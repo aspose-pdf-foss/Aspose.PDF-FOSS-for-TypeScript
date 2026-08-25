@@ -1,0 +1,55 @@
+<DICT KEY="AP"><STREAM KEY="N"><ARRAY KEY="BBox"><FIXED VAL="0.000000"/>
+<FIXED VAL="0.000000"/>
+<FIXED VAL="512.000000"/>
+<FIXED VAL="512.000000"/>
+</ARRAY>
+<INT KEY="FormType" VAL="1"/>
+<INT KEY="Length" VAL="68"/>
+<ARRAY KEY="Matrix"><FIXED VAL="-0.000000"/>
+<FIXED VAL="1.000000"/>
+<FIXED VAL="-1.000000"/>
+<FIXED VAL="-0.000000"/>
+<FIXED VAL="-0.000000"/>
+<FIXED VAL="-0.000000"/>
+</ARRAY>
+<NAME KEY="Name" VAL="FRM"/>
+<DICT KEY="Resources"><DICT KEY="XObject"><STREAM KEY="xobj1"><INT KEY="BitsPerComponent" VAL="8"/>
+<NAME KEY="ColorSpace" VAL="DeviceRGB"/>
+<NAME KEY="Filter" VAL="DCTDecode"/>
+<INT KEY="Height" VAL="2033"/>
+<BOOL KEY="Interpolate" VAL="true"/>
+<INT KEY="Length" VAL="8"/>
+<STREAM KEY="SMask"><INT KEY="BitsPerComponent" VAL="8"/>
+<NAME KEY="ColorSpace" VAL="DeviceGray"/>
+<NAME KEY="Filter" VAL="FlateDecode"/>
+<INT KEY="Height" VAL="2033"/>
+<BOOL KEY="Interpolate" VAL="true"/>
+<INT KEY="Length" VAL="8"/>
+<NAME KEY="Subtype" VAL="Image"/>
+<NAME KEY="Type" VAL="XObject"/>
+<INT KEY="Width" VAL="1089"/>
+<DATA ENCODING="HEX" MODE="RAW">789CEDDD89BF6EE5</DATA>
+</STREAM>
+<NAME KEY="Subtype" VAL="Image"/>
+<NAME KEY="Type" VAL="XObject"/>
+<INT KEY="Width" VAL="1089"/>
+<DATA ENCODING="HEX" MODE="RAW">FFD8FFE000104A46</DATA>
+</STREAM>
+<STREAM KEY="xobj2"><INT KEY="BitsPerComponent" VAL="8"/>
+<NAME KEY="ColorSpace" VAL="DeviceGray"/>
+<NAME KEY="Filter" VAL="FlateDecode"/>
+<INT KEY="Height" VAL="2033"/>
+<BOOL KEY="Interpolate" VAL="true"/>
+<INT KEY="Length" VAL="8"/>
+<NAME KEY="Subtype" VAL="Image"/>
+<NAME KEY="Type" VAL="XObject"/>
+<INT KEY="Width" VAL="1089"/>
+<DATA ENCODING="HEX" MODE="RAW">789CEDDD89BF6EE5</DATA>
+</STREAM>
+</DICT>
+</DICT>
+<NAME KEY="Subtype" VAL="Form"/>
+<NAME KEY="Type" VAL="XObject"/>
+<DATA ENCODING="HEX" MODE="RAW">312030203020312030203020636D0A710A710A3236312E333620302030203438372E3932203132352E333737322031312E383820636D0A2F786F626A3120446F0A510A51</DATA>
+</STREAM>
+</DICT>

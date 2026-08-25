@@ -1,0 +1,22 @@
+node_modules/
+dist/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# UCD raw downloads (regenerate src/unicode-data.ts via npm run gen:ucd)
+/unicode/
+
+# feature-showcase build products, the PDF included: it is regenerated on every
+# run with fresh /Info dates, so tracking it adds a new 2.8 MB blob per commit
+# for a document nobody edited. Build it with `npm run example:showcase`.
+docs/feature-showcase.pdf
+docs/feature-showcase.html
+docs/feature-showcase-fixed.html
+docs/feature-showcase-pdfa.pdf
+docs/feature-showcase-signed.pdf
+
+# Predefined Adobe CMap downloads (regenerate src/cmapdata.ts via npm run gen:cmaps)
+/cmaps/

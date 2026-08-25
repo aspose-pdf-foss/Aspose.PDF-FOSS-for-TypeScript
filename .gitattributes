@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Frozen third-party regression fixtures: byte-exact or worthless. A .ppm has an
+# ASCII header and may contain no NUL at all, so git's content sniffing calls it
+# text and text=auto would rewrite CRLF in its payload on commit. Say binary
+# outright rather than relying on the sniff.
+test/fixtures/jpeg/*.jpg binary
+test/fixtures/jpeg/*.ppm binary

@@ -1,0 +1,106 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ToHtml — semantic output is byte-identical > shell: doctype, title and CSS around a body 1`] = `
+"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>body{font-family:serif;margin:2em auto;max-width:45em;line-height:1.5}table{border-collapse:collapse}td,th{border:1px solid #999;padding:.25em .5em}img{max-width:100%}</style>
+</head>
+<body>
+<h1>Quarterly Report</h1>
+<p>Revenue grew twelve percent this year.</p>
+</body>
+</html>
+"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: RoleMap, /Lang and /ActualText 1`] = `"<div><h2 lang="en-GB">Hello Heading</h2><p>Body paragraph actual</p><img alt="A descriptive figure"/></div>"`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: a /Figure resolved to its image by MCID 1`] = `
+"<p>caption</p>
+<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC" alt="a company logo"/>"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: a Table element carrying no /Pg 1`] = `
+"<table>
+  <tr>
+    <th scope="col">A</th>
+    <th scope="col">B</th>
+  </tr>
+  <tr>
+    <td>C</td>
+    <td>D</td>
+  </tr>
+</table>"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: a table with a caption and header scope 1`] = `
+"<table>
+  <caption>Employee directory</caption>
+  <thead>
+  <tr>
+    <th scope="col" id="h1">Name</th>
+    <th colspan="2" scope="col" id="h2">Info</th>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+    <td headers="h1">Alice</td>
+    <td>30</td>
+    <td>NYC</td>
+  </tr>
+  <tr>
+    <td rowspan="2">Bob</td>
+    <td>25</td>
+    <td>LA</td>
+  </tr>
+  <tr>
+    <td>40</td>
+    <td>SF</td>
+  </tr>
+  </tbody>
+</table>"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: multi-page tree, one page only 1`] = `"<div><div><p>Page two body</p></div></div>"`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: multi-page tree, whole document 1`] = `"<div><div><p>Page one body</p><p>Page two body</p></div><img alt="A figure"/></div>"`;
+
+exports[`ToHtml — semantic output is byte-identical > tagged: two figures on one page pair with their own images 1`] = `
+"<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4fPgwAASWAkpuGcH6AAAAAElFTkSuQmCC" alt="upper"/>
+<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC" alt="lower"/>"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > untagged: a ruled card beside a real grid 1`] = `
+"<p>Card heading</p>
+<table>
+  <tr>
+    <td style="border-top: 1pt solid #000000; border-right: 1pt solid #000000; border-bottom: 1pt solid #000000; border-left: 1pt solid #000000">A</td>
+    <td style="border-top: 1pt solid #000000; border-right: 1pt solid #000000; border-bottom: 1pt solid #000000; border-left: 1pt solid #000000">B</td>
+  </tr>
+  <tr>
+    <td style="border-top: 1pt solid #000000; border-right: 1pt solid #000000; border-bottom: 1pt solid #000000; border-left: 1pt solid #000000">C</td>
+    <td style="border-top: 1pt solid #000000; border-right: 1pt solid #000000; border-bottom: 1pt solid #000000; border-left: 1pt solid #000000">D</td>
+  </tr>
+</table>"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > untagged: headings, paragraphs 1`] = `
+"<h1>Quarterly Report</h1>
+<p>Revenue grew twelve percent this year.</p>"
+`;
+
+exports[`ToHtml — semantic output is byte-identical > untagged: page images 1`] = `
+"<p>caption</p>
+<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC" alt=""/>"
+`;
+
+exports[`ToHtml — the constructs no93.2 adds > tagged: a code block and a quote 1`] = `"<div><pre><code>x = 1;</code></pre><blockquote><p>quoted</p></blockquote></div>"`;
+
+exports[`ToHtml — the constructs no93.2 adds > tagged: a nested bullet list 1`] = `"<div><ul><li><p>outer</p><ul><li><p>inner</p></li></ul></li></ul></div>"`;
+
+exports[`ToHtml — the constructs no93.2 adds > tagged: a task list 1`] = `"<div><ul><li><input type="checkbox" disabled="disabled"/><p>todo</p></li><li><input type="checkbox" disabled="disabled" checked="checked"/><p>done</p></li></ul></div>"`;
+
+exports[`ToHtml — the constructs no93.2 adds > tagged: an ordered list with a start 1`] = `"<div><ol start="3"><li><p>three</p></li><li><p>four</p></li></ol></div>"`;
