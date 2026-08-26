@@ -20,6 +20,12 @@ import {
 // Re-exported so `redact.ts` and the tests keep the import path they have had
 // since before the move -- the shape `redact.ts` already uses for resprune.ts.
 export { decodeImageRgba, type ImageRgba } from './imagergba.js';
+import { UnsupportedFeatureError } from './errors.js';
+import { encodeJpeg } from './jpegencode.js';
+import { encodeTiff, type TiffFrame } from './tiffencode.js';
+import { encodeBmp } from './bmpencode.js';
+import { encodeGif } from './gifencode.js';
+import { resolvePages } from './pagerange.js';
 import { SfntFont } from './sfnt.js';
 import { CffFont } from './cff.js';
 import { gidForProgram, gidForCid, loadEmbeddedProgram } from './glyphprogram.js';
@@ -34,7 +40,35 @@ import {
 } from './font.js';
 import { Type1Font } from './type1.js';
 
+/** Every output encoding `page.ToImage` can produce, and the ONE owner of that
+ *  list — `ImageFormat` is derived from it, so the runtime guard and the
+ *  compile-time union cannot drift. Each encoder issue under the raster-output
+ *  epic appends one string here and one case to `encodeCanvas`. */
+export const IMAGE_FORMATS = ['png', 'jpeg', 'tiff', 'bmp', 'gif'] as const;
+
+/** What `ImageOptions.format` accepts. Deliberately a CLOSED union rather than a
+ *  wide `string`: a caller cannot name an encoding that does not exist yet, and
+ *  widening a union is not a breaking change. */
+export type ImageFormat = (typeof IMAGE_FORMATS)[number];
+
 export interface ImageOptions {
+  /** Output encoding. Default 'png'.
+   *
+   *  **Invariant:** an unrecognised value THROWS rather than falling back to
+   *  PNG. TypeScript stops the mistake at the call site, but this ships as
+   *  JavaScript too — and PNG bytes returned for `format: 'jpeg'` get written
+   *  under an extension no viewer opens, which is a corrupt file rather than a
+   *  degraded one. Checked before rendering, so a rejected call costs nothing. */
+  format?: ImageFormat;
+  /** Encoder quality, 1..100 on the IJG scale. Default 75.
+   *
+   *  Read only by LOSSY formats — 'png' ignores it, since a lossless encoding
+   *  has no quality to trade. Documented rather than rejected: a caller holding
+   *  one options bag across several formats should not have to strip the key. */
+  quality?: number;
+  /** Strip compression, for formats that choose one. TIFF only; default
+   *  'deflate'. PNG and JPEG carry their own coding and ignore it. */
+  compression?: 'none' | 'deflate' | 'g4';
   /** Multiplier on the 72-DPI point size. Default 1. Ignored if width/height set. */
   scale?: number;
   /** Target pixel width. Overrides `scale`; height derived aspect-preserving unless also given. */
@@ -51,6 +85,9 @@ export interface ImageOptions {
 
 
 // ---------- Canvas (straight-alpha RGBA, 0..1) ----------
+
+/** 0..1 float to an 8-bit sample, clamped. */
+const to8 = (v: number): number => Math.round((v < 0 ? 0 : v > 1 ? 1 : v) * 255);
 
 class Canvas {
   readonly data: Float32Array;
@@ -127,21 +164,34 @@ class Canvas {
     d[i + 3] = oa;
   }
 
-  toPng(opaqueWhite: boolean): Uint8Array {
+  /** Interleaved 8-bit RGB, alpha DISCARDED rather than composited — which is
+   *  right only because the caller has already established the canvas is
+   *  opaque (`opaqueWhite`, so it was seeded to white and every draw
+   *  composited over it). Shared by the PNG and JPEG encoders so the two
+   *  cannot disagree about the conversion. */
+  toRgb(): Uint8Array {
     const { w, h, data } = this;
-    const to8 = (v: number) => { const n = Math.round((v < 0 ? 0 : v > 1 ? 1 : v) * 255); return n; };
-    if (opaqueWhite) {
-      const rgb = new Uint8Array(w * h * 3);
-      for (let p = 0; p < w * h; p++) {
-        rgb[p * 3]     = to8(data[p * 4]);
-        rgb[p * 3 + 1] = to8(data[p * 4 + 1]);
-        rgb[p * 3 + 2] = to8(data[p * 4 + 2]);
-      }
-      return encodePng(w, h, rgb, 'rgb');
+    const rgb = new Uint8Array(w * h * 3);
+    for (let p = 0; p < w * h; p++) {
+      rgb[p * 3]     = to8(data[p * 4]);
+      rgb[p * 3 + 1] = to8(data[p * 4 + 1]);
+      rgb[p * 3 + 2] = to8(data[p * 4 + 2]);
     }
+    return rgb;
+  }
+
+  /** Interleaved 8-bit RGBA, straight alpha. */
+  toRgba(): Uint8Array {
+    const { w, h, data } = this;
     const rgba = new Uint8Array(w * h * 4);
     for (let p = 0; p < w * h * 4; p++) rgba[p] = to8(data[p]);
-    return encodePng(w, h, rgba, 'rgba');
+    return rgba;
+  }
+
+  toPng(opaqueWhite: boolean): Uint8Array {
+    return opaqueWhite
+      ? encodePng(this.w, this.h, this.toRgb(), 'rgb')
+      : encodePng(this.w, this.h, this.toRgba(), 'rgba');
   }
 }
 
@@ -1096,9 +1146,73 @@ export interface BackdropOptions {
   hideWidgets?: ReadonlySet<PdfDict>;
 }
 
-function renderPage(
-  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions,
+/** Encode a finished canvas. The single dispatch point every raster entry
+ *  reaches, so no two of them can disagree about what a format means. */
+function encodeCanvas(
+  canvas: Canvas, opts: ImageOptions, format: ImageFormat, opaqueWhite: boolean,
 ): Uint8Array {
+  switch (format) {
+    case 'png':
+      return canvas.toPng(opaqueWhite);
+    case 'jpeg':
+      // Always 'rgb': `resolveFormat` has already refused a transparent
+      // background, so the canvas is opaque and its alpha carries nothing.
+      return encodeJpeg(canvas.w, canvas.h, canvas.toRgb(), 'rgb',
+        opts.quality != null ? { quality: opts.quality } : {});
+    case 'bmp':
+      // 24-bit BI_RGB has no alpha, so this takes JPEG's answer rather than
+      // TIFF's — `resolveFormat` has already refused a transparent background.
+      return encodeBmp(canvas.w, canvas.h, canvas.toRgb());
+    case 'gif':
+      // 256 colours, so LOSSY for a photograph — but exact for the flat fills
+      // and text a rendered document is mostly made of. Also opaque-only: GIF
+      // has index transparency, not an alpha channel, and choosing an index to
+      // sacrifice is a decision about the image nobody asked us to make.
+      return encodeGif(canvas.w, canvas.h, canvas.toRgb());
+    case 'tiff':
+      // TIFF, unlike JPEG and BMP, CAN carry alpha, so a transparent
+      // background is honoured through an unassociated ExtraSample.
+      return encodeTiff([opaqueWhite
+        ? { width: canvas.w, height: canvas.h, kind: 'rgb', samples: canvas.toRgb() }
+        : { width: canvas.w, height: canvas.h, kind: 'rgba', samples: canvas.toRgba() }],
+      opts.compression != null ? { compression: opts.compression } : {});
+  }
+}
+
+/** Which formats cannot carry an alpha channel, and so contradict
+ *  `background: 'transparent'`. */
+const OPAQUE_ONLY: ReadonlySet<ImageFormat> = new Set<ImageFormat>(['jpeg', 'bmp', 'gif']);
+
+/** Resolve `opts.format`, rejecting anything `encodeCanvas` cannot encode and
+ *  any option combination the chosen format cannot honour. Called BEFORE the
+ *  render so a refused call does no work. */
+function resolveFormat(opts: ImageOptions): ImageFormat {
+  const format = opts.format ?? 'png';
+  if (!(IMAGE_FORMATS as readonly string[]).includes(format)) {
+    throw new UnsupportedFeatureError(
+      `unsupported image format ${JSON.stringify(format)}; ` +
+      `supported: ${IMAGE_FORMATS.join(', ')}`);
+  }
+  // REFUSE rather than quietly compositing onto white. The composite would
+  // return a valid file, which is what makes it worse: the caller's
+  // transparency request would vanish with no signal, and `ToImage` returns
+  // bytes with no report channel to carry one. Refusing is also the reversible
+  // choice — relaxing it later is additive, tightening it would not be.
+  if (opts.background === 'transparent' && OPAQUE_ONLY.has(format)) {
+    throw new UnsupportedFeatureError(
+      `image format ${JSON.stringify(format)} has no alpha channel and cannot ` +
+      `honour background: 'transparent' — use 'png', or drop the background option`);
+  }
+  return format;
+}
+
+/** Rasterize one page and stop, before any encoder sees it. Split out of
+ *  `renderPage` for the multi-page TIFF path, which needs each page's SAMPLES
+ *  rather than a finished single-page file — encoded TIFFs cannot be
+ *  concatenated, so every frame has to reach one `encodeTiff` call. */
+function renderCanvas(
+  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions,
+): Canvas {
   const box = opts.box ?? 'crop';
   const opaqueWhite = (opts.background ?? 'white') !== 'transparent';
   const { matrix, width: w0, height: h0 } = baseMatrix(page, box);
@@ -1123,7 +1237,59 @@ function renderPage(
   } catch {
     // Degrade: whatever composited before the failure still renders.
   }
-  return canvas.toPng(opaqueWhite);
+  return canvas;
+}
+
+function renderPage(
+  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions,
+): Uint8Array {
+  // Before the render, so a refused call does no work.
+  const format = resolveFormat(opts);
+  const opaqueWhite = (opts.background ?? 'white') !== 'transparent';
+  return encodeCanvas(renderCanvas(doc, page, opts, o), opts, format, opaqueWhite);
+}
+
+/** Options for {@link renderDocumentToTiff}. Every render option `ToImage`
+ *  takes, minus the two a multi-page TIFF decides for itself: `format` is TIFF
+ *  by definition, and `quality` belongs to a lossy encoder TIFF is not using. */
+export interface TiffExportOptions
+  extends Omit<ImageOptions, 'format' | 'quality'> {
+  /** Which pages, 1-based: an explicit list or a `"1-5,8,12-"` range string.
+   *  Default every page. Resolved by `pagerange.ts`, so a list is normalized
+   *  ascending and deduped exactly as `Overlay` and the decoration API do. */
+  pages?: number[] | string;
+}
+
+/** Render one page to the frame shape `tiffencode.ts` consumes.
+ *
+ *  Separate from `renderPage` because a multi-page TIFF needs the SAMPLES of
+ *  each page rather than a finished single-page file — there is no way to
+ *  concatenate encoded TIFFs, so the frames must reach one `encodeTiff` call. */
+function renderPageToTiffFrame(
+  doc: Document, page: Page, opts: ImageOptions,
+): TiffFrame {
+  const canvas = renderCanvas(doc, page, opts, { skipGlyphs: false });
+  const opaque = (opts.background ?? 'white') !== 'transparent';
+  return opaque
+    ? { width: canvas.w, height: canvas.h, kind: 'rgb', samples: canvas.toRgb() }
+    : { width: canvas.w, height: canvas.h, kind: 'rgba', samples: canvas.toRgba() };
+}
+
+/** Render a page selection to ONE multi-page TIFF — the entry that makes this
+ *  format useful for archival and fax pipelines, which the per-page encoder
+ *  alone does not. */
+export function renderDocumentToTiff(
+  doc: Document, opts: TiffExportOptions = {},
+): Uint8Array {
+  const pages = resolvePages(opts.pages, doc.Pages.length);
+  // `resolvePages([])` is legally empty, and `encodeTiff` would then refuse in
+  // terms of itself — an internal the caller never called. The mistake is a
+  // selection that matched nothing, so it is reported as one.
+  if (pages.length === 0)
+    throw new TypeError('ToTiff: the page selection is empty; at least one page is required');
+
+  const frames = pages.map((n) => renderPageToTiffFrame(doc, doc.Pages[n - 1], opts));
+  return encodeTiff(frames, opts.compression != null ? { compression: opts.compression } : {});
 }
 
 /** Render one page to a PNG. */

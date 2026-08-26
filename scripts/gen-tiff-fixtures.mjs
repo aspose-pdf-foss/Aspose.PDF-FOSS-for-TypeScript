@@ -163,6 +163,79 @@ for (const [name, make, oracle] of CASES) {
 // The big-endian half, from an unrelated implementation.
 await freeze('utif-rgba-mm', Buffer.from(UTIF.encodeImage(rgba, W, H)), 'srgb');
 
+// ---------------------------------------------------------------------------
+// Multi-page (issue vk5h.8).
+//
+// WHY UTIF AND NOT LIBTIFF. sharp exposes no multi-page TIFF write at all:
+// `pyramid: true` puts its levels in SubIFDs rather than the main chain (even
+// with `subifd: false` — measured, one IFD), and a `pageHeight` input is
+// flattened into one tall image. utif2's `encode(ifds)` takes an ARRAY and
+// writes the chain, so the container — byte order, tag layout and every
+// `nextIFD` pointer — is entirely its work. We choose only the strip offsets,
+// exactly as utif2's own `encodeImage` does.
+//
+// FRAMES DIFFER IN SIZE on purpose. A walk that ignores the chain and re-reads
+// IFD 0 returns a perfectly valid image for every page, so same-size frames
+// cannot see it; different dimensions make it fail on the first assertion.
+const PAGES = [
+  { w: 40, h: 24, ch: 0 },   // red
+  { w: 24, h: 40, ch: 1 },   // green, transposed
+  { w: 33, h: 17, ch: 2 },   // blue, neither dimension a multiple of 8
+];
+
+/** utif2 writes a page's IFD; we place the strip data after the chain, which is
+ *  what `encodeImage` does with its own fixed 1000-byte gap. */
+function utifMultiPage(pages) {
+  const sizes = pages.map((p) => p.w * p.h * 4);
+  const BASE = 4096;                       // comfortably past the IFD chain
+  const offsets = [];
+  let at = BASE;
+  for (const s of sizes) { offsets.push(at); at += s; }
+
+  const ifds = pages.map((p, i) => ({
+    t256: [p.w], t257: [p.h], t258: [8, 8, 8, 8], t259: [1], t262: [2],
+    t273: [offsets[i]], t277: [4], t278: [p.h], t279: [sizes[i]],
+    t282: [[72, 1]], t283: [[72, 1]], t284: [1],
+    t286: [[0, 1]], t287: [[0, 1]], t296: [1], t338: [1],
+  }));
+
+  const prefix = new Uint8Array(UTIF.encode(ifds));
+  if (prefix.length > BASE)
+    throw new Error(`utifMultiPage: IFD chain is ${prefix.length} bytes, past the ${BASE} gap`);
+
+  const out = new Uint8Array(at);
+  out.set(prefix, 0);
+  pages.forEach((p, i) => {
+    const f = new Uint8Array(sizes[i]);
+    for (let px = 0; px < p.w * p.h; px++) {
+      // A gradient, not a flat fill: a flat page survives a mis-strided read.
+      f[px * 4 + p.ch] = 255;
+      f[px * 4 + ((p.ch + 1) % 3)] = (px % p.w) * 3 & 0xff;
+      f[px * 4 + 3] = 255;
+    }
+    out.set(f, offsets[i]);
+  });
+  return Buffer.from(out);
+}
+
+{
+  const name = 'utif-multipage-mm';
+  const bytes = utifMultiPage(PAGES);
+  fs.writeFileSync(path.join(OUT, `${name}.tif`), bytes);
+  // One oracle decode per page, through libvips — independent of utif2.
+  for (let i = 0; i < PAGES.length; i++) {
+    const dec = await sharp(path.join(OUT, `${name}.tif`), { page: i })
+      .toColourspace('srgb').raw().toBuffer({ resolveWithObject: true });
+    fs.writeFileSync(path.join(OUT, `${name}.p${i}.expected.raw`), dec.data);
+    written.push({
+      name: `${name} p${i}`, bytes: i === 0 ? bytes.length : 0,
+      sha: i === 0 ? createHash('sha256').update(bytes).digest('hex') : '',
+      w: dec.info.width, h: dec.info.height, ch: dec.info.channels,
+      rawSha: createHash('sha256').update(dec.data).digest('hex'),
+    });
+  }
+}
+
 // The exact encoder inputs, so a regenerated fixture can be checked against
 // what it was actually asked to encode rather than against its own output.
 fs.writeFileSync(path.join(OUT, 'source-rgb.raw'), rgb);

@@ -83,7 +83,7 @@ function readMode(br: BitReader): 'P' | 'H' | number {
  *  right of a0 whose colour is opposite to `color` (0=white, 1=black). The
  *  changing element at index i begins a run of colour (i even ? black : white),
  *  so opposite-to-white wants an even index and opposite-to-black an odd one. */
-function findB1Index(ref: number[], a0: number, color: number): number {
+export function findB1Index(ref: number[], a0: number, color: number): number {
   let i = 0;
   while (i < ref.length && ref[i] <= a0) i++;
   const wantEven = color === 0;

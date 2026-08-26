@@ -1629,6 +1629,108 @@ Source (`src/`):
 - **ocg.ts** — optional content / layers (`OptionalContent`, `Layer`,
   `LayerConfig`): enumerate/toggle, author, and delete OCGs + their marked
   content.
+- **imagepages.ts** — `doc.AddImagePages()`: an image file expanded into PAGES,
+  one per frame. Note the direction against `imageembed.ts`, which draws an
+  image INTO a page.
+  **Invariant:** the expansion happens at ADD time, not on save. Java expands a
+  multi-frame TIFF when the document is written; here `Save()` is a pure
+  function of the live model, so creating pages during serialization would make
+  the page count depend on when you looked and would put a decoder inside the
+  writer.
+  **Invariant:** a frame that will not decode costs ITS OWN page and nothing
+  else, reported in `skipped` — `svgdraw.ts`'s rule, so a partly-corrupt fax
+  still yields the pages that survive. It throws only when NO frame decoded,
+  where there is nothing to hand back and silence would read as success.
+  **Invariant:** `frames` is a SELECTION, normalized ascending and deduped like
+  every other page selection here. A caller wanting an ORDER makes the calls in
+  that order.
+  **Note, and it is the gap this feature sits on:**
+  `test/fixtures/tiff/PROVENANCE.md` records that no third-party MULTI-PAGE
+  TIFF is vendored. So each frame's CONTENT decoding is anchored by real
+  single-frame libtiff/utif2 files, while the IFD CHAINING is our `encodeTiff`
+  read back by our `decodeTiff` — the shared-convention class, tracked as its
+  own issue. Do not read those tests as conformance evidence for the walk.
+- **bmpencode.ts**, **gifencode.ts**, **quantize.ts** — the other two raster
+  **writers** behind `page.ToImage`, and the palette reduction GIF needs. All
+  pure; note the direction, since `bmp.ts` is the BMP *reader* and there is no
+  GIF reader in `src/` at all.
+  **Invariant:** `bmpencode.ts` writes rows BOTTOM-UP under a positive height.
+  That is BMP's convention and the opposite of the top-down samples held
+  everywhere else here — `bmp.ts` centralises the same flip on the reading side
+  in `eachRowTopDown`. Wrong, it yields a vertically mirrored image, which is a
+  plausible picture rather than an obvious fault, so the fixture pinning it is
+  asymmetric TOP-TO-BOTTOM; a left/right one cannot see the flip at all.
+  **Invariant:** rows pad to a 4-byte boundary (`fileStride`, reused from
+  `bmp.ts` so the two halves cannot disagree), which differs from the packed
+  length whenever the width is not a multiple of 4 — the shear `bmp.ts` already
+  records in the other direction.
+  **Invariant:** GIF's LZW is **not** `lzw.ts`'s. That one is PDF's —
+  8-bit-rooted, MSB-first, with the early-change quirk — while GIF's is
+  LSB-first, takes its root size from the palette, and frames output in
+  length-prefixed sub-blocks. Reusing `lzwEncode` produces a structurally valid
+  file that decodes to noise.
+  **Invariant:** the code width grows when the dictionary passes `1 << width`,
+  one step LATER than the naive reading, because the width applies to codes
+  already emitted. Off by one desynchronises the decoder partway through, so
+  the first half of the image is fine and the rest is garbage.
+  **Invariant:** `quantize.ts` passes an image of at most 256 distinct colours
+  through EXACTLY, reporting `exact`. Not an optimization: it is why GIF is
+  usable for rendered pages at all, since a document of text and flat fills is
+  losslessly representable and only a photograph reaches the median cut.
+  **Note on the oracle, and it is weaker than every other codec here:** `src/`
+  has no GIF reader, so this writer cannot be checked against its counterpart
+  the way `tiffencode.ts` is against `tiff.ts`. `test/helpers/decode-gif.ts` is
+  a test-only reader written independently from the GIF89a spec — the
+  arrangement `scripts/jbig2-codec.mjs` has against `src/jbig2*.ts`. It is
+  deliberately STRICT where the spec is: it requires the opening Clear code,
+  which real decoders commonly tolerate the absence of. Measured — a lenient
+  oracle leaves an encoder that omits it entirely green. There is no
+  third-party GIF in `test/fixtures/`.
+- **tiffencode.ts** — the TIFF **writer**, behind `doc.ToTiff()`, `page.ToImage({ format:
+  'tiff' })` and the public `encodeTiff`. Note the direction: `tiff.ts` is the
+  reader, and the two share no code — only a format.
+  **Invariant:** pure. Bytes in, bytes out, no `Document` and no PDF object,
+  the split `svgdraw.ts`/`svgembed.ts` makes, which is what lets every rule be
+  tested from hand-built samples.
+  **Invariant:** frames are a LIST and a single-page write is a list of one. A
+  multi-page TIFF is not a different writer — it is the same IFDs with their
+  `nextIFD` pointers chained — and it is the format's whole reason for existing
+  in archival and fax pipelines. Building the one-page writer first would mean
+  rewriting the offset arithmetic, which is the only part that is easy to get
+  wrong. `doc.ToTiff()` is the entry that cashes this in, over
+  `renderDocumentToTiff` in raster.ts: encoded TIFFs cannot be CONCATENATED, so
+  a per-page call could never produce one and every frame must reach a single
+  `encodeTiff`. That is also why `renderCanvas` is split out of `renderPage` —
+  the multi-page path needs each page's SAMPLES, not a finished file.
+  **Note:** `ToTiff` guards an EMPTY page selection itself rather than letting
+  `encodeTiff` refuse. `resolvePages([])` is legally empty, and the encoder
+  would report in terms of a function the caller never called; the actual
+  mistake is a selection that matched nothing.
+  **Invariant:** every choice comes from the set `tiff.ts` already decodes, so
+  a file we write is one we can read back. Layout is header, then all strip
+  data, then the chained IFDs — data first is what lets a strip offset be known
+  before the IFD naming it is written, so the file is one forward pass with
+  only `nextIFD` patched.
+  **Invariant:** `ExtraSamples` is **2** (unassociated), never 1. `tiff.ts`
+  divides associated alpha back out on read, so writing 1 over straight alpha
+  brightens every SEMI-transparent pixel on the round trip. **Measured:** a
+  fixture whose alpha is only 0 or 255 cannot see this at all — 255 divides by
+  one and 0 is forced to 0 — so it stays green with the wrong value written.
+  The half-alpha pixel in `test/raster-tiff.test.ts` is the whole test.
+  **Note, measured:** asserting that a tall page's pixels round-trip does NOT
+  pin the strip split; one whole-image strip reassembles perfectly. The count
+  is read out of tag 273 for that reason.
+  **Note on the oracle's ceiling, and do NOT read the green suite past it:**
+  the tests read what we write back through `tiff.ts`, usable only because
+  `test/fixtures/tiff/` anchors that decoder against libtiff and utif2. It is
+  still OUR decoder, so anything it TOLERATES is invisible — removing the
+  word-alignment before each IFD leaves all 12 cases green, because the reader
+  seeks to the offset and does not care, while TIFF 6.0 requires it. There is
+  no third-party TIFF *validator* in this suite, the gap `docxpackage.ts`
+  records about not being able to open Word.
+  **Note:** CCITT G4 is absent. `ccitt.ts` is decode-only, so it is a T.6
+  encoder from scratch rather than wiring — tracked as its own issue, and it is
+  what a bilevel scan needs to be small.
 - **rasterimage.ts**, **bmp.ts**, **tiff.ts** — raster image INPUT, the decoders
   behind embedding a `.bmp` or `.tif`. Note the direction: `jpeg.ts`, `jpx.ts`
   and `jbig2.ts` decode streams already inside a PDF, and these turn a file on
@@ -3190,6 +3292,37 @@ Source (`src/`):
   **Invariant:** a page-filtered export (`page.ToHtml()`) skips content items on
   other pages, so a figure split across a break cannot pull in the other half.
 - **ccitt.ts**, **ccitt-tables.ts** — `CCITTFaxDecode` (Group 3 1D/2D, Group 4).
+- **ccittencode.ts** — the Group 4 (T.6) **encoder**, behind `encodeG4` and
+  `encodeTiff`'s `compression: 'g4'`. Pure.
+  **Invariant:** the code TABLES are not transcribed here. `ccitt-tables.ts`
+  already owns T.4's run codes and T.6's mode codes for the decoder, and this
+  imports them; `findB1Index` is exported from `ccitt.ts` and shared for the
+  same reason — "which changing element is opposite in colour to a0" is ONE
+  question, and both `a1` (coding line) and `b1` (reference line) ask it with
+  the SAME colour argument. Passing the flipped colour for `a1` selects the
+  wrong parity and skips it entirely; that was the one real bug in writing this.
+  **Invariant:** input is 1-bpp MSB-first with **1 = black**, which is exactly
+  what `decodeCcitt` returns under `blackIs1: false`. The contract is defined by
+  round trip rather than by prose, because polarity is the thing everyone gets
+  backwards and a mirrored bitmap decodes perfectly while showing the negative.
+  **Note, and it is why this has a size test at all:** MODE SELECTION cannot be
+  checked by round trip. Any mode choice that decodes back to the same bitmap is
+  correct G4, so dropping VR3 and falling through to horizontal mode round-trips
+  perfectly and costs only bytes — measured, 117 → 203 on the staircase fixture,
+  which is why that one asserts a size bound.
+  **Note on the oracle, and it is STRONGER here than for our other writers:**
+  `decodeCcitt`'s G4 path is anchored by `test/fixtures/tiff/libtiff-g4-*.tif`,
+  real libtiff files with ground truth from a third decoder — so a round trip is
+  checked against a reader that agrees with libtiff, unlike `gifencode.ts`,
+  whose reader we also wrote.
+  **Note, measured and NOT claimed:** G4 is not asserted to beat Deflate.
+  Without vertical coherence Deflate wins outright on synthetic bilevel pages;
+  with it the two land within 2%. Real scans favour G4 more than any fixture we
+  can synthesize, but no real fax TIFF is vendored. The reason to write G4 is
+  what fax and archival toolchains EXPECT to read.
+  **Note:** it refuses a non-bilevel frame rather than thresholding, so
+  `ToImage({ format: 'tiff', compression: 'g4' })` refuses too — a rendered page
+  is 8-bit RGB, and picking a threshold is a decision about the image.
 - **embeddedfile.ts**, **collection.ts** — embedded-file attachments
   (`Attachment`) and the `/Collection` portfolio layer. **pagelabels.ts** —
   `/PageLabels` ranges; named destinations live in **outline.ts**.

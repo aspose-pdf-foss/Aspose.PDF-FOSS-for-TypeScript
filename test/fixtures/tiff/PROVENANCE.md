@@ -147,6 +147,43 @@ they remain builder-anchored in `test/tiff.test.ts`:
   not premultiply its samples. Its alpha is 255 everywhere on purpose, where the
   two readings coincide; with partial alpha the fixture would be asserting our
   division rule against a producer that got the flag wrong.
-- **Multi-page files.** Reachable from sharp only via `pyramid: true`, whose
-  second IFD is a downsampled pyramid level rather than an independent image —
-  not the shape `tiffPageCount` and `opts.page` are for.
+- ~~**Multi-page files.**~~ **Covered since `vk5h.8`** by `utif-multipage-mm.tif`
+  — see below. The note this replaces was right about sharp and wrong to stop
+  there: libtiff through sharp writes no multi-page TIFF at all, and utif2 does.
+
+---
+
+## `utif-multipage-mm.tif` — the multi-page anchor (`vk5h.8`)
+
+Three chained IFDs written by **utif2 4.1.0**, big-endian, with one
+`<name>.p<i>.expected.raw` per page frozen from **libvips** reading that page
+back. Neither side is ours: utif2 writes every `nextIFD` pointer, libvips
+supplies the ground truth.
+
+**Why utif2 and not libtiff.** sharp exposes no multi-page TIFF write. Both
+routes were tried and measured: `pyramid: true` puts its levels in SubIFDs
+rather than the main chain — one IFD there even with `subifd: false` — and a
+`pageHeight` input is flattened into a single tall image. utif2's
+`encode(ifds)` takes an array and writes the chain, so the container (byte
+order, tag layout, every pointer) is entirely its work. Only the strip offsets
+are chosen by the generator, exactly as utif2's own `encodeImage` chooses them.
+
+**The pages differ in size** — 40x24, 24x40, 33x17 — on purpose. A walk that
+ignores the chain and re-reads IFD 0 returns a perfectly valid image for every
+page, so same-size frames cannot see it; different dimensions fail on the first
+assertion. The third page's dimensions are also both non-multiples of 8.
+
+**What it pins, measured rather than assumed.** Our own `encodeTiff` writes
+little-endian ONLY, so every multi-frame test we have — `raster-tiff`,
+`document-totiff`, `document-addimagepages`, 79 cases — walks the chain in `II`
+order. Forcing the `nextIFD` read little-endian regardless of the file's byte
+order reddens **3 cases here and none of those 79**.
+
+**What it does NOT pin.** Breaking the walk itself — dropping the chain, or
+reading `nextIFD` from the wrong offset — reddens both suites. The builder
+suite is not blind to a broken walk; it is blind to one that works in a single
+byte order, which is the shared-convention class this directory exists for.
+
+**Still not covered.** No multi-page file from *libtiff*, and none using a
+compression other than none. A per-page compression bug in a multi-page context
+would be invisible here.

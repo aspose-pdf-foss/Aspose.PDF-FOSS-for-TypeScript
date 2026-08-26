@@ -13,6 +13,8 @@ import { StructTreeRoot } from './struct.js';
 import { renderDocumentToHtml, HtmlOptions } from './html.js';
 import { renderDocumentToDocx, type DocxOptions } from './docxexport.js';
 import { renderEpub, type EpubOptions } from './epubexport.js';
+import { renderDocumentToTiff, type TiffExportOptions } from './raster.js';
+import { addImagePages, type AddImagePagesOptions, type AddImagePagesResult } from './imagepages.js';
 import {
   renderDocumentToMarkdown, renderDocumentToMarkdownAssets,
   type MarkdownExportOptions, type MarkdownExportResult,
@@ -1020,6 +1022,36 @@ export class Document {
    *  Never throws. */
   ToEpub(options?: EpubOptions): Uint8Array {
     return renderEpub(this, this.Pages, options ?? {});
+  }
+
+  /** Rasterize a page selection into ONE multi-page TIFF.
+   *
+   *  `pages` is an explicit 1-based list or a `"1-5,8,12-"` range string,
+   *  defaulting to every page; the remaining options are `ToImage`'s, applied
+   *  to every frame. Compression is Deflate unless `{ compression: 'none' }`.
+   *
+   *  This is the format document archival, fax gateways and scanning pipelines
+   *  interchange in, and it is why the TIFF encoder takes a list of frames:
+   *  encoded TIFFs cannot be concatenated, so a per-page call could never
+   *  produce one. `background: 'transparent'` is honoured, TIFF being able to
+   *  carry alpha where JPEG cannot. */
+  ToTiff(options?: TiffExportOptions): Uint8Array {
+    return renderDocumentToTiff(this, options ?? {});
+  }
+
+  /** Append one page per frame of an image file, sized to each frame.
+   *
+   *  A multi-frame TIFF — how a scanned or faxed document arrives — becomes one
+   *  page per frame; a single-frame JPEG, PNG or BMP becomes one page, which is
+   *  the ordinary image-to-PDF operation. `frames` selects a subset (0-based,
+   *  normalized ascending and deduped) and `dpi` sizes the pages, defaulting to
+   *  72 so one pixel is one point.
+   *
+   *  A frame that will not decode costs its own page and nothing else: it is
+   *  reported in `skipped` so a partly-corrupt fax still yields what survives.
+   *  Throws only when NO frame decoded. */
+  AddImagePages(data: Uint8Array, options?: AddImagePagesOptions): AddImagePagesResult {
+    return addImagePages(this, data, options ?? {});
   }
 
   /** The document's logical structure tree, or null when untagged. */

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decodeTiff } from '../src/tiff.js';
+import { decodeTiff, tiffPageCount } from '../src/tiff.js';
 import type { RasterImage } from '../src/rasterimage.js';
 
 /**
@@ -32,6 +32,22 @@ import type { RasterImage } from '../src/rasterimage.js';
  *   3 predictor un-differenced across the IMAGE        1        1
  *     width
  *   4 byte order forced little-endian                  2        1
+ *   5 nextIFD pointer read little-endian whatever       3        0
+ *     the file's byte order (vk5h.8)
+ *
+ * Row 5 is the multi-page fixture's own justification, and its zero is as
+ * pointed as row 1's. Our `encodeTiff` writes little-endian ONLY, so every
+ * multi-frame assertion we have — `raster-tiff`, `document-totiff`,
+ * `document-addimagepages`, 79 cases — runs the chain in `II` order and cannot
+ * see an `MM` walk break at all. Measured with that mutation applied: 3 red
+ * here, all 79 green there.
+ *
+ * Measured and recorded the other way too, because the obvious reading is
+ * wrong: breaking the walk ITSELF (dropping the chain so every page re-reads
+ * IFD 0, or reading `nextIFD` from the wrong offset) reddens BOTH suites. The
+ * builder suite is not blind to a broken walk — it is blind to a walk that
+ * works in one byte order and not the other, which is exactly the shared
+ * convention class this directory exists for.
  *
  * Row 1 is the whole reason this file exists, and its zero is the point: the
  * mutation was GREEN against the entire builder suite. Every CCITT case there
@@ -224,5 +240,67 @@ describe('real-producer TIFF — JPEG-compressed', () => {
     // A tolerance that admits anything proves nothing. This one is tight enough
     // that a channel swap or a stride error blows straight through it.
     expect(maxErr).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * MULTI-PAGE, from bytes we did not write (issue vk5h.8).
+ *
+ * Until this fixture existed the frame walk was anchored on nothing: every
+ * multi-frame assertion in the suite ran our own `encodeTiff` back through our
+ * own `decodeTiff`, so a shared misreading of how `nextIFD` chains would have
+ * cancelled out — precisely the class this directory exists for. The file comes
+ * from utif2's `encode(ifds)`, which writes the whole chain; the per-page ground
+ * truth comes from libvips reading each page back, so neither side is ours.
+ *
+ * WHY THE PAGES DIFFER IN SIZE. A walk that ignores the chain and re-reads IFD 0
+ * hands back a perfectly valid image for every page. Same-size frames cannot see
+ * that at all; different dimensions fail on the first assertion.
+ *
+ * It is big-endian, so it also carries the `MM` byte order THROUGH the walk —
+ * `utif-rgba-mm` only reaches the first IFD.
+ */
+describe('TIFF — multi-page from utif2, big-endian', () => {
+  const NAME = 'utif-multipage-mm';
+  const PAGES = [[40, 24], [24, 40], [33, 17]] as const;
+
+  it('is a big-endian file, so the walk is exercised in MM order', () => {
+    const b = read(`${NAME}.tif`);
+    expect([b[0], b[1]]).toEqual([0x4d, 0x4d]);
+  });
+
+  it('counts every page in the chain', () => {
+    expect(tiffPageCount(read(`${NAME}.tif`))).toBe(PAGES.length);
+  });
+
+  it('reads each page at its own dimensions', () => {
+    const b = read(`${NAME}.tif`);
+    PAGES.forEach(([w, h], i) => {
+      const img = sized(decodeTiff(b, i));
+      expect([i, img.width, img.height]).toEqual([i, w, h]);
+    });
+  });
+
+  it('matches libvips page for page', () => {
+    const b = read(`${NAME}.tif`);
+    PAGES.forEach(([w, h], i) => {
+      const img = decodeTiff(b, i);
+      expect(img.kind).toBe('rgb');
+      const got = (img as { samples: Uint8Array }).samples;
+      const want = oracle(`${NAME}.p${i}`);
+      // libvips returns 4 channels (the file declares an alpha ExtraSample);
+      // our decoder splits alpha off, so compare the colour channels.
+      expect(want.length).toBe(w * h * 4);
+      expect(got.length).toBe(w * h * 3);
+      let firstBad = -1;
+      for (let px = 0; px < w * h && firstBad < 0; px++)
+        for (let c = 0; c < 3; c++)
+          if (got[px * 3 + c] !== want[px * 4 + c]) { firstBad = px * 3 + c; break; }
+      expect({ page: i, firstBad }).toEqual({ page: i, firstBad: -1 });
+    });
+  });
+
+  it('reports a page past the end rather than returning page 0', () => {
+    expect(() => decodeTiff(read(`${NAME}.tif`), PAGES.length)).toThrow();
   });
 });

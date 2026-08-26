@@ -13,7 +13,7 @@ import {
 } from './pagecontent.js';
 import { UnsupportedFeatureError, PdfParseError } from './errors.js';
 import { decodeBmp } from './bmp.js';
-import { decodeTiff } from './tiff.js';
+import { decodeTiff, tiffPageCount } from './tiff.js';
 import type { RasterImage } from './rasterimage.js';
 
 export interface AddImageOptions {
@@ -137,6 +137,15 @@ export function buildRasterXObject(img: RasterImage): BuiltImage {
   if (!img.alpha) return { stream };
   const smask = imageStream(img.width, img.height, 8, name('DeviceGray'), flate(img.alpha));
   return { stream, smask };
+}
+
+/** How many frames an image file holds. Only TIFF can hold more than one, so
+ *  every other format answers 1 — which is what lets `AddImagePages` treat a
+ *  JPEG as a one-page document without a special case at the call site. */
+export function imageFrameCount(
+  data: Uint8Array, format?: 'jpeg' | 'png' | 'bmp' | 'tiff',
+): number {
+  return (format ?? sniff(data)) === 'tiff' ? tiffPageCount(data) : 1;
 }
 
 /** Build an Image XObject (+ optional soft mask) from encoded image bytes,
