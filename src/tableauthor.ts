@@ -7,10 +7,12 @@ import { EmbeddedFont } from './embeddedfont.js';
 import { FontDriver, winAnsiDriver, layoutText, layoutRuns } from './layout.js';
 import { buildImageXObject, BuiltImage } from './imageembed.js';
 import { buildSpanGrid, applySpanDeficits, type SpanGrid } from './tablespan.js';
+import { textExtents } from './textextents.js';
 
 // The sides vocabulary is shared with floatbox.ts and lives in its own module;
 // re-exported here so `BorderInfo` and its `sides` stay one import for callers.
 import { countBorderEdges, checkBorderSides, type BorderSides } from './bordersides.js';
+import { coverageOf, type Undrawable } from './textcoverage.js';
 export {
   resolveBorderSides, countBorderEdges, checkBorderSides,
   type BorderSides, type BorderEdges,
@@ -202,63 +204,14 @@ function measuringDriverFor(font: AuthoringFont): FontDriver {
   return { measure: (t, fs) => real.measure(t, fs), probe: (t) => real.probe(t), encode: () => EMPTY };
 }
 
-/** @internal One piece of a cell's content with the font it measures at. */
-interface CellPiece { text: string; driver: FontDriver; fontSize: number }
-
-/** Width of the concatenated pieces' [from, to) slice, measured piece by piece
- *  so each keeps its own font. Summing per piece agrees exactly with measuring
- *  the whole string for the WinAnsi and Identity-H drivers — a string's width is
- *  the sum of its glyph advances — which is the rule layoutRuns already uses. */
-function sliceWidth(pieces: CellPiece[], from: number, to: number): number {
-  let w = 0;
-  let at = 0;
-  for (const p of pieces) {
-    const s = Math.max(from, at);
-    const e = Math.min(to, at + p.text.length);
-    if (e > s) w += p.driver.measure(p.text.slice(s - at, e - at), p.fontSize);
-    at += p.text.length;
-  }
-  return w;
-}
-
 /** The widest single LINE (max-content) and widest single WORD (min-content) of
- *  a cell's content, in points, excluding padding.
- *
- *  Lines rather than the whole string: a cell may carry a hard break — addCell
- *  takes arbitrary text and mdruns.ts maps a linebreak to '\n' — and measuring
- *  across one would demand a column wide enough for every line at once.
- *
- *  Words are found on the CONCATENATED run text, because a word may span a run
- *  boundary (`**bold**text` is one word), which is what layoutRuns does for
- *  break opportunities; each piece is still measured at its own run's font.
- *  Only U+0020 and '\n' break, so the U+00A0 a code block paints for
- *  indentation keeps its line intact. */
+ *  a cell's content, in points, excluding padding. The rules live in
+ *  textextents.ts, shared with a CSS float's shrink-to-fit — one owner for
+ *  "how wide does this content want to be". */
 function cellExtents(
   text: string | TextRun[], st: ResolvedStyle,
 ): { longestLine: number; longestWord: number } {
-  const pieces: CellPiece[] = isTextRunList(text)
-    ? text.map((r) => ({
-      text: r.text,
-      driver: measuringDriverFor(r.font ?? st.font),
-      fontSize: r.fontSize ?? st.fontSize,
-    }))
-    : [{ text, driver: measuringDriverFor(st.font), fontSize: st.fontSize }];
-  const all = pieces.map((p) => p.text).join('');
-  let longestLine = 0;
-  let longestWord = 0;
-  let lineStart = 0;
-  let wordStart = 0;
-  for (let i = 0; i <= all.length; i++) {
-    const ch = i < all.length ? all[i] : '\n';
-    if (ch !== '\n' && ch !== ' ') continue;
-    if (i > wordStart) longestWord = Math.max(longestWord, sliceWidth(pieces, wordStart, i));
-    wordStart = i + 1;
-    if (ch === '\n') {
-      longestLine = Math.max(longestLine, sliceWidth(pieces, lineStart, i));
-      lineStart = i + 1;
-    }
-  }
-  return { longestLine, longestWord };
+  return textExtents(text, st.font, st.fontSize);
 }
 
 /** Distribute `total` across columns from their measured content.
@@ -292,6 +245,27 @@ function autoFitWidths(max: number[], min: number[], total: number): number[] {
     for (let i = 0; i < n; i++) if (!under[i]) w[i] -= (shortfall * (w[i] - min[i])) / slack;
   }
   return w;
+}
+
+/** Report what each cell's resolved face cannot draw, ONCE (`zch2.14`).
+ *
+ *  A cell's effective font comes from the cell -> row -> table cascade, which
+ *  {@link resolveCellStyle} owns, so this cannot live in the shared flow
+ *  builders the way a paragraph's check does — a cell never goes through them.
+ *  Called explicitly by each consumer rather than from `measure`, which the
+ *  flow engine runs speculatively many times per table. @internal */
+export function reportTableCoverage(
+  t: TableBuilder, onUndrawable: (u: Undrawable) => void,
+): void {
+  for (const row of t.rows) {
+    for (const cell of row.cells) {
+      const st = resolveCellStyle(cell, row.style, t.defaults);
+      const u = coverageOf(
+        cell.text, st.font, st.font instanceof EmbeddedFont && st.font.shape,
+      );
+      if (u !== undefined) onUndrawable(u);
+    }
+  }
 }
 
 /** Resolve a cell's style: cell ?? row ?? table ?? built-in

@@ -14,6 +14,7 @@ import {
   drawSvg, type SvgImageSink, type SvgRasterSink, type SvgStreamSink,
 } from './svgdraw.js';
 import { parseViewBox, placementMatrix, type ViewBox } from './svgtransform.js';
+import type { Matrix } from './text.js';
 import { rasterizeFormRgba } from './raster.js';
 import { faceOutline } from './glyphoutline.js';
 import { getStd14Sfnt } from './std14fonts.js';
@@ -180,14 +181,36 @@ function rasterSink(doc: Document): SvgRasterSink {
 /** Parse `data` as SVG and draw it into `rect` on `page`. Existing content is
  *  preserved. Validation runs before anything is allocated, so a rejected call
  *  leaves the document byte-identical. */
-export function addSvgObject(
-  doc: Document, page: Page, data: Uint8Array,
-  rect: [number, number, number, number], opts: AddSVGOptions = {},
-): AddSVGResult {
-  if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((n) => Number.isFinite(n)))
-    throw new TypeError('rect must be [x, y, w, h] of finite numbers');
+/** What an imported SVG is, before it is placed. @internal */
+export interface BuiltSvg {
+  ref: PdfObject;
+  /** The placement matrix for a rect. A CLOSURE rather than a baked matrix, so
+   *  addSvgObject computes exactly the matrix it always did and its output
+   *  stays BYTE-IDENTICAL. placementMatrix takes rx/ry additively in `e` and
+   *  `f`, so this is also just a translate of the origin matrix. */
+  matrixFor(rect: [number, number, number, number]): Matrix;
+  skipped: string[];
+  rasterized: string[];
+}
+
+/** Import an SVG into `doc` as a Form XObject, WITHOUT placing it.
+ *
+ *  Split out of {@link addSvgObject} along the line that function already had:
+ *  everything here touches only the Document, and only the page attachment
+ *  needs a Page. That is what lets zch2.12 import at BUILD time and fold the
+ *  importer's report into the one AddHtml hands back before anything is drawn.
+ *
+ *  Takes a SIZE rather than a rect, and that is forced: placementMatrix bakes
+ *  the rect's rx/ry into the matrix, so a form built before its position is
+ *  known cannot be handed one. resolveViewBox reads only the width and height,
+ *  so nothing else here depends on the position. @internal */
+export function buildSvgForm(
+  doc: Document, data: Uint8Array, size: [number, number],
+  opts: AddSVGOptions = {},
+): BuiltSvg {
+  const [sw, sh] = size;
   validateMarkOptions(opts); // before anything is parsed or allocated
-  if (!(rect[2] > 0) || !(rect[3] > 0))
+  if (!(sw > 0) || !(sh > 0))
     throw new TypeError('rect width and height must be positive');
   const fit = opts.fit;
   if (fit !== undefined && fit !== 'meet' && fit !== 'slice' && fit !== 'fill')
@@ -210,17 +233,21 @@ export function addSvgObject(
   const root = parseXml(data);                 // throws PdfParseError if malformed
   if (root.name !== 'svg') throw new PdfParseError(`SVG: root element is <${root.name}>, not <svg>`);
 
-  const vb = resolveViewBox(root.attrs, rect);
+  const origin: [number, number, number, number] = [0, 0, sw, sh];
+  const vb = resolveViewBox(root.attrs, origin);
+  const par = root.attrs.get('preserveAspectRatio');
   // /Font is assembled by the walker, per content stream: a pattern tile is a
   // separate stream with its own /Resources and cannot see the form's.
   const { provider } = fontProvider(doc, font);
   // The placement is resolved BEFORE the walk: a rasterized <filter> needs to
   // know how many device pixels a user unit is worth, and deviceScale is the
-  // one scalar that carries it across the seam.
-  const m = placementMatrix(vb, rect, root.attrs.get('preserveAspectRatio'), fit);
+  // one scalar that carries it across the seam. Computed at the ORIGIN, which
+  // changes nothing: ctmScale reads the scale terms, and a translate does not
+  // touch them.
+  const m0 = placementMatrix(vb, origin, par, fit);
   const { content, resources, skipped, rasterized } = drawSvg(
     root, vb, provider, streamSink(doc), imageSink(doc),
-    { deviceScale: ctmScale(m), filterScale, raster: rasterSink(doc), resolveImage });
+    { deviceScale: ctmScale(m0), filterScale, raster: rasterSink(doc), resolveImage });
 
   const form: PdfDict = new Map<string, PdfObject>([
     ['Type', name('XObject')],
@@ -232,18 +259,35 @@ export function addSvgObject(
   ]);
   const ref = doc.allocObject({ kind: 'stream', dict: form, raw: enc(content) });
 
+  return {
+    ref,
+    matrixFor: (rect) => placementMatrix(vb, rect, par, fit),
+    skipped,
+    rasterized,
+  };
+}
+
+export function addSvgObject(
+  doc: Document, page: Page, data: Uint8Array,
+  rect: [number, number, number, number], opts: AddSVGOptions = {},
+): AddSVGResult {
+  if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((n) => Number.isFinite(n)))
+    throw new TypeError('rect must be [x, y, w, h] of finite numbers');
+  const built = buildSvgForm(doc, data, [rect[2], rect[3]], opts);
+
   const res = ensureOwnResources(doc, page);
   const xobjs = ensureOwnSubdict(doc, res, 'XObject');
   const key = freshKey(xobjs, 'Fm');
-  xobjs.set(key, ref);
+  xobjs.set(key, built.ref);
 
   // Clip to the rect unconditionally: 'slice' deliberately overflows, and no
   // SVG should paint outside the rectangle it was handed.
   const [x, y, w, h] = rect;
+  const m = built.matrixFor(rect);
   const drawn = enc(
     `q\n${num(x)} ${num(y)} ${num(w)} ${num(h)} re\nW n\n` +
     `${m.map(num).join(' ')} cm\n/${key} Do\nQ`);
   appendContent(doc, page, markDrawing(doc, page, drawn, opts));
 
-  return { skipped, rasterized };
+  return { skipped: built.skipped, rasterized: built.rasterized };
 }

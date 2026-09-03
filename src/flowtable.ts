@@ -8,7 +8,8 @@
  *  Nothing here re-derives a table: TableBuilder already owns row measurement,
  *  the `continuationFrom` remainder and repeating headers. */
 
-import type { TableBuilder, BorderInfo } from './tableauthor.js';
+import { reportTableCoverage, type TableBuilder, type BorderInfo } from './tableauthor.js';
+import type { Undrawable } from './textcoverage.js';
 import { paintRowSlice } from './tablerender.js';
 import type { SpanGrid } from './tablespan.js';
 import { TableTagger } from './tabletag.js';
@@ -26,6 +27,10 @@ export interface FlowTableOptions {
   spaceBefore?: number;
   spaceAfter?: number;
   clear?: FlowClear;
+  /** Called for each cell whose resolved face cannot draw some or all of
+   *  its text. Opt-in; a caller who passes nothing gets the previous silence.
+   *  Fires once per cell, before the table is placed. */
+  onUndrawable?: (u: Undrawable) => void;
 }
 
 /** Tolerance so a column exactly N rows tall takes N rows despite float drift,
@@ -136,5 +141,8 @@ export function table(t: TableBuilder, o: FlowTableOptions = {}): FlowElement[] 
   if (o.width !== undefined && (!Number.isFinite(o.width) || o.width <= 0))
     throw new TypeError('width must be a positive finite number');
   if (o.cellPadding !== undefined) nonNegative(o.cellPadding, 0, 'cellPadding');
+  // Once, at BUILD time — never from measure(), which the engine runs
+  // speculatively many times per table.
+  if (o.onUndrawable !== undefined) reportTableCoverage(t, o.onUndrawable);
   return [new TableElement(t, o, spaceBefore, spaceAfter, normalizeClear(o.clear))];
 }

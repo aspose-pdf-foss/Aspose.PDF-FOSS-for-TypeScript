@@ -477,6 +477,71 @@ Source (`src/`):
   span-based line preserves the double space and moves the bytes of every
   existing caller. The separator space belongs to the run that precedes it,
   which is the run whose `Tf` is in force when it paints.
+  **Invariant (`zch2.11`):** an INLINE ATOMIC — an image among words — is a
+  U+FFFC OBJECT REPLACEMENT CHARACTER in the concatenated text, which is what
+  Unicode defines that character for. `LayoutRun` is a union and an atomic run
+  contributes exactly one character, so `owner`, the unit builder, the UAX #14
+  search, `piecesOf` and the remainder reconstruction all work UNCHANGED.
+  `zch2.11`'s own issue predicted that all of those "need a non-text unit";
+  they do not, and the prediction is recorded because acting on it would have
+  been a rewrite. It also gets the CSS answer for free: U+FFFC is a non-space
+  character, so `a<img>b` is one unbreakable word and `a <img> b` is three.
+  **Invariant:** the placeholder NEVER reaches a `driver.encode` or a line's
+  `text` — the segment mapper replaces it with `''` and carries the box on
+  `LaidSegment.atomic`. A driver asked to encode it draws a glyph nobody asked
+  for.
+  **Invariant, and it was a live bug for one commit:** a separator space
+  FOLLOWING an atomic is attributed to the nearest TEXT run, not to the
+  atomic. `piecesOf` merges adjacent same-run pieces, so a space attributed to
+  the atomic joined the atomic's own piece — whose text the segment mapper
+  discards — and vanished from both the width and the page. `spaceRun` is the
+  one owner of that rule, read by `spaceWidth` (which measures the space) and
+  `piecesOf` (which emits it); two answers there is how a line comes to
+  measure 10 where it draws 11.
+  **Invariant:** an atomic wider than the box CLAMPS to the box width with the
+  aspect preserved — the rule `flow.ts`'s `image()` already applies to a block
+  image, so it is one rule and not two. It happens in `layoutRuns` because
+  that is the only place that knows `boxWidth`, and the CLAMPED height is what
+  the band must see. The parameter is `readonly` and the clamp binds a fresh
+  array: `stamp.ts` reuses the same `ResolvedRun.layout` objects for
+  `segmentBoxes` and the painter, so writing through would resize the image on
+  every re-flow.
+  **Note:** `LaidLine.maxFontSize` KEPT ITS NAME while gaining a second
+  meaning — it is the line's ASCENT, which a baseline-aligned atomic's height
+  can now set. Four modules read it and a rename is churn with no test behind
+  it.
+  **Invariant (`zch2.11`), and it is the finding the issue itself missed:**
+  `buildRunBlockBody` emits NO per-segment `Td` — its own comment says "`Tj`
+  advances the pen by the string's own width". An atomic emits no `Tj`, so
+  without an explicit `[ -N ] TJ` kern the pen does not move and the text
+  after an image OVERPRINTS it. `N = width * 1000 / fontSize` of the font in
+  force, borrowed from the neighbouring run because an atomic has none; a
+  block that OPENS with an atomic has set no `Tf` yet and falls back to the
+  block size. The image itself cannot go inside `BT…ET` and draws through the
+  existing `drawBuiltImage` — no refactor of `imageembed.ts` — appended after
+  the text body, which is unobservable because an inline atomic's box never
+  overlaps the glyphs it sits between.
+  **Invariant:** atomics travel in a channel PARALLEL to `TextRun[]`
+  (`TextBlockOptions.atomics`, `FlowParagraphOptions.atomics`), so
+  `textdecor.ts`'s `TextRun` does NOT change and every existing consumer —
+  `mdruns.ts`, `tableauthor.ts`, `flowtable.ts`, `docmodel.ts` — is
+  byte-identical by construction rather than by test. `weaveAtomics` is shared
+  by `flowTextBlock` and `measureTextBlock` for the reason they already share
+  `resolveRuns`: a second weave is how a paragraph measures one way and paints
+  another.
+  **Invariant, and it is the trap:** `sliceContent` RE-BASES each remaining
+  atomic's `beforeRun` onto the sliced run list, and `flow.ts`'s `TextElement`
+  builds its continuation with `{ ...this.opts, atomics: remainderAtomics }`
+  rather than `this.opts`. The originals index the ORIGINAL runs, so carrying
+  them forward puts an image at the wrong place — or off the end, where it
+  vanishes at a column break. `sliceRuns` was REPLACED rather than kept
+  beside it: two remainder rebuilders is the drift this repo keeps recording.
+  **Note, measured the hard way:** a fixture for that rule needs run 0 FULLY
+  CONSUMED in the first column, so the remainder's list is shorter and the
+  re-based index genuinely differs. Two earlier fixtures did not discriminate
+  — one overflowed entirely (so the indices coincided) and one asserted
+  `beforeRun <= remainder.length`, a BOUND the un-rebased index also
+  satisfies. Both left the mutation green.
   **Invariant:** `TextRun` lives in textdecor.ts, not layout.ts. It names an
   `AuthoringFont`, which stamp.ts defines, and stamp.ts imports layout.ts — the
   reverse inverts that dependency. layout.ts works over resolved runs carrying a
@@ -541,6 +606,196 @@ Source (`src/`):
   `AddFloatingBox` is *in-flow* (consumes the band outright, excludes nothing,
   and never splits — a callout broken across a column reads as a fault, and a
   box's border and background have no defined way to continue).
+  **Invariant (`zch2.16`):** content taller than an EMPTY column renders rather
+  than refusing the document. An image SCALES (`shrinkToFit`, implemented only
+  by `ImageElement`, which is the one element type with an aspect ratio and no
+  other meaning); anything else DRAWS PAST the column bottom. `Render` used to
+  throw here, and `doc.AddHtml('<img …>')` reached it for any image whose own
+  aspect exceeded the column's — measured at 1.548 on a default A4 flow, so a
+  9:16 phone photo refused the whole document.
+  **Invariant (`zch2.16`), and it is the one a single-element fixture cannot
+  see:** the shrink is asked ONLY where the alternative is refusing the
+  document — at a column start, or with nothing yet placed into a rect. A tall
+  image near a column FOOT must move to the next column at full size; shrink at
+  every `place()` and a picture's size depends on what precedes it.
+  **Invariant (`zch2.16`):** a shrink is accepted only when the replacement
+  actually FITS — the termination proof, since one still too tall would be
+  asked again at the same column start forever. `zch2.15`'s "a tail is accepted
+  only when something was painted" is the same shape. **Note, measured:** NO
+  element in `src/` can violate it — `resolveSize`'s clamp guarantees the
+  replacement fits and `ImageElement` is the only implementor — so dropping the
+  guard reddened NOTHING until `test/flow-overtall.test.ts` grew a hand-built
+  element whose `shrinkToFit` LIES. With the guard dropped that case HANGS,
+  which is the failure the rule exists to prevent and is why it is a fixture
+  rather than a comment.
+  **Invariant (`zch2.16`):** the overflow budget is a large FINITE probe, never
+  `Infinity`. `place` builds its rect from `availHeight` and `stamp.ts` refuses
+  a non-finite rect, so `measure` at the probe reports the element's NATURAL
+  height and that is what it is given — which also keeps the emitted rect tight
+  rather than astronomically tall. The design said `Infinity`; it throws.
+  **Invariant (`zch2.16`):** `ImageElement.resolveSize` clamps HEIGHT beside
+  WIDTH, and the two live in ONE function because it answers "how big is this
+  drawn" — a second site would let them disagree. `availHeight` defaults to
+  Infinity, so `measure` and `place` are byte-identical to before and only
+  `shrinkToFit` passes a budget.
+  **Invariant (`zch2.16`):** `cssframe.ts`'s `BoxElement` FORWARDS
+  `shrinkToFit`. `frameBoxes` wraps every non-float element, so without it the
+  shrink never reaches the image inside and every HTML picture overflows where
+  it should scale.
+  **Note (`zch2.16`), a deliberate asymmetry:** `flowplace.ts` shrinks but
+  never overflows. A rect has a real answer `Render` does not — `remainder` —
+  so an unscalable element is handed back rather than drawn outside the box the
+  caller asked for.
+  **Invariant (`zch2.16`):** the engine learns NO HTML vocabulary. It holds a
+  `FlowElement` and a `FloatContent`, never an `HtmlElement`, and
+  `NotRendered.el` IS an `HtmlElement` — so `flow.ts` provably cannot build one
+  of these records. `onCompromise` and `onDegraded` are bare callbacks and
+  `cssflow.ts` closes over the element. `onCompromise` is the ONE non-readonly
+  member of `FlowElement`, because the builders are shared with Markdown and
+  hand-built flows and must not grow an HTML-shaped option.
+  **Invariant (`zch2.16`), and BOTH halves were live bugs the plan did not
+  foresee:** a compromise is attributed to the INNERMOST element that produced
+  the flow element. `mapBox` RECURSES, so assigning `onCompromise`
+  unconditionally lets each ancestor overwrite its children and every
+  compromise in every document is reported against `<html>`; and `cssframe.ts`
+  wraps every element, so a fresh wrapper arrives unclaimed at each ancestor
+  and the same thing happens by a second route. `attribute` claims only an
+  element nobody has claimed, and `BoxElement` forwards `onCompromise` to its
+  inner element so that check reads THROUGH the frame. A lone image is
+  attributed to the `<img>` rather than to the block that lowered it, since
+  `imageElement` runs inside its CONTAINER's `mapBoxInner`. All three are
+  mutation-checked.
+  **Note (`zch2.16`), measured and NOT covered:** `cssflow.ts`'s `once`
+  de-duplication reddens NOTHING, and the design's premise for it is wrong. It
+  predicted "a retry after a column advance re-enters the float branch", but a
+  float that does not fit is DEFERRED to the next column before it is ever
+  offered a split, so the degrade is only ever reached with `atColumnStart`
+  true — traced, for every filler length from 0 to 390 paragraphs — and the
+  fall-through then always draws. Nothing can fire twice today. Retained
+  because the rule is sound and one box must stay one record if that deferral
+  ever changes; do not read the green suite as covering it.
+  **Invariant (`zch2.16`):** `doc.AddHtml` and `page.AddHtml` return a FRESH
+  `[...skipped, ...late]`; `flow.AddHtml`'s array is never appended to after it
+  is handed back. A Flow caller uses `HtmlFlowOptions.onNotRendered`, which is
+  the only channel that can fire at the right time when Add and Render are
+  separate calls. **Note the mutation that tests this is not the obvious one:**
+  making `document.ts` push into `skipped` reddens nothing, because that array
+  is internal to the call. What is observable is `cssflow.ts` pushing a late
+  record into `c.skipped` — the array `flow.AddHtml` already handed back —
+  which reddens two cases.
+  **Invariant (`zch2.16`):** `'overflow'` is its OWN construct, not a reuse of
+  `'text'` — that name means a glyph the resolved face cannot draw and is
+  shared with `svgdraw.ts`, while an overflowing block drew every character
+  perfectly. `CONSTRUCTS` is 21.
+  **Note (`zch2.16`), and it is what a fixture for the float degrade must get
+  right:** since `zch2.15` a float that merely overflows a column SPLITS, and
+  since this issue an over-tall image inside one simply SCALES — so reaching
+  the degrade at all takes content that can neither fit nor fragment, such as a
+  single unbreakable 900px line. The design's own float fixture was an
+  over-tall image and reached nothing.
+- **flowfloat.ts** — a CSS float as the flow engine sees it (`zch2.10`):
+  `elementFloat`, a `FloatContent` over an ordinary `FlowElement[]` painted
+  through `placeElements`, and `floatElement`, the wrapper element that carries
+  the marker.
+  **Invariant:** `FloatContent` has FOUR REQUIRED members — `width`, `spacing`,
+  `measure()`, `paintAt()` — and `FloatingBox` satisfies every one UNEDITED.
+  Since `zch2.15` there is one OPTIONAL fifth, `splitPaint`, which only
+  `elementFloat` implements; `FloatingBox` declines it and keeps its documented
+  refusal to split, so it is STILL edited not at all.
+  That is what lets a CSS float join the existing float branch in `flow.ts`
+  instead of adding a second one; a required edit to `FloatingBox` means the
+  seam is wrong. `FloatItem.box` widened to it, and `floatOf` reads a float off
+  either an explicit `FloatItem` or an element carrying `FlowElement.float`.
+  **Invariant, and it is the nicest property here: DEGRADING IS FREE.** Because
+  the marker rides ON a `FlowElement`, a float the engine declines to place is
+  just an element with a marker it ignores — it places in flow by the ordinary
+  path, frame and content intact, so there is no fallback rendering path to
+  write. `degradeOnOverflow` is what selects it; `FloatingBox` sets nothing and
+  keeps throwing, which is its documented contract.
+  **Invariant:** `elementFloat` is INJECTED into `cssflow.ts` through
+  `CssFlowOptions.makeFloat`, never constructed there. `placeElements` needs a
+  `Document`; `FloatingBox` captures one at construction; `Page.doc` is PRIVATE
+  and `paintAt` takes only a `Page` — so the adapter must capture one too, and
+  `cssflow.ts` is a pure leaf that may not import `document.js`. The Document
+  it captures MUST be the one the page belongs to: a throwaway one paints the
+  float onto a page of a different document and its text never appears, which
+  is exactly how `cssflow-report.test.ts`'s helper failed first.
+  **Invariant:** a float box lowers to exactly ONE wrapper element. A marker on
+  the first of several would leave the rest in the queue to be placed a second
+  time.
+  **Invariant, and `zch2.15`'s own issue predicted the opposite:** the wrapper
+  DOES hold a group, and splitting did NOT force it to become a decorator over
+  one child. The hazard "a container never holds and paginates its children"
+  names a container with its OWN pagination loop; `placeElements` is not a
+  second loop but the shared one, extracted in `zch2.5` so a caller can lay
+  elements into ONE rect and get the overflow back, so a container that
+  delegates to it is not what the rule forbids. The wrapper is unchanged.
+  **Invariant (`zch2.15`):** a float splits ONLY when it cannot fit an EMPTY
+  column. One that fits a column on its own still defers whole, which is what
+  browsers do in paged media — push to the next fragmentainer, fragment only if
+  it cannot. So splitting replaced the degrade path and moved nothing `zch2.10`
+  shipped.
+  **Invariant (`zch2.15`):** the excluded band comes from the height PAINTED,
+  never from `measure()`. The engine discarded `paintAt`'s return value and
+  after a split the two differ, so reading the measure narrows the channel past
+  the column bottom for every element below. **Note the fixture, measured the
+  hard way:** the body beside the float must OVERFLOW the painted band. A
+  paragraph that fits inside it whole is indented on every line under BOTH
+  readings, so the case measures nothing — the first version of it did exactly
+  that and passed with the bug in place.
+  **Invariant (`zch2.15`):** a tail is accepted only when something was
+  PAINTED, which is the termination proof — every split consumes drawn content,
+  so the tail is strictly shorter than what produced it. Content that cannot
+  fragment at all reports `height: 0`, the call has had no effect, and the
+  degrade is still clean.
+  **Note (`zch2.15`), and it is a deliberate asymmetry:** `flowplace.ts` does
+  NOT split. One rect has no next column, so a split head would paint and the
+  tail would land in a `remainder` most callers of `page.AddHtml` never
+  re-place — half a float drawn and the rest silently gone, strictly worse than
+  degrading to in-flow, which draws everything. Pinned in
+  `test/flowplace-floats.test.ts` so it reads as a decision.
+  **Note, measured:** all SEVEN mutations aimed at `zch2.15` redden something,
+  so nothing here rests on reasoning alone — which matters more than usual,
+  because there is NO oracle: `test/fixtures/css-box/` sees used widths and
+  collapsed gaps and nothing positional. Two are worth naming. Building the
+  tail over the original `elements` rather than the REMAINDER does not fail, it
+  HANGS — the tail is then the same content and the split never terminates.
+  And giving `splitPaint` the measured height instead of the budget reddens
+  five cases across three files, because it collapses `splitPaint` back into
+  `paintAt`.
+  **Invariant:** `measure()` and `paintAt()` run the same placement arithmetic
+  (`measureElements` shares `placeElements`' gap rule), so the two agree by
+  construction.
+  **Invariant (`cssframe.ts`):** `frameBoxes` passes a float through UNWRAPPED.
+  A float is out of flow, so the container's per-child frame slicing does not
+  apply to it, and excluding it keeps the container's top and bottom insets on
+  the elements actually in flow. Wrong, the wrapper SWALLOWS the marker and
+  every float — nested in `body`, which is to say all of them — lays out in
+  flow while reporting nothing. That was a live bug for one commit.
+  **Invariant (`cssresolve.ts`):** CSS 2.1 §10.3.3 governs a block-level
+  element IN NORMAL FLOW, so a float skips it entirely and uses §10.3.5:
+  shrink-to-fit or stated width, and an `auto` margin is 0. Running §10.3.3 for
+  a float reaches its over-constrained branch and hands `margin-right` the
+  whole leftover column — 326pt for a 150px float in a 601px container, which
+  is both an absurd excluded band and a NEGATIVE content width for the float's
+  own contents, so it measures 0 and draws nothing. Nothing read those margins
+  before `zch2.10`.
+  **Note, measured:** all 11 mutations aimed at these rules redden something.
+  Two needed their fixtures rebuilt first and are recorded because the first
+  versions measured NOTHING. The shrink-to-fit case bounded the body's x
+  loosely ("between 72 and 200"), which accepts both the shrunk float (90.4,
+  beside it) and the full-width one (78, below it); it compares against a
+  no-float baseline now. And `measureElements`' inter-element gaps are
+  invisible to any single-paragraph float, so the fixture holds two paragraphs
+  with stated spacing.
+  **Note on the oracle, and it covers HALF:** `test/fixtures/css-box/` gained
+  three float fixtures, so a float's stated WIDTH is browser-checked. Its
+  shrink-to-fit width is NOT — that depends on font metrics, and Chrome renders
+  the UA serif while the suite stubs Helvetica. Nor are its MARGINS: reverting
+  the §10.3.5 fix above reddens NOTHING in that corpus and two cases in
+  `test/css-float.test.ts`, because the corpus compares content widths and the
+  bug was in margins. Placement is not observable through `getComputedStyle`
+  at all.
 - **flowelement.ts**, **flowblock.ts**, **flowplace.ts** — the Flow element
   protocol and the three block types Markdown needed and Flow lacked.
   `flowelement.ts` holds `FlowElement`/`PlaceContext`/`PlaceResult` and the
@@ -573,6 +828,47 @@ Source (`src/`):
   element. An item lowers to a body plus its `blocks`, and whichever draws FIRST
   paints the marker — with a private flag the text body owns it, so an item
   opening with a code block draws none at all.
+  **Invariant (`zch2.10`):** `flowplace.ts` does band bookkeeping too, from the
+  same pure `floatstack.ts` — `insetsAt` to narrow the channel, `nextBoundary`
+  to cap an element beside a float, `pruneFloats`, `resolveFloatTop`. One rect
+  makes it the SIMPLER half: there is no next column to carry to, so a float
+  that does not fit is simply not floated and falls through to ordinary
+  placement. Text beside a float RESUMES AT FULL WIDTH below the band — the
+  remainder is re-queued at the boundary rather than ending the rect — which is
+  what `page.AddHtml` needed to place floats at all, and `zch2.5`'s rule that
+  the three entry points are one implementation is why it has them.
+  **Invariant:** `measureElements` shares the place loop's gap rule
+  (`spaceAfter + paragraphSpacing + spaceBefore`, dropped above the first), so
+  a float cannot measure one way and paint another. It skips an element that
+  measures 0 rather than spacing around it — "nothing to draw" since `zch2.13`,
+  and charging a gap for it would leave a hole where an unencodable paragraph
+  used to be.
+  **Invariant (`zch2.13`):** `measure`'s `fits` means NOTHING IS LEFT OVER, and
+  deliberately NOT "and something was drawn". Every producer wrote
+  `remainder === null && usedHeight > 0`, which conflates *empty* with *did not
+  fit here* — and only the second may mean retry, so an element with nothing to
+  draw asked for a column it could not have and `flow.ts` threw
+  `element does not fit in an empty column`. The everyday way in is a
+  Standard-14 fallback face: `encodeWinAnsi` DROPS what it cannot encode, so an
+  all-Cyrillic paragraph measures 0 wide, and `AddHtml('<p>При</p>')` refused
+  the whole document. The fix must hold for a CHAIN — a `<div>` around a `<p>`
+  is a `BoxElement` around a `BoxElement`, and `cssframe.ts` passes the inner
+  verdict through, which is why fixing `TextElement` alone left it throwing.
+  **Invariant:** the ONE consumer that genuinely wants "and drew something" is
+  flow.ts's keep-with-next lookahead, which tests `usedHeight` itself. Measured
+  load-bearing: without it an undrawable heading pushes the content under it to
+  a second page.
+  **Note, measured and NOT covered:** `CodeBlockElement.measure`'s half of the
+  same rule reddens NOTHING. `<pre>` in the CSS stack is an ordinary block with
+  `white-space: pre` (`preformat` in `cssinline.ts`), so nothing wraps a
+  `CodeBlockElement` in anything that decides from `measure` — Markdown's
+  `place` already handled the discard. Retained so `measure` and `place` agree,
+  which is this module's own stated rule; do not read the green suite as
+  covering it.
+  **Note:** text dropped for want of a glyph is still ABSENT from `skipped`, so
+  such a page comes out blank with nothing said. Tracked as `zch2.14`: the
+  report vocabulary is `htmlreport.ts`'s while the loss reaches Markdown and
+  hand-built flows equally.
 - **mdstyle.ts**, **mdruns.ts**, **mdflow.ts** — Markdown rendering
   (`flow.AddMarkdown`, `page.AddMarkdown`, `doc.AddMarkdown`). Three pure layers
   lowering an `MdDocument` to a flat `FlowElement[]`: `mdstyle.ts` is the style
@@ -692,6 +988,1517 @@ Source (`src/`):
   document must not relabel that document. It requires `tagged: true` and throws
   otherwise, because an untagged flow has no `/Sect` and the option would
   silently do nothing.
+- **htmltoken.ts**, **htmlcharref.ts** — the WHATWG HTML tokenizer
+  (HTML Standard §13.2.5), a literal transcription: one branch per spec state,
+  named as the spec names it, over a pull model (`next`/`setState`) that tree
+  construction steers for RCDATA, RAWTEXT, script data and PLAINTEXT.
+  `htmlcharref.ts` is the character-reference sub-machine, its own module
+  because it is self-contained and returning offsets lets the caller turn them
+  into columns with the cursor it already has. Note the direction against
+  `htmlsemantic.ts` and `htmlfixed.ts`, which are PDF→HTML and share no code
+  with this. Nothing here produces PDF, and nothing here is public API yet —
+  `parseHtml` arrives with tree construction (`zch2.1.2`).
+  **Invariant:** it NEVER throws. Every string is a valid HTML document — the
+  spec mandates a recovery for every parse error by construction — so parse
+  errors are values on `errors`, never control flow. This is `markdown.ts`'s
+  rule and the exact opposite of `parseXml`, which throws `PdfParseError`; the
+  contrast otherwise reads as an oversight and gets "fixed".
+  **Invariant:** both are pure leaves. No `Document`, no PDF object, no `node:`
+  import; they take a `string`. Character-encoding detection from bytes is a
+  separate decision, tracked as `zch2.8`.
+  **Invariant:** neither `xml.ts` nor `mdscan.ts` is reused, and the reasons are
+  opposite. `parseXml` is one closure-based recursive descent that throws on a
+  mismatched end tag, demands quoted attribute values and strips namespace
+  prefixes — every rule the inverse of what HTML5 needs. `scanHtmlTag` is
+  CommonMark's grammar, returns only an end index, and produces no name and no
+  attributes; it also REJECTS inputs HTML5 accepts, on purpose. Two grammars
+  sharing a name, as `tablegrid.ts` and `tablespan.ts` do.
+  **Invariant:** the named character reference state matches BOTH spellings,
+  which is why `gen-entities.mjs` now emits the 106 legacy names beside the
+  2125-entry table. Measured against `entities.json`: every legacy name is ALSO
+  a semicolon key with an identical value, so this is a SPELLING PERMISSION
+  rather than a second table — `allowsMissingSemicolon` is a predicate and
+  `namedEntity` still answers for every name. In an attribute a semicolon-less
+  match followed by `=` or an alphanumeric is NOT replaced and the consumed
+  text is flushed LITERALLY, so `?a=1&copy=2` keeps its query string while the
+  same bytes in text give `©`. CommonMark reads the values and never the
+  predicate, so its output cannot move; `test/commonmark-spec.test.ts`'s 652
+  cases are that fence.
+  **Invariant:** the longest-match scan CONTINUES past a name that is in the
+  table but unusable here, rather than bailing out. `notin` is spelled only
+  with its semicolon, so an unterminated `&notin` falls back to the legacy
+  `&not` and yields `¬in`.
+  **Invariant:** RCDATA resolves character references and RAWTEXT, script data
+  and PLAINTEXT do not — one `case` label apart, and no rendering reveals the
+  difference until a `<title>` shows the five literal characters `&amp;`. NUL
+  likewise differs by content model rather than globally.
+  **Invariant:** a non-matching end tag in a content model is not a tag at all:
+  the buffered `</name` is emitted as CHARACTERS and the model resumes, which
+  is what keeps a `</div>` inside a `<textarea>` visible.
+  **Invariant:** §13.2.3.5's input-stream errors — a surrogate, a noncharacter,
+  a non-whitespace control — belong to the INPUT STREAM and not to any state,
+  so they are found in one pass up front and interleaved by source index. The
+  ordering is load-bearing: `<!\u000B` expects the control error BEFORE markup
+  declaration open's `incorrectly-opened-comment`, at the same column, because
+  the character has entered the stream even though that state only PEEKED at
+  it. Reporting them from `consume` instead put them the wrong way round and
+  made a reconsumed character report twice.
+  **Two position rules that read backwards, and both were asserted WRONGLY here
+  before the vendored suite corrected them** — the sharpest evidence in this
+  repo for why real-world fixtures exist, since both hand-written tests passed
+  with both halves ours. Columns count UTF-16 CODE UNITS, so an astral
+  character advances by two. And the two markup-declaration-open errors report
+  at different ends of what they looked at: `cdata-in-html-content` at the LAST
+  character of the `[CDATA[` it consumed (col 9), `incorrectly-opened-comment`
+  at the one character it merely peeked (col 3).
+  **Invariant (`zch2.9`):** `<?target data?>` is a PROCESSING INSTRUCTION, not
+  a bogus comment. whatwg/html#12118 merged 2026-06-25, adding five states
+  (§13.2.5.72-76) and DELETING
+  `unexpected-question-mark-instead-of-tag-name` from the tag open state — so
+  a `?` there now reports no parse error at all. A target may START with an
+  ASCII alpha or U+005F, which is WIDER than the tag-name rule it otherwise
+  mirrors, and continues with alphanumerics, `-` and `_`.
+  **Invariant:** `xml` and `xml-stylesheet` are blocklisted, ANCHORED — a
+  prefix test would refuse `xmlfoo`, which is a perfectly good target. They
+  fall back to a bogus comment, as does a target that is not a name.
+  **Invariant, and it is the detail the spec's own summary gets wrong:** every
+  fallback KEEPS the leading `?` plus whatever the target consumed, so
+  `<?xml version="1.0">` reads back as `<!-- ?xml version="1.0" -->`. Tag open
+  swallowed that `?`, so `fallBackToComment` re-supplies it rather than
+  reconsuming it. Dropping it yields a plausible comment and the wrong one;
+  WPT pins it.
+  **Invariant:** only `?>` closes — a lone `?` is data, which is the whole
+  reason the "questionable" state exists — while a BARE `>` closes too, which
+  is the bogus-comment behaviour this replaced and is why `<?t a>b` leaves `b`
+  as text rather than swallowing the document.
+  **Invariant:** at EOF the spec emits the EOF token and NEVER the buffer, so
+  an unterminated `<?` leaves nothing at all — not a PI, and not the comment
+  the old reading would have left. Both corpora agree on this from opposite
+  sides.
+  **Note on the oracle, and it is now SPLIT (`zch2.9`):** the tokenizer suite
+  is `html5lib-tests/tokenizer`, the suite browser engines share — 6,995 of
+  7,033 cases green, with the mutation results recorded in
+  `test/fixtures/html5lib/PROVENANCE.md`. `xmlViolation.test` is excluded
+  STRUCTURALLY, by its `xmlViolationTests` root key rather than by file name.
+  The other 38 are excluded because that pin PREDATES #12118 and cannot be
+  advanced — its newest commit IS ours, dated one day after the merge, with
+  nothing since — so on `<?` we follow the WPT corpus, which postdates the
+  change and whose 88 PI cases now all pass. Do NOT "fix" the 38 by reverting
+  the tokenizer; that trades a maintained oracle for a dormant one.
+- **htmlencoding.ts** — what encoding a sequence of HTML bytes is in
+  (`zch2.8`): `bomEncoding`, `encodingFromLabel`, `metaEncoding`,
+  `decodeHtmlBytes`. A pure leaf importing NOTHING — not even `htmldom.js` —
+  so every rule is testable from byte arrays with no tree and no PDF. It never
+  throws.
+  **Invariant, and it is why this module is 80 lines rather than 800:** THE
+  ENCODING STANDARD'S LABEL TABLE IS NOT TRANSCRIBED. `TextDecoder` already
+  implements it — ~230 labels over ~40 encodings, whitespace stripped and case
+  folded — so `new TextDecoder(label)` IS the "get an encoding" step and the
+  decoder both, and `.encoding` is the canonical name. Measured rather than
+  assumed: `cp1251`/`x-cp1251` → `windows-1251`, `ms_kanji` → `shift_jis`, and
+  `iso-8859-1`/`us-ascii` → `windows-1252` — the standard's deliberate legacy
+  aliases, not approximations. A second table is a second answer to "what does
+  `cp1251` mean".
+  **Note what that borrows:** `TextDecoder`'s legacy coverage is
+  ICU-DEPENDENT. On a `small-icu` Node almost every legacy label is rejected,
+  which reads here as an unknown label — the declaration is ignored and the
+  current encoding stands. A degrade, never a throw, and the first
+  environment-dependent behaviour in the library, so it is documented rather
+  than left to be discovered.
+  **Invariant:** a BOM is honoured AS IT STANDS while a META-derived UTF-16 is
+  rewritten to UTF-8 (and `x-user-defined` to windows-1252). The two rewrites
+  are §13.2.3.3's and belong to the meta path ALONE — applied to a BOM they
+  decode a UTF-16 document to mojibake. Both directions are mutation-checked.
+  **Invariant:** an invalid `charset` attribute FALLS THROUGH to
+  `http-equiv`, because the in-head rule reads "charset, and getting an
+  encoding returns an encoding, OTHERWISE http-equiv". A junk `charset` must
+  not shadow a good declaration beside it.
+  **Note:** the `content=` scan RESTARTS one character on rather than giving
+  up when what follows `charset` is not `=`, so `charsetish; charset=koi8-r`
+  still finds the real declaration.
+  **Note:** the `replacement` encoding is unreachable — `TextDecoder` rejects
+  its labels (`iso-2022-kr`, `hz-gb-2312`) outright — so they are declined and
+  the current encoding stands, where the standard decodes the whole stream to
+  one U+FFFD. The safer of two wrong answers.
+- **htmldom.ts**, **htmlstack.ts**, **htmlforeign.ts**, **htmltree.ts** — HTML5
+  tree construction
+  (HTML Standard §13.2.6), the half that turns `htmltoken.ts`'s token stream
+  into a node tree. `htmldom.ts` is the node model, `htmlstack.ts` the stack of
+  open elements and the active formatting elements, `htmlforeign.ts` the SVG
+  and MathML adjustment tables and integration-point predicates, `htmltree.ts`
+  all 21 insertion modes §13.2.6.4 defines, plus the adoption agency, foster
+  parenting and implied end tags. Note the direction against `htmlsemantic.ts`, which is
+  PDF→HTML. Nothing here produces PDF. `parseHtml` IS public API as of
+  `zch2.1.3.3`, which withheld it no longer; `parseHtmlFragment` deliberately
+  is not.
+  **Invariant:** all four are pure leaves and none throws — `htmlstack.ts` in
+  particular must not import `htmltree.ts`, which is what keeps every scope
+  predicate assertable from a hand-built element list.
+  **Invariant:** `htmlforeign.ts` holds DATA and PREDICATES only, importing
+  `htmldom.js` for types and nothing else. The token RULES stay in
+  `htmltree.ts`, because they insert elements, pop the stack and reconstruct
+  formatting; moving them out needs either a wide seam of injected callbacks or
+  an import back that closes a cycle. Its five tables carry asserted SIZES (37,
+  58, 1, 11, 44), so a half-transcribed table is a red build rather than a
+  silently mis-cased element that still renders. Three rows read like typos and
+  are not: MathML's table has exactly ONE entry, `xmlns` is the one foreign
+  attribute whose key equals its value because it has no prefix, and the SVG
+  integration points are the ADJUSTED spellings, since that is what the element
+  carries by the time the predicate is asked.
+  **Invariant:** an adjusted foreign attribute is stored under its html5lib
+  DISPLAY key — `xlink:href` becomes `xlink href`. Sound rather than
+  convenient: whitespace terminates an attribute name in the tokenizer, so no
+  document can produce a literal key that collides, and the serializer's
+  existing sort then already produces the corpus's order.
+  **Invariant:** `special` and the four scope terminator lists key on
+  `(ns, name)`, never a bare name. An SVG `title` terminates a scope and so
+  does an HTML `<title>` — but MathML `mi` does and an HTML `<mi>` does not, so
+  a name-only test is wrong in BOTH directions. What it breaks is the adoption
+  agency's choice of furthest block: a mis-nested tree that still renders.
+  **Note, measured, and thinner than the others:** that rule is held by ONE
+  vendored case (`adoption01`) plus the unit assertions — a document has to
+  mis-nest formatting ACROSS a foreign boundary to expose it. Do not read the
+  wide margins on the neighbouring rules as covering this one.
+  **Invariant:** every "pop until an element with this tag name" means an HTML
+  ELEMENT with that tag name — `popUntilName`, `popUntilOneOf`, both
+  implied-end-tag walks, the `li` and `dd`/`dt` scans, "any other end tag" and
+  the adoption agency's first test. `<td><svg><td>` puts an SVG `td` above the
+  HTML one, so a name-only match stops at the wrong element and strands the
+  entire SVG subtree on the stack. The design and the plan for `zch2.1.3.1`
+  both missed this and ONE vendored case caught it, which is what
+  `namespace-sensitivity.dat` exists for.
+  **Invariant:** an element created in foreign content takes the ADJUSTED
+  CURRENT NODE's namespace, never one derived from its own name. That is what
+  puts `<g>` in SVG with no table of SVG element names, and an unknown element
+  inside `<math>` in MathML.
+  **Invariant:** the tokenizer's `adjustedCurrentNodeIsForeign` is a CALLBACK
+  asked at the moment `<![CDATA[` is seen, never a flag kept in sync. The stack
+  changes between tokens, so a cached answer is right until a `<svg>` opens
+  mid-stream — exactly the document it exists for. Its default is `() => false`,
+  which is what holds the 7,032 tokenizer cases still.
+  **Note:** the self-closing flag is read in foreign content and nowhere else.
+  `zch2.1.2` ignored it entirely and was right to — no HTML element's parsing
+  depends on it — but `<svg/>` is an empty element while `<svg>` swallows the
+  rest of the document.
+  **Note:** a NUL in foreign content is inserted as U+FFFD, where "in body"
+  ignores it. One `case` label apart, and no rendering reveals the difference
+  until a document carries one; all 9 cases that cover it are in
+  `plain-text-unsafe.dat`.
+  **Note:** the foreign end-tag walk tests "is this the topmost element"
+  BEFORE the name match, which is not the obvious order and means an end tag
+  naming the bottom of the stack returns rather than popping it.
+  **Invariant:** a template's children live in its `content` FRAGMENT, never
+  among its own children, and the fragment is a real node rather than a second
+  array. A template's content is not part of the document — CSS must not match
+  into it and `zch2.2`'s traversal must not walk it — so a separate node makes
+  that structural rather than a rule every consumer has to remember, and it
+  gives `appendChild`/`removeChild` a real parent to point at. `content` is
+  ABSENT rather than empty on every other element. `HtmlChild` deliberately
+  does NOT include it: a fragment is never anybody's child, exactly as a
+  document is not.
+  **Invariant:** foster parenting searches for the last TEMPLATE OR TABLE on
+  the stack, not the last table, and accepts a FRAGMENT as that element's
+  parent — which is what it is whenever the table was opened inside a
+  template. The first half was a live bug from `zch2.1.2` until `zch2.1.3.2`
+  made it reachable; without the second, text fosters to the END of a
+  template's content instead of before the table.
+  **Invariant:** "original insertion mode" is ONE variable but the TEMPLATE
+  insertion mode is a STACK, and the difference is real: a template can nest
+  inside a table cell inside another template, and each level has to remember
+  what it was doing. Measured at 13 vendored cases.
+  **Invariant:** IN-BODY's end-of-file consults the template insertion-mode
+  stack — the only place outside "in template" that does, and the whole reason
+  an unclosed `<template>` still gets a `<body>`. "In template" redirects
+  nearly every start tag to "in body", so by EOF the insertion mode is usually
+  `InBody` and without this clause the template unwind never runs. 20 cases.
+  **Invariant:** in-body's `<html>` and `<body>` start tags IGNORE the token
+  outright when a template is open, rather than merging attributes onto the
+  element — `<template><html b=c>` would otherwise write `b="c"` onto the real
+  `html` element. `<frameset>`'s prose mentions templates too but needs no
+  guard: `<template>` sets frameset-ok to "not ok", which already refuses it.
+  **Note:** with `InTemplate`, `htmltree.ts` implements all 21 modes
+  §13.2.6.4 defines, and `generateImpliedEndTagsThoroughly` — which shipped
+  unreached in `zch2.1.2` — has its one and only caller in `</template>`.
+  **Note, measured, and it covers NOTHING:** swapping that thorough call for
+  the ordinary variant reddens **zero** vendored cases. The thorough list's
+  extra names are the table-section tags, and no case has one open when a
+  `</template>` arrives, so the rule is held by the spec alone. This is a
+  DIFFERENT claim from `zch2.1.2`'s measurement that using the thorough list
+  *everywhere* reddens 83 cases — that one is covered, this one is not.
+  **Note on two spec branches deliberately absent:** the `<template>` start
+  tag is fourteen steps, eleven of them DECLARATIVE SHADOW DOM, gated on a
+  parser flag that is false for anything that is not a browser — and the
+  spec's own first sub-step then says "insert an HTML element for the token
+  and return", which is the collapsed form written here. `</template>`'s
+  INSERTION-TARGET unwind is null unless something reads a template's `for`
+  attribute, and nothing does. Both measured unreachable: the corpus contains
+  zero cases mentioning either. Neither gets a flag or a stub.
+  **Invariant:** `adjustedCurrentNode` is the fragment CONTEXT element when the
+  stack of open elements holds exactly one, and the current node otherwise. It
+  returned the current node from `zch2.1.3.1` until `zch2.1.3.3`, named
+  correctly on purpose so fragments would not have to find its call sites.
+  **Note, measured:** only **20** cases can tell the two apart, not the 67 that
+  have a foreign context — for most of them the first token pushes an element
+  before anything consults the adjusted node, after which the two agree.
+  `foreign-fragment.dat` is where the distinction actually lives.
+  **Invariant:** the fragment context element is NEVER pushed onto the stack of
+  open elements — the synthetic `html` root is the whole stack. That is what
+  makes the context's own end tag close nothing, which
+  `foreign-fragment.dat#4` asserts directly.
+  **Invariant:** there are exactly FOUR "fragment context element is" guards in
+  §13.2.6 that apply here, and missing any one is silent. `resetInsertionMode`
+  substitutes the context at the bottom of the stack — measured the widest at
+  194 cases, because it decides the STARTING insertion mode for every fragment
+  parse, not just the table contexts. In-body's `<input>` and `<select>` ignore
+  the token outright when the context is a `select`. After-body's `</html>`
+  IGNORES the token rather than switching to "after after body" — switching
+  sends the comment that follows to the Document, which a fragment never
+  serializes. And in-frameset's `</frameset>` never leaves the mode, since
+  there is no outer document for "after frameset" to be after.
+  **Invariant:** `parseHtml(src): HtmlDocument` is the whole public surface,
+  and `parseHtmlFragment` is implemented, fully tested and NOT exported —
+  nothing in this epic can call it, since `zch2.5`'s entry points take a PDF
+  target rather than an HTML element and so have no context to pass. The
+  mutation helpers stay internal for the same class of reason: exporting them
+  would commit this library to a DOM-editing API before anyone has asked for
+  one. `test/html-public-api.test.ts` asserts the absences BY NAME, so they are
+  a decision the suite enforces rather than an oversight.
+  **Invariant (`zch2.8`):** `parseHtmlBytes` is a SIBLING of `parseHtml`, not a
+  widening of it. `parseHtml(string)` is what 8,862 vendored cases anchor and
+  it must not move — which is exactly what `TreeBuilder.tentativeEncoding`
+  guarantees: the in-head `<meta>` rule fires only for a parse that HAS one,
+  and `parseHtml` never sets one, so the string path is byte-identical BY
+  CONSTRUCTION rather than by test. Measured load-bearing: dropping that guard
+  reddens 18 corpus cases.
+  **Invariant:** there is NO PRESCAN, and that is a decision rather than an
+  omission. HTML's prescan is an optimization for a STREAMING parser — it lets
+  a browser tokenize before it has seen a `<meta>`, and gives up after 1024
+  bytes. With the whole buffer in hand, tree construction's own
+  change-the-encoding rule reaches the same answer for every document, and
+  reaches it for a `<meta>` PAST that window, which a browser misses. A
+  divergence in mechanism that converges in result.
+  **Invariant:** the first pass finds that `<meta>` because tags and attribute
+  names are ASCII and UTF-8's decoder is NON-FATAL — a windows-1251 body
+  decodes to U+FFFD noise around perfectly intact tag structure. Nothing about
+  the restart works without that.
+  **Invariant:** AT MOST ONE restart, and it is a PROOF rather than a limit:
+  the second pass runs with certain confidence (no `tentativeEncoding`), so
+  the rule cannot fire again. Relatedly, a `<meta>` naming the encoding
+  already in force SETTLES the confidence rather than merely changing nothing
+  — without that a following, contradicting `<meta>` restarts a parse the
+  first had already vouched for.
+  **Note:** the one insertion site (`inHead`'s `<meta>` case) covers every
+  mode, because "after head", "in body" and "in template" all redirect there.
+  §13.2.6.4.7 spells that out for `<meta>`, so a body `<meta>` DOES change the
+  encoding — the obvious reading, that the rule lives in head and a body meta
+  is too late, is wrong, and this repo's own test asserted it that way before
+  the spec corrected it.
+  **Note on coverage:** BOTH vendored corpora are string-level by
+  construction and cover none of this. The one case that could discriminate —
+  `tests19.dat`'s 300-byte comment pushing `<meta charset>` past 1024 bytes —
+  is a TREE test asserting only where the element lands. Held by
+  `test/html-encoding.test.ts` and `test/html-parse-bytes.test.ts` alone.
+  **Invariant:** `parseHtml` returns the tree alone, never a result object with
+  an error list. Every HTML string is a valid document by construction, so a
+  parse error is never actionable for a caller rendering a PDF; the list a
+  caller CAN act on is `zch2.7`'s "what could not be rendered". Widening a
+  return type later is additive, narrowing is not.
+  **Note, and BOTH reddened nothing:** §13.4's form-element-pointer walk is
+  unreachable — a `.dat` context element is synthesized with no ancestors, so
+  it always finds nothing, which was known before the mutation was run. And
+  the template-context push is redundant for the only case that could exercise
+  it: `template.dat#108` is the corpus's single `template` context and its
+  input opens its OWN `<template>`, which pushes the mode through the in-head
+  rule regardless. Both are held by the spec, not by this suite.
+  **Invariant:** `htmldom.ts`'s `appendChild` and `insertBefore` DETACH from the
+  current parent first. The adoption agency moves live nodes, and a node
+  reachable from two parents is a cycle that hangs the serializer rather than
+  failing an assertion.
+  **Invariant:** TWENTY insertion modes and FOUR scopes, not the 22 and 5 that
+  `zch2.1.2`'s design and plan both named. The HTML Standard has REMOVED "in
+  select" and "in select in table" (the customizable-select change): §13.2.6.4
+  runs .1 to .21, a `<select>`'s content is parsed by "in body" — which grew
+  `select`/`option`/`optgroup` clauses and a `select`-in-scope test on `<hr>`
+  and `<input>` — and `select` has moved into the DEFAULT scope's terminator
+  list, a reversal, since select scope used to be *inverted*. Seventeen
+  vendored cases fail against the older reading, which is what settled it. The
+  block END-tag list is still not the start-tag list: it adds `button`,
+  `listing`, `pre` and now `select`.
+  **Invariant:** foster parenting inserts BEFORE the table, never into it.
+  Wrong, stray content lands inside the table and still displays — measured, 73
+  vendored cases.
+  **Invariant:** "original insertion mode" is ONE variable, not a stack, and
+  this is held by the SPEC rather than by the suite: making it a stack reddens
+  **nothing**, across all 1,317 cases. Recorded as an uncovered rule rather
+  than left to be discovered.
+  **Note, measured:** the thorough variant of implied end tags is unreachable
+  today — `</template>` is its only spec call site and templates are
+  `zch2.1.3` — but the pair ships anyway, because using the thorough list for
+  both reddens 83 cases.
+  **Note on the oracle, and it is NOT html5lib-tests:** anchored by
+  web-platform-tests' `html/syntax/parsing/resources`, because html5lib-tests
+  no longer carries tree-construction at all — its README records that the
+  tests "are now solely maintained on web-platform-tests". Vendored under
+  `test/fixtures/wpt/`, a separate directory because these fixtures are named
+  for who produced the bytes. 1,918 of 1,936 cases run; the rest are scripted
+  (the flag is off) or `<selectedcontent>` (whose expected tree holds text the
+  ELEMENT clones in, not the parser). That last exclusion is PERMANENT rather
+  than a gap: `4h3p` closed on the finding that the RENDER already agrees —
+  `selectedOptionText` implements the same selected-else-first rule the four
+  cases turn on, so all four draw what Chrome shows, and only emphasis inside
+  a customizable-select is flattened. Pinned in
+  `test/htmlreport-render.test.ts`, since the corpus provably cannot report a
+  regression in behaviour it excludes. Every exclusion is a COMPUTED
+  predicate over the case, never a file list, and the bucket counts are
+  asserted — so a case cannot be reclassified to dodge a failure.
+  **Note (`zch2.9`), and it is the only bucket retired because the SPEC moved
+  rather than because we implemented more:** the 88 processing-instruction
+  cases used to be excluded, on the reading that the two vendored corpora were
+  pinned to different spec eras. Confirmed and acted on — whatwg/html#12118
+  merged 2026-06-25 — so `<?target data?>` is a real PI, all 88 run, and the
+  DISAGREEMENT MOVED to the html5lib tokenizer corpus, where 38 cases are now
+  excluded instead. That pin cannot be advanced: its newest commit IS ours,
+  dated one day after the merge, with nothing since.
+- **csstoken.ts**, **cssparse.ts** — CSS Syntax Level 3: the tokenizer (§4)
+  and the component-value parser (§5). `csstoken.ts` is a pure
+  `string → CssToken[]` function that knows nothing of blocks or rules;
+  `cssparse.ts` is eight entry points over those tokens and never re-reads a
+  character. Note the direction against `svgcss.ts`, which is a much smaller
+  CSS subset for SVG `<style>` elements and shares no code with this.
+  Nothing here produces PDF and nothing is exported from `index.ts`.
+  **Invariant:** both are pure leaves and neither throws — no `Document`, no
+  PDF object, no `node:` import, and no `htmldom.js`. String in, structure
+  out. Collecting `<style>` element text is a walk over `HtmlElement` and so
+  `zch2.2.3`'s, deliberately not here; the issue text originally put it in
+  this module and was corrected before any code was written.
+  **Invariant:** the tokenizer emits FLAT `function`, `open` and `close`
+  tokens and nesting is built in `cssparse.ts`. That is what lets `tokenize`
+  stay a pure `string → CssToken[]` with no recursion — and it obliges the
+  parser: NO `open` or `close` token ever reaches parser output. A matched
+  pair becomes a block or a function; an unmatched close becomes an error
+  value.
+  **Invariant:** a number carries its REPRESENTATION and a type flag beside
+  its value. `1` and `1.0` have equal values and differ only in the flag;
+  `+1` and `1` differ only in the representation. Measured: forcing the flag
+  reddens 10 cases and replacing the representation reddens 14.
+  **Invariant:** NEGATIVE ZERO is normalised to `+0`. `Number('-0')` is `-0`
+  and the corpus expects `+0` — and the difference is INVISIBLE to every
+  ordinary check, because `JSON.stringify` renders both as `"0"` while a
+  deep-equality assertion uses `Object.is` and fails. It is the only rule here
+  with no hand-built cover, held by 4 corpus cases alone.
+  **Invariant:** `url(` is a url-token whose value runs to the closing paren
+  with no quoting, while `url (` is an ident then a function and `url("a")` is
+  a function too. A tokenizer that treats `url` as a name everywhere produces
+  a plausible token stream that is wrong for every unquoted URL.
+  **Invariant:** the four EOF-and-damage kinds are distinct and none may
+  collapse into a good token. `bad-string` ends at the newline that broke it
+  and DISCARDS what it had; `bad-url` consumes to the closing paren and
+  discards too; but `eof-in-string` and `eof-in-url` emit the SALVAGED VALUE
+  and then the error — `'eof` is `["string","eof"]` followed by
+  `eof-in-string`. The hand-built test asserted that backwards and the corpus
+  corrected it.
+  **Invariant:** a TRAILING BACKSLASH is a valid escape. The rule is "a
+  backslash whose next code point is not a newline", and EOF is not a
+  newline, so it yields U+FFFD inside the name being consumed rather than
+  ending the name and leaving a delim. Requiring a following character reddens
+  four cases.
+  **Invariant:** U+007F is in the non-printable set that makes a `bad-url`,
+  and it is invisible in every view of the corpus: `JSON.stringify` escapes
+  control points below U+0020 and leaves DEL raw, so `url(<DEL>)` reads on
+  screen as the perfectly valid `url()`.
+  **Invariant:** `parseBlocksContents` is NOT `parseDeclarationList` under
+  another name. A run beginning with an ident may be a declaration or a
+  qualified rule — `a:hover { }` opens exactly like a declaration — and a
+  qualified rule ENDS at its block, so `a b{c:d}e:f` is a rule followed by a
+  declaration. The choice is made from the delimited run, never by rewinding
+  the cursor: rewinding re-consumes past the `;` that ended the run and loses
+  everything after it.
+  **Invariant, and it is a DECISION rather than an oversight:** the tokenizer
+  implements the CORPUS's spec era, not the current editor's draft. It emits
+  `unicode-range`, the five match tokens (`~=` `|=` `^=` `$=` `*=`) and the
+  column token (`||`), all of which the live draft has removed from the
+  tokenizer. Eleven of the 149 vendored cases turn on it. It keeps the corpus
+  running whole with no bucket; `zch2.9` already records this repo following a
+  pinned oracle against a newer spec; and it hands `zch2.2.2` an attribute
+  selector as one `^=` token rather than two delims to rejoin. Two mutations
+  exist so that "fixing" it toward the live draft reddens immediately, at 3
+  and 10 cases.
+  **Note on the oracle, and on its LIMITS:** anchored by CourtBouillon's
+  `css-parsing-tests`, 149 cases across 8 files, all green with no allowlist.
+  That is a real anchor and it is an order of magnitude smaller than the HTML
+  corpora — 7,032 tokenizer cases and 1,936 tree-construction cases. It turned
+  out to be DENSE rather than thin: every one of eleven mutations reddened
+  something, where `zch2.1` produced four empty results across four issues,
+  because 50 of the 149 cases pack dozens of tokens into a single input.
+  **Note, and it is the thing to remember when the sibling lands:**
+  `zch2.2.2` (selectors) and `zch2.2.3` (the cascade) have no VENDORED oracle
+  at all. WPT ships reftests and `testharness.js` there, both needing a
+  renderer or a JavaScript engine. This note used to say their suites are
+  therefore hand-built and must not be read as conformance — half of that has
+  since been overtaken: `zch2.2.2` GENERATES one instead, by driving headless
+  Chrome (`scripts/gen-selector-goldens.ts`), which is `test/fixtures/svg/`'s
+  arrangement and is real evidence. It corrected two rules on its first run.
+  `zch2.2.3` remains hand-built until someone does the same for it.
+- **cssselect.ts** — CSS selectors: parsing, matching and specificity
+  (Selectors Level 4). Takes a qualified rule's prelude as `CssValue[]` and
+  never re-reads a character; matches right-to-left over `htmldom.ts`'s parent
+  pointers, which is what those pointers were landed for. Nothing here
+  produces PDF and nothing is exported from `index.ts` — `zch2.2.3` is the
+  only consumer.
+  **Invariant:** a pure leaf, and it must NOT import `svgcss.ts`. That module
+  is a selector engine too and the two share NO code, on purpose: it takes a
+  raw STRING and finds selectors with regexes (it predates any CSS tokenizer
+  here), it walks `XmlNode`, which has no parent pointers, so its matcher
+  threads an explicit ancestors array, and SVG is case-sensitive XML where
+  HTML is not. Six SVG modules and a browser-rendered golden set depend on it.
+  Two grammars sharing a name — the `tablegrid.ts`/`tablespan.ts` and
+  `mdscan.ts`/`htmltoken.ts` idiom.
+  **Invariant:** it never throws. An unsupported selector is a `null` return
+  and the caller drops the RULE — which is CSS's own behaviour, not a
+  degradation we invented — and ONE invalid selector invalidates the WHOLE
+  list, because the surviving half of a partly-applied rule is
+  indistinguishable from a correct render. That rule is what makes the two
+  entries below matter rather than being pedantry: anything wrongly called
+  invalid costs its whole stylesheet rule.
+  **Invariant:** a dynamic pseudo-class (`:hover`, `:visited`, `:target`, …)
+  is KNOWN AND NEVER MATCHES, which is not the same as unsupported. Unknown
+  invalidates the list, so `a, a:hover { color: blue }` would drop its `a`
+  half and the document render unstyled rather than merely un-hovered.
+  `:link` is the exception and DOES match: an `href` is a fact about the
+  document rather than about a pointer. **Note, measured:** Blink's answer for
+  `a:hover` alone is also "matches nothing", so the corpus cannot see this —
+  only the shared-list case in `test/cssselect-logical.test.ts` can, and it is
+  the sharper half of the mutation, reddening three cases there while the
+  `a:hover`-alone case stays green.
+  **Invariant:** `Compound.ids` is a LIST, mirroring `classes`, and EVERY id
+  must match. `#a#b` is valid CSS that matches nothing — the grammar admits
+  it and an element has one id — so rejecting a second id turns a
+  never-matching selector into an INVALID one, and by the rule above `p, #a#b`
+  then loses its `p` half. Keeping only the first id instead is WORSE than
+  that rejection: `#x#other` would match `<p id=x>` and render wrongly rather
+  than not at all. All three halves are pinned separately, and the middle one
+  by Blink as well.
+  **Invariant:** a pseudo-element is parsed and RECORDED on the compound, and
+  matches no real element. That is what lets `zch2.3`/`zch2.4` pick up
+  generated content without re-parsing, and it keeps a `::before` rule from
+  invalidating a list it shares.
+  **Invariant:** specificity is a TUPLE compared lexicographically, not
+  `svgcss.ts`'s packed `a*10000 + b*100 + c`. Packing needs a documented
+  no-carry bound; a tuple needs none, and `:is()`'s "maximum of its arguments"
+  is then a plain lexicographic max rather than a claim about the packing
+  preserving order. `:where()` contributes NOTHING whatever its arguments, and
+  `:is()`/`:not()` take a MAXIMUM rather than a sum — both produce a
+  perfectly plausible cascade when wrong.
+  **Invariant, and the OBVIOUS READING IS WRONG — this is the one to
+  remember:** a type name folds ASCII case against EVERY element, foreign ones
+  included. The natural rule, which this issue's design and its implementation
+  plan both stated and which three hand-written tests here asserted, is that
+  folding is for HTML elements while a foreign one is compared exactly, so
+  `lineargradient` would not match SVG `<linearGradient>`. That is XML's rule.
+  In an HTML document Blink matches `linearGradient`, `lineargradient` and
+  `LINEARGRADIENT` alike — through `querySelectorAll`, `Element.matches` AND
+  the stylesheet cascade — while `clippath` still misses, so it is genuinely
+  folding rather than a wildcard; the same probe against an `application/xml`
+  document matches only the exact spelling. `parseHtml` produces nothing but
+  HTML documents, so one folded spelling is the whole model and the second
+  field a first attempt added for this was deleted again. An attribute NAME
+  folds while its VALUE does not, and `#id` and `.class` fold only in QUIRKS
+  mode — `HtmlDocument.quirks` is computed by `htmltree.ts` from §13.2.6.4.1
+  and, before this module, was read by exactly one line of parsing logic.
+  **Invariant:** `^=`, `$=` and `*=` never match an EMPTY value. Without the
+  guard `[href^=""]` matches every element that has an `href`, which reads as
+  a working selector rather than a fault.
+  **Note, and it is the trap this module was hardest to get right:** four
+  An+B forms are a SINGLE token, because `n-1` is a valid CSS name. `2n-1` is
+  a dimension whose UNIT is `n-1`, not a dimension followed by a number, and
+  `n-1` is one ident. A parser written from the obvious reading handles
+  `2n+1` and mis-handles `2n-1` — which is `odd` shifted by one, so a striped
+  table still looks striped and only the first row is wrong.
+  **Note:** the template boundary needs NO special case. `htmltree.ts`
+  assigns `el.content = createFragment()` and `createFragment` leaves
+  `parent` null, so the chain from an element inside a template runs element →
+  fragment → `null` and never reaches the document; `selectAll` declines to
+  descend on the way down. Structural in both directions, which is a property
+  of two files agreeing rather than of one line, so it is asserted directly.
+  **Note on the oracle, and it is GENERATED rather than vendored:** there is
+  no data-driven selector corpus to vendor — WPT ships reftests and
+  `testharness.js`, both needing a renderer or a JavaScript engine. So
+  `scripts/gen-selector-goldens.ts` drives headless Chrome and commits what it
+  said, the way `test/fixtures/svg/` already works, and cheaply, because a
+  selector's answer is a list of elements rather than a bitmap. Two golden
+  kinds: 549 match sets from `querySelectorAll`, and 6 specificity CONTESTS
+  resolved by `getComputedStyle`, which is the only way to observe a number no
+  API reports. It corrected TWO rules on its first run — the type-name fold
+  above, and a contest of its own that measured which rule APPLIED rather than
+  which was more specific, since `:not(#t)` cannot match `<p id=t>` at all;
+  the generator now requires `el.matches()` for both selectors before
+  recording one. `test/fixtures/css-selectors/PROVENANCE.md` records the
+  ceiling — one engine with no second to arbitrate, a child-index path
+  computed on both sides (which is why the harness carries a
+  deliberate-mismatch test), and four rules it provably cannot see, each
+  measured by mutation and each naming the unit test that holds it instead.
+  **Note, measured:** all fourteen mutations run against this module reddened
+  something, so nothing here is held by the spec alone. Three are corpus-blind
+  and say so in PROVENANCE: summing `:is()`'s arguments, descending into
+  template content, and counting an attribute selector as a type — that last
+  one because a contest is a one-sided bound, so a mutation that collapses a
+  real difference into a TIE still satisfies it.
+  **Invariant (`zch2.2.4`):** a `:has()` argument is a RELATIVE selector, and
+  it is stored as an ordinary `ComplexSelector` with the anchor PREPENDED —
+  `:has(> div p)` becomes `:scope > div p`, `parts[0]` being a synthetic
+  compound holding the one `Pseudo` kind no author can write. That is the
+  whole trick: the existing right-to-left `matchFrom` then does the anchoring,
+  backtracking included, and this module gains no second matching algorithm.
+  The plausible alternative — "does some descendant match `div p`" — is WRONG
+  and reports every div with a `p` anywhere below it rather than one whose own
+  CHILD div holds the `p`; `div:has(> div p)` on a two-deep chain is the case
+  that separates them, and it is in the Blink corpus.
+  **Invariant:** the anchor weighs `[0, 0, 0]`. Selectors 4 counts a `:has()`
+  as its most specific ARGUMENT — it joins `:is()`/`:not()` in the max group —
+  and the implicit `:scope` is not part of what the author wrote. Left to the
+  default branch it weighs a phantom class, making `div:has(> p)` report
+  `[0, 1, 2]` for `[0, 0, 2]`: a plausible number, and one a Blink contest
+  catches by itself, since `[0, 0, 2]` LOSES to `.c` where `[0, 1, 2]` wins.
+  **Invariant:** `:has()` is NON-forgiving, and a nested `:has()` or a
+  pseudo-element inside one is refused — which invalidates the whole list, as
+  every other refusal here does. That is the CURRENT reading: Selectors 4
+  changed `:has()` from a forgiving argument list after the forgiving one
+  broke feature detection, and Blink agrees — measured, it refuses
+  `div:has(p:has(span))` on all 11 corpus documents. The `inHas` flag rides
+  through `:is()`/`:not()`/`:where()`, so `:has(:is(p:has(x)))` is refused by
+  the same rule rather than by a second one.
+  **Note on the cost, MEASURED and left unguarded:** the driver is nesting
+  DEPTH, not the element count, and it is worse than the quadratic `zch2.2.2`
+  predicted. `csscascade.ts` asks every rule about every element, a `:has()`
+  walks the anchor's subtree, and each candidate's match then walks back UP
+  the ancestor chain — so at a fixed 4,000 elements the cost is roughly
+  quadratic in depth (31 ms at depth 10, 187 at 80, 2,738 at 320), and an
+  all-nested chain, where depth IS the element count, is cubic (7.4 s for
+  1,000 divs). Real markup nests 10-20 deep, where 4,000 elements cost ~35 ms;
+  nothing throws at any depth; and a visit budget would buy the bound by
+  answering a selector WRONGLY on a large document. `test/cssselect-has-cost.test.ts`
+  records the numbers and fences the realistic shape.
+  **Note, measured, and it covers NOTHING:** narrowing the descendant lead's
+  candidates to the anchor's subtree is a COST measure only — `matchFrom`
+  rejects everything outside it anyway, so widening the pool to the whole
+  document reddens nothing at all. The SIBLING pool is different and IS
+  load-bearing: a `+` or `~` subject is not below the anchor, so searching the
+  subtree finds nothing whatever. Likewise the anchor's self-exclusion is held
+  by the anchoring rather than by the `descendants` generator — yielding the
+  anchor too reddens nothing, so `p:has(p)`'s test does not cover that line.
+  **Invariant (`zch2.2.5`):** `:lang()` and `:dir()` are answered from the
+  DOM, through `htmllang.ts`, and `matches()` gained no parameter for them.
+  The issue was filed on the belief that both "need the inherited lang, which
+  is the cascade's rather than the selector engine's" — that is WRONG, and
+  worth recording because it delayed the work: `lang` and `dir` are HTML
+  ATTRIBUTES inherited through parent pointers, and `ComputedStyle` carries
+  neither among its 43 longhands. The cascade is not involved at all.
+  **Invariant:** an unknown `:dir()` value is VALID and matches nothing, while
+  an EMPTY `:dir()` or `:lang()` argument is INVALID. The two refusals differ
+  on purpose — a direction we do not know is Selectors 4's never-matching,
+  where an unfinished selector is a parse error — and getting the first wrong
+  costs the whole selector list, so `p, p:dir(sideways)` would drop its `p`
+  half and render unstyled.
+  **Invariant:** an element with NO language in scope matches no `:lang()`
+  range. Having no language is not the same as having any.
+  **Invariant, and it is NARROWER than Selectors 4 on purpose:** `:lang()`
+  accepts ONE unquoted ident. The spec writes `<language-range>#` — a comma
+  list whose members may be strings and carry `*` wildcards — but Chrome 152
+  refuses every one of those forms, `:lang("en")` included; measured, not
+  assumed. Accepting them would make us style content every browser leaves
+  unstyled, since an unsupported selector invalidates its whole list, and the
+  Blink corpus could not see the divergence because Blink REFUSES those
+  selectors rather than answering them. The RFC 4647 matcher in `htmllang.ts`
+  is unaffected and still wildcard-capable: what narrowed is the syntax an
+  author may write, not how a tag is compared.
+  **Note:** the unsupported-selector stand-in in `csscascade.ts`'s and
+  `cssselect-logical.ts`'s tests is now an UNKNOWN NAME (`:nonsense`) rather
+  than a real pseudo-class. It had already moved twice — `:has()` until
+  `zch2.2.4`, `:lang()` until `zch2.2.5` — and a name no spec will define
+  cannot be overtaken a third time.
+- **htmllang.ts** — the two things HTML says about a node that the DOM
+  INHERITS rather than the cascade computes: `nodeLanguage` and
+  `nodeDirection`, plus `langMatches`. A pure leaf over `htmldom.js` and
+  `bidi.js`.
+  **Invariant, and `zch2.2.5` was filed on the opposite belief:** NEITHER IS A
+  CSS PROPERTY. That issue recorded `:lang()`/`:dir()` as needing "the
+  inherited lang, which is the cascade's rather than the selector engine's",
+  and waited on `zch2.2.3` for it — but `lang` and `dir` are HTML ATTRIBUTES
+  inherited through parent pointers, and `ComputedStyle` carries neither among
+  its 43 longhands. The cascade is not involved, and `matches()` gained no
+  parameter. Recorded because the misdiagnosis is what delayed the work.
+  **Invariant:** its own module rather than part of `cssselect.ts`, because
+  `nodeDirection` needs `bidi.js` where `cssselect.ts` is a leaf over
+  `htmldom.js` and `cssparse.js` alone — and because every rule here is then
+  drivable from a hand-built DOM with no stylesheet.
+  **Invariant:** an empty `lang=""` means UNKNOWN and stops the walk. A
+  document setting it on a quotation inside an English page is declining to
+  state that quotation's language, so inheriting `en` past it would be a claim
+  the document refused to make.
+  **Invariant:** `langMatches` is RFC 4647 §3.3.2 extended filtering, and its
+  two subtle halves each render plausibly when wrong. The match must fall on a
+  SUBTAG BOUNDARY — `startsWith` says `lang="english"` matches `:lang(en)` —
+  and a SINGLETON subtag may NEVER be skipped, a one-character subtag being
+  the start of an extension.
+  **Invariant:** `dir=auto` is RESOLVED through `bidi.paragraphLevel` (UAX #9
+  P2/P3, the first-strong rule) rather than defaulted to `ltr`. Defaulting
+  gives a plausible wrong answer for every Arabic or Hebrew document using it.
+  `<bdi>` with no `dir` is `auto` — that is what the element is for.
+  **Invariant:** the auto scan SKIPS a descendant that states its own `dir`,
+  and skips `script`/`style` content. That subtree is governed by its own
+  direction, so letting it decide the ancestor's inverts both — and it is the
+  everyday shape, since `auto` is used exactly where a subtree of known
+  direction sits inside text of unknown direction.
+- **colornames.ts** — the 148 CSS named colours (the 147 X11 names plus
+  `rebeccapurple`), as a `ReadonlyMap` of 0..1 triples. A leaf importing
+  NOTHING, shared by two stacks that must not depend on each other:
+  `svgstyle.ts` parses SVG paint out of strings, `cssvalue.ts` parses CSS out
+  of `CssValue[]`. The parsers cannot be shared and the DATA must not be
+  duplicated — a second copy is how the two would come to disagree about one
+  colour in a document containing inline SVG.
+  **Invariant:** `transparent` is NOT in the table. It is `rgba(0,0,0,0)`
+  rather than a named colour and carries an alpha the table has no room for;
+  the two callers handle it differently and both correctly — `svgstyle.ts`
+  returns null (do not paint), `cssvalue.ts` returns a colour with `a: 0`.
+- **cssvalue.ts**, **cssprop.ts**, **cssshorthand.ts**, **cssua.ts**,
+  **csscascade.ts**, **csscompute.ts** — the CSS cascade (`zch2.2.3`):
+  declarations in, computed style out. All six are pure leaves; none imports
+  `document.js`, `page.js`, any PDF object module, any `node:` module,
+  `svgcss.js` or `svgstyle.js`, and none throws. Nothing is exported from
+  `index.ts` — `zch2.3` is the next consumer.
+  **Invariant:** the property set is bounded by what `zch2.3`, `zch2.4` and
+  `zch2.6` will consume, not by CSS. **43** longhands, asserted, so a
+  half-pasted table is a red build; a property outside them is recorded as
+  `unknown-property` for `zch2.7` rather than dropped, which is what makes
+  "we do not implement flexbox" reportable instead of invisible.
+  **Invariant (`zch2.2.6`):** `LengthPct` is ONE shape,
+  `{ px, pct }`, not the `{px} | {pct}` union it was — forced by the math
+  functions, since `calc(100% - 20px)` is neither arm. A THIRD arm would have
+  been worse than converting: every `'px' in v` test already written would
+  have matched it and silently dropped the percentage. Read it through
+  `resolveLengthPct` and `fixedPx`, never by hand, which is what keeps one
+  owner for "resolve a length-percentage against a basis"; the second arm,
+  `{ expr }`, is the rare retained `min()`/`max()`/`clamp()` a percentage
+  reaches. **Note the trap it left, which the COMPILER could not catch:**
+  `PropDef.initial` is typed `unknown`, so nine properties went on saying
+  `{ px: 0 }` with tsc silent and every box in every document coming out NaN
+  wide. They share the typed constant `ZERO_LENGTH` now, so the next change to
+  this type is a compile error rather than 77 failing tests.
+  **Note, and it had never fired:** `test/helpers/cascade-goldens.ts` excluded
+  percentages from the corpus by testing `'px' in v`, which now matches
+  EVERYTHING; it asks `fixedPx` instead. The old form was correct only because
+  no fixture declared a percentage.
+  **Invariant:** units are CSS **px** throughout, and the single `× 0.75` to
+  points belongs to `zch2.4`. Decided on the oracle rather than on taste:
+  `getComputedStyle` reports px, so a golden comparison is an exact equality
+  where a points model would put a multiply and a tolerance between every
+  pair — making a unit bug indistinguishable from a conversion bug.
+  **Invariant:** SIX cascade tiers — UA normal, author normal, author
+  `style=`, author `!important`, `style=` `!important`, UA `!important`. CSS
+  Cascade 5 sorts by origin+importance, then context, then element-attachment,
+  then specificity, then order; with no user origin and no shadow context the
+  first and third flatten to one ordinal. The flattening is the point: the
+  shortcut "a `style=` declaration has infinite specificity" is RIGHT that
+  `style=` beats any selector at equal importance and WRONG that a normal
+  `style=` beats an `!important` stylesheet rule.
+  **Note, measured, and the fixture for it needs care:** collapsing tiers 2
+  and 3 reddens ONLY the two `2 < 3` cases and collapsing 3 and 4 reddens ONLY
+  `3 < 4` — neither touches the other, which is the whole argument for six
+  tiers. The `3 < 4` case must use a `*` selector: with `p` the rule carries
+  specificity `[0,0,1]` against an inline block's `[0,0,0]`, so a collapsed
+  tier still lets it win on specificity and the mutation reddens NOTHING. That
+  was the first version, and it measured nothing.
+  **Invariant (`zch2.2.7`):** a CUSTOM PROPERTY is matched on the RAW name,
+  before `toLonghands` folds it — a custom property is the one name in CSS
+  that is case-sensitive, so `--Foo` and `--foo` are different properties and
+  the fold would silently merge them. A name of exactly `--` is NOT one, and
+  falls through to the ordinary unknown-property report, which is Chrome's
+  answer too.
+  **Invariant (`zch2.2.7`):** a shorthand whose value contains a `var()`
+  becomes one PENDING entry per longhand it governs, checked before
+  `expandShorthand` — which cannot read a raw `var()` and would report the
+  declaration unparsable. The pendings sort as ordinary longhands, so the
+  expand-before-the-sort invariant below survives untouched, and re-expansion
+  happens once the element's environment is known. Failure there costs THAT
+  longhand alone, which is what makes `border: var(--w) dashed blue` still
+  set the style and colour.
+  **Invariant (`zch2.2.7`), and it was a real bug caught by the mutation
+  sweep:** `csscompute.ts` reads the CSS-WIDE KEYWORDS off the RAW declared
+  value and never off the substituted one. Measured against Chrome,
+  `--x: initial; color: var(--x)` computes to the INHERITED colour rather
+  than to `color`'s initial black — a keyword arriving by substitution is not
+  a keyword, and leaves the declaration invalid at computed-value time
+  instead. Testing the substituted value gets `inherit` right BY LUCK and
+  `initial` wrong, which is exactly how it shipped for one commit.
+  **Invariant:** shorthands expand in `csscascade.ts` BEFORE the sort, because
+  the cascade sorts longhands only. `p { margin: 0; margin-top: 5px }` yields
+  5px and the reverse yields 0; expanding afterwards yields 0 both times, a
+  wrong answer indistinguishable from a right one without the reversed pair.
+  **Invariant:** an unmentioned sub-longhand of a shorthand is emitted with a
+  synthetic `initial` ident rather than modelled by a second concept, so
+  `border: 1px` resets style and colour through the CSS-wide keyword machinery
+  that already exists. One reset rule, not two.
+  **Invariant:** the cascade keeps the UA winner BESIDE the final winner, so
+  `revert` is a lookup rather than a second pass over the same rule list — two
+  passes being two things that can drift.
+  **Invariant:** ORDER inside `csscompute.ts` is load-bearing twice.
+  `font-size` computes FIRST, because every other property's `em` resolves
+  against it; `color` computes SECOND, because `currentColor` — which is also
+  the INITIAL value of the three border and decoration colour properties —
+  resolves against it. **Note the mutation that tests this is not the obvious
+  one:** letting `color` be recomputed in the main loop is a NO-OP, since it
+  recomputes from identical inputs and reddens nothing. The real mutation is
+  passing the PARENT's colour into the main-loop context, which reddens the
+  `currentColor` cases and the corpus.
+  **Invariant, and it is the one that compounds:** `font-size` is the ONLY
+  property whose relative values resolve against the PARENT's computed size;
+  every other property resolves against the element's own. One rule for both
+  is wrong on exactly one property, and it is the property whose error
+  multiplies down the tree — a nested document ends up off by a factor rather
+  than by a pixel.
+  **Invariant:** `line-height: 1.5` and `line-height: 150%` are different
+  values, not two spellings. A number computes to a number and inherits as
+  one, so each descendant multiplies by its own size; a percentage computes to
+  px and inherits as that px. A single-font-size document cannot tell them
+  apart, so the fixture nests a differently-sized child.
+  **Invariant:** a percentage `margin`, `padding` or `width` STAYS a
+  percentage in the computed value — it resolves against the containing block,
+  which is `zch2.3`'s to know. Those fields are `px | pct`, and this is also
+  why the oracle cannot compare them: `getComputedStyle` returns the used px.
+  **Invariant:** `border-collapse` and `border-spacing` ARE inherited, so that
+  setting them on a container reaches the table. It reads wrong and has its
+  own test. **Note the surprising half, also pinned:** an inherited property
+  is inherited only where the element has NO declaration of its own, and the
+  UA sheet declares both on `table` directly — so wrapping a table in a
+  collapsing container does NOT collapse it, and an author must target the
+  table. Browsers agree.
+  **Invariant:** `text-decoration` is NOT inherited: it propagates visually to
+  in-flow descendants, which is a rendering rule `zch2.4` owns, and modelling
+  it as inheritance would let a descendant that sets its own wrongly win.
+  Expect "underline did not reach the `<span>`" to be misfiled here.
+  **Invariant:** `@media` honours TYPES only. A feature is detected
+  STRUCTURALLY — a `(` block in the query, no string matching anywhere — and
+  is recorded rather than dropped; evaluating one needs a viewport this stack
+  deliberately does not have, which is also why `vw`/`vh` are refused.
+  Dropping every `@media`, as `svgcss.ts` does, would render a document whose
+  whole print stylesheet sits inside `@media print` completely unstyled.
+  **Invariant:** the collection walk does NOT descend into a `<template>`'s
+  content, the same structural rule `selectAll` follows: a template's content
+  is not part of the document, so a `<style>` inside one styles nothing.
+  **Two traps in what `cssparse.ts` hands over, both measured:** `!important`
+  is already stripped from a value but a trailing whitespace token is not, and
+  every value carries a LEADING whitespace token from after the colon — so
+  `trimWs` trims BOTH ends and a consumer matching on `value.length` is wrong
+  twice without it. And `color:` is a VALID declaration whose value is `[]`,
+  so every property helper rejects an empty value first or `color:` sets a
+  colour.
+  **Note, and it is the exact INVERSE of `cssselect.ts`'s trap:** a `hash`
+  token carries `id: true` only when its name is an identifier, so `#123456`
+  and `#1a2b3c` are `id: false` while `#abc` and `#a1b2c3` are `id: true`. An
+  id SELECTOR must require the flag — `#123456` is not a valid id selector —
+  and a COLOUR must ignore it entirely, or the commonest spelling of a hex
+  colour silently stops parsing. Two modules, opposite rules, one token; do
+  not copy either into the other.
+  **Note on the oracle, GENERATED rather than vendored:** WPT's cascade tests
+  are `testharness.js` and need a JavaScript engine, so
+  `scripts/gen-cascade-goldens.ts` drives headless Chrome and commits what it
+  said — with `emulateMediaType('print')`, without which Chrome is a screen
+  user agent and the `@media print` case records the wrong answer while
+  looking healthy. 203 comparisons over 14 documents, and it compares only the
+  properties each fixture DECLARES: our UA sheet is transcribed from HTML §15
+  and Chrome's is Chrome's, so a full comparison would mismatch on every
+  element nobody styled.
+  **Note on the largest untested surface here, named rather than discovered
+  later:** the UA sheet is OUTSIDE the corpus entirely. It is a transcription
+  checked against HTML §15 by a human reading it, and it is the first thing to
+  re-examine if `zch2.5` produces documents that look wrong in ways the unit
+  tests do not explain. `test/fixtures/css-cascade/PROVENANCE.md` records the
+  rest of the ceiling — including that a `border-width` is compared only where
+  its `border-style` is not `none`, Chrome reporting the USED 0 there against
+  our computed `medium`.
+  **Out of scope and tracked:** `@property` and registered custom properties,
+  `env()`, and animation of custom properties — each a feature of its own
+  rather than a corner of `zch2.2.7`.
+  **Note, measured in `zch2.2.6` and recorded because breaking either half
+  alone proves NOTHING:** `computeFontSize` resolving against
+  `c.parentFontSize` is REDUNDANT with `csscompute.ts` handing that same
+  number in as `fontSize` (csscompute.ts:108). Mutating either one on its own
+  leaves the whole suite green; only mutating BOTH reddens, and then exactly
+  one case. Two defences for one rule — do not read the green suite as
+  covering the cssprop.ts half, and do not "simplify" either away.
+- **cssvar.ts** — CSS custom properties and `var()` (CSS Variables 1),
+  `zch2.2.7`. A pure leaf over `cssparse.js`/`csstoken.js` types plus
+  `cssshorthand.js`; it never throws, and `csscascade.ts` and `csscompute.ts`
+  both import it while it imports neither, so the edges close no cycle.
+  **Invariant:** substitution is TOKEN-LEVEL and runs before any grammar sees
+  the value. Not a preference — measured: `--op: + 5px` with
+  `calc(10px var(--op))` computes to 15px in Chrome, so a variable is a
+  FRAGMENT of a value rather than a value. That is also what makes
+  `csscalc.ts` and every other consumer work with no change at all.
+  **Invariant:** the environment holds ALREADY-SUBSTITUTED values, which is
+  what lets `substituteValue` splice rather than recurse — and it is why the
+  billion-laughs guard belongs to `customPropEnv` rather than to
+  substitution. A raw `var()` reaching the map is spliced as the tokens it
+  is; the plan for this issue assumed the opposite and put the guard in the
+  wrong place.
+  **Invariant, and the OBVIOUS IMPLEMENTATION IS WRONG THREE WAYS:** cycles
+  are found on a DEPENDENCY GRAPH, not with a resolution stack. Nodes are the
+  names declared on THIS element and edges are every `var()` name reachable
+  in a value, FALLBACKS INCLUDED — so `--a: var(--b, blue)` with
+  `--b: var(--a)` is a cycle and computes to nothing rather than to blue, and
+  `--a: var(--a, blue)` is a self-cycle. Third and worst, A NAME DECLARED ON
+  THIS ELEMENT NEVER SEES ITS OWN INHERITED VALUE: seeding the resolution map
+  from the parent makes `--a: var(--a)` quietly resolve to the parent's
+  `--a`, where Chrome says self-cycle. All three measured; the parent's entry
+  for every declared name is deleted before resolution and put back only as
+  that name's own resolved value.
+  **Note:** a name that merely DEPENDS on a cycle member is not itself in one
+  — its fallback fires normally — so the marking is strictly the members.
+  Reachability is asked per name, O(n²) over a handful of properties; Tarjan
+  is the general answer and is not worth its own correctness risk here.
+  **Invariant:** the fallback fires only when the referenced property is
+  GUARANTEED-INVALID — undefined, cyclic, or over budget — and NEVER when the
+  substituted result merely fails the property's grammar. Measured:
+  `--x: 10px; color: var(--x, red)` INHERITS rather than going red. Both
+  readings render a perfectly plausible page.
+  **Invariant:** an EMPTY custom property is valid, substitutes nothing, and
+  is not guaranteed-invalid, so it does not trigger the fallback either. The
+  declaration usually then fails on its own, which is a different route to
+  the same place.
+  **Invariant:** the fallback is everything after the FIRST top-level comma,
+  commas included — `var(--nope, Georgia, serif)` has a two-family fallback,
+  not a malformed three-argument call.
+  **Invariant, a DELIBERATE DIVERGENCE:** the expansion budget is 65,536
+  tokens per declaration. Measured, Chrome expanded a 100,000-token
+  billion-laughs and survived, so input between the two figures renders there
+  and is refused here. No real document is near either, and the alternative is
+  an unbounded expansion in a library whose consumers hand it files they did
+  not write — the failure `lexer.ts`'s own invariant exists to prevent. A
+  cycle check cannot see that shape: it has no cycle.
+  **Note, measured:** every one of the sixteen mutations run against this
+  module and its two consumers reddened something, the identity-reuse fast
+  path included — so nothing here rests on the spec alone.
+- **csscalc.ts** — the CSS math functions `calc()`, `min()`, `max()` and
+  `clamp()` (CSS Values 4 §10), added by `zch2.2.6`. A pure leaf over
+  `cssparse.js`/`csstoken.js` types that never throws; `cssvalue.ts` imports
+  it and it imports nothing back, so the edge closes no cycle.
+  **Invariant:** it owns the DIMENSION TABLE. `lengthOf` used to hold it, and
+  a second copy would be two answers to "how many px is 1pt" — but `calc(1pt)`
+  and `1pt` are the same value, so one owner is forced rather than tidy.
+  **Invariant, and it is the decision the whole issue turns on:** a
+  length-percentage reduces to the LINEAR form `A px + B %`, which CSS Values
+  4 §10.9 says every such math function reduces to. A `calc()` is a sum of
+  products and so is ALWAYS linear; a `min()`/`max()`/`clamp()` is linear only
+  when no percentage reaches it, since which argument wins otherwise depends
+  on the basis. The `sum`/`scale`/`fn` node kinds exist for that one case and
+  are built ONLY when the fold cannot happen, so a document with no
+  percentage-bearing comparison in it never sees anything but `lin`.
+  **Invariant:** TWO types, number and length-percentage, because these sites
+  have no angles or times. `+`/`-` demand matching types, `*` demands a number
+  on one side, `/` demands one on the right, and `min`/`max`/`clamp` demand
+  one type across every argument. That algebra is also what refuses
+  `width: calc(5)` — the result is a number, not a length — so `lengthOf`'s
+  existing "a bare non-zero number is not a length" rule holds inside a math
+  function without a second rule saying so.
+  **Invariant:** a number-typed subtree can hold NO percentage, which every
+  rule above enforces. That is what makes a divisor fully known at parse time,
+  so a zero divisor is decided there rather than becoming a resolve-time
+  surprise on some containing blocks and not others.
+  **Invariant, a DELIBERATE DIVERGENCE from Chrome, and the oracle is what
+  found it:** division by zero is REFUSED. CSS Values 3 made it invalid;
+  Values 4 §10.9 makes it infinity and clamps at §10.12, and Chrome/152
+  follows Values 4 — measured, `margin-top: calc(10px / 0)` computes there to
+  33554432px (2^25). We refuse because an infinite length reaches `stamp.ts`,
+  which throws on a non-finite rect, and matching Chrome would mean adopting
+  the clamp too for an expression no document means; a refused declaration
+  falls back to the initial or inherited value, which renders. The case is OUT
+  of the cascade corpus rather than allowlisted inside it, since that corpus
+  running whole is worth more than one fixture.
+  **Note, and the obvious single explanation is WRONG for half of it:** CSS
+  requires whitespace on both sides of `+` and `-`, and FOUR separate
+  mechanisms enforce it here. `calc(1px-2px)` is ONE dimension whose unit is
+  `px-2px` — `-` is a name character — so no operator is ever seen and the
+  unit table refuses it; `calc(1px -2px)` is two dimensions and no operator;
+  `calc(1px+ 2px)` is refused by the whitespace-BEFORE check; and
+  `calc(1px +(2px))` is the ONLY input the whitespace-AFTER check catches,
+  every other unspaced spelling having already gone. Each has its own case in
+  `test/csscalc.test.ts`, because one fixture leaves three mechanisms
+  unmeasured — this repo's own note said "the tokenizer folds the sign into
+  the number" for all of them and was wrong.
+  **Note, measured:** all 16 mutations aimed at this module redden something,
+  and five of them redden the Chrome corpus, so nothing here rests on the spec
+  alone. A fixture for `clamp()` needs its bounds INVERTED
+  (`clamp(40px, 2px, 10px)`): with them the right way round both readings of
+  the argument order agree, and the mutation survives.
+- **linebox.ts** — where a line's baseline sits and how tall its band is
+  (`zch2.11`): `lineBox(items, leading, blockFontSize)` over `LineItem`s
+  carrying an ascent, a height and an alignment.
+  **Invariant:** it imports NOTHING and knows no font, so every rule is
+  testable from plain numbers with no PDF built — the split `floatstack.ts`,
+  `booklet.ts`, `tablespan.ts` and `docinfer.ts` each already make, for the
+  same reason: this is geometry that is silently wrong when reversed. It never
+  throws.
+  **Invariant, and it is `zch2.11`'s acceptance criterion:** with no atomic
+  items it COLLAPSES to the arithmetic `layout.ts` had before — `ascent` is
+  the largest font size and `height` is
+  `max(leading, ascent * leading / blockFontSize)`. That is what makes
+  `test/rich-runs-identity.test.ts`'s four hashes hold BY CONSTRUCTION rather
+  than by tolerance, and it is why the fence never moved across the six
+  commits that built this.
+  **Invariant:** `ascent` counts only BASELINE-aligned items, and a `top`- or
+  `bottom`-aligned box contributes 0 to it while raising the band through the
+  third term of the `max`. Those align to the BAND, not the baseline, so they
+  make a line taller without moving its text — the two-term model
+  `vertical-align: top` forces and the reason `middle` was excluded rather
+  than approximated.
+  **Invariant:** a line with no baseline-aligned item falls back to
+  `blockFontSize`, so a blank line keeps ordinary leading rather than
+  collapsing to nothing.
+  **Note, measured:** all four mutations aimed at this module redden
+  something, and three of them redden `layout.ts`'s tests too.
+- **preformat.ts** — `preformat` and `expandTabs`, the rule that lets
+  indentation survive being drawn. A leaf importing NOTHING, extracted from
+  `flowblock.ts` so `cssinline.ts` can reach it: `flowblock.ts` imports
+  `pagecontent.js` and `serialize.js`, so a pure CSS leaf cannot.
+  `flowblock.ts` re-exports it, keeping `mdflow.ts`'s import path unchanged.
+  **Invariant:** the substitution is U+00A0 and it exists because `layoutRuns`
+  COLLAPSES runs of spaces, which is fatal to indentation. A SINGLE interior
+  space is left alone — it is an ordinary word separator and must stay
+  breakable, or a long preformatted line could never wrap at all.
+- **htmlreport.ts** — what an HTML document asked for that we could not fully
+  draw (`zch2.7`): the `NotRendered` record, the construct vocabulary,
+  `describe`, `elementPolicy` and `selectedOptionText`. A pure leaf over
+  `htmldom.js` that never throws and imports none of its four consumers
+  (`cssbox.ts`, `cssinline.ts`, `csstable.ts`, `cssflow.ts`). `CONSTRUCTS` is
+  **21**, asserted by size, and `'overflow'` (`zch2.16`) is the newest — see
+  `flow.ts` for why it is not a reuse of `'text'`.
+  **Invariant:** it is `html*` rather than `css*` despite the CSS stack being
+  its only consumer. It is keyed on HTML element names and encodes HTML's own
+  content models, and it sits beside `htmllang.ts` — the existing precedent
+  for an HTML fact as a pure leaf. Naming it `cssreport.ts` would say the
+  policy is a CSS one and send the next reader to the cascade.
+  **Invariant:** a module of its own rather than a section of `cssprop.ts`,
+  because TWO walks need the policy and neither may import the other.
+  `cssbox.ts` must not descend into a block-level `<iframe>`; `cssinline.ts`
+  has its own separate `visit` and must not descend into an inline one. The
+  forcing argument behind `colornames.ts`, `preformat.ts` and
+  `bordersides.ts` — and it is load-bearing in BOTH directions: deleting
+  either call site reddens only the cases that route through that walk.
+  **Invariant:** TWO kinds, `dropped` and `degraded`. A third, `leaked`, was
+  considered and dropped — once the per-element policy is in place nothing
+  leaks knowingly, so no site could produce one, and a kind nobody emits is a
+  case every consumer switches on for nothing.
+  **Invariant:** the policy is keyed by NAMESPACE for foreign content and by
+  TAG NAME for HTML. A whole subtree is foreign rather than one element, and
+  a name-keyed test would fire on an HTML element that merely shares a name
+  with an SVG one.
+  **Invariant:** the leak rule is PER ELEMENT, by what the content MEANS, and
+  HTML already draws the distinction. `<object>`, `<video>`, `<audio>` and
+  `<canvas>` children ARE fallback content a browser renders when the thing
+  cannot load, so they are kept and reported `degraded`; `<iframe>` children
+  are, in the spec's words, "ignored by conforming user agents", so emitting
+  them is a divergence and they are suppressed. A uniform "never lose words"
+  rule renders text no browser shows; a uniform "suppress everything" rule
+  blanks a page whose content sits in `<object>` fallback.
+  **Invariant:** `input` and `select` are deliberately ABSENT from the policy
+  table — their text is SELECTED rather than kept or suppressed, so
+  `cssinline.ts` owns them outright and an entry here would be a second
+  statement about one element that could drift from the first.
+  **Invariant:** `<select>` yields ONE option, the one carrying `selected`
+  else the first. Emitting every option turns a three-choice dropdown into
+  three lines of body text — a document that looks plausible and says
+  something the source does not.
+  **Note, measured and NOT covered:** using `in` instead of
+  `hasOwnProperty` in the policy lookup reddens NOTHING, because no fixture
+  names an element `constructor`. Retained because the rule is sound —
+  `predefcmap.ts` records the same hazard for a name that comes from a
+  document — but do not read the green suite as covering it.
+  **Note, measured:** every other mutation aimed at this module and its four
+  consumers reddens something — 20 of 21 across the sweep.
+- **cssinline.ts**, **cssbox.ts**, **cssresolve.ts**, **cssmargin.ts** — the
+  box model (`zch2.3`): the styled tree to a box tree, and the arithmetic to
+  resolve one against a containing-block width. All four are pure leaves and
+  none throws. Nothing is exported from `index.ts` — `zch2.4` is the next
+  consumer.
+  **Invariant, and it is the decision the whole issue turns on: IT POSITIONS
+  NOTHING.** No x, no y, no line break, no page break. `zch2.4` maps each box
+  to a `FlowElement` and `flow.ts` stacks and paginates exactly as it does for
+  Markdown — which is what makes that issue's "mirror mdflow.ts, hand back a
+  flat array" possible, and what keeps the existing pagination, keep-with-next
+  and column budget working unchanged. A full layout engine was considered and
+  rejected: it would duplicate both.
+  **Invariant:** `resolveBoxes` takes a WIDTH as an argument rather than
+  baking one in, and that is forced rather than preferred. A percentage margin
+  resolves against the containing block's WIDTH — vertical margins included,
+  which is the part that surprises — so nothing can be precomputed. `flow.ts`
+  supplies it at `place()` time.
+  **Invariant:** a border edge's USED width is 0 when its style is `none` or
+  `hidden` (CSS 2.1 §8.5.3), however wide the computed value. This is not a
+  nicety: the initial `border-width` is `medium` (3px) and the initial
+  `border-style` is `none`, so every box that states no border carries a
+  computed 3px per edge, and adding it takes 6px off the content width of
+  EVERY element in EVERY document. Measured — 794 where 800 was right, on the
+  first run of `test/cssresolve.test.ts`. It is also why
+  `test/fixtures/css-cascade/PROVENANCE.md` had to exclude `border-width`
+  from that corpus.
+  **Invariant, the rule `cssbox.ts` exists for:** a block container holds
+  EITHER only block-level children OR exactly one inline formatting context,
+  and a mixed container's inline runs are wrapped in ANONYMOUS block boxes.
+  An anonymous box carries its PARENT's computed style and no element — a
+  fresh initial style would reset the font and colour of every mixed container
+  in a document.
+  **Note, measured, and it is the redundant-defences trap:** two rules here
+  are each held by a CONJUNCTION rather than by any one line, so breaking
+  either half alone proves nothing. A whitespace-only text node between two
+  blocks makes no anonymous box because `contributesInline` skips it AND
+  because `flush` drops a box whose runs came back empty after `cssinline.ts`
+  trims — mutate either and the suite stays GREEN; mutate both and
+  "makes NO anonymous box for whitespace between two blocks" reddens.
+  `display: none` generates no box because `boxFor` returns null, AND because
+  `contributesInline` excludes it, AND because `isBlockLevel` does not admit
+  it — all three must go before the three cases that cover it redden. Do not
+  read a green suite as evidence that any single one of those lines is
+  unnecessary.
+  **Invariant (`zch2.6`):** a table box carries ROWS and CELLS, and a cell's
+  content is built by the SAME function a paragraph's is — `contentOf`, which
+  `zch2.6` extracted out of `boxFor` for exactly this. A second content
+  builder is how a cell comes to render bold where a paragraph renders code;
+  `mdflow.ts` records the same rule for its own cells. `csstable.ts` maps the
+  result to a `TableBuilder`.
+  **Invariant:** CSS 2.1 §17.2.1's anonymous fixup earns its place on
+  `display: table-*`, NOT on `<table>` markup. `htmltree.ts` already produces
+  well-formed `table > tbody > tr > td`, so real HTML needs almost none of it
+  — what needs it is a div tree given table displays by CSS, which is why both
+  fixtures for it are `<div style="display:table">`. `boxFor` runs
+  `collectRows` over the element ITSELF, so a stray `display: table-cell`
+  reached directly lands in an anonymous row with no second entry point.
+  **Invariant (`zch2.7`):** `boxFor` applies `htmlreport.ts`'s content policy
+  and, on `suppress`, returns a BOX WITH NO CONTENT rather than no box — the
+  element is still a replaced box that occupies its margins, unlike
+  `display: none`. `cssmargin.ts`'s `isEmpty` then treats it as an empty
+  block, which is what a browser does with an iframe it cannot load. This is
+  the block-level half of a rule `cssinline.ts` applies for the inline case;
+  an element here is inline by DEFAULT, so only `display: block` reaches it,
+  and a policy applied in one walk is silent for the other.
+  **Invariant:** a cell's `header` is decided by the SECTION as well as the
+  tag — a `<td>` inside a `<thead>` is a header, because a `<thead>` is what
+  repeats atop each page of a paginated table whatever its cells are called.
+  **Note, measured:** with every `<thead>` fixture written with `<th>`, the
+  section half of that rule is UNREACHABLE and deleting it reddens nothing;
+  `test/cssbox.test.ts`'s "marks a td inside a thead as a header too" is the
+  only case that covers it.
+  **Invariant:** a junk `colspan`/`rowspan` clamps to 1. A `NaN` reaches
+  `TableBuilder` and corrupts the whole grid, where 1 is the cell the author
+  meant.
+  **Invariant:** the CAPTION comes out of the row flow onto `TableBox.caption`
+  and is emitted as ordinary block content. `TableBuilder` has no caption
+  vocabulary, so leaving it among the rows would make it a data row and
+  dropping it would lose its text.
+  **Invariant:** `cssinline.ts` adds NO wrapping engine. An IFC lowers to the
+  `TextRun[]` model `textdecor.ts` defines and `layoutRuns` wraps it — the
+  one-wrapping-engine rule, which also buys justification, per-line leading
+  and `runlink.ts`'s link-rect geometry. A run's merge key folds in the LINK
+  DESTINATION, because two adjacent links style identically and merging would
+  point the whole phrase at the second URI; `mdruns.ts` records the same rule.
+  **Invariant (`zch2.6`, MOVED by `zch2.7`):** a FRAGMENT-only `href` gets NO
+  link. A `/URI` action pointing at `#intro` is a link that looks clickable
+  and does nothing in a viewer, which is worse than no link; resolving one
+  needs an id-to-destination map built after placement. It is reported on the
+  CONSTRUCT report as `link`/`degraded` — `zch2.6` parked it on `unsupported`
+  as `unparsable-value` and recorded that `zch2.7` could widen it, and it did:
+  a link we DECLINED to make is a construct we did not render, not a
+  declaration we could not parse. Note an href that merely CONTAINS a hash
+  still links.
+  **Invariant (`zch2.7`):** `<input>`'s value is DRAWN — it drew nothing at
+  all before — except for `type=hidden` and `type=password`, which draw
+  nothing and report `dropped`. The password refusal is not a new rule:
+  `CLAUDE.md` records under `formfield.ts` that "a password field's value must
+  never reach a content stream", because flattening bakes the plaintext into
+  permanent page content where no viewer will ever mask it again. An HTML
+  password value is the same disclosure by a different route.
+  **Invariant (`zch2.11`), TWO rules where there was one:** an `<img>` reports
+  `vertical-align` only for a value OUTSIDE `baseline`/`top`/`bottom`, because
+  those three are implemented for an atomic; a non-atomic inline still reports
+  every non-baseline value, because for text none of them are implemented. A
+  single widened rule satisfies either fixture alone, so both are asserted.
+  Note the img branch RETURNS, so its check sits inside that branch rather
+  than in the block below — before `zch2.11` an `<img>` reported nothing at
+  all.
+  **Invariant (`zch2.7`):** `visit` is reached ONLY for non-block-level nodes
+  — `contentOf` routes block-level children to `boxFor` — which is why the
+  three "computed and never read" reports (`inline-block`, `vertical-align`,
+  inline padding) need no display check. Those three have ZERO consumers
+  outside `cssprop.ts`'s table, so they get no backstop from the cascade's
+  unknown-property report, which fires only for a name outside the 43
+  longhands: without these they are silent by omission rather than by
+  decision. Only a STATED padding reports, since the initial is 0 on every
+  side and reporting the initial would put a record on every element in every
+  document.
+  **Note, and the difference is easy to get backwards:** `runlink.ts` emits
+  ONE `/Link` STRUCTURE element per linked run — two would have a screen
+  reader announce it twice — but one ANNOTATION per LINE the link occupies,
+  because a rect is a rectangle and a wrapped link is not. A test asserting
+  "one annotation for a link broken across a line" is asserting the wrong one
+  of those, and this repo's own plan for `zch2.6` did.
+  **Invariant:** an ATOMIC INLINE IS A MERGE BARRIER. An atomic records
+  `beforeRun: runs.length`, so the text after it must start a new run —
+  otherwise `a<img>b` merges into the single run `ab` whose index 0 the image
+  claims to precede, moving the picture to the front of the line. The two
+  texts are identically styled precisely when it bites.
+  **Invariant:** `resolveFamily` and `measure` are both INJECTED, the seam
+  `grayimage.ts` uses for `resolve`/`inflate`. `fontFamily` is a list of NAMES
+  and `TextRun.font` is an `AuthoringFont`, and bridging them needs
+  `Document.LoadFontByName`; shrink-to-fit needs `layoutRuns`. Either import
+  would put a font stack inside a pure leaf.
+  **Invariant:** margin collapsing combines the largest POSITIVE plus the most
+  NEGATIVE, NOT `Math.max`. 40px against −10px is 30px, and a document with no
+  negative margins cannot tell the two readings apart.
+  **Invariant, and the corpus found it when no hand-written test had:** an
+  EMPTY block's collapsed margin is spent ONCE. Such a block occupies no
+  vertical space, so its top and bottom margins are still adjoining everything
+  on both sides and the whole run is ONE margin; emitting it before the
+  zero-height box AND again after gives 60px where 30px is right. The unit
+  test asserted the same wrong pair, which is exactly why only an outside
+  answer could catch it.
+  **Invariant:** `collapseMargins` returns the gap BEFORE each box and always
+  0 for the first, whose own top margin escapes its parent under rule 2 —
+  counting it here as well would double the space above it. A box that does
+  NOT collapse (a float, a cleared box) contributes its own top margin and
+  combines with nothing on either side.
+  **Note:** clearance is a deliberate SIMPLIFICATION. Real clearance depends
+  on where the floats are, and a cleared box whose clearance turns out to be
+  zero would collapse in a browser; this module has no float positions, takes
+  the conservative reading that a cleared box never collapses, and leaves the
+  actual clearing to `floatstack.ts` through the `clear` `zch2.4` passes to
+  Flow.
+  **Note, measured, and it covers NOTHING here:** treating `height` as an
+  exact height rather than a MINIMUM cannot be expressed in this module at
+  all — `minHeight` is a number reported by `zch2.3` and CONSUMED by
+  `zch2.4`, which decides whether a box may exceed it. Held by that issue,
+  and noted on it.
+  **Note on the shape `zch2.4` depends on:** `flow.ts` ADDS
+  `spaceAfter + paragraphSpacing + spaceBefore` between consecutive elements
+  rather than collapsing, so `zch2.4` sets `paragraphSpacing: 0`, puts the
+  whole gap in `spaceBefore`, and zeroes every `spaceAfter`. Flow's additive
+  rule then reproduces the collapsed result exactly, with no change to Flow —
+  which is the whole premise of the epic.
+  **Note on the oracle, GENERATED rather than vendored:**
+  `scripts/gen-box-goldens.ts` drives headless Chrome and records exactly two
+  numbers per element — the used content width, and the collapsed gap to the
+  previous sibling. `getComputedStyle(el).width` IS the used CONTENT width
+  (measured: 770px for a block in an 800px container with 10px padding and 5px
+  borders, whose `getBoundingClientRect().width` is 800), and the sibling gap
+  is the ONLY way to observe collapsing at all — Chrome reports the SPECIFIED
+  margin through the CSSOM and never the collapsed one, so `zch2.2.3`'s
+  computed-style corpus could not have tested this rule set. The suite
+  compares CUMULATIVE offsets rather than per-sibling gaps, because a
+  zero-height box is not placed within the collapsed margin it sits in.
+  **Note on the ceiling, and it is the part a reader will get wrong:**
+  ABSOLUTE POSITIONS ARE OUTSIDE THE CORPUS, because we produce none. So are
+  floats, line breaking, inline geometry and clearance.
+  `test/fixtures/css-box/PROVENANCE.md` says so at the top.
+- **cssflow.ts**, **cssframe.ts** — the styled box tree lowered to
+  `FlowElement[]` (`zch2.4`). `cssflow.ts` is the mapper and owns nothing
+  else: it knows about columns, rects and pagination not at all, which is what
+  makes `zch2.5`'s three entry points one implementation — `mdflow.ts`'s shape
+  for `mdflow.ts`'s reason. `cssframe.ts` is the `BoxElement` decorator, its
+  own module because it PAINTS and so cannot be the pure leaf the four
+  `zch2.3` modules are; it imports the protocol from `flowelement.ts`, never
+  `flow.ts`, the split `flowblock.ts` already makes.
+  **Invariant:** resolution happens at BUILD time, against a width the caller
+  supplies — NOT at `place()` time, which `zch2.3`'s design proposed. Three
+  call sites read `spaceBefore` before `place()` ever runs
+  (`flowplace.ts:63`, `flow.ts:1298`, and `flow.ts:1330`'s keep-with-next
+  lookahead, which reads the NEXT element's), so a gap computed inside
+  `place()` can never reach the engine. Every entry point has a width: a Flow
+  knows its column width, `page.AddHtml` is given a rect.
+  **Invariant:** the collapsed gap goes ENTIRELY in `spaceBefore`, because
+  `flow.ts` ADDS `spaceAfter + paragraphSpacing + spaceBefore` rather than
+  collapsing. THE CALLER MUST PLACE WITH `paragraphSpacing: 0`. A fixture for
+  this needs TWO DIFFERENT GAPS in one list: a uniform list totals identically
+  under `spaceAfter` and cannot tell the readings apart.
+  **Invariant:** a wrapper ADDS its box's gap to the inner element's own
+  spacing rather than REPLACING it — `quote()`'s rule, and load-bearing in
+  both directions. The gaps BETWEEN a container's children are computed on
+  those children and ride on their own decorators, so a wrapper reporting only
+  its own reports 0 for every one of them and flattens the document; and
+  `list()` expresses item spacing the same way, so swallowing it flattens
+  every list. Measured: it shipped wrong and four cases caught it at once.
+  **Invariant:** CSS px → points (× 0.75) crosses HERE and nowhere else, and
+  it includes every `TextRun.fontSize` — `cssinline.ts` emits px because it
+  reads `ComputedStyle.fontSize` directly. Miss that one and all text renders
+  33% too large, which reads as a style choice rather than a fault.
+  **Invariant:** a container never holds and paginates its children, so a
+  block box lowers to ONE `BoxElement` per element its subtree produced. A
+  split box needs no special case and a nested box is the decorator wrapping
+  itself — `QuotedElement`'s shape.
+  **Invariant:** `insetTop` and the top border belong to the FIRST slice,
+  `insetBottom` and the bottom border to the LAST, and the side borders draw
+  on every slice. Drop the flags and a split box draws its top border twice
+  and its bottom never.
+  **Invariant, and it is the one the obvious implementation gets wrong:** a
+  box that does NOT end in this column owes NO bottom inset, and the room
+  reserved for it goes back to the content. The first build charged it on both
+  the slice that was `last` when it began AND on the continuation, so a split
+  box paid twice. The re-probe has a guard of its own: if the returned room
+  makes the content fit, the inset has nowhere to go and the box must still
+  split, so the narrower probe stands.
+  **Invariant:** the background and borders are painted BEFORE the inner
+  element draws, which is why `place()` measures first — `CodeBlockElement`'s
+  route, and for the same reason: paint after and the fill covers the text.
+  **Invariant:** `minHeight` is a MINIMUM and content taller than a stated
+  height makes the box taller. `zch2.3` reports the number and provably cannot
+  test the rule, so it lands here. A fixture whose content FITS measures
+  nothing — a clipping build and a growing build agree there.
+  **Invariant:** the shortfall is computed against a holder SHARED by every
+  decorator of one box, a continuation included. Per-element state pads each
+  slice to the full minimum, so a three-child 100pt box comes out 300. Third
+  instance of the pattern behind a list item's marker, a split table's
+  `TableTagger` and `QuoteStruct`.
+  **Note:** `measure()` IGNORES `minHeight` and so under-reports for such a
+  box — the padding reads the holder's running total, which a non-destructive
+  dry run must not touch. Its only consumer is keep-with-next.
+  **Invariant:** a heading is routed through `heading()` with the cascade's
+  font and size passed EXPLICITLY, so the builder's own defaults never
+  double-apply on top of the UA sheet's. What that buys is `/H1`..`/H6` and
+  `keepWithNextEligible`; under `paragraph()` both are SILENT losses, since
+  the rendering is identical. The level comes from the TAG — a DOM fact, since
+  no computed property says "this is a heading". **Note the fixture:** `h1`
+  cannot separate the two, the UA sheet's `2em` being 24pt and the builder's
+  default also 24pt; `h3` can, at `1.17em` = 14.04pt against a flat 14.
+  **Invariant:** a RUN of consecutive `display: list-item` siblings becomes
+  ONE `list()`, because `list()` owns the ordinal counter and one call per
+  item restarts it — every marker then reads `1.`. Nesting falls out of
+  `FlowListItem.blocks` rather than `items`, so there is one path rather than
+  two. Keying on `display: list-item` rather than the `ul`/`ol` tag is what
+  makes the property work on an arbitrary element, and it costs nothing.
+  **Invariant:** a construct that does not render names itself in `skipped`
+  and still contributes its text — `svgdraw.ts`'s rule, applied early here
+  because it is free. `'table'` LEFT the report in `zch2.6`, and that is
+  asserted directly: a construct leaving is worth pinning too, since a caller
+  reads the report to tell a dropped construct from an empty document.
+  **Invariant (`zch2.7`):** `skipped` is `NotRendered[]`, not `string[]` — see
+  `htmlreport.ts` for the record and the vocabulary. `describeNotRendered`
+  recovers the old flat strings for a caller that only logs. Markdown's
+  `skipped` stays `string[]`, and the ASYMMETRY IS DELIBERATE:
+  `NotRendered.el` is an `HtmlElement` and Markdown has `MdNode`, so a shared
+  type would carry a field always `undefined` for half its callers, and
+  Markdown is `gl6o`'s epic.
+  **Invariant (`zch2.7`, widened by `zch2.16`):** ORDER is by PHASE, then
+  document order within a phase — there are now THREE phases, and everything
+  found while BUILDING boxes precedes everything found while LOWERING them,
+  which in turn precedes everything found while PLACING them. Each of the
+  first two walks the whole tree; the third is the engine's, and its records
+  reach `skipped` only through the two entry points that place before they
+  return (`doc.AddHtml`, `page.AddHtml`). A true global
+  document order would need a preorder index on every element carried on
+  every record, for a guarantee no caller has asked for. Recorded as a
+  decision so it is not read as an oversight; the retrofit is cheap only
+  during `computeStyles`'s existing walk.
+  **Invariant (`zch2.6`):** a table's CAPTION is emitted BEFORE the table and
+  is resolved HERE rather than through `mapSiblings`, so that the table's own
+  collapsed gap lands on whichever of the two comes first — `mapSiblings`
+  zeroes the gap above its first box, which would drop it. Both halves are
+  pinned: charging the gap to neither and charging it to both each redden
+  exactly one case. **Note:** ORDER is asserted on the caption's y against the
+  first row's, because element COUNT cannot see it — a caption emitted after
+  the table still gives two elements.
+  **Invariant (`zch2.6`):** a LONE image renders as a figure; one sharing its
+  line with text is still reported, because `layoutRuns` cannot place an
+  atomic inside a line. "Lone" means no MEANINGFUL runs — but **note,
+  measured:** demanding `runs.length === 0` instead reddens NOTHING, because
+  `cssinline.ts` trims the context's outer edges and then filters every empty
+  run, so a lone atomic provably arrives with no whitespace run left. Two
+  redundant defences; breaking either alone proves nothing. What IS covered is
+  the multi-atomic guard: accepting more than one atomic renders the first and
+  silently loses the second.
+  **Invariant:** `resolveImage` is INJECTED and `data:` URIs need it not at
+  all — `datauri.ts` handles those. A src it declines is reported and the rest
+  of the document renders; `imageElement` catches `buildImageXObject`'s throw
+  for the same reason, since a mapper whose whole contract is that damage is a
+  value must not let one escape.
+  **Invariant (`zch2.11`):** `resolveImage` is asked ONCE per image. A LONE
+  image tries the block-figure path first, and when that fails it reports and
+  falls through to the text WITHOUT atomics — `atomicsOf` would otherwise ask
+  for the same src a second time. Invisible in the output, since the report
+  and the render are identical either way, but a resolver that fetches would
+  do the work twice. Found by an existing `zch2.6` case going red.
+  **Invariant (`zch2.11`):** an `<img>` among words is an ATOMIC and renders;
+  only one that will not resolve is still reported. A LONE image stays on the
+  block-figure path, so `zch2.6`'s rule is untouched. `atomicBox` does the CSS
+  sizing — stated `width`/`height` win, else the intrinsic pixels as CSS px,
+  aspect preserved when only one is stated — and the `x 0.75` crosses there,
+  once, which is why `imageembed.ts` exports `imageSize` (a header read, not a
+  decode) rather than this module building an XObject it may not touch.
+  **Note, measured, and the trap is that the obvious fixture tests something
+  else:** `mapSiblings` carries a gap forward across a box that produced no
+  ELEMENT, and an empty `<div>` does NOT exercise it — `cssmargin.ts` already
+  handles an empty block by pushing a 0 gap and continuing the pending run, so
+  that shape never reaches the carry and passes with it deleted. A ROW-LESS
+  TABLE is the fixture: `isEmpty` returns false for ANY table box
+  (cssmargin.ts:80), so a real gap is emitted against a box that then produces
+  nothing. That fixture was a SKIPPED table until `zch2.6` made tables render.
+  Both cases are in the suite, the `div` one labelled as `zch2.3`'s rule
+  reaching through.
+  **Note, measured and NOT covered:** a table's `clear` is passed to
+  `table()` and dropping it reddens nothing. Clearance only shows against a
+  float, and float PLACEMENT is `zch2.10`'s, so there is nothing to clear
+  past yet.
+  **Note:** the root box's escaped top margin is DROPPED. `body { margin: 8px }`
+  collapses up and out under rule 2, and both engines drop `spaceBefore` above
+  the first element anyway. Consistent with Flow, a divergence from a browser.
+  **Note on the oracle, and it is thinner than every CSS issue before it:**
+  there is NONE. `zch2.3`'s headless-Chrome corpus measures used widths and
+  collapsed gaps and stops short of anything positional; which builder a box
+  goes through, where the ink lands and how a split box frames itself are not
+  observable through `getComputedStyle` at all. Every rule here is held by a
+  hand-built case and a mutation — all ten reddened something. `zch2.5` is
+  where an end-to-end comparison becomes possible.
+- **csstable.ts** — a CSS `TableBox` to a `TableBuilder` (`zch2.6`). A pure
+  leaf: `cssbox.js`, `cssprop.js` and `textdecor.js` for types, `cssvalue.js`
+  for `fixedPx`, `tableauthor.js` for the builder and `bordersides.js` for the
+  edge flags — no `Document`, no PDF object module, no `node:` import, which
+  is what lets every rule be tested from a hand-built box tree. Nothing is
+  exported from `index.ts`.
+  **Invariant:** `toPt` and `scaleRuns` are INJECTED rather than computed
+  here, because CLAUDE.md records that the px → pt × 0.75 crosses in
+  `cssflow.ts` and NOWHERE else. A second site is a second thing to get wrong,
+  and `cssinline.ts` emits every `TextRun.fontSize` in px.
+  **Invariant:** it NEVER throws. A table it cannot build is `null` — which is
+  what a table with NO ROWS gets, since `TableBuilder` has no meaning with an
+  empty grid and `flowtable.ts` would index `grid[0]`. Every number handed to
+  the authoring layer is guarded first: `addCell` validates `fontSize` as
+  strictly POSITIVE and CSS admits `font-size: 0`, so `positive()` returns
+  undefined there and the builder's own default applies.
+  **Invariant:** only the LEADING run of header rows can go through
+  `setRepeatingRowsCount`, and a leading header cell then carries NO explicit
+  `header` — `CellOptions.header` already defaults to "cells in the
+  repeating-header rows are column headers", and saying both is two statements
+  that can drift (`mdflow.ts`'s rule). A header row ANYWHERE ELSE — a
+  `<tfoot>`'s `<th>` — gets an explicit `header: 'column'` instead, because
+  the repeating-header default provably cannot reach it.
+  **Invariant (`zch2.7`):** a NESTED table flattens its cells' text into the
+  outer cell and reports `table`/`degraded`. It was LOST outright from
+  `zch2.6` until `zch2.7` — `collectBox` returned early for a table box, so
+  `<td>outer<table>…INNER…</table></td>` drew only `outer`. A regression
+  against this epic's own rule, found by probing rather than by a test.
+  **Invariant:** a cell holding BLOCK content FLATTENS to its runs and is
+  reported once as `table-cell-blocks`. `addCell` takes `string | TextRun[]`,
+  so a cell containing a `<p>` and a `<ul>` cannot be represented; losing the
+  text instead would break the rule that a construct which does not render
+  still contributes what it has. A hard break separates sibling blocks —
+  without it `<td><p>alpha</p><p>beta</p></td>` reads `alphabeta`, which is
+  not a degraded rendering but a different word, and `addCell` already splits
+  a cell's text on a newline so it costs no new vocabulary.
+  **Invariant:** only `outerBorder` is seeded from the table's own border,
+  never `TableDefaults.border`. That field is the per-CELL default, so seeding
+  it would draw a grid where CSS draws one frame: `table { border: 1px }` says
+  nothing about `td`.
+  **Invariant:** a border edge's USED width is 0 when its style is `none` or
+  `hidden` (CSS 2.1 §8.5.3) — `cssresolve.ts`'s rule, and it bites here for
+  the same reason: the initial `border-style` is `none` while the initial
+  `border-width` is `medium` (3px), so a cell that states no border would
+  otherwise be drawn boxed. `BorderInfo` carries ONE width and ONE colour plus
+  per-edge flags, so four edges that DIFFER collapse to the first painted one
+  — a limitation of the authoring type rather than a dropped construct, hence
+  documented rather than reported per cell.
+  **Note:** CSS column widths are a follow-up; `autoFitColumns()` is what runs
+  today. Mixing stated and auto columns is what `resolveColumnWidths`'s
+  `ColumnWidth` specs are for, and guessing silently mis-sizes every column
+  rather than failing.
+  **Note, measured:** all eleven mutations aimed at this module redden
+  something, the border rule included — the plan predicted that one would be
+  uncovered, and `test/csstable.test.ts`'s "paints the edges a cell border
+  states and no others" closes it.
+- **datauri.ts** — decoding a `data:` URI's payload (`zch2.6`). A pure leaf
+  importing NOTHING.
+  **Invariant:** it never throws — a payload it cannot decode is `undefined`,
+  including a malformed one, which is a destination we cannot resolve rather
+  than an error.
+  **Invariant:** ONE owner. `mdflow.ts` held this privately and `cssflow.ts`
+  needed it too; two copies is how they would come to disagree about one
+  payload. The extraction `colornames.ts`, `preformat.ts` and
+  `bordersides.ts` each already made — and the move kept the identifier name
+  so `mdflow.ts`'s one call site did not change, with
+  `test/markdown-flow.test.ts` as the fence that it moved nothing.
+- **htmlflow.ts**, **cssfont.ts** — the three HTML entry points (`zch2.5`) and
+  the font bridge under them. `htmlflow.ts` is `htmlElements`, the one
+  implementation `flow.AddHtml`, `page.AddHtml` and `doc.AddHtml` all wrap —
+  `mdflow.ts`'s shape for `mdflow.ts`'s reason. `cssfont.ts` is the
+  `FamilyResolver` every module below deferred here, and it is the ONLY module
+  in the CSS stack allowed to import `document.js`.
+  **Invariant:** `htmlElements` takes a `Document` and a WIDTH where
+  `markdownElements` takes neither, and both are forced. Fonts come from
+  `LoadFontFamily`; and `zch2.4` resolves boxes at BUILD time, so the width
+  must be known then. A Markdown element carries no resolved geometry and is
+  width-independent until it places.
+  **Invariant:** the width is POSITIONAL, not an option, so no caller of the
+  three entry points passes one — the flow supplies `columnWidth`, the page
+  `rect[2]`, the document by building a `Flow`. A width in the shared options
+  bag could be passed twice and disagree.
+  **Note, measured, and it is the trap when testing any of this:** an HTML
+  test that measures TEXT WRAPPING cannot see the build width at all, and
+  stays green with the wrong number handed to the mapper. `BoxElement` derives
+  its inner width from the PLACEMENT context — deliberately, so a caller
+  handing a different width degrades rather than overflowing — so wrapping is
+  placement-driven. What the build width decides is PERCENTAGE resolution, so
+  a `margin-left: 25%` is the fixture that sees it. Both width mutations
+  reddened NOTHING against wrapping fixtures and exactly one case each after
+  the rewrite.
+  **Invariant:** the option bag is `HtmlFlowOptions`, NOT `HtmlOptions` —
+  `html.ts` already exports that for `ToHtml`, the opposite direction. The
+  collision `mdexport.ts` records for `MarkdownExportOptions`, and it is a
+  compile error only because both are exported from `index.ts`.
+  **Invariant:** `LoadFontFamily` is REUSED rather than reimplemented, and it
+  fits exactly: it already walks a family chain and returns
+  `{ regular, bold?, italic?, boldItalic? }`, structurally identical to
+  `MarkdownFontFamily` — no coincidence, since its own docs say the result is
+  ready for `AddMarkdown({ style: { font } })`. Feeding it to
+  `mdstyle.resolveFamily` keeps ONE owner for "an unstated face falls back to
+  regular".
+  **Invariant:** a generic keyword is NEVER offered to `LoadFontFamily` — no
+  installed family is called `serif` — and the FIRST generic in the list wins.
+  **Note, and it will read as a regression:** a plain `<p>` renders in TIMES,
+  not Helvetica. The UA sheet declares `html { font-family: serif }` and
+  `font-family` inherits, so `serif` is what an unstyled document computes.
+  Browser-correct; every `zch2.4` test stubbed Helvetica for every list and so
+  cannot see it.
+  **Note:** an unresolvable named family in a list with NO generic falls back
+  to sans-serif. `font-family: Garamond` alone admits no principled answer, and
+  a name-to-class table can never be complete — the shape `rebuild.ts` already
+  rejects for identifying `/Info`. Asserted directly so it stays a decision.
+  **Invariant:** the resolver is memoized per DOCUMENT (a `WeakMap`) and its
+  answers per family list, keyed on the list joined by **NUL**. `buildBoxes`
+  asks once per element. Per document rather than globally because a resolver
+  closes over that document's registered folders, so sharing one would leak
+  one document's fonts into another; and NUL rather than a space because under
+  a space `['Alpha', 'Sans']` and `['Alpha Sans']` key IDENTICALLY — a
+  two-family chain against one two-word family, which resolve differently.
+  **Invariant:** the `<title>` default is `doc.AddHtml`'s ALONE.
+  `Flow.AddHtml` and `Page.AddHtml` append to a document whose title is someone
+  else's business — `doc.AddMarkdown`'s own stated rule, and why it is the only
+  one of the three that accepts `title`. An explicit option always wins, and a
+  BLANK `<title>` yields undefined rather than `''`: `SetMetadata({ title: '' })`
+  would write an empty `/Info /Title`, worse than leaving the document's own
+  alone.
+  **Invariant:** `doc.AddHtml` parses ONCE and hands the tree to
+  `flow.AddHtml`, which is what `src: string | HtmlDocument` is for. It reads
+  the title from the same tree the flow lowers.
+  **Invariant:** THE CALLER MUST PLACE WITH `paragraphSpacing: 0`. Measured:
+  both `normalizeFlowOptions` and `page.AddMarkdown`'s own option already
+  default it to 0, so the contract holds for everyone who says nothing; a
+  caller who sets it gets it added between every HTML element too, which is
+  their statement and is documented rather than overridden.
+  **Invariant (`zch2.6`):** `HtmlFlowOptions.resolveImage` takes HTML's
+  `(src, alt)` where `mdflow.ts`'s takes Markdown's `(destination, title)` —
+  the same PATTERN, deliberately not the same arity, since the two formats
+  name different things. It is validated as a function at the entry point, as
+  `resolveFamily` already is, and a `data:` URI needs it not at all.
+  **Note on the oracle:** the equivalence test compares EXTRACTED TEXT, not
+  geometry. It proves the three share a mapper; it says nothing about whether
+  the mapping is right, which is `zch2.4`'s question and is held there by
+  hand-built cases with no oracle at all. All twelve mutations here reddened
+  something.
 - **markdown.ts**, **mdast.ts**, **mdblock.ts**, **mdinline.ts**, **mdscan.ts**,
   **mdentity.ts**, **mdtable.ts**, **mdgfm.ts** — CommonMark 0.31.2 parsing
   (`parseMarkdown`), the spec's
@@ -870,6 +2677,72 @@ Source (`src/`):
   **Invariant:** all four edges keep the single `re` shorthand. That is what
   makes an unset `sides` byte-identical to a border written before the option
   existed, in both consumers.
+- **textcoverage.ts** — what of a piece of text the resolved face cannot draw
+  (`zch2.14`). A pure leaf: `encoding.js` and `embeddedfont.js` by value,
+  `AuthoringFont`/`TextRun`/`FontDriver` as types — the shape `textdecor.ts`
+  already has. It never throws, and `undefined` means fully drawable.
+  **Invariant:** the per-character question goes through each owner's OWN
+  predicate (`EmbeddedFont.probe`, `encodeWinAnsi`), never a reach-through to
+  `font.sfnt.cmapLookup` — which `stamp.ts` does and a leaf should not.
+  **Invariant:** `\n`, `\r` and `\t` are EXCLUDED, and that is the feature
+  rather than a detail. Measured: `encodeWinAnsi` drops all three, so `a\nb`
+  probes 2 of its 3 codepoints and every code block and every hard-broken
+  paragraph in every document would carry a `degraded` record.
+  **Invariant:** a SHAPED block gets the all-or-nothing answer only. A shaper
+  legitimately consumes joiners and format characters, so a per-character scan
+  reports loss where the shaper did its job.
+  **Invariant, and the two are NOT one function:** `coverageOf` skips
+  structure because it answers "what did the author ask for that will not
+  appear"; `drawsNothing` counts it because it answers the painter's "will any
+  bytes be emitted", for which a lone newline IS nothing. Collapsing them
+  sends an empty line to the painter and moves bytes.
+  **Invariant:** `lost` is DISTINCT characters, capped at 32. A page of
+  Cyrillic must not become a report field.
+- **textextents.ts** — max-content and min-content widths of a piece of text
+  (`zch2.10`). A pure leaf, extracted from `tableauthor.ts` because a CSS
+  float's shrink-to-fit asks the same question a table column's auto-fit does,
+  and two copies is two answers to "how wide does this content want to be".
+  **Invariant:** LINES rather than the whole string. `addCell` takes arbitrary
+  text and `mdruns.ts` maps a hard break to `'\n'`, so measuring across one
+  would demand a box wide enough for every line at once.
+  **Invariant:** words are found on the CONCATENATED run text, because a word
+  may span a run boundary (`**bold**text` is one word) — the rule `layoutRuns`
+  already uses for break opportunities — while each piece is still measured at
+  its own run's font. Only U+0020 and `'\n'` break, so the U+00A0 a code block
+  paints for indentation keeps its line intact.
+  **Invariant:** its measuring driver records NO glyph usage (`encode` returns
+  empty bytes, which measurement ignores), so asking how wide an embedded font
+  wants to be does not retain glyphs for text that may never be drawn.
+  **Note:** `measuringDriverFor` is DUPLICATED here and in `tableauthor.ts`,
+  which keeps its own because two more callers there (its row-height walk) need
+  it. Six lines, and not a rule that can drift — a driver that measures like the
+  real font and encodes nothing is those six lines in both places or it is
+  broken in one, which its own callers show immediately.
+  **Invariant:** the sink is CONSUMED by whoever detects and never forwarded.
+  The builders (`paragraph`, `heading`, `list`, `codeBlock`) detect at BUILD
+  time; `stampText`/`stampTextBlock` detect for a DIRECT page-level draw, where
+  the call IS the paint; and `flowTextBlock`/`measureTextBlock`/`wrapLines`
+  detect NOTHING, because the engine measures speculatively many times per
+  element. `table()` and `page.AddTable` are the two table sites — a cell's
+  font comes from `resolveCellStyle`'s cascade and never reaches a flow builder.
+  **Note, measured, and TWO of the ten mutations were redundant defences:**
+  `paragraphOptions`'s field WHITELIST is said to be what stops a flowed
+  paragraph reporting twice — but forwarding `onUndrawable` through it reddens
+  NOTHING, because `flowTextBlock` does not fire the sink at all. Adding a fire
+  there reddens one case. Two defences for one rule; breaking either alone
+  proves nothing, and do not "simplify" either away.
+  **Note, measured, and UNOBSERVABLE rather than merely uncovered:** `codeBlock`
+  reports the PREFORMATTED text, since that is what reaches the driver — but
+  judging the raw text instead reddens nothing, and cannot. `preformat` changes
+  only spaces (to U+00A0) and tabs; tabs are excluded as structure either way,
+  and every face this suite has encodes space and U+00A0 alike (measured, for
+  Helvetica and the embedded Type 1). A font with a glyph for space and none
+  for U+00A0 would separate them; none is vendored.
+  **Note:** the per-run rule needs TWO faces of DIFFERENT coverage, so it cannot
+  be built from the Standard-14 set — all 12 share one WinAnsi table. U+0131
+  (dotless i) is the discriminator: WinAnsi has no code for it and
+  `NimbusSans-Regular.t1` does. The first fixture for this rule used two
+  Standard-14 faces and measured nothing.
 - **toc.ts**, **tocrender.ts**, **tocstruct.ts** — table of contents
   (`page.AddTOC`), split exactly like tableauthor/tablerender: `toc.ts` is the
   model, validation and measurement (it reads the `Document` for two read-only
@@ -966,6 +2839,70 @@ Source (`src/`):
   and `AddBatesNumbering` (position anchors, `{page}`/`{bates}`/date templates)
   across a page selection resolved by `pagerange.ts` (an explicit 1-based list or
   a `"1-5,8,12-"` range string).
+- **svgserialize.ts** — an inline `<svg>` subtree back to XML markup
+  (`zch2.12`). A pure leaf over `htmldom.js` and `htmlforeign.js` that never
+  throws. Note the DIRECTION: this is HTML DOM → markup so the SVG IMPORTER can
+  read it, and it shares no code with `htmlsemantic.ts` (PDF → HTML) or
+  `svgrender.ts` (PDF → SVG).
+  **Why it exists:** `addSvgObject` takes SOURCE BYTES and `svgdraw.ts` walks an
+  `xml.ts` tree, while the HTML parser produced `HtmlElement`s. There is no path
+  between them, so "render it through the existing importer" needs this step —
+  which `zch2.12`'s issue treated as free.
+  **Invariant:** it UNDOES two tree-construction adjustments, both silent when
+  missed. An adjusted foreign attribute is stored under a DISPLAY key with a
+  SPACE (`xlink href`, `htmlforeign.ts:87`), which is not a name `parseXml` can
+  read; and element and attribute names are ALREADY case-adjusted
+  (`linearGradient`, `viewBox`), so they are emitted AS STORED — lower-casing
+  them, the obvious move when writing XML from an HTML DOM, breaks every
+  gradient and every viewBox.
+  **Note:** no `xmlns` is added, verified against the real importer rather than
+  assumed — `page.AddSVGObject` renders namespace-less markup, because
+  `parseXml` strips namespace prefixes and `svgembed.ts` checks the root name
+  only. Adding one would make this a rewrite rather than a round trip.
+  **Note:** the output is validated by its CONSUMER. `parseXml` is strict, so a
+  serializer bug surfaces as a `PdfParseError` at the parse rather than as a
+  silently wrong drawing — which is why the round trip is the test that matters.
+  **Invariant (`zch2.12`):** an inline `<svg>` is an ATOMIC, not a box kind.
+  It is `display: inline` by DEFAULT, so it never reaches `cssbox.ts`'s
+  `boxFor` — `visit` handles non-block-level nodes and only block-level
+  children are routed there. A first attempt added a block box kind and
+  produced NO box whatsoever for a top-level `<svg>`: body came back with no
+  children and an empty report. `AtomicInline.kind` is `'image' | 'svg'`, and
+  BOTH walks produce the same atomic — `cssinline.ts` for the inline case,
+  `cssbox.ts` for a `display: block` one, which must NOT walk its children
+  because that is exactly the leak `zch2.7` closed.
+  **Invariant:** `renderSvg` is INJECTED into `cssflow.ts` and called at BUILD
+  time. Build time is the whole point: the importer reports what it could not
+  draw only when it imports, and `AddHtml` hands `skipped` back before anything
+  is placed — `zch2.14`'s timing limit. Both of its lists fold in as
+  `construct: 'svg'`, `dropped` when nothing imported and `degraded` otherwise;
+  rasterization is `degraded` because it is resolution-bound and its text stops
+  being extractable, which is "drawn, but not as specified".
+  **Invariant:** `svgFigure` lives in `cssframe.ts` because it PAINTS — the
+  split that module already makes for `BoxElement` — and a figure NEVER splits:
+  too tall for the column means the next column.
+  **Note, measured:** 9 of 12 mutations aimed at these rules redden. Four
+  needed the sizing fixtures REBUILT first: rewriting the box test for the
+  atomic shape dropped four of the five measured sizing rows, so attribute
+  widths, CSS precedence, the percentage rule and the px→pt conversion were all
+  unmeasured for a while.
+  **Note, measured and NOT covered — three, each recorded rather than
+  removed.** Dropping the `svg` row from `elementPolicy` reddens NOTHING: both
+  walks intercept an `<svg>` BEFORE the policy is consulted, so the row was
+  already dead. It stays removed because leaving it would claim `<svg>` is
+  suppressed when it is not, and would silently re-suppress if the interception
+  ever moved. `buildSvgForm` ignoring its `size` argument reddens nothing
+  either — the size reaches only `resolveViewBox`'s fallback (an `<svg>` with
+  neither a viewBox nor width/height attributes) and a rasterized filter's
+  device scale, and no fixture asserts either. And the `svg`/`dropped` report
+  for a failed import is unreached: no input was found that the serializer
+  produces and `parseXml` then refuses, so that path is defensive.
+  **Note on the oracle, and it is NONE:** the sizing table is measured against
+  Chrome/152 and lives in the spec, but it is NOT in
+  `test/fixtures/css-box/`. Five fixtures were added there, regenerated, and
+  then found to pin nothing — an `<svg>` is an atomic, so the harness produces
+  no row for it and its `if (mine === undefined) continue` skips every one.
+  They were reverted; `test/fixtures/css-box/PROVENANCE.md` records why.
 - **svgembed.ts**, **svgdraw.ts**, **svgpath.ts**, **svgstyle.ts**,
   **svgcss.ts**, **svgtransform.ts**, **svggradient.ts**, **svgpattern.ts**,
   **svgmask.ts**, **svgmarker.ts**, **svgtext.ts**, **svgtextpath.ts**,
@@ -3513,7 +5450,28 @@ Source (`src/`):
   **Invariant:** it throws `UnsupportedFeatureError` on a signed document, which
   converting would invalidate.
 - **linearize.ts** — linearized (Fast Web View) output + `verifyLinearization`.
-- **node.ts** — file-based convenience wrappers. **index.ts** — public exports.
+- **node.ts** — file-based convenience wrappers, and the only module that
+  reaches `node:fs` on behalf of a caller. Every wrapper but one is PDF-in;
+  `htmlFileToPdf` (`zch2.8`) is the exception and the only entry point in the
+  library that reads HTML from a file.
+  **Invariant:** it resolves a relative `<img src>` from the input's own
+  directory and CONFINES it there — a URL scheme, an absolute path, and
+  anything that climbs out with `..` are refused, and a refused src lands in
+  `skipped` like any other construct that did not render. The `..` test runs
+  AFTER resolution, since `a/../../b` escapes while starting with neither `/`
+  nor `..`. A caller-supplied `resolveImage` wins outright, so the default is
+  a convenience rather than a policy.
+  **Note, measured, and it covers NOTHING:** deleting the URL-SCHEME test
+  reddens no case. `resolve(base, 'https://…')` lands INSIDE `base` (a
+  directory named `https:`), so the confinement admits it and the read then
+  fails only because no such file exists — the same `undefined`, by luck. It
+  stays because "no file is there" is not a safety property, and a colon is
+  illegal in a Windows filename so no portable fixture can separate the two.
+  **Invariant:** `encoding` and `resolveImage` are destructured OUT before the
+  rest of the options are forwarded to `AddHtml` — the rule `textedit.ts`
+  already records for `region`, so a key this module owns cannot reach a
+  consumer that would silently accept it.
+  **index.ts** — public exports.
 
 Tests live in `test/` (vitest). Most fixtures are built programmatically by the
 builders in `test/helpers/`, which keeps the suite hermetic and readable.
@@ -3540,6 +5498,9 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |
 | `fixtures/commonmark/` | `PROVENANCE.md` | The official CommonMark 0.31.2 suite — 652 examples, run with no allowlist through the test-only oracle in `test/helpers/md-html.ts` |
 | `fixtures/gfm/` | `PROVENANCE.md` | GitHub's own `spec.txt` — the 24 examples tagged with an extension name. The other 648 are a CommonMark **0.29** document and are deliberately not run |
+| `fixtures/html5lib/` | `PROVENANCE.md` | The official html5lib-tests tokenizer suite — 6,995 of 7,033 cases over every state, both character-reference spellings, and the parse-error vocabulary with positions. The suite browser engines share, so it catches the class our own builders cannot: it CORRECTED two position rules this repo had asserted the wrong way round in its own tests. Since `zch2.9` it is also the STALE half of a spec disagreement: 38 cases assert the pre-#12118 reading of `<?`, this pin is one day newer than that merge and upstream is dormant, so they are excluded by a computed predicate |
+| `fixtures/css-parsing/` | `PROVENANCE.md` | CSS Syntax 3's conformance corpus, from CourtBouillon — 149 cases in 8 files, all run with no allowlist. Records a SPEC-ERA decision: the corpus still tokenizes `unicode-range` and the match tokens, which the current editor's draft removed, and we follow the corpus. Records two places the corpus README contradicts its own data, where the data wins. Caught five rules the plan did not name, three of them invisible to a diff of serialized output |
+| `fixtures/wpt/` | `PROVENANCE.md` | The HTML tree-construction corpus, from web-platform-tests — html5lib-tests no longer carries it. 1,936 cases in asserted buckets, 1,918 run here. It CORRECTED the spec reading this issue was designed against: there is no "in select" insertion mode and no select scope any more. Since `zch2.9` it is the corpus we FOLLOW on processing instructions — whatwg/html#12118 merged 2026-06-25 and this pin postdates it, where the html5lib tokenizer pin does not. One disagreement is left and is PERMANENT, over `<selectedcontent>`, whose expected tree holds text the element clones in rather than the parser — confined to the TREE, since `4h3p` measured that the render already draws what Chrome shows |
 
 Two rules apply to these, both learned the hard way:
 

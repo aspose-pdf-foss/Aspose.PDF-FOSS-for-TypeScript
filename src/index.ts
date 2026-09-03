@@ -124,6 +124,17 @@ export { markdownElements } from './mdflow.js';
 export type {
   MarkdownFlowOptions, MarkdownElements, MarkdownResult, AddMarkdownResult,
 } from './mdflow.js';
+// --- HTML rendering (zch2.5) ---
+export { htmlElements } from './htmlflow.js';
+export type {
+  HtmlFlowOptions, HtmlFlowResult, HtmlElements, AddHtmlResult,
+} from './htmlflow.js';
+// The unrenderable-construct report (zch2.7). `describe` is renamed on
+// export because the bare name collides with vitest's and with any caller's
+// own; describeNotRendered says what it describes.
+export { describe as describeNotRendered, CONSTRUCTS } from './htmlreport.js';
+export type { NotRendered, Construct, ElementPolicy } from './htmlreport.js';
+
 export { resolveMarkdownStyle, resolveFamily, faceFor } from './mdstyle.js';
 export type {
   MarkdownStyle, MarkdownFontFamily, MarkdownFontSpec, ResolvedFamily,
@@ -235,3 +246,22 @@ export type {
   MdText, MdSoftBreak, MdHardBreak, MdEmph, MdStrong, MdCode, MdLink, MdImage, MdHtmlInline,
   MdAlign, MdTable, MdTableRow, MdTableCell, MdStrikethrough,
 } from './mdast.js';
+
+// ---- HTML parsing (zch2.1) ------------------------------------------------
+//
+// parseHtml alone. parseHtmlFragment is implemented and fully tested but not
+// exported: nothing in this epic can call it, since zch2.5's entry points take
+// a PDF target rather than an HTML element and so have no context to pass.
+// The mutation helpers stay internal too — a caller reading a parse result
+// does not need them, and exporting them would commit this library to a
+// DOM-editing API before anyone has asked for one.
+// zch2.8 adds parseHtmlBytes as a SIBLING rather than widening parseHtml's
+// signature: parseHtml is what the 8,862 vendored cases anchor and it keeps
+// taking a string. The sniffing helpers in htmlencoding.ts stay internal —
+// they are how the entry point works, not a vocabulary a caller needs.
+export { parseHtml, parseHtmlBytes } from './htmltree.js';
+export type { ParseHtmlBytesOptions } from './htmltree.js';
+export type {
+  HtmlNode, HtmlDocument, HtmlElement, HtmlFragment,
+  HtmlText, HtmlComment, HtmlProcessingInstruction, HtmlDoctype, HtmlNamespace,
+} from './htmldom.js';

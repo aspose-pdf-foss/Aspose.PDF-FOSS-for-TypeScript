@@ -19,9 +19,11 @@ import {
   paragraph, heading, list, image, type FlowListItem, type FlowListNode,
 } from './flow.js';
 import { codeBlock, quote, rule } from './flowblock.js';
+import type { Undrawable } from './textcoverage.js';
 import { table } from './flowtable.js';
 import { createTable, type TableBuilder } from './tableauthor.js';
 import { inlineRuns, plainText } from './mdruns.js';
+import { decodeDataUri } from './datauri.js';
 import { resolveMarkdownStyle, type MarkdownStyle, type ResolvedMarkdownStyle } from './mdstyle.js';
 
 /** Options for the Markdown entry points. Extends {@link MarkdownOptions}, so
@@ -66,6 +68,13 @@ interface Ctx {
   skipped: string[];
 }
 
+/** The Markdown presentation of an undrawable block. `skipped` is a flat
+ *  string list by decision (zch2.7 kept it that way), so the dropped/degraded
+ *  distinction becomes two strings rather than a `kind` field. */
+function undrawableSink(c: Ctx): (u: Undrawable) => void {
+  return (u) => { c.skipped.push(u.all ? 'text' : 'text:partial'); };
+}
+
 /** The single image a paragraph consists of, ignoring surrounding whitespace and
  *  soft breaks; undefined for a paragraph that holds anything else. This is the
  *  shape every Markdown author means as a figure. */
@@ -74,22 +83,6 @@ function loneImage(children: MdInline[]): MdImage | undefined {
     n.type !== 'softbreak' && !(n.type === 'text' && n.value.trim() === ''));
   return meaningful.length === 1 && meaningful[0].type === 'image'
     ? meaningful[0] : undefined;
-}
-
-/** Decode a `data:` URI's payload. Returns undefined for anything else —
- *  including a malformed one, which is a destination we cannot resolve, not an
- *  error. */
-function decodeDataUri(dest: string): Uint8Array | undefined {
-  const comma = dest.indexOf(',');
-  if (!dest.startsWith('data:') || comma < 0) return undefined;
-  const meta = dest.slice(5, comma);
-  const payload = dest.slice(comma + 1);
-  try {
-    if (/;base64$/i.test(meta)) return new Uint8Array(Buffer.from(payload, 'base64'));
-    return new TextEncoder().encode(decodeURIComponent(payload));
-  } catch {
-    return undefined;
-  }
 }
 
 /** An image block for `n`, or undefined when its bytes cannot be had or decoded.
@@ -127,6 +120,7 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
         font: c.st.family.regular, fontSize: c.st.fontSize, color: c.st.color,
         leading: c.st.leading, align: c.st.align,
         spaceBefore: extraBefore, spaceAfter: c.st.paragraphSpacing,
+        onUndrawable: undrawableSink(c),
       });
   }
   const runs = inlineRuns(n.children, c.st, { family: c.st.family, fontSize: c.st.fontSize },
@@ -139,6 +133,7 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
     align: c.st.align,
     spaceBefore: extraBefore,
     spaceAfter: c.st.paragraphSpacing,
+    onUndrawable: undrawableSink(c),
   });
 }
 
@@ -153,6 +148,7 @@ function headingElements(n: MdHeading, c: Ctx, extraBefore: number): FlowElement
     align: c.st.align === 'justify' ? 'left' : c.st.align,
     spaceBefore: c.st.heading.spaceBefore + extraBefore,
     spaceAfter: c.st.heading.spaceAfter,
+    onUndrawable: undrawableSink(c),
   });
 }
 
@@ -168,6 +164,7 @@ function codeElements(n: MdCodeBlock, c: Ctx, extraBefore: number): FlowElement[
     padding: c.st.code.padding,
     spaceBefore: c.st.code.spaceBefore + extraBefore,
     spaceAfter: c.st.code.spaceAfter + c.st.paragraphSpacing,
+    onUndrawable: undrawableSink(c),
   });
 }
 
@@ -217,6 +214,7 @@ function listElements(n: MdList, c: Ctx, extraBefore: number): FlowElement[] {
     itemSpacing: n.tight ? c.st.list.itemSpacing : c.st.paragraphSpacing,
     spaceBefore: c.st.list.spaceBefore + extraBefore,
     spaceAfter: c.st.list.spaceAfter + c.st.paragraphSpacing,
+    onUndrawable: undrawableSink(c),
   });
 }
 
@@ -290,11 +288,13 @@ function blockToElements(n: MdBlock, c: Ctx, extraBefore: number): FlowElement[]
         spaceBefore: c.st.quote.spaceBefore + extraBefore,
         spaceAfter: c.st.quote.spaceAfter + c.st.paragraphSpacing,
       });
-    case 'table':
+    case 'table': {
       return table(mdTable(n, c), {
         spaceBefore: c.st.table.spaceBefore + extraBefore,
         spaceAfter: c.st.table.spaceAfter,
+        onUndrawable: undrawableSink(c),
       });
+    }
     // Raw HTML is out of scope by design (mdast.ts has recorded that since
     // gl6o.1); it names itself rather than vanishing.
     case 'html_block': c.skipped.push('html_block'); return [];

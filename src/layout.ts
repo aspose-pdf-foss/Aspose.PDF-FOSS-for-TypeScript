@@ -1,6 +1,7 @@
 import { encodeWinAnsi } from './encoding.js';
 import { measure, StdFont } from './metrics.js';
 import { lineBreakOpportunities, LBRK } from './linebreak.js';
+import { lineBox, type LineItem } from './linebox.js';
 
 /** A font abstraction the layout/stamping engine measures and encodes through,
  *  letting one code path flow Standard-14 (1-byte WinAnsi) and embedded
@@ -26,15 +27,35 @@ export function winAnsiDriver(font: StdFont): FontDriver {
   };
 }
 
-/** One run as the layout engine sees it: already resolved to a driver and a
- *  size. layout.ts never learns what an AuthoringFont is — stamp.ts owns that
+/** A box occupying width in a line without contributing characters — an image.
+ *  @internal */
+export interface AtomicBox {
+  width: number;
+  height: number;
+  /** `baseline` puts its bottom on the baseline; `top`/`bottom` align it to
+   *  the line band. `middle` is deliberately absent — CSS defines it against
+   *  half the x-height, which the AFM tables do not expose. */
+  align: 'baseline' | 'top' | 'bottom';
+}
+
+/** One TEXT run as the layout engine sees it: already resolved to a driver and
+ *  a size. layout.ts never learns what an AuthoringFont is — stamp.ts owns that
  *  resolution, and owning it in one place is what keeps a block from being
  *  measured one way and painted another.
  *  @internal */
-export interface LayoutRun {
+export interface TextLayoutRun {
   text: string;
   driver: FontDriver;
   fontSize: number;
+}
+
+/** One atomic run — a box among the text. @internal */
+export interface AtomicLayoutRun { atomic: AtomicBox }
+
+export type LayoutRun = TextLayoutRun | AtomicLayoutRun;
+
+export function isAtomicRun(r: LayoutRun): r is AtomicLayoutRun {
+  return (r as AtomicLayoutRun).atomic !== undefined;
 }
 
 /** The piece of one laid line contributed by one run.
@@ -45,6 +66,10 @@ export interface LaidSegment {
   text: string;
   width: number;
   bytes: Uint8Array;
+  /** Present for an atomic segment, whose `text` is '' and `bytes` empty. The
+   *  emitter draws the box and advances the pen; every consumer that walks
+   *  segments for GEOMETRY already advances by `width` and needs no change. */
+  atomic?: AtomicBox;
 }
 
 /** A piece of unconsumed text, tagged with the run it came from.
@@ -66,13 +91,18 @@ export interface LaidLine {
   hardBreak: boolean;
   /** The line split at run boundaries, in order. Never empty for a non-empty line. */
   segments: LaidSegment[];
-  /** Largest `fontSize` among the runs with text on this line; the block's own
-   *  size for a line with no text. The baseline sits this far below the line's
-   *  band top, which is what keeps an oversized run inside the box. */
+  /** The line's ASCENT: how far below the band top its baseline sits, which is
+   *  what keeps an oversized run inside the box. The largest font size among
+   *  the runs with text, or a baseline-aligned atomic's height when that is
+   *  larger; the block's own size for a line with neither.
+   *
+   *  Named `maxFontSize` from before zch2.11 gave it the second meaning. The
+   *  name is KEPT because four modules read it and a rename is churn with no
+   *  test behind it. */
   maxFontSize: number;
-  /** This line's band height: `max(leading, maxFontSize * leading / fontSize)`.
-   *  The `max` collapses to `leading` for every line whose runs sit at or below
-   *  the block size, which is what makes every existing caller byte-identical. */
+  /** This line's band height, from linebox.ts. Collapses to
+   *  `max(leading, maxFontSize * leading / fontSize)` for every line with no
+   *  atomic, which is what makes every existing caller byte-identical. */
   height: number;
 }
 
@@ -149,19 +179,39 @@ function breakOverwideWord(
  *  the rest as a re-flowable `remainder`.
  *  @internal */
 export function layoutRuns(
-  runs: LayoutRun[], boxWidth: number, boxHeight: number,
+  runs: readonly LayoutRun[], boxWidth: number, boxHeight: number,
   leading: number, blockFontSize: number,
 ): RunLayoutResult {
+  // An atomic wider than the box scales BOTH dimensions down — the rule
+  // flow.ts's image() already applies to a block image, so it is one rule
+  // rather than two. It happens here because this is the only place that
+  // knows boxWidth, and the CLAMPED height is what the band must see.
+  //
+  // A fresh array and fresh objects: stamp.ts reuses the same
+  // ResolvedRun.layout objects for segmentBoxes and the painter, so writing
+  // through would resize the image on every re-flow.
+  const scaled: LayoutRun[] = runs.map((r) => {
+    if (!isAtomicRun(r) || r.atomic.width <= boxWidth || r.atomic.width <= 0) return r;
+    const k = boxWidth / r.atomic.width;
+    return { atomic: { ...r.atomic, width: boxWidth, height: r.atomic.height * k } };
+  });
+
+  // U+FFFC OBJECT REPLACEMENT CHARACTER, which is what Unicode defines it for.
+  // One character per atomic is what lets the whole index-based walk below —
+  // units, the UAX #14 search, piecesOf and the remainder — work unchanged.
+  const OBJ = '￼';
+
   // The concatenated run text, plus the run each character came from.
   let text = '';
-  for (const r of runs) text += r.text;
+  for (const r of scaled) text += isAtomicRun(r) ? OBJ : r.text;
   if (text === '') return { lines: [], remainder: [] };
   const owner = new Uint32Array(text.length);
   {
     let at = 0;
-    for (let i = 0; i < runs.length; i++) {
-      owner.fill(i, at, at + runs[i].text.length);
-      at += runs[i].text.length;
+    for (let i = 0; i < scaled.length; i++) {
+      const n = isAtomicRun(scaled[i]) ? 1 : (scaled[i] as TextLayoutRun).text.length;
+      owner.fill(i, at, at + n);
+      at += n;
     }
   }
 
@@ -173,40 +223,67 @@ export function layoutRuns(
       const r = owner[i];
       let j = i;
       while (j < to && owner[j] === r) j++;
-      w += runs[r].driver.measure(text.slice(i, j), runs[r].fontSize);
+      const run = scaled[r];
+      w += isAtomicRun(run)
+        ? run.atomic.width
+        : run.driver.measure(text.slice(i, j), run.fontSize);
       i = j;
     }
     return w;
   };
 
-  /** Width of a separator space, measured in the run that precedes it — the run
-   *  whose `Tf` is in force when that space is emitted. */
+  /** The run a separator space is emitted under, given the run that precedes
+   *  it: that run when it is text, else the nearest TEXT run before it, else
+   *  the nearest after. `-1` when the input is all atomics and no font is in
+   *  force at all.
+   *
+   *  An atomic has no `Tf`, so a space attributed to one would be measured at
+   *  no width AND merge into the atomic's own piece, swallowing it. ONE owner
+   *  for that rule, because `spaceWidth` measures the space and `piecesOf`
+   *  emits it, and the two must not disagree about which font it is in. */
+  const spaceRun = (before: number): number => {
+    for (let k = before; k >= 0; k--) if (!isAtomicRun(scaled[k])) return k;
+    for (let k = before + 1; k < scaled.length; k++) if (!isAtomicRun(scaled[k])) return k;
+    return -1;
+  };
+
+  /** Width of a separator space, measured in the run whose `Tf` is in force
+   *  when that space is emitted. */
   const spaceWidth = (at: number): number => {
-    const r = runs[owner[at]];
+    const k = spaceRun(owner[at]);
+    if (k < 0) return 0;
+    const r = scaled[k] as TextLayoutRun;
     return r.driver.measure(' ', r.fontSize);
   };
 
-  /** Largest run size with text in `units`; the block's size when there is
-   *  none, so a blank line keeps ordinary leading. The separator space belongs
-   *  to the run that ends the preceding unit, which is already covered. */
-  const maxSizeOf = (units: Unit[]): number => {
-    let m = 0;
+  /** The items on a line, for linebox.ts. A text piece contributes its font
+   *  size as its ascent — layout.ts's convention since before atomics — and an
+   *  atomic contributes its box. The separator space belongs to the run that
+   *  ends the preceding unit, which is already covered. */
+  const itemsOf = (units: Unit[]): LineItem[] => {
+    const items: LineItem[] = [];
     for (const u of units) {
       let i = u.start;
       while (i < u.end) {
         const r = owner[i];
-        m = Math.max(m, runs[r].fontSize);
-        while (i < u.end && owner[i] === r) i++;
+        let j = i;
+        while (j < u.end && owner[j] === r) j++;
+        const run = scaled[r];
+        if (isAtomicRun(run)) {
+          const a = run.atomic;
+          items.push({
+            ascent: a.align === 'baseline' ? a.height : 0,
+            height: a.height,
+            align: a.align,
+          });
+        } else {
+          items.push({ ascent: run.fontSize, height: run.fontSize, align: 'baseline' });
+        }
+        i = j;
       }
     }
-    return m > 0 ? m : blockFontSize;
+    return items;
   };
-
-  /** A line's band height. `blockFontSize` is validated positive by every entry
-   *  point, so the ratio is finite; a caller who asked for `leading: 0` still
-   *  gets 0. */
-  const heightOf = (maxSize: number): number =>
-    Math.max(leading, (maxSize * leading) / blockFontSize);
 
   // --- Phase A: wrap every paragraph into lines (ignoring height). ---
   const wrapped: WrappedLine[] = [];
@@ -282,11 +359,13 @@ export function layoutRuns(
   let used = 0;
   let kept = 0;
   const heights: number[] = [];
+  const ascents: number[] = [];
   while (kept < wrapped.length) {
-    const h = heightOf(maxSizeOf(wrapped[kept].units));
-    if (used + h > boxHeight + EPS) break;
-    used += h;
-    heights.push(h);
+    const b = lineBox(itemsOf(wrapped[kept].units), leading, blockFontSize);
+    if (used + b.height > boxHeight + EPS) break;
+    used += b.height;
+    heights.push(b.height);
+    ascents.push(b.ascent);
     kept++;
   }
 
@@ -304,8 +383,15 @@ export function layoutRuns(
     };
     for (let ui = 0; ui < units.length; ui++) {
       const u = units[ui];
-      // The space is emitted under the preceding run's Tf, so it belongs to it.
-      if (u.spaceBefore && ui > 0) push(owner[units[ui - 1].end - 1], ' ');
+      // The space is emitted under the preceding run's Tf, so it belongs to it
+      // — and to the nearest TEXT run when that one is an atomic, which has no
+      // Tf. Attributing it to the atomic would merge it into the atomic's own
+      // piece, where the segment mapper discards the text and the space
+      // vanishes from both the width and the page.
+      if (u.spaceBefore && ui > 0) {
+        const k = spaceRun(owner[units[ui - 1].end - 1]);
+        if (k >= 0) push(k, ' ');
+      }
       let i = u.start;
       while (i < u.end) {
         const r = owner[i];
@@ -320,19 +406,30 @@ export function layoutRuns(
 
   const lines: LaidLine[] = [];
   for (let k = 0; k < kept; k++) {
-    const segments: LaidSegment[] = piecesOf(wrapped[k].units).map((p) => ({
-      run: p.run,
-      text: p.text,
-      width: runs[p.run].driver.measure(p.text, runs[p.run].fontSize),
-      bytes: runs[p.run].driver.encode(p.text),
-    }));
+    const segments: LaidSegment[] = piecesOf(wrapped[k].units).map((p) => {
+      const run = scaled[p.run];
+      // An atomic's piece is the U+FFFC placeholder, REPLACED by '' here —
+      // which is what keeps it out of line.text and out of any encode call.
+      if (isAtomicRun(run)) {
+        return {
+          run: p.run, text: '', width: run.atomic.width,
+          bytes: new Uint8Array(0), atomic: run.atomic,
+        };
+      }
+      return {
+        run: p.run,
+        text: p.text,
+        width: run.driver.measure(p.text, run.fontSize),
+        bytes: run.driver.encode(p.text),
+      };
+    });
     lines.push({
       text: segments.map((s) => s.text).join(''),
       width: segments.reduce((n, s) => n + s.width, 0),
       bytes: segments.length === 1 ? segments[0].bytes : concatBytes(segments),
       hardBreak: wrapped[k].sepAfter === '\n' || k === kept - 1,
       segments,
-      maxFontSize: maxSizeOf(wrapped[k].units),
+      maxFontSize: ascents[k],
       height: heights[k],
     });
   }
@@ -349,8 +446,11 @@ export function layoutRuns(
     for (const p of piecesOf(wrapped[k].units)) pushSlice(p.run, p.text);
     const units = wrapped[k].units;
     if (k < wrapped.length - 1 && wrapped[k].sepAfter !== '' && units.length > 0) {
-      // The separator belongs to the run that ended the line.
-      pushSlice(owner[units[units.length - 1].end - 1], wrapped[k].sepAfter);
+      // The separator belongs to the run that ended the line — or the nearest
+      // TEXT run, when that one is an atomic, exactly as piecesOf attributes
+      // an interior space.
+      const k2 = spaceRun(owner[units[units.length - 1].end - 1]);
+      if (k2 >= 0) pushSlice(k2, wrapped[k].sepAfter);
     }
   }
 

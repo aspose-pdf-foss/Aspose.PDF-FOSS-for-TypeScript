@@ -1,0 +1,679 @@
+{
+ "chrome": "Chrome/152.0.7977.54",
+ "cases": [
+  {
+   "id": "insets",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"padding:10px;border:5px solid black\">a</div><div style=\"padding:0 20px\">b</div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 770,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 760,
+     "gap": 0
+    }
+   ]
+  },
+  {
+   "id": "stated-and-percentage-width",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"width:300px\">a</div><div style=\"width:50%\">b</div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 300,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 400,
+     "gap": 0
+    }
+   ]
+  },
+  {
+   "id": "auto-margins-centre",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"width:400px;margin:0 auto\">a</div><div style=\"width:400px;margin-left:auto\">b</div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 400,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 400,
+     "gap": 0
+    }
+   ]
+  },
+  {
+   "id": "sibling-collapse",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><p style=\"margin:0 0 30px\">a</p><p style=\"margin:20px 0 0\">b</p><p style=\"margin:40px 0\">c</p>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 800,
+     "gap": 30
+    },
+    {
+     "path": [
+      1,
+      2
+     ],
+     "width": 800,
+     "gap": 40
+    }
+   ]
+  },
+  {
+   "id": "collapse-through-parent",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><p style=\"margin:0\">a</p><div><p style=\"margin-top:40px\">b</p></div><p style=\"margin:0\">c</p>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 800,
+     "gap": 40
+    },
+    {
+     "path": [
+      1,
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      2
+     ],
+     "width": 800,
+     "gap": 16
+    }
+   ]
+  },
+  {
+   "id": "collapse-blocked-by-padding",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><p style=\"margin:0\">a</p><div style=\"padding-top:1px\"><p style=\"margin-top:40px\">b</p></div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    }
+   ]
+  },
+  {
+   "id": "collapse-blocked-by-height",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"height:50px\"><p style=\"margin-bottom:40px\">a</p></div><p style=\"margin:0\">b</p>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 16
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      0,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    }
+   ]
+  },
+  {
+   "id": "empty-block-collapse",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><p style=\"margin:0\">a</p><div style=\"margin:20px 0 30px\"></div><p style=\"margin:0\">b</p>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 800,
+     "gap": 20
+    },
+    {
+     "path": [
+      1,
+      2
+     ],
+     "width": 800,
+     "gap": 10
+    }
+   ]
+  },
+  {
+   "id": "negative-margin",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><p style=\"margin:0 0 40px\">a</p><p style=\"margin:-10px 0 0\">b</p>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      1
+     ],
+     "width": 800,
+     "gap": 30
+    }
+   ]
+  },
+  {
+   "id": "float-stated-width",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"float:left;width:150px\">a</div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 150,
+     "gap": null
+    }
+   ]
+  },
+  {
+   "id": "float-right-with-insets",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"float:right;width:200px;padding:10px;border:5px solid black\">a</div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 200,
+     "gap": null
+    }
+   ]
+  },
+  {
+   "id": "float-stated-margins",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"float:left;width:150px;margin:0 20px\">a</div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 150,
+     "gap": null
+    }
+   ]
+  },
+  {
+   "id": "nested-widths",
+   "html": "<!doctype html><style>html{width:800px}body{margin:0}</style><div style=\"width:600px;padding:20px\"><div style=\"padding:10px\">a</div><div style=\"width:50%\">b</div></div>",
+   "rows": [
+    {
+     "path": [],
+     "width": 800,
+     "gap": null
+    },
+    {
+     "path": [
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      0,
+      0
+     ],
+     "width": null,
+     "gap": null
+    },
+    {
+     "path": [
+      1
+     ],
+     "width": 800,
+     "gap": 0
+    },
+    {
+     "path": [
+      1,
+      0
+     ],
+     "width": 600,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      0,
+      0
+     ],
+     "width": 580,
+     "gap": null
+    },
+    {
+     "path": [
+      1,
+      0,
+      1
+     ],
+     "width": 300,
+     "gap": 0
+    }
+   ]
+  }
+ ]
+}

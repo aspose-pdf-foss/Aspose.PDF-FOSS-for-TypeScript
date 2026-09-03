@@ -11,6 +11,10 @@ import {
   type FlowClear, type FlowElement, type MeasureContext, type PlaceContext, type PlaceResult,
 } from './flowelement.js';
 import type { StructElement } from './struct.js';
+import { preformat } from './preformat.js';
+import { EmbeddedFont } from './embeddedfont.js';
+import { coverageOf, type Undrawable } from './textcoverage.js';
+export { preformat } from './preformat.js';
 import { num, appendContent, wrapArtifact } from './pagecontent.js';
 import { enc } from './serialize.js';
 import {
@@ -34,8 +38,11 @@ function positive(v: number | undefined, dflt: number, name: string): number {
 }
 
 /** Operators for a filled rectangle in its own q/Q, so the fill colour cannot
- *  leak into whatever the page draws next. */
-function fillRect(
+ *  leak into whatever the page draws next.
+ *
+ *  Exported for cssframe.ts, which paints a CSS box's background and its four
+ *  border edges as filled rects. @internal */
+export function fillRect(
   x: number, y: number, w: number, h: number, color: [number, number, number],
 ): Uint8Array {
   return enc(`q\n${num(color[0])} ${num(color[1])} ${num(color[2])} rg\n`
@@ -45,8 +52,12 @@ function fillRect(
 /** Paint `body` on the page, marked as an /Artifact when the flow is tagged.
  *  A rule, a code-block fill and a quote bar are all decoration: they carry no
  *  meaning a screen reader should announce, and in a tagged document every
- *  piece of content must be either tagged or artifacted. */
-function paintDecoration(ctx: PlaceContext, body: Uint8Array): void {
+ *  piece of content must be either tagged or artifacted.
+ *
+ *  Exported for cssframe.ts, which must artifact a CSS box's background and
+ *  borders by the same rule. One owner, so the two cannot come to disagree
+ *  about whether decoration is announced. @internal */
+export function paintDecoration(ctx: PlaceContext, body: Uint8Array): void {
   appendContent(ctx.doc, ctx.page, ctx.structParent ? wrapArtifact(body) : body);
 }
 
@@ -143,68 +154,13 @@ export interface FlowCodeOptions {
   spaceAfter?: number;
   /** Drop the block below the floats on the given side(s) before placing it. */
   clear?: FlowClear;
+  /** Called when the resolved face cannot draw some or all of this text.
+   *  Opt-in: a caller who passes nothing gets the previous silence. Fires once,
+   *  at BUILD time. */
+  onUndrawable?: (u: Undrawable) => void;
 }
 
 const CODE_BACKGROUND: [number, number, number] = [0.96, 0.96, 0.96];
-
-/** The no-break space the substitution below uses. */
-const NBSP = '\u00a0';
-
-/** Expand `line`'s tabs to `tabWidth` columns. A tab expands directly to
- *  no-break spaces: it is indentation by intent, and the run rule below would
- *  otherwise leave a one-column tab unprotected. */
-function expandTabs(line: string, tabWidth: number): string {
-  let out = '';
-  let col = 0;
-  for (const ch of line) {
-    if (ch === '\t') {
-      const n = tabWidth - (col % tabWidth);
-      out += NBSP.repeat(n);
-      col += n;
-      continue;
-    }
-    out += ch;
-    col++;
-  }
-  return out;
-}
-
-/** Turn source text into text the wrapping engine will not destroy: expand tabs,
- *  then substitute U+00A0 for the spaces — and ONLY the spaces — it would
- *  otherwise eat.
- *
- *  **Invariant:** this substitution happens here, once, and nothing downstream
- *  knows about it. `layoutRuns` skips a line's LEADING spaces outright and
- *  COLLAPSES any run of two or more to one (`a  b` lays out as `a b`), both
- *  fatal to code; adding a preserve-spaces mode to the one wrapping engine would
- *  put every existing caller's byte-identity at risk. U+00A0 costs nothing
- *  instead: `winAnsi[0xA0]` is U+00A0, WinAnsiEncoding names that code /space
- *  (32000-1 Annex D Table D.2's documented duplicate), and its AFM advance is
- *  identical to /space's — so the block measures exactly as the same text with
- *  real spaces would.
- *
- *  **A single interior space is left alone**, which is the whole reason the rule
- *  is selective rather than blanket. The engine does not touch it, and a reader
- *  who copies a code block out of the PDF gets real spaces in `return 1;` rather
- *  than no-break ones that a whitespace-sensitive language may reject. The cost
- *  is that an over-wide line breaks at a space rather than at a UAX #14
- *  opportunity, which for code reads better than the alternative. */
-export function preformat(text: string, tabWidth: number): string {
-  return text.split('\n').map((raw) => {
-    const line = expandTabs(raw, tabWidth);
-    let out = '';
-    let i = 0;
-    while (i < line.length) {
-      if (line[i] !== ' ') { out += line[i]; i++; continue; }
-      let j = i;
-      while (j < line.length && line[j] === ' ') j++;
-      const len = j - i;
-      out += i === 0 || len >= 2 ? NBSP.repeat(len) : ' ';
-      i = j;
-    }
-    return out;
-  }).join('\n');
-}
 
 /** A preformatted block: monospaced, indentation-preserving, optionally on a
  *  fill. An ordinary text element underneath, so it inherits pagination,
@@ -233,7 +189,9 @@ class CodeBlockElement implements FlowElement {
     const { w, h } = this.inner(ctx.width, ctx.availHeight);
     if (w <= 0 || h <= 0) return { usedHeight: 0, fits: false };
     const { usedHeight, remainder } = measureTextBlock(this.text, w, h, this.opts);
-    if (usedHeight === 0) return { usedHeight: 0, fits: false };
+    // Nothing drawn: a null remainder means there was nothing to draw (discard),
+    // not that it did not fit here. Padding is not reserved for absent content.
+    if (usedHeight === 0) return { usedHeight: 0, fits: remainder === null };
     return { usedHeight: usedHeight + 2 * this.padding, fits: remainder === null };
   }
 
@@ -291,6 +249,16 @@ export function codeBlock(text: string, options: FlowCodeOptions = {}): FlowElem
     leading: options.leading,
     align: 'left',
   };
+  // The PREFORMATTED text, not the raw text: the U+00A0 substitution is what
+  // actually reaches the driver, so judging the raw text would report
+  // characters the painter never sees. Its own four-line copy of flow.ts's
+  // reportCoverage rather than an import — flow.ts imports THIS module, so
+  // reaching back would close a cycle.
+  if (options.onUndrawable !== undefined) {
+    const f = opts.font ?? 'Courier';
+    const u = coverageOf(preformat(text, tabWidth), f, f instanceof EmbeddedFont && f.shape);
+    if (u !== undefined) options.onUndrawable(u);
+  }
   const { spaceBefore, spaceAfter } = normalizeSpacing(options);
   return [new CodeBlockElement(preformat(text, tabWidth), opts, padding, background,
     spaceBefore, spaceAfter, normalizeClear(options.clear))];

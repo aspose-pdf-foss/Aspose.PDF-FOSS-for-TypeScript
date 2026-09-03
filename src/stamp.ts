@@ -3,14 +3,15 @@ import type { Page } from './page.js';
 import { PdfObject, PdfDict, isDict, isName, isRef, name, ref } from './types.js';
 import { StdFont } from './metrics.js';
 import {
-  layoutText, layoutRuns, LaidLine, FontDriver, winAnsiDriver,
-  type LayoutRun, type RunSlice,
+  layoutText, layoutRuns, LaidLine, LaidSegment, FontDriver, winAnsiDriver,
+  type LayoutRun, type RunSlice, isAtomicRun,
 } from './layout.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { emitLine } from './otemit.js';
 import { shapeText, type ShapeOpts } from './shape.js';
 import { enc, serializeString } from './serialize.js';
 import type { StructElement } from './struct.js';
+import { drawBuiltImage, type BuiltImage } from './imageembed.js';
 import { allocContentMcid, reserveContentMcid } from './structwrite.js';
 import {
   num, freshKey, ensureOwnResources, ensureOwnSubdict, registerExtGState, appendContent,
@@ -22,6 +23,7 @@ import {
 } from './textdecor.js';
 import { placeRunLinks, type RunLinkBox } from './runlink.js';
 import { UnsupportedFeatureError } from './errors.js';
+import { coverageOf, drawsNothing, type Undrawable } from './textcoverage.js';
 
 /** The 12 Latin Standard-14 fonts authoring supports (WinAnsi-encodable).
  *  Symbol/ZapfDingbats are excluded: their width tables exist but their
@@ -74,11 +76,39 @@ export interface StampOptions extends DecorationOptions {
   /** Draw this stamp beneath existing page content instead of on top of it.
    *  Default false. On a page with nothing to sink beneath this is a plain draw. */
   behind?: boolean;
+  /** Called when the resolved face cannot draw some or all of this text.
+   *  Opt-in: a caller who passes nothing gets the previous silence. Fires once
+   *  per drawn block — never from a measure pass, which the flow engine runs
+   *  speculatively many times per element. */
+  onUndrawable?: (u: Undrawable) => void;
 }
 
 /** True when `font` is an embedded handle AND shaping is effectively on. */
 function effectiveShape(font: AuthoringFont, callShape: boolean | undefined): font is EmbeddedFont {
   return font instanceof EmbeddedFont && (callShape ?? font.shape);
+}
+
+/** Fire `onUndrawable` for a DIRECT page-level draw, where the call IS the
+ *  paint. Deliberately not called from measureTextBlock, wrapLines or
+ *  flowTextBlock: the flow engine measures speculatively many times per
+ *  element, and a flow block has already reported at BUILD time through its
+ *  builder — firing here too would report every flowed paragraph twice.
+ *  @internal */
+export function reportUndrawable(
+  content: string | TextRun[],
+  // Structural rather than StampOptions: TextBlockOptions Omits `align` and
+  // redeclares it with 'justify', so it is not assignable to StampOptions —
+  // and this needs only the three fields named here from either.
+  options: {
+    font?: AuthoringFont;
+    shape?: boolean;
+    onUndrawable?: (u: Undrawable) => void;
+  },
+): void {
+  if (options.onUndrawable === undefined) return;
+  const font = options.font ?? 'Helvetica';
+  const u = coverageOf(content, font, effectiveShape(font, options.shape));
+  if (u !== undefined) options.onUndrawable(u);
 }
 
 function shapeOptsFrom(o: { dir?: 'auto' | 'ltr' | 'rtl'; script?: string; language?: string }): ShapeOpts {
@@ -257,6 +287,7 @@ export function stampText(
 ): void {
   validateMarking(options);
   const o = normalizeOptions(options);
+  reportUndrawable(text, options);
   // An explicit caller-supplied splice wins: decorate.ts's underlay watermark is
   // a structural choice by that caller, not something `behind` should override.
   const put = splice ?? (o.behind ? prependContent : appendContent);
@@ -288,7 +319,27 @@ export function stampText(
 /** Options for flowing wrapped text into a rectangle. Inherits the typographic
  *  options of {@link StampOptions} (sans single-line `align` and `rotate`) and
  *  adds block layout: paragraph `align` (incl. `justify`), `valign`, `leading`. */
+/** A box placed among a run block's runs — an image on a line of text.
+ *
+ *  At stamp.ts's level the image is already BUILT, because this module may
+ *  allocate objects and layout.ts may not. flow.ts's FlowAtomic takes bytes
+ *  and builds one of these. @internal */
+export interface BlockAtomic {
+  /** The run index this sits BEFORE; `runs.length` places it at the end. */
+  beforeRun: number;
+  built: BuiltImage;
+  width: number;
+  height: number;
+  align: 'baseline' | 'top' | 'bottom';
+}
+
 export interface TextBlockOptions extends Omit<StampOptions, 'align' | 'rotate'> {
+  /** Boxes to place among the runs — an image on a line of text. A PARALLEL
+   *  channel rather than a field on TextRun, so textdecor.ts's model — read by
+   *  mdruns.ts, tableauthor.ts, flowtable.ts and docmodel.ts — does not change
+   *  and every existing caller is byte-identical by construction. Ignored for
+   *  a string block. */
+  atomics?: BlockAtomic[];
   /** Horizontal alignment of each line. Default 'left'. ('justify' spreads each
    *  line's slack across its inter-word gaps via the `Tw` operator; the final
    *  line and single-word lines fall back to 'left'.) */
@@ -443,6 +494,50 @@ function justifiable(runs: ResolvedRun[]): boolean {
   return runs.every((r) => !(r.font instanceof EmbeddedFont));
 }
 
+/** Runs and atomics woven into ONE list, in document order, plus a map from
+ *  woven index to the atomic that produced it.
+ *
+ *  Shared by flowTextBlock and measureTextBlock deliberately: they already
+ *  share resolveRuns and layoutRuns, and a second weave is how a paragraph
+ *  comes to measure one way and paint another — the failure the
+ *  one-wrapping-engine rule exists to prevent.
+ *
+ *  With no atomics it returns `resolved` UNCHANGED, which is what keeps every
+ *  existing caller's bytes identical. */
+function weaveAtomics(
+  resolved: ResolvedRun[], atomics: BlockAtomic[] | undefined,
+): { woven: ResolvedRun[]; atomicOf: Map<number, BlockAtomic> } {
+  const atomicOf = new Map<number, BlockAtomic>();
+  if (atomics === undefined || atomics.length === 0)
+    return { woven: resolved, atomicOf };
+  const woven: ResolvedRun[] = [];
+  const at = (i: number): void => {
+    for (const a of atomics) {
+      if (a.beforeRun !== i) continue;
+      atomicOf.set(woven.length, a);
+      woven.push({
+        layout: { atomic: { width: a.width, height: a.height, align: a.align } },
+        // An atomic has no font, colour, decoration or link of its own. These
+        // are inert and exist only so the array stays homogeneous; the painter
+        // returns before reading any of them.
+        font: resolved[0]?.font ?? resolved[resolved.length - 1]?.font,
+        color: [0, 0, 0],
+        decor: undefined,
+        link: undefined,
+      } as ResolvedRun);
+    }
+  };
+  for (let i = 0; i < resolved.length; i++) { at(i); woven.push(resolved[i]); }
+  at(resolved.length);
+  return { woven, atomicOf };
+}
+
+/** Is every run either an atomic or fully unencodable? An atomic draws without
+ *  a glyph, so a block that is nothing but boxes must still reach the painter. */
+function nothingDrawable(runs: ResolvedRun[]): boolean {
+  return runs.every((r) => !isAtomicRun(r.layout) && drawsNothing(r.layout.text, r.layout.driver));
+}
+
 /** Runs plus shaping is not implemented: BiDi reorders across a whole paragraph,
  *  and how a bidi-run boundary should interact with a style boundary is an open
  *  question. Throwing beats silently dropping either the styles or the shaping. */
@@ -451,18 +546,38 @@ function rejectShapedRuns(o: TextBlockOptions, font: AuthoringFont): void {
     throw new UnsupportedFeatureError('complex-text shaping is not supported with a run list');
 }
 
-/** Rebuild a run list from the layout's slices, carrying each source run's style.
+/** Rebuild the remainder's runs AND its atomics, with each atomic's
+ *  `beforeRun` re-based onto the new list.
  *  Adjacent slices from the same run merge, so a remainder re-flows into the same
  *  number of runs it started with rather than one per line. */
-function sliceRuns(slices: RunSlice[], source: TextRun[]): TextRun[] {
-  const out: TextRun[] = [];
+function sliceContent(
+  slices: RunSlice[], source: TextRun[], atomicOf: Map<number, BlockAtomic>,
+  woven: ResolvedRun[],
+): { runs: TextRun[]; atomics: BlockAtomic[] } {
+  // `source` is indexed by the ORIGINAL run list and `slices` by the woven
+  // one, so a woven index has to be taken back to a source index.
+  const sourceIndex: number[] = [];
+  let n = 0;
+  for (let i = 0; i < woven.length; i++) sourceIndex.push(atomicOf.has(i) ? -1 : n++);
+
+  const runs: TextRun[] = [];
+  const atomics: BlockAtomic[] = [];
   let lastRun = -1;
   for (const s of slices) {
-    if (s.run === lastRun) { out[out.length - 1].text += s.text; continue; }
-    out.push({ ...source[s.run], text: s.text });
+    const a = atomicOf.get(s.run);
+    if (a !== undefined) {
+      // Re-based onto the REBUILT list: it sits before whatever run comes
+      // next there. Carrying the original index forward lands the image in
+      // the wrong place, or off the end where it vanishes.
+      atomics.push({ ...a, beforeRun: runs.length });
+      lastRun = -1;                       // an atomic breaks the merge run
+      continue;
+    }
+    if (s.run === lastRun) { runs[runs.length - 1].text += s.text; continue; }
+    runs.push({ ...source[sourceIndex[s.run]], text: s.text });
     lastRun = s.run;
   }
-  return out;
+  return { runs, atomics };
 }
 
 function validateRect(rect: [number, number, number, number]): void {
@@ -602,8 +717,9 @@ function segmentBoxes(
       const tail = seg.text.slice(seg.text.replace(/ +$/, '').length);
       const r = runs[seg.run];
       // `width` already includes the Tw those spaces gained, so the nominal
-      // advance alone under-trims a justified line.
-      const trailing = tail === '' ? 0
+      // advance alone under-trims a justified line. An atomic has no text, so
+      // no trailing space to trim.
+      const trailing = tail === '' || isAtomicRun(r.layout) ? 0
         : r.layout.driver.measure(tail, r.layout.fontSize) + tw * tail.length;
       out.push({ run: seg.run, x: dx, baseline, width, trailing });
       dx += width;
@@ -689,7 +805,9 @@ function runLinkBoxes(
   const out: RunLinkBox[] = [];
   boxes.forEach((b, i) => {
     const r = runs[b.run];
-    if (r.link === undefined) return;
+    // An atomic carries no link of its own — a linked image is zch2.12's, and
+    // an inert atomic run would otherwise ask for a font size it has not got.
+    if (r.link === undefined || isAtomicRun(r.layout)) return;
     const vm = vmetricsFor(r.font);
     const size = r.layout.fontSize;
     out.push({
@@ -704,6 +822,23 @@ function runLinkBoxes(
     });
   });
   return out;
+}
+
+/** The laid segment at flat index `i` across all lines, with the line it is
+ *  on — `boxes[i]`'s segment.
+ *
+ *  Both lists come from the same nested walk, which is what makes the index
+ *  shared; a second walk is how a box and its segment come to disagree about
+ *  where a picture goes. */
+function segAt(
+  lines: LaidLine[], i: number,
+): { seg: LaidSegment; line: LaidLine } | undefined {
+  let n = i;
+  for (const line of lines) {
+    if (n < line.segments.length) return { seg: line.segments[n], line };
+    n -= line.segments.length;
+  }
+  return undefined;
 }
 
 /** Per-run block body: one text object, a `Tf` when the font or size changes and
@@ -749,11 +884,27 @@ function buildRunBlockBody(
       // leaving the element text-less. `undefined` for every segment of an
       // untagged block, so those bytes are exactly what they always were.
       const mcid = linkMcids[segIdx++];
+      // Bound to a local so the type guard narrows it for the rest of the
+      // loop body — a guard on `seg.atomic` would not, since it says nothing
+      // about `r.layout`.
+      const layout = r.layout;
+      if (isAtomicRun(layout)) {
+        // No Tj, so the pen would not advance and the following text would
+        // overprint the image — buildRunBlockBody emits no per-segment Td, by
+        // design ("Tj advances the pen by the string's own width"). A TJ with
+        // a single negative number kerns by `n/1000 * fontSize`, so the
+        // advance is exact at whatever size is in force. A block that OPENS
+        // with an atomic has set no Tf yet, so it falls back to the block
+        // size. The MCID wrap is skipped too: an image is not a link's text.
+        const size = curSize > 0 ? curSize : o.fontSize;
+        s += `[ ${num(-(seg.width * 1000) / size)} ] TJ\n`;
+        continue;
+      }
       if (mcid !== undefined) s += `/Span <</MCID ${mcid}>> BDC\n`;
-      if (key !== curFont || r.layout.fontSize !== curSize) {
-        s += `/${key} ${num(r.layout.fontSize)} Tf\n`;
+      if (key !== curFont || layout.fontSize !== curSize) {
+        s += `/${key} ${num(layout.fontSize)} Tf\n`;
         curFont = key;
-        curSize = r.layout.fontSize;
+        curSize = layout.fontSize;
       }
       const col = `${num(r.color[0])} ${num(r.color[1])} ${num(r.color[2])} rg`;
       if (col !== curColor) { s += `${col}\n`; curColor = col; }
@@ -819,11 +970,11 @@ export function flowTextBlock(
 export function flowTextBlock(
   doc: Document, page: Page, runs: TextRun[],
   rect: [number, number, number, number], options?: TextBlockOptions,
-): { remainder: TextRun[] | null; usedHeight: number };
+): { remainder: TextRun[] | null; remainderAtomics?: BlockAtomic[]; usedHeight: number };
 export function flowTextBlock(
   doc: Document, page: Page, content: string | TextRun[],
   rect: [number, number, number, number], options: TextBlockOptions = {},
-): { remainder: string | TextRun[] | null; usedHeight: number } {
+): { remainder: string | TextRun[] | null; remainderAtomics?: BlockAtomic[]; usedHeight: number } {
   validateMarking(options);
   validateRect(rect);
   const o = normalizeBlockOptions(options);
@@ -832,9 +983,8 @@ export function flowTextBlock(
 
   if (isTextRunList(content)) {
     rejectShapedRuns(options, o.font);
-    const resolved = resolveRuns(content, o);
-    if (resolved.every((r) => r.layout.driver.probe(r.layout.text) === 0))
-      return { remainder: null, usedHeight: 0 };
+    const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
+    if (nothingDrawable(resolved)) return { remainder: null, usedHeight: 0 };
     // Justification falls back to left when any run is embedded; `ro` is a local
     // copy so the block's own options are not mutated.
     const ro: NormalizedBlockOptions =
@@ -867,9 +1017,37 @@ export function flowTextBlock(
       // measurement free of side effects.
       const linkBoxes = runLinkBoxes(boxes, resolved, linkMcids);
       if (linkBoxes.length > 0) placeRunLinks(doc, page, linkBoxes, tag);
+      // Each atomic's picture, through the EXISTING drawBuiltImage — which
+      // already handles /SMask, resource registration and tagging, so
+      // imageembed.ts needs no refactor. It cannot go inside BT…ET, so it is
+      // its own q…cm…Do…Q; appended AFTER the text body, which is
+      // unobservable because an inline atomic's box never overlaps the glyphs
+      // it sits between.
+      boxes.forEach((b, i) => {
+        const at = segAt(lines, i);
+        if (at === undefined || at.seg.atomic === undefined) return;
+        const a = atomicOf.get(at.seg.run);
+        if (a === undefined || at.seg.atomic.width <= 0 || at.seg.atomic.height <= 0) return;
+        // `align: baseline` puts the box BOTTOM on the baseline, so the rect's
+        // y IS the baseline. top/bottom align to the BAND: the baseline sits
+        // `maxFontSize` (the line's ascent) below the band top, which is what
+        // recovers the band from a box that only knows its baseline.
+        //
+        // The atomic on the SEGMENT rather than on `a`: layoutRuns may have
+        // clamped an over-wide box, and the drawn rect must be the clamped one.
+        const drawn = at.seg.atomic;
+        const bandTop = b.baseline + at.line.maxFontSize;
+        const y = drawn.align === 'baseline' ? b.baseline
+          : drawn.align === 'top' ? bandTop - drawn.height
+            : bandTop - at.line.height;
+        drawBuiltImage(doc, page, a.built, [b.x, y, drawn.width, drawn.height],
+          { artifact: options.artifact });
+      });
     }
+    const rest = sliceContent(remainder, content, atomicOf, resolved);
     return {
-      remainder: remainder.length === 0 ? null : sliceRuns(remainder, content),
+      remainder: remainder.length === 0 ? null : rest.runs,
+      remainderAtomics: rest.atomics.length === 0 ? undefined : rest.atomics,
       usedHeight: linesHeight(lines),
     };
   }
@@ -879,7 +1057,7 @@ export function flowTextBlock(
     const font = o.font;
     const so = shapeOptsFrom(options);
     const driver = shapedDriver(font, so);
-    if (driver.probe(text) === 0) return { remainder: null, usedHeight: 0 };
+    if (drawsNothing(text, driver)) return { remainder: null, usedHeight: 0 };
     const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading);
     if (lines.length > 0) {
       const fontKey = registerFont(doc, page, font);
@@ -890,7 +1068,7 @@ export function flowTextBlock(
     return { remainder: remainder === '' ? null : remainder, usedHeight: linesHeight(lines) };
   }
   const driver = driverFor(o.font);
-  if (driver.probe(text) === 0) return { remainder: null, usedHeight: 0 };
+  if (drawsNothing(text, driver)) return { remainder: null, usedHeight: 0 };
   const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading);
   if (lines.length > 0) {
     const fontKey = registerFont(doc, page, o.font);
@@ -912,27 +1090,28 @@ export function measureTextBlock(
 ): { usedHeight: number; remainder: string | null };
 export function measureTextBlock(
   runs: TextRun[], width: number, availHeight: number, options?: TextBlockOptions,
-): { usedHeight: number; remainder: TextRun[] | null };
+): { usedHeight: number; remainder: TextRun[] | null; remainderAtomics?: BlockAtomic[] };
 export function measureTextBlock(
   content: string | TextRun[], width: number, availHeight: number, options: TextBlockOptions = {},
-): { usedHeight: number; remainder: string | TextRun[] | null } {
+): { usedHeight: number; remainder: string | TextRun[] | null; remainderAtomics?: BlockAtomic[] } {
   const o = normalizeBlockOptions(options);
   if (isTextRunList(content)) {
     rejectShapedRuns(options, o.font);
-    const resolved = resolveRuns(content, o);
-    if (resolved.every((r) => r.layout.driver.probe(r.layout.text) === 0))
-      return { usedHeight: 0, remainder: null };
+    const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
+    if (nothingDrawable(resolved)) return { usedHeight: 0, remainder: null };
     const { lines, remainder } = layoutRuns(
       resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize);
+    const rest = sliceContent(remainder, content, atomicOf, resolved);
     return {
       usedHeight: linesHeight(lines),
-      remainder: remainder.length === 0 ? null : sliceRuns(remainder, content),
+      remainder: remainder.length === 0 ? null : rest.runs,
+      remainderAtomics: rest.atomics.length === 0 ? undefined : rest.atomics,
     };
   }
   let driver: FontDriver;
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
   else driver = driverFor(o.font);
-  if (driver.probe(content) === 0) return { usedHeight: 0, remainder: null };
+  if (drawsNothing(content, driver)) return { usedHeight: 0, remainder: null };
   const { lines, remainder } = layoutText(content, driver, o.fontSize, width, availHeight, o.leading);
   return { usedHeight: linesHeight(lines), remainder: remainder === '' ? null : remainder };
 }
@@ -957,7 +1136,7 @@ export function wrapLines(
   let driver: FontDriver;
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
   else driver = driverFor(o.font);
-  if (driver.probe(text) === 0) return [];
+  if (drawsNothing(text, driver)) return [];
   const { lines } = layoutText(text, driver, o.fontSize, width, Infinity, o.leading);
   return lines.map((l) => ({ text: l.text, width: l.width }));
 }
@@ -979,6 +1158,7 @@ export function stampTextBlock(
   doc: Document, page: Page, content: string | TextRun[],
   rect: [number, number, number, number], options: TextBlockOptions = {},
 ): string | TextRun[] | null {
+  reportUndrawable(content, options);
   // The two arms are identical on purpose: TypeScript resolves an overloaded
   // call by picking one signature, and a `string | TextRun[]` argument matches
   // neither. Narrowing first is what lets each arm pick its own. The same

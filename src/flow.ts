@@ -4,8 +4,10 @@ import type { StructElement } from './struct.js';
 import { FloatingBox } from './floatbox.js';
 import {
   flowTextBlock, stampText, measureText, measureTextBlock,
-  type TextBlockOptions, type StampOptions, type AuthoringFont,
+  type TextBlockOptions, type StampOptions, type AuthoringFont, type BlockAtomic,
 } from './stamp.js';
+import { EmbeddedFont } from './embeddedfont.js';
+import { coverageOf, type Undrawable } from './textcoverage.js';
 import {
   validateDecoration, validateBackground, resolveDecor, decorRects, vmetricsFor, isTextRunList,
   type Decoration, type Background, type TextRun,
@@ -21,7 +23,7 @@ import {
 } from './floatstack.js';
 import {
   nonNegative, normalizeClear, normalizeSpacing,
-  type FlowClear, type FlowElement, type MeasureContext, type PlaceContext, type PlaceResult,
+  type FlowClear, type FlowElement, type FloatContent, type MeasureContext, type PlaceContext, type PlaceResult,
 } from './flowelement.js';
 
 import {
@@ -31,6 +33,8 @@ import {
 import { table, type FlowTableOptions } from './flowtable.js';
 import type { TableBuilder } from './tableauthor.js';
 import { markdownElements, type MarkdownFlowOptions, type MarkdownResult } from './mdflow.js';
+import { htmlElements, type HtmlFlowOptions, type HtmlFlowResult } from './htmlflow.js';
+import type { HtmlDocument } from './htmldom.js';
 import type { MdDocument } from './mdast.js';
 
 export type {
@@ -129,6 +133,13 @@ export function normalizeFlowOptions(options: FlowOptions = {}): Geometry {
   };
 }
 
+/** Height budget offered to an element the engine can only place by drawing it
+ *  past the column bottom (`zch2.16`). Finite because `place` builds a rect
+ *  from it and stamp.ts refuses a non-finite one, and far larger than any
+ *  content a page can hold, so `measure` reports the element's NATURAL height
+ *  against it. @internal */
+const OVERFLOW_PROBE = 1e6;
+
 /** Left edge (PDF user space) of column `col` (0-based). @internal */
 export function columnX(g: Geometry, col: number): number {
   return g.contentLeft + col * (g.columnWidth + g.columnGap);
@@ -159,7 +170,7 @@ function measureFlowText(
 function drawFlowText(
   doc: Document, page: Page, t: FlowText,
   rect: [number, number, number, number], o: TextBlockOptions,
-): { remainder: FlowText | null; usedHeight: number } {
+): { remainder: FlowText | null; remainderAtomics?: BlockAtomic[]; usedHeight: number } {
   return isTextRunList(t)
     ? flowTextBlock(doc, page, t, rect, o)
     : flowTextBlock(doc, page, t, rect, o);
@@ -167,7 +178,57 @@ function drawFlowText(
 
 /** Typographic options for {@link Flow.AddParagraph} (a subset of the text-block
  *  options; flow content is always laid top-down, so `valign` is not offered). */
+/** A box placed among a paragraph's runs — an image on a line of text.
+ *
+ *  `data` is IMAGE BYTES rather than a built XObject, so a pure mapper like
+ *  cssflow.ts can produce one without importing any PDF object module; this
+ *  builder does the same `buildImageXObject` call `image()` already does. */
+export interface FlowAtomic {
+  /** The run index this sits BEFORE; `runs.length` places it at the end. */
+  beforeRun: number;
+  data: Uint8Array;
+  /** Drawn size in POINTS. Both > 0, or the atomic draws nothing. */
+  width: number;
+  height: number;
+  /** Default 'baseline' — the box's bottom edge sits on the text baseline.
+   *  'middle' is not offered: CSS defines it against half the x-height, which
+   *  the AFM tables do not expose. */
+  align?: 'baseline' | 'top' | 'bottom';
+}
+
+/** Validate and build. Every atomic is checked BEFORE any XObject is
+ *  allocated, so a rejected call leaves the document byte-identical — the rule
+ *  every authoring entry point here follows. */
+function resolveAtomics(list: FlowAtomic[] | undefined): BlockAtomic[] | undefined {
+  if (list === undefined) return undefined;
+  if (!Array.isArray(list)) throw new TypeError('atomics must be an array');
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (!Number.isInteger(a?.beforeRun) || a.beforeRun < 0)
+      throw new TypeError(`atomic ${i}: beforeRun must be a non-negative integer`);
+    if (!(a.data instanceof Uint8Array))
+      throw new TypeError(`atomic ${i}: data must be a Uint8Array`);
+    for (const k of ['width', 'height'] as const) {
+      if (!Number.isFinite(a[k]) || a[k] < 0)
+        throw new TypeError(`atomic ${i}: ${k} must be a non-negative finite number`);
+    }
+    if (a.align !== undefined && !['baseline', 'top', 'bottom'].includes(a.align))
+      throw new TypeError(`atomic ${i}: align must be 'baseline', 'top' or 'bottom'`);
+  }
+  return list.map((a) => ({
+    beforeRun: a.beforeRun,
+    built: buildImageXObject(a.data),
+    width: a.width,
+    height: a.height,
+    align: a.align ?? 'baseline',
+  }));
+}
+
 export interface FlowParagraphOptions {
+  /** Boxes to place among the runs — an image on a line of text. A PARALLEL
+   *  channel rather than a field on TextRun, so textdecor.ts's model does not
+   *  change and every existing caller is byte-identical by construction. */
+  atomics?: FlowAtomic[];
   font?: AuthoringFont;
   fontSize?: number;
   color?: [number, number, number];
@@ -186,6 +247,10 @@ export interface FlowParagraphOptions {
   /** Drop this element below the floats on the given side(s) before placing it.
    *  Default: none. */
   clear?: FlowClear;
+  /** Called when the resolved face cannot draw some or all of this text.
+   *  Opt-in: a caller who passes nothing gets the previous silence. Fires once,
+   *  at BUILD time, from the builder this option was handed to. */
+  onUndrawable?: (u: Undrawable) => void;
 }
 
 /** Options for {@link Flow.AddHeading}. Extends {@link FlowParagraphOptions}; the
@@ -203,6 +268,7 @@ function paragraphOptions(o: FlowParagraphOptions): TextBlockOptions {
   return {
     font: o.font, fontSize: o.fontSize, color: o.color, align: o.align, leading: o.leading,
     underline: o.underline, strikethrough: o.strikethrough, background: o.background,
+    atomics: resolveAtomics(o.atomics),
   };
 }
 
@@ -225,7 +291,7 @@ class TextElement implements FlowElement {
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
     const { usedHeight, remainder } = measureFlowText(this.text, ctx.width, ctx.availHeight, this.opts);
-    return { usedHeight, fits: remainder === null && usedHeight > 0 };
+    return { usedHeight, fits: remainder === null };
   }
 
   place(ctx: PlaceContext): PlaceResult {
@@ -241,7 +307,8 @@ class TextElement implements FlowElement {
     const opts = this.tag ? { ...this.opts, tag: this.tag } : this.opts;
     const rect: [number, number, number, number] =
       [ctx.x, ctx.top - ctx.availHeight, ctx.width, ctx.availHeight];
-    const { remainder, usedHeight } = drawFlowText(ctx.doc, ctx.page, this.text, rect, opts);
+    const { remainder, remainderAtomics, usedHeight } =
+      drawFlowText(ctx.doc, ctx.page, this.text, rect, opts);
     if (usedHeight === 0) {
       // Nothing drawn: null remainder = empty/undrawable (discard); else it did
       // not fit in the leftover space (retry this element in the next column).
@@ -250,17 +317,40 @@ class TextElement implements FlowElement {
     return {
       usedHeight,
       // Continuation carries spaceBefore = 0 (already started) and the same tag.
+      // `{ ...this.opts, atomics: remainderAtomics }` and NOT `this.opts`: the
+      // original atomics index the ORIGINAL run list, and sliceContent has
+      // re-based these onto the sliced one. Carrying the originals forward
+      // puts an image at the wrong place, or off the end where it vanishes.
       remainder: remainder === null ? null
-        : new TextElement(remainder, this.opts, this.structType, 0, this.spaceAfter, this.tag),
+        : new TextElement(remainder, { ...this.opts, atomics: remainderAtomics },
+          this.structType, 0, this.spaceAfter, this.tag),
       drew: true,
     };
   }
+}
+
+/** Report what the block's face cannot draw, once, at BUILD time.
+ *
+ *  Invariant: the sink is CONSUMED here and never forwarded. `paragraphOptions`
+ *  and `bodyOptions` copy an explicit whitelist of fields rather than
+ *  spreading, so `flowTextBlock` cannot fire it a second time when the block is
+ *  painted — and that whitelist is what enforces it.
+ *
+ *  Note the scan runs only when a sink is installed: a caller who asks for
+ *  nothing pays nothing. @internal */
+function reportCoverage(
+  text: FlowText, font: AuthoringFont, onUndrawable?: (u: Undrawable) => void,
+): void {
+  if (onUndrawable === undefined) return;
+  const u = coverageOf(text, font, font instanceof EmbeddedFont && font.shape);
+  if (u !== undefined) onUndrawable(u);
 }
 
 /** Build a word-wrapped paragraph element. The builder behind
  *  {@link Flow.AddParagraph}; use it to compose the `blocks` of a list item or
  *  the contents of a block quote. */
 export function paragraph(text: FlowText, o: FlowParagraphOptions = {}): FlowElement[] {
+  reportCoverage(text, o.font ?? 'Helvetica', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
   return [new TextElement(text, paragraphOptions(o), 'P', spaceBefore, spaceAfter,
     undefined, false, undefined, normalizeClear(o.clear))];
@@ -280,6 +370,8 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
     font: o.font ?? 'Helvetica-Bold',
     fontSize: o.fontSize ?? HEADING_SIZES[level - 1],
   };
+  // AFTER withDefaults, so the reported face is the one the painter will use.
+  reportCoverage(text, withDefaults.font ?? 'Helvetica-Bold', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
   return [new TextElement(text, paragraphOptions(withDefaults), 'H' + String(level),
     spaceBefore, spaceAfter, undefined, true, o.keepWithNext, normalizeClear(o.clear))];
@@ -340,6 +432,10 @@ export interface FlowListOptions {
   /** Drop the list below the floats on the given side(s) before placing it.
    *  Applies to the first item only. Default: none. */
   clear?: FlowClear;
+  /** Called when the resolved face cannot draw some or all of this text.
+   *  Opt-in: a caller who passes nothing gets the previous silence. Fires once,
+   *  at BUILD time, from the builder this option was handed to. */
+  onUndrawable?: (u: Undrawable) => void;
 }
 
 /** Resolved, validated list options (shared by every item of one list). @internal */
@@ -571,7 +667,7 @@ class ListItemElement implements FlowElement {
     const bodyOpts = bodyOptions(this.opts);
     const { usedHeight, remainder } =
       measureFlowText(this.text, ctx.width - this.indent, ctx.availHeight, bodyOpts);
-    return { usedHeight, fits: remainder === null && usedHeight > 0 };
+    return { usedHeight, fits: remainder === null };
   }
 
   place(ctx: PlaceContext): PlaceResult {
@@ -813,6 +909,10 @@ function buildListElements(items: FlowListNode[], options: FlowListOptions): Flo
     nodes.forEach((raw, index) => {
       const item = validateNode(raw);
       const itemOpts = resolveItemOptions(o, item);
+      // Per ITEM, against that item's own resolved body font. An item's
+      // `blocks` are built by their own builders and report for themselves.
+      if (item.text !== undefined)
+        reportCoverage(item.text, itemOpts.font, options.onUndrawable);
       const marker: ListMarker = item.marker !== undefined
         ? {
           kind: 'shape',
@@ -934,17 +1034,45 @@ class ImageElement implements FlowElement {
     this.ih = built.stream.dict.get('Height') as number;
   }
 
-  /** Drawn size for a given region width: default fills the region; an over-region
-   *  width clamps down (requested aspect preserved). */
-  private resolveSize(regionWidth: number): { drawW: number; drawH: number } {
+  /** Drawn size for a given region width: default fills the region; an
+   *  over-region width clamps down (requested aspect preserved).
+   *
+   *  `availHeight` is the HEIGHT sibling of that clamp (`zch2.16`), and it
+   *  lives here rather than at a second site because one function answers "how
+   *  big is this drawn" — two would let them disagree. It defaults to Infinity,
+   *  so `measure` and `place` are byte-identical to before; only `shrinkToFit`
+   *  passes a real budget, and the engine asks for that solely where the
+   *  alternative is refusing the document. */
+  private resolveSize(
+    regionWidth: number, availHeight = Infinity,
+  ): { drawW: number; drawH: number } {
     const baseW = this.reqWidth ?? regionWidth;
     const baseH = this.reqHeight !== undefined && this.reqHeight > 0
       ? this.reqHeight : baseW * (this.ih / this.iw);
-    if (baseW > regionWidth) {
-      const factor = regionWidth / baseW;
-      return { drawW: regionWidth, drawH: baseH * factor };
+    let drawW = baseW;
+    let drawH = baseH;
+    if (drawW > regionWidth) {
+      const factor = regionWidth / drawW;
+      drawW = regionWidth;
+      drawH *= factor;
     }
-    return { drawW: baseW, drawH: baseH };
+    if (drawH > availHeight) {
+      const factor = availHeight / drawH;
+      drawH = availHeight;
+      drawW *= factor;
+    }
+    return { drawW, drawH };
+  }
+
+  /** An image can always be scaled, which is what makes it the one element
+   *  type that implements this. The replacement STATES the fitted size, so its
+   *  own measure() and place() agree with the engine about what it occupies. */
+  shrinkToFit(width: number, availHeight: number): FlowElement | undefined {
+    if (!(width > 0) || !(availHeight > 0)) return undefined;
+    const { drawW, drawH } = this.resolveSize(width, availHeight);
+    if (!(drawW > 0) || !(drawH > 0)) return undefined;
+    return new ImageElement(this.built, drawW, drawH, this.align, this.alt,
+      this.spaceBefore, this.spaceAfter, this.clear);
   }
 
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
@@ -1029,13 +1157,22 @@ export function image(data: Uint8Array, options: FlowImageOptions = {}): FlowEle
 /** Sentinel enqueued by {@link Flow.AddColumnBreak}. @internal */
 interface ColumnBreak { readonly kind: 'column-break'; }
 /** A floating box enqueued by {@link Flow.AddFloatBox}. @internal */
-interface FloatItem { readonly kind: 'float'; readonly box: FloatingBox; readonly side: 'left' | 'right'; }
+interface FloatItem { readonly kind: 'float'; readonly box: FloatContent; readonly side: 'left' | 'right'; }
 type FlowItem = FlowElement | ColumnBreak | FloatItem;
 function isBreak(item: FlowItem): item is ColumnBreak {
   return (item as ColumnBreak).kind === 'column-break';
 }
 function isFloat(item: FlowItem): item is FloatItem {
   return (item as FloatItem).kind === 'float';
+}
+
+/** The float a queue item carries: an explicit FloatItem (AddFloatBox) or an
+ *  ordinary element with a marker (a CSS float). Undefined for anything that
+ *  places in flow. One lookup, so the engine has ONE float branch. @internal */
+function floatOf(item: FlowItem): { content: FloatContent; side: 'left' | 'right' } | undefined {
+  if (isFloat(item)) return { content: item.box, side: item.side };
+  const f = (item as FlowElement).float;
+  return f === undefined ? undefined : { content: f.content, side: f.side };
 }
 
 /** A flow layout container. Create via {@link Document.NewFlow}. Queue content
@@ -1128,6 +1265,15 @@ export class Flow {
     return this;
   }
 
+  /** @internal Append already-built elements. The seam AddMarkdown and AddHtml
+   *  use internally, exposed so a float can be driven from a hand-built
+   *  FloatContent with no CSS stack in the way. */
+  AddElements(elements: FlowElement[]): this {
+    if (!Array.isArray(elements)) throw new TypeError('elements must be an array');
+    this.items.push(...elements);
+    return this;
+  }
+
   /** Append a table built with `createTable`, paginating by row across columns
    *  and pages. Repeating header rows (`setRepeatingRowsCount`) reprint at the
    *  top of each continuation. Unlike `page.AddTable` this is positioned by the
@@ -1152,6 +1298,26 @@ export class Flow {
     const { elements, skipped } = markdownElements(src, options);
     this.items.push(...elements);
     return { skipped };
+  }
+
+  /** Append an HTML document: it is parsed (HTML5), styled through the CSS
+   *  cascade, laid out as a box tree and lowered onto flow elements, so the
+   *  result paginates, tags and mixes with hand-built content like any other
+   *  flow.
+   *
+   *  Resolved against this flow's COLUMN width, which is why a two-column flow
+   *  wraps where a one-column flow does not: an HTML box resolves against a
+   *  containing width when it is BUILT, not when it places.
+   *
+   *  Unlike the other `Add*` methods this returns a report rather than `this`:
+   *  `skipped` names every construct that did not render (a table, an image, a
+   *  float), and without it a caller cannot tell a dropped table from an empty
+   *  document. */
+  AddHtml(src: string | HtmlDocument, options: HtmlFlowOptions = {}): HtmlFlowResult {
+    const { elements, skipped, unsupported } =
+      htmlElements(this.doc, src, this.geometry.columnWidth, options);
+    this.items.push(...elements);
+    return { skipped, unsupported };
   }
 
   /** Force the following content to start in the next column (next page if in
@@ -1218,7 +1384,9 @@ export class Flow {
     let floats: ActiveFloat[] = [];
     // Floats deferred from a column that ran out of room, re-queued at the top
     // of the next one.
-    let pending: FloatItem[] = [];
+    // Floats deferred to the next column. FlowItem rather than FloatItem since
+    // zch2.10: a CSS float is an ordinary element carrying a marker.
+    let pending: FlowItem[] = [];
     const advanceColumn = () => {
       col++;
       if (col >= g.columns) { col = 0; pageIdx++; }
@@ -1241,43 +1409,105 @@ export class Flow {
 
       // Clear the floats the pen has passed.
       floats = pruneFloats(floats, colTop);
-
-      if (isFloat(item)) {
-        const box = item.box;
+      // A float, whether an explicit FloatItem or an element carrying a marker.
+      // The plan is computed BEFORE the branch is entered, so a degradable
+      // float that cannot fit an empty column falls through to ordinary
+      // placement below instead of continuing down the float path.
+      const fl = floatOf(item);
+      let floatPlan: { top: number; height: number; natural: number } | undefined;
+      if (fl !== undefined) {
+        const box = fl.content;
         const h = box.measure();
         const gap = atColumnStart ? 0 : pendingSpaceAfter + g.paragraphSpacing + box.spacing;
         const naturalTop = colTop - gap;
         // Never share a side; sit beside an opposing float only when the box
         // still fits the channel it leaves.
         const boxTop = resolveFloatTop(
-          floats, item.side, box.width, box.spacing, naturalTop, g.columnWidth);
-        if (boxTop - h < g.contentBottom - 1e-9) {
-          if (atColumnStart)
-            throw new Error('Flow: floating box does not fit in an empty column (column too short for the box)');
+          floats, fl.side, box.width, box.spacing, naturalTop, g.columnWidth);
+        if (boxTop - h >= g.contentBottom - 1e-9) {
+          floatPlan = { top: boxTop, height: h, natural: naturalTop };
+        } else if (!atColumnStart) {
           // Defer rather than advancing: taking the column with us would abandon
           // the rest of it. Following content keeps filling this column and the
           // box leads the next one. A column start has no active floats, so a
-          // carried float there either fits or throws — this terminates.
+          // carried float there either fits, degrades, or throws — this
+          // terminates.
           pending.push(item);
           queue.shift();
           continue;
+        } else {
+          // Too tall even for an EMPTY column. Split if the content can
+          // fragment (zch2.15); otherwise degrade, or throw. This is the ONLY
+          // caller of splitPaint, and it runs at a column start, so the budget
+          // is the whole column.
+          let splitHeight = 0;
+          let splitTail: FlowElement | undefined;
+          if (box.splitPaint !== undefined) {
+            const page = ensurePage(pageIdx);
+            const boxX = fl.side === 'left'
+              ? columnX(g, col)
+              : columnX(g, col) + g.columnWidth - box.width;
+            const s = box.splitPaint(
+              page, boxX, boxTop, boxTop - g.contentBottom, fl.side, structParent);
+            splitHeight = s.height;
+            splitTail = s.tail;
+          }
+          if (splitHeight > 0) {
+            // The band comes from what was PAINTED. After a split that differs
+            // from `h`, and reading `h` narrows the channel past the column
+            // bottom for every element below.
+            floats.push({
+              side: fl.side, band: box.width + box.spacing, bottom: boxTop - splitHeight,
+            });
+            if (boxTop === naturalTop) colTop = boxTop;
+            atColumnStart = false;
+            pendingSpaceAfter = 0;
+            queue.shift();
+            // The tail leads the next column through the same `pending`
+            // mechanism a deferred float already uses. It is accepted only
+            // when something was painted, so it is strictly shorter than what
+            // produced it and the split terminates.
+            if (splitTail !== undefined) pending.push(splitTail);
+            continue;
+          }
+          // splitPaint absent, or it painted nothing because the content
+          // cannot fragment at all. Either way the call had no effect, so
+          // degrading here is clean: floatPlan stays undefined and we fall
+          // through. The marker rides ON a FlowElement, so "not floating it"
+          // is just placing it, frame and content intact — there is no
+          // fallback rendering path to write.
+          box.onDegraded?.();
+          if (box.degradeOnOverflow !== true) {
+            throw new Error('Flow: floating box does not fit in an empty column (column too short for the box)');
+          }
         }
+      }
+      if (fl !== undefined && floatPlan !== undefined) {
+        const box = fl.content;
         const page = ensurePage(pageIdx);
-        const boxX = item.side === 'left'
+        const boxX = fl.side === 'left'
           ? columnX(g, col)
           : columnX(g, col) + g.columnWidth - box.width;
-        box.paintAt(page, boxX, boxTop, structParent);
-        floats.push({ side: item.side, band: box.width + box.spacing, bottom: boxTop - h });
+        box.paintAt(page, boxX, floatPlan.top, structParent);
+        floats.push({
+          side: fl.side, band: box.width + box.spacing, bottom: floatPlan.top - floatPlan.height,
+        });
         // A float never advances the pen past itself: one placed at the pen
         // consumes its leading gap, a pushed one leaves the pen alone. The
         // comparison is exact — resolveFloatTop returns the very naturalTop it
         // was given when nothing pushes the box.
-        if (boxTop === naturalTop) colTop = boxTop;
+        if (floatPlan.top === floatPlan.natural) colTop = floatPlan.top;
         atColumnStart = false;
         pendingSpaceAfter = 0;
         queue.shift();
         continue;
       }
+
+      // Past the float branch `item` is an ELEMENT. A FloatItem always
+      // continues above — it paints, defers, or throws — because FloatingBox
+      // never sets degradeOnOverflow; the only thing that falls through here is
+      // a degrading element float, which places like any other element.
+      const item2: FlowElement = item as FlowElement;
 
       // Clear: drop the pen below the floats on the requested side(s). Idempotent
       // — the cleared floats are pruned, so re-entering with the same element
@@ -1285,8 +1515,8 @@ export class Flow {
       // deeper float on the other side stays in force and still narrows the
       // region. Moves the pen only — the gap below is computed as usual, and
       // atColumnStart is untouched.
-      if (item.clear) {
-        const target = clearTo(floats, item.clear);
+      if (item2.clear) {
+        const target = clearTo(floats, item2.clear);
         if (target !== undefined) {
           colTop = target;
           floats = pruneFloats(floats, colTop);
@@ -1295,7 +1525,7 @@ export class Flow {
 
       // Gap above this element, dropped entirely at a column top.
       const gap = atColumnStart ? 0
-        : pendingSpaceAfter + g.paragraphSpacing + (item.spaceBefore ?? 0);
+        : pendingSpaceAfter + g.paragraphSpacing + (item2.spaceBefore ?? 0);
       const top = colTop - gap;
 
       // Region: narrowed by the floats in force at `top`, and capped at the y
@@ -1319,15 +1549,17 @@ export class Flow {
       // Keep-with-next: an eligible heading that fully fits here but leaves no room
       // for the next element's first line pushes to the next column. Never at a
       // column start (that would loop) and never beside a float (out of scope).
-      const keep = item.keepWithNextEligible
-        && (item.keepWithNext ?? this.keepHeadingsWithNext);
-      if (keep && !atColumnStart && !besideFloat && item.measure) {
-        const self = item.measure({ width: elemWidth, availHeight });
-        if (self.fits) {
+      const keep = item2.keepWithNextEligible
+        && (item2.keepWithNext ?? this.keepHeadingsWithNext);
+      if (keep && !atColumnStart && !besideFloat && item2.measure) {
+        const self = item2.measure({ width: elemWidth, availHeight });
+        // `fits` alone now admits an element with nothing to draw; such a heading
+        // has no ink to keep with anything, so it must not push the column.
+        if (self.fits && self.usedHeight > 0) {
           const next = queue.length > 1 && !isBreak(queue[1]) && !isFloat(queue[1])
             ? (queue[1] as FlowElement) : undefined;
           if (next?.measure) {
-            const gapNext = (item.spaceAfter ?? 0) + g.paragraphSpacing + (next.spaceBefore ?? 0);
+            const gapNext = (item2.spaceAfter ?? 0) + g.paragraphSpacing + (next.spaceBefore ?? 0);
             const remaining = (top - self.usedHeight) - gapNext - g.contentBottom;
             if (next.measure({ width: g.columnWidth, availHeight: remaining }).usedHeight <= 0) {
               advanceColumn();
@@ -1338,7 +1570,7 @@ export class Flow {
       }
 
       const page = ensurePage(pageIdx); // create a page only when content needs it
-      const res = item.place({
+      const res = item2.place({
         doc: this.doc, page, x: elemX, top, width: elemWidth, availHeight,
         paragraphSpacing: g.paragraphSpacing, structParent,
       });
@@ -1358,7 +1590,7 @@ export class Flow {
             advanceColumn();
           }
         } else {
-          pendingSpaceAfter = item.spaceAfter ?? 0;
+          pendingSpaceAfter = item2.spaceAfter ?? 0;
         }
         continue;
       }
@@ -1370,8 +1602,47 @@ export class Flow {
         floats = pruneFloats(floats, colTop);
         continue;
       }
-      if (atColumnStart)
-        throw new Error('Flow: element does not fit in an empty column (column too short for its content)');
+      if (atColumnStart) {
+        // Last resort before refusing the document (zch2.16). Asked ONLY here,
+        // where availHeight is the whole column: a tall image near a column
+        // FOOT must move to the next column rather than shrink to the gap it
+        // happens to find.
+        const shrunk = item2.shrinkToFit?.(elemWidth, availHeight);
+        // Accepted only when the replacement actually FITS. That is the
+        // termination proof: one still too tall would be asked again at this
+        // same column start, forever.
+        if (shrunk !== undefined
+          && shrunk.measure?.({ width: elemWidth, availHeight })?.fits === true) {
+          item2.onCompromise?.('scaled');
+          queue[0] = shrunk;
+          continue;
+        }
+        // Cannot be scaled: draw it at its natural size, overflowing the
+        // column, rather than refusing the whole document. Only UNSPLITTABLE
+        // content reaches here — a paragraph, a table and (since zch2.15) a
+        // float all split — so the overflow is ONE element, never a cascade.
+        item2.onCompromise?.('overflow');
+        // The budget must be FINITE: `place` builds its rect from it and
+        // stamp.ts refuses a non-finite rect. `measure` at a generous probe
+        // reports the element's natural height, which is exactly the room the
+        // overflow needs — and keeps the emitted rect tight rather than
+        // astronomically tall.
+        const natural = item2.measure?.(
+          { width: elemWidth, availHeight: OVERFLOW_PROBE },
+        )?.usedHeight;
+        const over = item2.place({
+          doc: this.doc, page, x: elemX, top, width: elemWidth,
+          availHeight: natural !== undefined && natural > 0 ? natural : OVERFLOW_PROBE,
+          paragraphSpacing: g.paragraphSpacing, structParent,
+        });
+        queue.shift();
+        if (over.drew) {
+          colTop = top - over.usedHeight;
+          atColumnStart = false;
+          pendingSpaceAfter = item2.spaceAfter ?? 0;
+        }
+        continue;
+      }
       advanceColumn();
     }
 

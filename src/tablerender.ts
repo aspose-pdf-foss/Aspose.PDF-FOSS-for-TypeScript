@@ -9,8 +9,9 @@ import type { StructElement } from './struct.js';
 import { TableTagger, validateTableTagging } from './tabletag.js';
 import {
   TableBuilder, resolveCellStyle, ResolvedStyle, BorderInfo, CellImageOptions,
-  resolveBorderSides, borderEdgeCount,
+  resolveBorderSides, borderEdgeCount, reportTableCoverage,
 } from './tableauthor.js';
+import type { Undrawable } from './textcoverage.js';
 import type { SpanGrid } from './tablespan.js';
 
 /** Options for {@link drawTable} / `page.AddTable`. */
@@ -46,6 +47,11 @@ export interface AddTableOptions {
    *  how a manual-pagination loop keeps one table across pages — pass back
    *  {@link AddTableResult.struct}. Requires `tagged: true`. */
   structParent?: StructElement;
+  /** Called for each cell whose resolved face cannot draw some or all of its
+   *  text. Opt-in; a caller who passes nothing gets the previous silence.
+   *  Fires once per cell, before anything is drawn — page.AddTable is the one
+   *  table consumer that does not route through flowtable.ts's builder. */
+  onUndrawable?: (u: Undrawable) => void;
 }
 
 /** The outcome of {@link drawTable} / `page.AddTable`. */
@@ -288,6 +294,7 @@ export function drawTable(
   x: number, top: number, opts: AddTableOptions,
 ): AddTableResult {
   validateTableTagging(doc, opts);
+  if (opts.onUndrawable !== undefined) reportTableCoverage(table, opts.onUndrawable);
   // The draw-time cellPadding override stands in for the table level of the
   // cascade, and padding is part of a column's natural width — so auto-fit has
   // to see it.

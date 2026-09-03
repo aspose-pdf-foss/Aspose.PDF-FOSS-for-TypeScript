@@ -1,0 +1,828 @@
+{
+ "chrome": "Chrome/152.0.7977.54",
+ "cases": [
+  {
+   "id": "cascade-order",
+   "html": "<style>p{color:red}p{color:blue}</style><p>x</p>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 255)"
+    }
+   ]
+  },
+  {
+   "id": "specificity",
+   "html": "<style>p{color:red}#t{color:blue}.c{color:green}</style><p id=t class=c>x</p>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 255)"
+    }
+   ]
+  },
+  {
+   "id": "important-and-inline",
+   "html": "<style>#a{color:red}#b{color:red!important}</style><p id=a style=\"color:blue\">x</p><p id=b style=\"color:blue\">y</p>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 255)"
+    },
+    {
+     "color": "rgb(255, 0, 0)"
+    }
+   ]
+  },
+  {
+   "id": "inline-important",
+   "html": "<style>#t{color:red!important}</style><p id=t style=\"color:blue!important\">x</p>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 255)"
+    }
+   ]
+  },
+  {
+   "id": "inheritance",
+   "html": "<style>#o{color:red;font-style:italic;background-color:lime}</style><div id=o><p id=t>x</p></div>",
+   "props": [
+    "color",
+    "font-style",
+    "background-color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-style": "normal",
+     "background-color": "rgba(0, 0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-style": "normal",
+     "background-color": "rgba(0, 0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-style": "normal",
+     "background-color": "rgba(0, 0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-style": "normal",
+     "background-color": "rgba(0, 0, 0, 0)"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "font-style": "italic",
+     "background-color": "rgb(0, 255, 0)"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "font-style": "italic",
+     "background-color": "rgba(0, 0, 0, 0)"
+    }
+   ]
+  },
+  {
+   "id": "shorthand-order",
+   "html": "<style>#a{margin:0;margin-top:5px}#b{margin-top:5px;margin:0}</style><p id=a>x</p><p id=b>y</p>",
+   "props": [
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left"
+   ],
+   "values": [
+    {
+     "margin-top": "0px",
+     "margin-right": "0px",
+     "margin-bottom": "0px",
+     "margin-left": "0px"
+    },
+    {
+     "margin-top": "0px",
+     "margin-right": "0px",
+     "margin-bottom": "0px",
+     "margin-left": "0px"
+    },
+    {
+     "margin-top": "0px",
+     "margin-right": "0px",
+     "margin-bottom": "0px",
+     "margin-left": "0px"
+    },
+    {
+     "margin-top": "8px",
+     "margin-right": "8px",
+     "margin-bottom": "8px",
+     "margin-left": "8px"
+    },
+    {
+     "margin-top": "5px",
+     "margin-right": "0px",
+     "margin-bottom": "0px",
+     "margin-left": "0px"
+    },
+    {
+     "margin-top": "0px",
+     "margin-right": "0px",
+     "margin-bottom": "0px",
+     "margin-left": "0px"
+    }
+   ]
+  },
+  {
+   "id": "border-shorthand",
+   "html": "<style>#t{border:2px solid red;border-left-color:blue}</style><p id=t>x</p>",
+   "props": [
+    "border-top-width",
+    "border-top-style",
+    "border-top-color",
+    "border-left-color",
+    "border-right-style"
+   ],
+   "values": [
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-left-color": "rgb(0, 0, 0)",
+     "border-right-style": "none"
+    },
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-left-color": "rgb(0, 0, 0)",
+     "border-right-style": "none"
+    },
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-left-color": "rgb(0, 0, 0)",
+     "border-right-style": "none"
+    },
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-left-color": "rgb(0, 0, 0)",
+     "border-right-style": "none"
+    },
+    {
+     "border-top-width": "2px",
+     "border-top-style": "solid",
+     "border-top-color": "rgb(255, 0, 0)",
+     "border-left-color": "rgb(0, 0, 255)",
+     "border-right-style": "solid"
+    }
+   ]
+  },
+  {
+   "id": "relative-lengths",
+   "html": "<style>html{font-size:16px}#o{font-size:20px}#t{font-size:2em;margin-top:2em;text-indent:1rem}</style><div id=o><p id=t>x</p></div>",
+   "props": [
+    "font-size",
+    "margin-top",
+    "text-indent"
+   ],
+   "values": [
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "8px",
+     "text-indent": "0px"
+    },
+    {
+     "font-size": "20px",
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "font-size": "40px",
+     "margin-top": "80px",
+     "text-indent": "16px"
+    }
+   ]
+  },
+  {
+   "id": "line-height-number-vs-percentage",
+   "html": "<style>#a{font-size:10px;line-height:1.5}#b{font-size:10px;line-height:150%}.k{font-size:20px;line-height:inherit}</style><div id=a><p id=ta class=k>x</p></div><div id=b><p id=tb class=k>y</p></div>",
+   "props": [
+    "line-height",
+    "font-size"
+   ],
+   "values": [
+    {
+     "line-height": "normal",
+     "font-size": "16px"
+    },
+    {
+     "line-height": "normal",
+     "font-size": "16px"
+    },
+    {
+     "line-height": "normal",
+     "font-size": "16px"
+    },
+    {
+     "line-height": "normal",
+     "font-size": "16px"
+    },
+    {
+     "line-height": "15px",
+     "font-size": "10px"
+    },
+    {
+     "line-height": "30px",
+     "font-size": "20px"
+    },
+    {
+     "line-height": "15px",
+     "font-size": "10px"
+    },
+    {
+     "line-height": "15px",
+     "font-size": "20px"
+    }
+   ]
+  },
+  {
+   "id": "current-color",
+   "html": "<style>#t{color:red;border-top-style:solid;border-top-width:3px}</style><p id=t>x</p>",
+   "props": [
+    "color",
+    "border-top-color",
+    "border-top-width",
+    "border-top-style"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-top-width": "0px",
+     "border-top-style": "none"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-top-width": "0px",
+     "border-top-style": "none"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-top-width": "0px",
+     "border-top-style": "none"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "border-top-color": "rgb(0, 0, 0)",
+     "border-top-width": "0px",
+     "border-top-style": "none"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "border-top-color": "rgb(255, 0, 0)",
+     "border-top-width": "3px",
+     "border-top-style": "solid"
+    }
+   ]
+  },
+  {
+   "id": "css-wide-keywords",
+   "html": "<style>#o{color:red;font-weight:bold}#a{color:inherit}#b{color:initial}#c{color:unset}#d{font-weight:unset}</style><div id=o><p id=a>a</p><p id=b>b</p><p id=c>c</p><p id=d>d</p></div>",
+   "props": [
+    "color",
+    "font-weight"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-weight": "400"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-weight": "400"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-weight": "400"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-weight": "400"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "font-weight": "700"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "font-weight": "700"
+    },
+    {
+     "color": "rgb(0, 0, 0)",
+     "font-weight": "700"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "font-weight": "700"
+    },
+    {
+     "color": "rgb(255, 0, 0)",
+     "font-weight": "700"
+    }
+   ]
+  },
+  {
+   "id": "font-shorthand",
+   "html": "<style>#t{font:italic bold 12px/1.5 Georgia, serif}</style><p id=t>x</p>",
+   "props": [
+    "font-style",
+    "font-weight",
+    "font-size",
+    "line-height"
+   ],
+   "values": [
+    {
+     "font-style": "normal",
+     "font-weight": "400",
+     "font-size": "16px",
+     "line-height": "normal"
+    },
+    {
+     "font-style": "normal",
+     "font-weight": "400",
+     "font-size": "16px",
+     "line-height": "normal"
+    },
+    {
+     "font-style": "normal",
+     "font-weight": "400",
+     "font-size": "16px",
+     "line-height": "normal"
+    },
+    {
+     "font-style": "normal",
+     "font-weight": "400",
+     "font-size": "16px",
+     "line-height": "normal"
+    },
+    {
+     "font-style": "italic",
+     "font-weight": "700",
+     "font-size": "12px",
+     "line-height": "18px"
+    }
+   ]
+  },
+  {
+   "id": "media-print",
+   "html": "<style>@media print{#t{color:red}}@media screen{#t{color:lime}}</style><p id=t>x</p>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(255, 0, 0)"
+    }
+   ]
+  },
+  {
+   "id": "calc-lengths",
+   "html": "<style>html{font-size:16px}#t{font-size:calc(1em + 4px);margin-top:calc(10px * 2);text-indent:calc(2rem - 6px);line-height:calc(1.5 * 2)}</style><div id=t>x</div>",
+   "props": [
+    "font-size",
+    "margin-top",
+    "text-indent",
+    "line-height"
+   ],
+   "values": [
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "line-height": "normal"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "line-height": "normal"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "line-height": "normal"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "8px",
+     "text-indent": "0px",
+     "line-height": "normal"
+    },
+    {
+     "font-size": "20px",
+     "margin-top": "20px",
+     "text-indent": "26px",
+     "line-height": "60px"
+    }
+   ]
+  },
+  {
+   "id": "calc-units-and-nesting",
+   "html": "<style>html{font-size:16px}#o{font-size:20px}#t{margin-top:calc(1in - 24pt);text-indent:calc(1em + calc(2 * 3px));padding-top:calc((10px + 2px) / 4)}</style><div id=o><div id=t>x</div></div>",
+   "props": [
+    "font-size",
+    "margin-top",
+    "text-indent",
+    "padding-top"
+   ],
+   "values": [
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "padding-top": "0px"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "padding-top": "0px"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "padding-top": "0px"
+    },
+    {
+     "font-size": "16px",
+     "margin-top": "8px",
+     "text-indent": "0px",
+     "padding-top": "0px"
+    },
+    {
+     "font-size": "20px",
+     "margin-top": "0px",
+     "text-indent": "0px",
+     "padding-top": "0px"
+    },
+    {
+     "font-size": "20px",
+     "margin-top": "64px",
+     "text-indent": "26px",
+     "padding-top": "3px"
+    }
+   ]
+  },
+  {
+   "id": "min-max-clamp",
+   "html": "<style>html{font-size:16px}#a{margin-top:min(30px, 1em)}#b{margin-top:max(30px, 1em)}#c{text-indent:clamp(40px, 2px, 10px)}#d{text-indent:clamp(10px, 25px, 40px)}</style><div id=a>a</div><div id=b>b</div><div id=c>c</div><div id=d>d</div>",
+   "props": [
+    "margin-top",
+    "text-indent"
+   ],
+   "values": [
+    {
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "margin-top": "0px",
+     "text-indent": "0px"
+    },
+    {
+     "margin-top": "8px",
+     "text-indent": "0px"
+    },
+    {
+     "margin-top": "16px",
+     "text-indent": "0px"
+    },
+    {
+     "margin-top": "30px",
+     "text-indent": "0px"
+    },
+    {
+     "margin-top": "0px",
+     "text-indent": "40px"
+    },
+    {
+     "margin-top": "0px",
+     "text-indent": "25px"
+    }
+   ]
+  },
+  {
+   "id": "calc-invalid",
+   "html": "<style>#a{margin-top:calc(1px + 2)}#b{margin-top:calc(2px * 3px)}#c{margin-top:calc(1px-2px)}#d{margin-top:calc(5px)}</style><div id=a>a</div><div id=b>b</div><div id=c>c</div><div id=d>d</div>",
+   "props": [
+    "margin-top"
+   ],
+   "values": [
+    {
+     "margin-top": "0px"
+    },
+    {
+     "margin-top": "0px"
+    },
+    {
+     "margin-top": "0px"
+    },
+    {
+     "margin-top": "8px"
+    },
+    {
+     "margin-top": "0px"
+    },
+    {
+     "margin-top": "0px"
+    },
+    {
+     "margin-top": "0px"
+    },
+    {
+     "margin-top": "5px"
+    }
+   ]
+  },
+  {
+   "id": "var-basic-and-inheritance",
+   "html": "<style>#o{--c:rgb(1,2,3)}#a{color:var(--c)}#b{--c:rgb(4,5,6);color:var(--c)}</style><div id=o><p id=a>a</p><p id=b>b</p></div>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(1, 2, 3)"
+    },
+    {
+     "color": "rgb(4, 5, 6)"
+    }
+   ]
+  },
+  {
+   "id": "var-fallback",
+   "html": "<style>#o{color:rgb(0,128,0)}#a{color:var(--nope, rgb(1,2,3))}#b{--x:10px;color:var(--x, rgb(9,9,9))}#c{--a:var(--b);--b:var(--a);color:var(--a, rgb(4,5,6))}</style><div id=o><p id=a>a</p><p id=b>b</p><p id=c>c</p></div>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 128, 0)"
+    },
+    {
+     "color": "rgb(1, 2, 3)"
+    },
+    {
+     "color": "rgb(0, 128, 0)"
+    },
+    {
+     "color": "rgb(4, 5, 6)"
+    }
+   ]
+  },
+  {
+   "id": "var-case-sensitivity",
+   "html": "<style>#o{color:rgb(0,128,0)}#t{--Foo:rgb(1,2,3);color:var(--foo, rgb(4,5,6))}</style><div id=o><p id=t>x</p></div>",
+   "props": [
+    "color"
+   ],
+   "values": [
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 0, 0)"
+    },
+    {
+     "color": "rgb(0, 128, 0)"
+    },
+    {
+     "color": "rgb(4, 5, 6)"
+    }
+   ]
+  },
+  {
+   "id": "var-in-shorthand-and-calc",
+   "html": "<style>html{font-size:16px}#a{--c:rgb(4,5,6);border:2px solid var(--c)}#b{--w:3px;border:var(--w) dashed rgb(7,8,9)}#c{--m:10px;margin-top:calc(var(--m) * 2);--all:1px;border-top-width:var(--all);border-top-style:solid}</style><div id=a>a</div><div id=b>b</div><div id=c>c</div>",
+   "props": [
+    "border-top-width",
+    "border-top-style",
+    "border-top-color",
+    "margin-top"
+   ],
+   "values": [
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "margin-top": "0px"
+    },
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "margin-top": "0px"
+    },
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "margin-top": "0px"
+    },
+    {
+     "border-top-width": "0px",
+     "border-top-style": "none",
+     "border-top-color": "rgb(0, 0, 0)",
+     "margin-top": "8px"
+    },
+    {
+     "border-top-width": "2px",
+     "border-top-style": "solid",
+     "border-top-color": "rgb(4, 5, 6)",
+     "margin-top": "0px"
+    },
+    {
+     "border-top-width": "3px",
+     "border-top-style": "dashed",
+     "border-top-color": "rgb(7, 8, 9)",
+     "margin-top": "0px"
+    },
+    {
+     "border-top-width": "1px",
+     "border-top-style": "solid",
+     "border-top-color": "rgb(0, 0, 0)",
+     "margin-top": "20px"
+    }
+   ]
+  },
+  {
+   "id": "text-decoration",
+   "html": "<style>#o{text-decoration:underline dotted red}</style><div id=o><p id=t>x</p></div>",
+   "props": [
+    "text-decoration-line",
+    "text-decoration-style",
+    "text-decoration-color"
+   ],
+   "values": [
+    {
+     "text-decoration-line": "none",
+     "text-decoration-style": "solid",
+     "text-decoration-color": "rgb(0, 0, 0)"
+    },
+    {
+     "text-decoration-line": "none",
+     "text-decoration-style": "solid",
+     "text-decoration-color": "rgb(0, 0, 0)"
+    },
+    {
+     "text-decoration-line": "none",
+     "text-decoration-style": "solid",
+     "text-decoration-color": "rgb(0, 0, 0)"
+    },
+    {
+     "text-decoration-line": "none",
+     "text-decoration-style": "solid",
+     "text-decoration-color": "rgb(0, 0, 0)"
+    },
+    {
+     "text-decoration-line": "underline",
+     "text-decoration-style": "dotted",
+     "text-decoration-color": "rgb(255, 0, 0)"
+    },
+    {
+     "text-decoration-line": "none",
+     "text-decoration-style": "solid",
+     "text-decoration-color": "rgb(0, 0, 0)"
+    }
+   ]
+  }
+ ]
+}

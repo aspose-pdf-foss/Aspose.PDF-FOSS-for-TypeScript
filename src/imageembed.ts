@@ -198,6 +198,29 @@ export function addImage(
  *  Clones the image stream (and its soft mask) before allocating, so a single
  *  `BuiltImage` can be embedded independently on several pages (e.g. a repeating
  *  table header). Registers a fresh `/ImN` XObject and appends the draw. */
+/** An image's intrinsic size in PIXELS, or undefined for bytes this module
+ *  cannot read.
+ *
+ *  It goes through buildImageXObject rather than re-reading the headers,
+ *  because two readings of one header is how they come to disagree about a
+ *  picture — the rule imagehref.ts records for its own decoder. The cost is a
+ *  header parse rather than a decode: no sample data is touched for a JPEG or
+ *  a PNG, whose dimensions live in SOF/IHDR.
+ *
+ *  Undefined rather than a throw: cssflow.ts routes it straight to the
+ *  `image:<src>`/dropped report it already has. */
+export function imageSize(data: Uint8Array): { width: number; height: number } | undefined {
+  try {
+    const built = buildImageXObject(data);
+    const width = built.stream.dict.get('Width');
+    const height = built.stream.dict.get('Height');
+    return typeof width === 'number' && typeof height === 'number'
+      ? { width, height } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function drawBuiltImage(
   doc: Document, page: Page, built: BuiltImage,
   rect: [number, number, number, number],

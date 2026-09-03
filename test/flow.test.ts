@@ -191,12 +191,17 @@ describe('flow images (AddImage)', () => {
     expect(has(pages[1], /260 0 0 130 /)).toBe(true); // whole image on page 2
   });
 
-  it('throws when an image is taller than an empty column', () => {
+  it('SCALES an image taller than an empty column rather than refusing', () => {
+    // This threw until zch2.16. An image is the one element with an aspect
+    // ratio and no other meaning, so it shrinks to the column instead.
     const doc = Document.Open(buildBlankPage());
     const flow = doc.NewFlow({ format: PageFormat.custom(300, 100), columns: 1,
       marginLeft: 20, marginRight: 20, marginTop: 20, marginBottom: 20 }); // colH 60 < 130
     flow.AddImage(buildPngRgb());
-    expect(() => flow.Render()).toThrow(/does not fit in an empty column/i);
+    const pages = flow.Render();
+    expect(pages.length).toBe(1);
+    // 2:1 source in a 260x60 column: height-bound at 60, so 120 wide.
+    expect(has(pages[0], /120 0 0 60 /)).toBe(true);
   });
 
   it('spaceAfter shifts following content by the given points', () => {
@@ -465,7 +470,9 @@ describe('Flow engine', () => {
     expect(() => flow.Render()).toThrow(/already rendered/i);
   });
 
-  it('throws when an element cannot fit an empty column', () => {
+  it('OVERFLOWS an element that cannot fit an empty column', () => {
+    // This threw until zch2.16. Text cannot be scaled, so it draws past the
+    // column bottom rather than taking the whole document with it.
     const doc = Document.Open(buildBlankPage());
     // Column height ~ 8pt but leading 40 → not even one line fits.
     const flow = new Flow(doc, {
@@ -473,7 +480,9 @@ describe('Flow engine', () => {
       marginLeft: 20, marginRight: 20, marginTop: 26, marginBottom: 26,
     });
     flow.AddParagraph('too tall', { fontSize: 30, leading: 40 });
-    expect(() => flow.Render()).toThrow(/does not fit/i);
+    const pages = flow.Render();
+    expect(pages.length).toBe(1);
+    expect(pages[0].GetText()).toContain('too tall');
   });
 });
 

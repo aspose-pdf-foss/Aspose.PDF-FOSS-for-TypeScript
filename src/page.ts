@@ -55,6 +55,9 @@ import {
 import type { TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
 import { untagObjects } from './structwrite.js';
 import { markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
+import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
+import type { NotRendered } from './htmlreport.js';
+import type { HtmlDocument } from './htmldom.js';
 import { placeElements } from './flowplace.js';
 import type { MdDocument } from './mdast.js';
 import type { StructElement } from './struct.js';
@@ -570,6 +573,43 @@ export class Page {
       structParent: options.structParent,
     });
     return { usedHeight, remainder, skipped };
+  }
+
+  /** Lay an HTML document into the rectangle [x, y, w, h] (PDF user space,
+   *  `y` the bottom edge) on this page. Existing content is preserved.
+   *
+   *  Returns `usedHeight`, the `skipped` and `unsupported` reports, and a
+   *  `remainder` of the elements that did not fit — pass it to `placeElements`
+   *  to continue into another rect or another page. For a document that should
+   *  paginate itself, use `Document.AddHtml` or a `Flow`.
+   *
+   *  `rect[2]` is the containing width the CSS boxes resolve against. */
+  AddHtml(
+    src: string | HtmlDocument,
+    rect: [number, number, number, number],
+    options: HtmlFlowOptions & {
+      /** Gap between consecutive blocks, on top of the CSS margins. Default 0,
+       *  and leaving it there is what lets a collapsed margin reproduce
+       *  exactly — flow.ts ADDS this between every pair. */
+      paragraphSpacing?: number;
+      /** Grouping element the content tags under. Omit for untagged output. */
+      structParent?: StructElement;
+    } = {},
+  ): AddHtmlResult {
+    // See Document.AddHtml: a fresh array on the way out, never a mutation of
+    // the one htmlElements returned (zch2.16).
+    const late: NotRendered[] = [];
+    const sink = (r: NotRendered): void => {
+      late.push(r);
+      options.onNotRendered?.(r);
+    };
+    const { elements, skipped, unsupported } =
+      htmlElements(this.doc, src, rect[2], { ...options, onNotRendered: sink });
+    const { usedHeight, remainder } = placeElements(this.doc, this, elements, rect, {
+      paragraphSpacing: options.paragraphSpacing,
+      structParent: options.structParent,
+    });
+    return { usedHeight, remainder, skipped: [...skipped, ...late], unsupported };
   }
 
   /** Start a buffered vector-drawing session on this page. Operators are

@@ -87,6 +87,11 @@ import { DEFAULT_PLACEHOLDER_BYTES, fillSignature } from './sigplaceholder.js';
 import { buildTimeStampRequest, extractTimeStampToken, type TimestampProvider } from './rfc3161.js';
 import { Flow, type FlowOptions } from './flow.js';
 import type { MarkdownFlowOptions } from './mdflow.js';
+import { documentTitle, type HtmlFlowOptions } from './htmlflow.js';
+import { parseHtml } from './htmltree.js';
+import type { HtmlDocument } from './htmldom.js';
+import type { UnsupportedDeclaration } from './cssprop.js';
+import type { NotRendered } from './htmlreport.js';
 import type { MdDocument } from './mdast.js';
 import { FloatingBox, type FloatBoxOptions } from './floatbox.js';
 import { PageFormat } from './pageformat.js';
@@ -2333,6 +2338,57 @@ export class Document {
       this.DisplayDocTitle = true;
     }
     return { pages, skipped };
+  }
+
+  /** Render a whole HTML document, appending freshly sized pages to the end of
+   *  this document. The one-call form of `NewFlow` + `AddHtml` + `Render`;
+   *  `options` carries both the HTML options (`resolveFamily`) and the flow's
+   *  page geometry (`format`, `columns`, `margin*`, `tagged`, `lang`).
+   *
+   *  The document's own `<title>` becomes the PDF title when no explicit
+   *  `title` is given — an explicit one always wins. Unlike Markdown, which
+   *  has no title construct, an HTML document STATES its title, so carrying it
+   *  into `/Info /Title`, XMP `dc:title` and
+   *  `/ViewerPreferences /DisplayDocTitle` reads the document rather than
+   *  inventing a fact. All three are written together: a title without the
+   *  flag satisfies neither PDF/UA nor the caller's intent.
+   *
+   *  That applies here and on neither of the other two entry points, which
+   *  append to a document whose title is someone else's business. */
+  AddHtml(
+    src: string | HtmlDocument,
+    options: HtmlFlowOptions & FlowOptions & {
+      /** Document title. Non-empty. Default: the source's `<title>`, else the
+       *  document's title is untouched. */
+      title?: string;
+    } = {},
+  ): { pages: Page[]; skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] } {
+    // Validated before anything is allocated, so a rejected call leaves the
+    // document byte-identical — the rule every authoring entry point follows.
+    const explicit = options.title;
+    if (explicit !== undefined && (typeof explicit !== 'string' || explicit === ''))
+      throw new TypeError('title must be a non-empty string');
+    // Parsed ONCE: the title is read from the tree the flow then lowers.
+    const root = typeof src === 'string' ? parseHtml(src) : src;
+    const flow = new Flow(this, options);
+    // Placement-time reports (zch2.16). Collected into a LOCAL array and
+    // concatenated on the way out, never appended to the array flow.AddHtml
+    // already handed back — nothing may mutate under a caller. A caller's own
+    // sink still fires.
+    const late: NotRendered[] = [];
+    const sink = (r: NotRendered): void => {
+      late.push(r);
+      options.onNotRendered?.(r);
+    };
+    const { skipped, unsupported } =
+      flow.AddHtml(root, { ...options, onNotRendered: sink });
+    const pages = flow.Render();
+    const title = explicit ?? documentTitle(root);
+    if (title !== undefined) {
+      this.SetMetadata({ title });   // mirrors to XMP dc:title on its own
+      this.DisplayDocTitle = true;
+    }
+    return { pages, skipped: [...skipped, ...late], unsupported };
   }
 
   /** Create a {@link FloatingBox} bound to this document. Add content with

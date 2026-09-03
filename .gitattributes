@@ -6,3 +6,11 @@
 # outright rather than relying on the sniff.
 test/fixtures/jpeg/*.jpg binary
 test/fixtures/jpeg/*.ppm binary
+
+# The WPT tree-construction corpus carries lone CR bytes inside #data payloads
+# (processing-instructions.dat's `<?hey\rthere=1?>` is one) and other bytes the
+# format deliberately makes unsafe. eol=lf normalization leaves a lone CR alone
+# today, but these are byte-exact-or-worthless like the jpeg fixtures above, so
+# say so rather than relying on that. -text rather than binary: they are a text
+# corpus people read in a diff.
+test/fixtures/wpt/tree-construction/*.dat -text
