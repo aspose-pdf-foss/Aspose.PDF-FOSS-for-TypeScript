@@ -219,3 +219,90 @@ describe('appendSignatureUpdate', () => {
     expect(result.signatureValid).toBe(true);
   });
 });
+
+describe('incremental update: free entries and generations', () => {
+  /** The appended region: everything after the original byte image. */
+  const appended = (out: Uint8Array, base: Uint8Array): string =>
+    new TextDecoder('latin1').decode(out.subarray(base.length));
+
+  // Asserted on the emitted section text rather than through readXref, which
+  // provably cannot see this: readClassicTable records an entry only when the
+  // keyword is 'n', so a free entry never shadows the older offset entry it is
+  // meant to supersede. Tracked as 2yvi.
+  it('writes an f entry for a freed object, with the generation incremented', () => {
+    const base = buildClassicPdf(1);
+    const out = appendIncrementalUpdate(base, { objects: new Map(), freed: new Set([3]) });
+    expect(appended(out, base)).toMatch(/^0000000000 00001 f $/m);
+  });
+
+  it('names the freed object in its own xref subsection', () => {
+    const base = buildClassicPdf(1);
+    const out = appendIncrementalUpdate(base, { objects: new Map(), freed: new Set([3]) });
+    expect(appended(out, base)).toMatch(/^3 1$/m);
+  });
+
+  it('preserves the original generation when replacing an object', () => {
+    const base = buildClassicPdf(1);
+    const page: PdfDict = new Map<string, PdfObject>([['Type', name('Page')], ['Rotate', 90]]);
+    const out = appendIncrementalUpdate(base, { objects: new Map([[3, page]]) });
+    const text = appended(out, base);
+    expect(text).toContain('3 0 obj');
+    expect(text).toMatch(/^\d{10} 00000 n $/m);
+  });
+
+  it('emits a well-formed empty section when nothing changed', () => {
+    const base = buildClassicPdf(1);
+    const out = appendIncrementalUpdate(base, { objects: new Map() });
+    // An xref section needs at least one subsection header; "xref\ntrailer" is
+    // malformed and some readers reject the whole file.
+    expect(appended(out, base)).toContain('xref\n0 0\n');
+    expect(() => readXref(out)).not.toThrow();
+  });
+
+  it('counts a freed object toward /Size', () => {
+    const base = buildClassicPdf(1);
+    const out = appendIncrementalUpdate(base, { objects: new Map(), freed: new Set([99]) });
+    expect(appended(out, base)).toMatch(/\/Size 100\b/);
+  });
+
+  /** A one-page classic PDF whose page object sits at GENERATION 1, which
+   *  buildClassicPdf cannot produce. Without it the generation is unfalsifiable:
+   *  every object is at generation 0, where reading the previous xref and
+   *  hardcoding 0 give the same answer. */
+  function buildGen1Pdf(): Uint8Array {
+    const objs = [
+      { num: 1, gen: 0, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+      { num: 2, gen: 0, body: '<< /Type /Pages /Count 1 /Kids [3 1 R] /MediaBox [0 0 400 400] >>' },
+      { num: 3, gen: 1, body: '<< /Type /Page /Parent 2 0 R /Resources << >> /Contents 4 0 R >>' },
+      { num: 4, gen: 0, body: '<< /Length 0 >>\nstream\n\nendstream' },
+    ];
+    let body = '%PDF-1.7\n';
+    const offsets = new Map<number, number>();
+    for (const o of objs) {
+      offsets.set(o.num, body.length);
+      body += `${o.num} ${o.gen} obj\n${o.body}\nendobj\n`;
+    }
+    const xrefOffset = body.length;
+    let x = 'xref\n0 5\n0000000000 65535 f \n';
+    for (const o of objs)
+      x += `${String(offsets.get(o.num)!).padStart(10, '0')} ${String(o.gen).padStart(5, '0')} n \n`;
+    body += `${x}trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+    return new TextEncoder().encode(body);
+  }
+
+  it('writes a replaced object at the generation the previous xref recorded', () => {
+    const base = buildGen1Pdf();
+    const page: PdfDict = new Map<string, PdfObject>([['Type', name('Page')], ['Rotate', 90]]);
+    const out = appendIncrementalUpdate(base, { objects: new Map([[3, page]]) });
+    const text = appended(out, base);
+    expect(text).toContain('3 1 obj');
+    expect(text).not.toContain('3 0 obj');
+    expect(text).toMatch(/^\d{10} 00001 n $/m);
+  });
+
+  it('increments a generation-1 object to 2 when freeing it', () => {
+    const base = buildGen1Pdf();
+    const out = appendIncrementalUpdate(base, { objects: new Map(), freed: new Set([3]) });
+    expect(appended(out, base)).toMatch(/^0000000000 00002 f $/m);
+  });
+});

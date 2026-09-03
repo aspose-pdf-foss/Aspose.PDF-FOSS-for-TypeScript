@@ -1,0 +1,19 @@
+# one-edit
+# a single replaced object appended, the ordinary shape
+# sha256 187d3c731dd4cd693823922c639b97e289b7512329e37a26646380e94bff41fd
+
+$ qpdf --check
+checking one-edit.pdf
+PDF Version: 1.7
+File is not encrypted
+File is not linearized
+No syntax or stream encoding errors found; the file may still contain
+errors that qpdf cannot detect
+
+$ qpdf --show-xref
+1/0: uncompressed; offset = 19
+2/0: uncompressed; offset = 68
+3/0: uncompressed; offset = 834
+4/0: uncompressed; offset = 306
+5/0: uncompressed; offset = 393
+6/0: uncompressed; offset = 544

@@ -1,0 +1,21 @@
+# classic-onto-xref-stream
+# a classic appended section chaining /Prev to a cross-reference STREAM, which CLAUDE.md documents as legal and nothing else verifies
+# sha256 6c726ef895d316ce836d3f7afd0906a3800d128e3986d35f2d633b65bb9f0397
+
+$ qpdf --check
+checking classic-onto-xref-stream.pdf
+PDF Version: 1.7
+File is not encrypted
+File is not linearized
+No syntax or stream encoding errors found; the file may still contain
+errors that qpdf cannot detect
+
+$ qpdf --show-xref
+1/0: compressed; stream = 7, index = 0
+2/0: compressed; stream = 7, index = 1
+3/0: uncompressed; offset = 647
+4/0: compressed; stream = 7, index = 3
+5/0: uncompressed; offset = 19
+6/0: uncompressed; offset = 106
+7/0: uncompressed; offset = 193
+8/0: uncompressed; offset = 472

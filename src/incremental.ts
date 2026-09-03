@@ -1,6 +1,7 @@
 import { PdfObject, PdfDict, isRef, isArray } from './types.js';
 import { enc, serializeObject } from './serialize.js';
-import { readXref } from './xref.js';
+import { Encryptor } from './encrypt.js';
+import { readXref, XrefEntry } from './xref.js';
 import { PdfParseError } from './errors.js';
 import {
   DEFAULT_PLACEHOLDER_BYTES, SignatureLayout, buildSigDictPlaceholder, finalizePlaceholder,
@@ -24,8 +25,17 @@ export type { SignatureLayout } from './sigplaceholder.js';
  *  `fillSignature` — all without changing any byte offset. */
 
 export interface IncrementalUpdateOptions {
-  /** New or replaced indirect objects (generation 0), keyed by object number. */
+  /** New or replaced indirect objects, keyed by object number. Each is written
+   *  at the generation the previous cross-reference recorded for it. */
   objects: Map<number, PdfObject>;
+  /** Object numbers to mark FREE in the appended cross-reference section.
+   *  An appended `f` entry shadows the original `n` entry, which is how a
+   *  deletion is expressed without touching the original bytes. */
+  freed?: Set<number>;
+  /** Encrypt appended strings and streams with the document's own key. The
+   *  `/Encrypt` object already lives in the original bytes, so the new trailer
+   *  references it rather than rewriting it. */
+  encryptor?: Encryptor;
   /** `/Root` object number for the new trailer. Default: carried from original. */
   rootNum?: number;
   /** `/Info` object number for the new trailer. Default: carried from original. */
@@ -53,6 +63,9 @@ export interface SignatureUpdateOptions {
   objects?: Map<number, PdfObject>;
   /** Reserved capacity for the detached CMS, in bytes. Default 8192. */
   placeholderBytes?: number;
+  /** Encrypt the appended objects and the signature dict strings with the
+   *  document own key. `/Contents` stays in the clear (32000-1 7.6.2). */
+  encryptor?: Encryptor;
   /** `/Root` object number for the new trailer. Default: carried from original. */
   rootNum?: number;
   /** `/Info` object number for the new trailer. Default: carried from original. */
@@ -71,12 +84,13 @@ export function appendSignatureUpdate(original: Uint8Array, opts: SignatureUpdat
   // exclude it from the generic plain-object pass.
   objects.delete(opts.sigObjNum);
 
-  const ph = buildSigDictPlaceholder(opts.sigDict, placeholderBytes);
+  const ph = buildSigDictPlaceholder(opts.sigDict, placeholderBytes, opts.encryptor, opts.sigObjNum);
   const header = `${opts.sigObjNum} 0 obj\n`;
   const text = `${header}${ph.body}\nendobj\n`;
 
   const { bytes, sigStart } = layout(original, {
     objects,
+    encryptor: opts.encryptor,
     rootNum: opts.rootNum,
     infoNum: opts.infoNum,
     id: opts.id,
@@ -112,7 +126,14 @@ function layout(
 
   // Gather the appended objects in ascending number order for tidy xref runs.
   const items: Array<{ num: number; body: Uint8Array }> = [];
-  for (const [num, obj] of opts.objects) items.push({ num, body: serializeObject(obj) });
+  for (const [num, obj] of opts.objects) {
+    // Encrypt under the object's OWN number and generation, which is what the
+    // per-object key derivation hashes — the same numbers the xref rows below
+    // record, since an append never renumbers.
+    const gen = prevGen(prev.entries, num);
+    const body = serializeObject(opts.encryptor ? opts.encryptor.encryptObject(obj, num, gen) : obj);
+    items.push({ num, body });
+  }
   if (sigObject) items.push({ num: sigObject.num, body: enc(sigObject.text) });
   items.sort((a, b) => a.num - b.num);
 
@@ -123,53 +144,82 @@ function layout(
   // Ensure the appended region starts on its own line.
   if (!endsWithEol(original)) push(enc('\n'));
 
-  const offsets = new Map<number, number>();
+  const rows: XrefRow[] = [];
   let sigStart = 0;
   for (const item of items) {
+    const gen = prevGen(prev.entries, item.num);
+    rows.push({ num: item.num, kind: 'n', offset: len, gen });
     if (sigObject && item.num === sigObject.num) {
-      // The signature object text already includes "N 0 obj ... endobj\n".
-      offsets.set(item.num, len);
+      // The signature object text already includes "N G obj ... endobj\n".
       sigStart = len;
       push(item.body);
     } else {
-      offsets.set(item.num, len);
-      push(enc(`${item.num} 0 obj\n`));
+      push(enc(`${item.num} ${gen} obj\n`));
       push(item.body);
       push(enc('\nendobj\n'));
     }
   }
+  for (const num of opts.freed ?? []) {
+    // A free entry's generation is the one the object WILL have if reused, so
+    // it is the previous generation plus one. The 10-digit field heads a free
+    // list we do not maintain, so it is 0 (the list terminator).
+    rows.push({ num, kind: 'f', offset: 0, gen: prevGen(prev.entries, num) + 1 });
+  }
 
   const xrefOffset = len;
-  push(enc(buildXrefSection(items.map((i) => i.num), offsets)));
+  push(enc(buildXrefSection(rows)));
 
   let maxNum = 0;
   for (const i of items) if (i.num > maxNum) maxNum = i.num;
+  for (const n of opts.freed ?? []) if (n > maxNum) maxNum = n;
   const size = Math.max(prevSize, maxNum + 1);
 
   let tr = `trailer\n<< /Size ${size} /Root ${rootNum} 0 R /Prev ${prevStartxref}`;
   if (infoNum !== undefined) tr += ` /Info ${infoNum} 0 R`;
   if (id !== undefined) tr += ` /ID ${serializeValueLatin(id)}`;
+  // The /Encrypt object already lives in the original bytes, so the appended
+  // revision REFERENCES it. Omitting it is what made a reader take the newest
+  // trailer at its word, treat the document as unencrypted, and decode every
+  // pre-existing encrypted string to garbage.
+  const encRef = prev.trailer.get('Encrypt');
+  if (isRef(encRef)) tr += ` /Encrypt ${encRef.num} ${encRef.gen} R`;
   tr += ` >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   push(enc(tr));
 
   return { bytes: concat(original, chunks), sigStart };
 }
 
-/** Build a classic `xref` section listing `nums`, grouping consecutive runs. */
-function buildXrefSection(nums: number[], offsets: Map<number, number>): string {
-  const sorted = [...nums].sort((a, b) => a - b);
+interface XrefRow { num: number; kind: 'n' | 'f'; offset: number; gen: number }
+
+/** Build a classic `xref` section from `rows`, grouping consecutive runs.
+ *
+ *  A section with no rows still needs a subsection header: `xref` immediately
+ *  followed by `trailer` is malformed and some readers reject the file, so an
+ *  empty update emits the degenerate `0 0` subsection. */
+function buildXrefSection(rows: XrefRow[]): string {
+  const sorted = [...rows].sort((a, b) => a.num - b.num);
+  if (sorted.length === 0) return 'xref\n0 0\n';
   let s = 'xref\n';
   let i = 0;
   while (i < sorted.length) {
-    const start = sorted[i];
     let j = i;
-    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
-    const count = j - i + 1;
-    s += `${start} ${count}\n`;
-    for (let k = i; k <= j; k++) s += `${String(offsets.get(sorted[k])!).padStart(10, '0')} 00000 n \n`;
+    while (j + 1 < sorted.length && sorted[j + 1].num === sorted[j].num + 1) j++;
+    s += `${sorted[i].num} ${j - i + 1}\n`;
+    for (let k = i; k <= j; k++) {
+      const r = sorted[k];
+      s += `${String(r.offset).padStart(10, '0')} ${String(r.gen).padStart(5, '0')} ${r.kind} \n`;
+    }
     i = j + 1;
   }
   return s;
+}
+
+/** The generation the previous cross-reference recorded for `num` (0 when it
+ *  named no offset entry: a compressed object is generation 0 by definition,
+ *  and an object the previous xref never named is new). */
+function prevGen(entries: Map<number, XrefEntry>, num: number): number {
+  const e = entries.get(num);
+  return e !== undefined && e.type === 'offset' ? e.gen : 0;
 }
 
 /** The `startxref` integer of the previous (newest existing) cross-reference. */

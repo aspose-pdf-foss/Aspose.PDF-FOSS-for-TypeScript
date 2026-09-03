@@ -8,7 +8,7 @@
 import { X509Certificate, KeyObject } from 'node:crypto';
 import { PdfDict, PdfObject, name, isDict, isName, isString, isArray, isStream } from './types.js';
 import {
-  sha1, sha256, objectKeyV4, rc4, aesCbcEncrypt, aesCbcDecrypt, randomBytes, Decryptor,
+  sha1, sha256, objectKeyV4, rc4, aesCbcEncrypt, aesCbcDecrypt, randomBytes, Decryptor, Cipher, CryptKeys, isSignatureDict,
 } from './crypto.js';
 import {
   Encryptor, makeEncryptor, permissionsToP, permissionsFromP,
@@ -123,7 +123,7 @@ export interface NormalizedRecipient {
 export function buildPubSecDecryptor(
   encrypt: PdfDict, recipient: NormalizedRecipient,
   resolve: (o: PdfObject | undefined) => PdfObject,
-): { decryptObject: Decryptor['decryptObject']; permissions: Permissions } {
+): { decryptObject: Decryptor['decryptObject']; permissions: Permissions; keys: CryptKeys } {
   const V = asNum(resolve(encrypt.get('V'))) ?? 4;
   const length = asNum(resolve(encrypt.get('Length'))) ?? 128;
   const isV5 = V >= 5;
@@ -170,7 +170,12 @@ export function buildPubSecDecryptor(
   const decryptObject = (obj: PdfObject, num: number, gen: number): PdfObject => {
     if (isString(obj)) return { kind: 'string', bytes: applyCipher(obj.bytes, num, gen) };
     if (isArray(obj)) { for (let i = 0; i < obj.length; i++) obj[i] = decryptObject(obj[i], num, gen); return obj; }
-    if (isDict(obj)) { for (const [k, v] of obj) obj.set(k, decryptObject(v, num, gen)); return obj; }
+    if (isDict(obj)) {
+      // A signature dict's /Contents is exempt (32000-1 7.6.2).
+      const skip = isSignatureDict(obj) ? 'Contents' : undefined;
+      for (const [k, v] of obj) if (k !== skip) obj.set(k, decryptObject(v, num, gen));
+      return obj;
+    }
     if (isStream(obj)) {
       for (const [k, v] of obj.dict) obj.dict.set(k, decryptObject(v, num, gen));
       return { kind: 'stream', dict: obj.dict, raw: applyCipher(obj.raw, num, gen) };
@@ -178,5 +183,13 @@ export function buildPubSecDecryptor(
     return obj;
   };
 
-  return { decryptObject, permissions: permissionsFromP(P) };
+  // PubSec applies ONE cipher to strings and streams alike, so both slots
+  // carry the same value — unlike the standard handler, which selects /StmF
+  // and /StrF independently.
+  const cipher: Cipher = isV5 ? 'aes256' : isAes ? 'aes128' : 'rc4';
+  return {
+    decryptObject,
+    permissions: permissionsFromP(P),
+    keys: { fileKey, streamCipher: cipher, stringCipher: cipher },
+  };
 }

@@ -68,6 +68,9 @@ function offsetOf(num: number, entries: Map<number, XrefEntry>): number {
   const e = entries.get(num);
   if (!e) return -1;
   if (e.type === 'offset') return e.offset;
+  // A free entry names no bytes, so it has no offset — the same answer as an
+  // absent entry. Narrowing by elimination would read it as compressed.
+  if (e.type === 'free') return -1;
   const c = entries.get(e.streamObj);
   return c && c.type === 'offset' ? c.offset : -1;
 }

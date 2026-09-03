@@ -7,6 +7,14 @@
 test/fixtures/jpeg/*.jpg binary
 test/fixtures/jpeg/*.ppm binary
 
+# Incremental-save outputs qpdf approved: byte-exact or worthless, since the
+# whole point is that bytes an external implementation vouched for cannot drift.
+# Measured, and the sniff does NOT save these: three of the four contain no NUL
+# at all, so git calls them text, and `classic-onto-xref-stream.pdf` carries a
+# lone CR inside its deflate stream that eol=lf would rewrite -- it escapes
+# today only because one NUL happens to land in the sniff window. Say binary.
+test/fixtures/qpdf/*.pdf binary
+
 # The WPT tree-construction corpus carries lone CR bytes inside #data payloads
 # (processing-instructions.dat's `<?hey\rthere=1?>` is one) and other bytes the
 # format deliberately makes unsafe. eol=lf normalization leaves a lone CR alone

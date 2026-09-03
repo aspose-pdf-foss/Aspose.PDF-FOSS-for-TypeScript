@@ -105,20 +105,32 @@ describe('Open: password handling', () => {
   });
 });
 
-describe('Save: round-trips an opened encrypted PDF to plaintext', () => {
-  it('drops /Encrypt and re-opens without a password', () => {
-    const { bytes } = buildEncryptedPdf(
-      { cipher: 'aes128', V: 4, R: 4, length: 128 },
-      { info: { Title: 'RoundTrip' }, pageContents: ['BT (rt) Tj ET'] },
-    );
-    const out = Document.Open(bytes).Save();
-    // Output must not be flagged encrypted.
-    expect(Buffer.from(out).toString('latin1')).not.toContain('/Encrypt');
-    // Re-open with no password and verify content survived.
-    const re = Document.Open(out);
+// This described the OLD behaviour, in which Save() silently decrypted an
+// opened encrypted document. It is inverted rather than deleted, because the
+// content half is still exactly what must survive -- what changed is that the
+// output stays encrypted unless the caller says otherwise (0cr3).
+describe('Save: round-trips an opened encrypted PDF', () => {
+  const roundTrip = (): Uint8Array => buildEncryptedPdf(
+    { cipher: 'aes128', V: 4, R: 4, length: 128 },
+    { info: { Title: 'RoundTrip' }, pageContents: ['BT (rt) Tj ET'] },
+  ).bytes;
+
+  const expectContent = (re: Document): void => {
     expect(re.GetMetadata().title).toBe('RoundTrip');
     const contents = re.resolve(re.Pages[0].Dict.get('Contents'));
     if (isStream(contents)) expect(dec.decode(inflateStream(contents))).toBe('BT (rt) Tj ET');
     else throw new Error('contents not a stream');
+  };
+
+  it('keeps /Encrypt and the content by default', () => {
+    const out = Document.Open(roundTrip()).Save();
+    expect(Buffer.from(out).toString('latin1')).toContain('/Encrypt');
+    expectContent(Document.Open(out));
+  });
+
+  it('drops /Encrypt and re-opens without a password when asked', () => {
+    const out = Document.Open(roundTrip()).Save({ encrypt: false });
+    expect(Buffer.from(out).toString('latin1')).not.toContain('/Encrypt');
+    expectContent(Document.Open(out));
   });
 });

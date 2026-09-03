@@ -1,0 +1,19 @@
+# base
+# the control: an unmodified classic file, so a qpdf complaint about an appended file cannot be blamed on the base
+# sha256 dd8d74393f2fe6df4f8756527e2f2dc788b0f59264ab62892b393be1bc871d39
+
+$ qpdf --check
+checking base.pdf
+PDF Version: 1.7
+File is not encrypted
+File is not linearized
+No syntax or stream encoding errors found; the file may still contain
+errors that qpdf cannot detect
+
+$ qpdf --show-xref
+1/0: uncompressed; offset = 19
+2/0: uncompressed; offset = 68
+3/0: uncompressed; offset = 155
+4/0: uncompressed; offset = 306
+5/0: uncompressed; offset = 393
+6/0: uncompressed; offset = 544

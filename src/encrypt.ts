@@ -1,7 +1,7 @@
 import { PdfDict, PdfObject, name, isString, isArray, isDict, isStream } from './types.js';
 import {
   aesCbcEncrypt, aesCbcEncryptNoPad, aes256EcbEncrypt, randomBytes, hash2B,
-  md5, rc4, padPassword, PASSWORD_PADDING, fileKeyR234, objectKeyV4,
+  md5, rc4, padPassword, PASSWORD_PADDING, fileKeyR234, objectKeyV4, Cipher, CryptKeys, isSignatureDict,
 } from './crypto.js';
 
 export interface Permissions {
@@ -77,7 +77,12 @@ export function makeEncryptor(encryptDict: PdfDict, strCipher: CipherFn, stmCiph
   const encryptObject = (obj: PdfObject, num: number, gen: number): PdfObject => {
     if (isString(obj)) return pdfStr(strCipher(obj.bytes, num, gen));
     if (isArray(obj)) { for (let i = 0; i < obj.length; i++) obj[i] = encryptObject(obj[i], num, gen); return obj; }
-    if (isDict(obj)) { for (const [k, v] of obj) obj.set(k, encryptObject(v, num, gen)); return obj; }
+    if (isDict(obj)) {
+      // A signature dict's /Contents is exempt (32000-1 7.6.2).
+      const skip = isSignatureDict(obj) ? 'Contents' : undefined;
+      for (const [k, v] of obj) if (k !== skip) obj.set(k, encryptObject(v, num, gen));
+      return obj;
+    }
     if (isStream(obj)) {
       const d = obj.dict;
       for (const [k, v] of d) d.set(k, encryptObject(v, num, gen));
@@ -218,4 +223,25 @@ export interface PubSecEncryptOptions {
   oaepHash?: 'sha1' | 'sha256';
   /** Encrypt the document metadata stream. Default true. */
   encryptMetadata?: boolean;
+}
+
+/** An Encryptor that reuses a document's OWN key and `/Encrypt` dict.
+ *
+ *  This is the mirror of `buildDecryptor`'s `applyCipher`: RC4 is symmetric,
+ *  AES swaps decrypt for encrypt, identity passes through. It exists because
+ *  encryption CANNOT be re-derived from what an opened document retains — the
+ *  owner password is hashed into `/O` and unrecoverable, and `buildEncryptor`
+ *  defaults `ownerPassword ?? userPassword`, so re-deriving would silently
+ *  equate them. The dict is carried VERBATIM for the same reason: `/O /U /P`
+ *  are statements about credentials we do not hold. */
+export function buildEncryptorFromKeys(keys: CryptKeys, encryptDict: PdfDict): Encryptor {
+  const apply = (cipher: Cipher): CipherFn => {
+    switch (cipher) {
+      case 'identity': return (data) => data;
+      case 'rc4': return (data, num, gen) => rc4(objectKeyV4(keys.fileKey, num, gen, false), data);
+      case 'aes128': return (data, num, gen) => aesCbcEncrypt(objectKeyV4(keys.fileKey, num, gen, true), data);
+      case 'aes256': return (data) => aesCbcEncrypt(keys.fileKey, data);
+    }
+  };
+  return makeEncryptor(encryptDict, apply(keys.stringCipher), apply(keys.streamCipher));
 }

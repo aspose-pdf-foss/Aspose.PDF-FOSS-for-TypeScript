@@ -160,7 +160,57 @@ Source (`src/`):
   font's decoder or the appearance. A throw in the lexer took all four down at
   once and was reachable from any file we did not write.
 - **xref.ts** — classic cross-reference tables, cross-reference streams, and
-  hybrid `/XRefStm`. **objstm.ts** — object stream (`/ObjStm`) decoding.
+  hybrid `/XRefStm`.
+  **Invariant:** a FREE entry is recorded as `{ type: 'free', gen }`, never
+  dropped, and it must OCCUPY the slot. The merge is newest-wins by "already
+  present", so a dropped tombstone lets an OLDER section's offset entry fill
+  the gap and a superseded object comes back from the dead — which is why a
+  separate `freed` set cannot work: "freed in a newer section beats `n` in an
+  older" and "`n` in a newer beats freed in an older" IS the newest-wins rule
+  the map already implements. `document.ts`'s parse loop then skips a free
+  entry BEFORE the offset/compressed split, which is a two-way branch that
+  would otherwise read it as compressed and dereference a missing `streamObj`.
+  **Note what this cost before `2yvi`:** the resurrected object was invisible
+  to `Save()`, whose mark-sweep drops it as unreachable — so the symptom was
+  not a corrupt file but a false REPORT. `objectEntries()` feeds
+  `validatectx.ts`'s all-objects scan, so a document whose author had correctly
+  deleted a prohibited stream still failed PDF/A validation for it. Measured:
+  one `/LZWDecode` violation before freeing and one after, where qpdf says the
+  object is gone.
+  **Note:** recording free entries makes object 0 visible for the first time —
+  every classic table opens with `0000000000 65535 f`, the free-list head, and
+  a compressed save emits it as a type-0 row. It reaches `entries` and
+  deliberately produces no OBJECT, which is what keeps the all-objects scans
+  unchanged.
+  **Note, measured:** the two readers are SEPARATE and the stream one is
+  covered by exactly one case. Dropping `readXrefStream`'s `f0 === 0` branch
+  reddens NOTHING against classic-table fixtures — `Save({ incremental: true })`
+  refuses `compressed`, so no test can append a stream section — and it is
+  pinned only by asserting object 0 on a `Save({ compressed: true })` document.
+  It also reports the `/Prev` chain as `XrefResult.revisions`
+  (`doc.Revisions`, `doc.hasIncrementalUpdates`), each carrying the byte length
+  of the file as of that revision.
+  **Invariant:** the chain is reported from the walk `readXref` ALREADY makes,
+  never from a second scan — two walks is how a document comes to disagree with
+  itself about how many revisions it has.
+  **Invariant:** revisions are OLDEST FIRST, so the index is the revision
+  number and `[0]` is the document as originally written. The walk itself runs
+  newest first, because that is the direction `/Prev` points, so the list is
+  reversed on the way out.
+  **Invariant:** a revision's end is scanned from the section's PARSED END
+  (`Section.end`), never from its offset. A cross-reference STREAM's payload is
+  binary that may contain the bytes `%%EOF`, and scanning from the offset finds
+  that and reports a truncated revision — measured at 391 bytes where 432 was
+  right. **Note the fixture this needed:** `Save({ compressed: true })` emits a
+  DEFLATED payload that happens never to contain the marker, so the obvious
+  compressed test leaves the mutation GREEN; the case that pins it hand-builds
+  an UNCOMPRESSED xref stream whose rows spell the marker, in two extra rows
+  whose type bytes are neither 1 nor 2 so `readXrefStream` skips them.
+  **Note:** the list is EMPTY rather than one-entry when the cross-reference
+  structure had to be rebuilt — there the chain is precisely what could not be
+  read, so empty says "we do not know" where `[one]` would claim "never
+  updated". A document recovered only at the OBJECT level keeps its revisions,
+  since its xref chain read fine. **objstm.ts** — object stream (`/ObjStm`) decoding.
   **Invariant:** a damaged `/ObjStm` costs its unreadable objects, not the
   container. `decodeObjStm` inflates partially, reads the header pairs that are
   there rather than the `/N` that is claimed, recovers `/First` from the header
@@ -242,6 +292,43 @@ Source (`src/`):
 - **extractor.ts** — single-page / object-graph extraction with a `PrunePolicy`.
 - **serializer.ts**, **serialize.ts** — output: classic xref table (default) and
   compressed (cross-reference stream + `/ObjStm`) via `Save({ compressed: true })`.
+- **incrementaldelta.ts** — what an incremental update must write, relative to
+  the document as opened: `diffObjects(baseline, live)` returning `replaced`,
+  `added` and `freed` object numbers. A pure leaf over `types.js` and
+  `serialize.js` — no `Document`, no `node:` import — so every rule is testable
+  from hand-built maps with no PDF built.
+  **Invariant:** the delta is decided by comparing CANONICAL SERIALIZATIONS,
+  never by trusting a mutation report. `Page.Dict`, `Annotation.Dict` and
+  `Field.Dict` are public live `Map`s, so `page.Dict.set('Rotate', 90)` mutates
+  the document and reports nothing — no discipline at the 64 `markModified()`
+  sites can close that while `Dict` is public. Equality is byte-equality of
+  `serializeObject`'s output with BOTH sides through the same serializer:
+  comparing against the original file bytes instead reports every object as
+  changed, because the parse-serialize round trip is lossy in SPELLING (number
+  formatting, string escaping, dict spacing) and faithful in content.
+  **Invariant:** it fails in the SAFE direction. A dict whose keys were deleted
+  and re-added serializes in a new order and is reported changed — verbose,
+  never silent — where a dirty set that missed a mutation writes too little and
+  the appended revision silently omits the edit. Same allowlist-not-denylist
+  posture `content.ts`'s `NON_MARKING` takes, and it is asserted directly so it
+  stays a decision rather than being "fixed" into a semantic comparison.
+  **Note, measured, and it covers NOTHING — the obvious reading is wrong:**
+  absence is tested with `Map.has` rather than by comparing `get` against
+  `undefined`, on the reasoning that `null` is a valid `PdfObject` and would
+  otherwise read as absent. That reasoning is FALSE and the mutation reddens
+  nothing: `Map.get` returns `undefined` only for a key mapped to literal
+  `undefined`, which `PdfObject` excludes, so the two forms provably cannot
+  differ. The `has` form stays as the honest spelling of the question and as
+  defence against an untyped caller, and the stored-null case stays asserted —
+  but it is held by the TYPE, not by the suite. Do not cite it as covered.
+  **Note, measured:** the other three mutations redden. Neutering the byte
+  comparison reddens six cases across both consumers, and mark-sweeping the
+  delta reddens exactly one — the orphan-retention case — which is what shows
+  the reachability rule is pinned on its own rather than as a side effect.
+  Hardcoding `incremental.ts`'s `prevGen` to 0 reddened NOTHING until
+  `test/incremental.test.ts` grew `buildGen1Pdf`: every fixture in the suite
+  sits at generation 0, where reading the previous xref and hardcoding 0 give
+  the same answer, so the generation fix was unfalsifiable by construction.
 - **outline.ts**, **image.ts**, **content.ts**, **metadata.ts** — feature modules
   (bookmarks, image XObjects, content-stream tokenizer, `/Info` metadata).
   `content.ts` also owns **`imageCutSet`**, the `q … cm … Do … Q` group cut
@@ -2989,6 +3076,33 @@ Source (`src/`):
   (32000-1 12.5.5), so composing in the `/Rect`'s own dimensions leaves a box
   the viewer stretches to fit, on top of wrapping and centring text against the
   wrong edges.
+- **crypto.ts** additionally owns `CryptKeys` and `isSignatureDict`, the two
+  things preserving a document's encryption needs (`0cr3`).
+  **Invariant:** the `/Encrypt` dict is COPIED VERBATIM and encryption is never
+  RE-DERIVED. `EncryptOptions` needs an owner password, which is hashed into
+  `/O` and unrecoverable, and `buildEncryptor` defaults
+  `ownerPassword ?? userPassword` — so carrying encryption forward by
+  re-deriving would SILENTLY EQUATE the owner and user passwords, a permissions
+  downgrade shipped as a confidentiality fix. `buildEncryptorFromKeys` reuses
+  the key `buildDecryptor` already computed instead. Confirmed externally: qpdf
+  validates the empty password against BOTH `/O` and `/U` on the
+  `encrypted-preserved` golden, which a rebuilt `/O` could not satisfy.
+  **Invariant:** preserving requires `/ID`. For R≤4 the file key hashes
+  `/ID[0]`, and `resolveIds` falls back to a fresh random one when the trailer
+  names none — which with a retained key yields a file NOTHING can decrypt.
+  `Save` refuses rather than producing it.
+  **Invariant:** a signature's `/Contents` is EXEMPT from encryption (32000-1
+  7.6.2) in BOTH directions — never encrypted on write, never DECRYPTED on
+  read. The read half was missing and PREDATES this work: `decryptObject`
+  decrypted it, so any encrypted signed document from any producer was
+  corrupted on open. Either half being wrong is silent and yields an
+  unverifiable signature rather than an error, which is why the two are
+  asserted from opposite sides — the signature must VERIFY while `/Name` must
+  NOT appear in cleartext.
+  **Note, measured:** the WRITE-side exemption in `makeEncryptor` is reached
+  only by re-encrypting a document that ALREADY carries a signature — signing
+  builds its dict as raw text and bypasses it — so it reddened NOTHING until
+  `test/sign-encrypted.test.ts` grew that case.
 - **encrypt.ts** — standard security handler encryption on `Save`
   (`Save({ encrypt })`: RC4, AES-128, AES-256), the write counterpart to
   crypto.ts.
@@ -5494,6 +5608,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/tiff/` | `PROVENANCE.md` | TIFF **input**: nine files from libtiff (via libvips/sharp) and utif2, with ground truth from a third decoder — libvips reading each back. The tiled-G4 file is the only shape that separates the *block* width `decodeCcitt` is told from the *image* width, a mutation `test/tiff.test.ts` leaves green. Found the `jpeg.ts` RGB-component-id bug on its first run (`test/tiff-real.test.ts`) |
 | `fixtures/pdfx/` | `PROVENANCE.md` | Ghostscript-produced PDF/X-1a/X-3/X-4 for `pdfxvalidate.ts` — four conformant, one deliberately not, and the only fixtures reaching `outputIntentRule`'s registered-name branch (`test/pdfx-real.test.ts`) |
 | `fixtures/corrupt/` | `PROVENANCE.md` | Damaged files for the recovery suite (`test/corrupt-real.test.ts`). The one directory where the *source* is what is third-party — a corrupt file has no producer — so Ghostscript and qpdf lay out the bytes and the damage is recorded byte for byte, alongside what each fixture salvages and loses |
+| `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |
 | `fixtures/commonmark/` | `PROVENANCE.md` | The official CommonMark 0.31.2 suite — 652 examples, run with no allowlist through the test-only oracle in `test/helpers/md-html.ts` |

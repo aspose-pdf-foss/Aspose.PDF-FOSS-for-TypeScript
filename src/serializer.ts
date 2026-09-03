@@ -18,7 +18,7 @@ export interface SerializeOptions {
   compressed?: boolean;
   /** Encrypt the output: password-based standard handler ({@link EncryptOptions})
    *  or certificate-based PubSec ({@link PubSecEncryptOptions}). Default: plaintext. */
-  encrypt?: EncryptOptions | PubSecEncryptOptions;
+  encrypt?: EncryptOptions | PubSecEncryptOptions | false;
   /** Emit a linearized ("Fast Web View") layout (classic xref, plaintext only).
    *  Throws if combined with `compressed` or `encrypt`. Default: false. */
   linearized?: boolean;
@@ -27,6 +27,13 @@ export interface SerializeOptions {
    *  RunLength replace it. Image-codec, XMP-metadata, and structural streams
    *  are left untouched. Not supported with `linearized`. */
   streamFilter?: StreamFilterName;
+  /** Append an incremental update to the bytes the document was opened from,
+   *  rather than rewriting it. Only the objects that changed are written, the
+   *  original bytes are preserved verbatim, and object numbers are NOT
+   *  renumbered. Requires a document opened from bytes; throws if combined
+   *  with `compressed`, `encrypt`, `linearized` or `streamFilter`.
+   *  Default: false. */
+  incremental?: boolean;
 }
 
 /** Collect every PdfRef contained directly in `o` (dict values, array elements, stream-dict values). */
@@ -105,6 +112,10 @@ function trailerExtras(plan: Plan, trailer: PdfDict, add: (key: string, value: s
  *  Does not mutate `objects` or `trailer` (remapping produces copies). */
 export function serializeDocument(
   objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions = {},
+  /** The document's own encryptor, when it was opened encrypted: used when no
+   *  explicit `encrypt` option is given, so encryption survives a rewrite
+   *  instead of the file being written silently in the clear. */
+  preserved?: Encryptor,
 ): Uint8Array {
   if (options.streamFilter && options.linearized)
     throw new UnsupportedFeatureError('streamFilter is not supported with linearized output');
@@ -116,16 +127,23 @@ export function serializeDocument(
   const plan = planDocument(objects, trailer);
   if (options.streamFilter) applyStreamFilter(plan.objs, options.streamFilter);
   const ver = headerVersion(objects, trailer);
-  if (!options.encrypt) {
+  // Precedence: an explicit `encrypt` wins; else the document's own retained
+  // encryption; else plaintext. `encrypt: false` is how a caller asks for
+  // plaintext from a document that was opened encrypted.
+  const { id0, id1 } = resolveIds(trailer);
+  const chosen: Encryptor | undefined = options.encrypt === false
+    ? undefined
+    : options.encrypt
+      ? ('recipients' in options.encrypt
+        ? buildPubSecEncryptor(options.encrypt)
+        : buildEncryptor(options.encrypt, id0))
+      : preserved;
+  if (!chosen) {
     return options.compressed ? serializeCompressed(plan, trailer, ver) : serializeClassic(plan, trailer, ver);
   }
-  const { id0, id1 } = resolveIds(trailer);
-  const encryptor = 'recipients' in options.encrypt
-    ? buildPubSecEncryptor(options.encrypt)
-    : buildEncryptor(options.encrypt, id0);
   return options.compressed
-    ? serializeCompressedEncrypted(plan, trailer, encryptor, id0, id1, ver)
-    : serializeClassicEncrypted(plan, encryptor, id0, id1, ver);
+    ? serializeCompressedEncrypted(plan, trailer, chosen, id0, id1, ver)
+    : serializeClassicEncrypted(plan, chosen, id0, id1, ver);
 }
 
 /** The header version to emit: catalog /Version when present, else 1.7. */

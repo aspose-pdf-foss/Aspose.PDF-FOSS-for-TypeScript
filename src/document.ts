@@ -1,6 +1,6 @@
 import { Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
-import { readXref, XrefEntry } from './xref.js';
+import { readXref, XrefEntry, PdfRevision } from './xref.js';
 import { sweepObjects, ObjCandidate, SweepResult } from './recover.js';
 import {
   expandObjectStreams, findEncryptDict, rebuildTrailer, TrailerChoice,
@@ -83,6 +83,7 @@ import {
 } from './decorate.js';
 import { serializeDocument, serializeSignedDocument, SerializeOptions } from './serializer.js';
 import { appendSignatureUpdate, appendIncrementalUpdate } from './incremental.js';
+import { diffObjects } from './incrementaldelta.js';
 import { DEFAULT_PLACEHOLDER_BYTES, fillSignature } from './sigplaceholder.js';
 import { buildTimeStampRequest, extractTimeStampToken, type TimestampProvider } from './rfc3161.js';
 import { Flow, type FlowOptions } from './flow.js';
@@ -121,10 +122,10 @@ import {
   buildDss, readDssMaterial, readDssCerts, vriKey, dedupBlobs,
   type DssEntry, type ValidationDataOptions,
 } from './dss.js';
-import { buildDecryptor, Decryptor } from './crypto.js';
+import { buildDecryptor, Decryptor, CryptKeys } from './crypto.js';
 import { buildPubSecDecryptor } from './pubsec.js';
 import { parsePkcs12 } from './pkcs12.js';
-import { Permissions, permissionsFromP } from './encrypt.js';
+import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys } from './encrypt.js';
 import { X509Certificate, KeyObject } from 'node:crypto';
 import { parseSfnt } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
@@ -222,6 +223,9 @@ export interface RecoveryReport {
 /** One object-building pass over an entry map, from {@link Document.build}. */
 interface BuildResult {
   objects: Map<number, PdfObject>;
+  /** The key and `/Encrypt` dict this document was decrypted with, so a save
+   *  can write it encrypted again. Absent for a plaintext document. */
+  preserved?: { keys: CryptKeys; encryptDict: PdfDict };
   /** Object numbers whose parse threw, after any fallback candidates. Still
    *  fatal on a structurally sound file — see the rethrow in Open. */
   failed: Set<number>;
@@ -329,16 +333,60 @@ export class Document {
   /** The bytes this document was opened from (absent when authored in memory).
    *  Required as the base for incremental-update (append) signing. */
   private originalBytes?: Uint8Array;
+  /** The options `Open` was called with, retained so an incremental save can
+   *  re-parse `originalBytes` into a pristine baseline. The password is the
+   *  reason this is kept rather than re-derived: `build()` constructs its
+   *  `Decryptor` locally and discards it. */
+  private openOptions: OpenOptions = {};
+  /** An Encryptor over the key and `/Encrypt` dict this document was opened
+   *  with, so `Save` writes it encrypted again rather than silently in the
+   *  clear. Absent for a plaintext document, which is what keeps an
+   *  unencrypted save byte-identical. */
+  private preservedEncryptor?: Encryptor;
   /** Set once the in-memory model diverges from `originalBytes` (any mutation
    *  through a tracked entry point), forcing sign-on-save instead of append. */
   private modified = false;
   /** The finished signed byte image cached by {@link Sign}; returned verbatim by
    *  {@link Save}/{@link WriteTo} so the signed bytes are never re-serialized. */
   private pendingSignedBytes?: Uint8Array;
+  /** Set once this session produced signed bytes, and NEVER cleared -- unlike
+   *  `pendingSignedBytes`, which `markModified` clears. From that moment the
+   *  live model is permanently behind the bytes for the signature object, so an
+   *  incremental save is unsafe whether or not anything was edited after. */
+  private signedInSession = false;
+  /** Revisions the `/Prev` chain named on open, oldest first — exactly what
+   *  `readXref` could read, and empty when it could not read anything.
+   *
+   *  So it is empty for a document authored in memory and for one whose
+   *  cross-reference structure had to be rebuilt, where the chain IS the
+   *  structure that could not be read: an empty list says "we do not know"
+   *  rather than "exactly one". A document recovered only at the OBJECT level
+   *  keeps its revisions, because there the xref chain was read fine and it is
+   *  individual objects that were damaged. */
+  private revisions: PdfRevision[] = [];
   /** Access permissions recovered from an encrypted document (undefined when the
    *  document is not encrypted). Surfaced for the caller; not enforced. */
   private permissions?: Permissions;
   get Permissions(): Permissions | undefined { return this.permissions; }
+
+  /** Every revision this file carries, OLDEST FIRST, so the index is the
+   *  revision number and `[0]` is the document as originally written.
+   *
+   *  Each revision appends to the one before it, so `length` grows
+   *  monotonically and `bytes.subarray(0, rev.length)` is that revision's
+   *  complete document — which is how an earlier state is recovered, and how a
+   *  signature's `/ByteRange` is checked against the revision it covers.
+   *
+   *  Empty when there is nothing to report: a document authored in memory, or
+   *  one whose cross-reference structure had to be rebuilt. That is
+   *  deliberately distinguishable from the single-entry list a clean,
+   *  never-updated file yields. */
+  get Revisions(): readonly PdfRevision[] { return this.revisions; }
+
+  /** True when this file carries more than one revision, i.e. it was appended
+   *  to after it was first written. False for an unknown chain, since an
+   *  unreadable structure is not evidence of an update. */
+  get hasIncrementalUpdates(): boolean { return this.revisions.length > 1; }
   /** Set when Open had to recover from a damaged cross-reference structure;
    *  undefined after a clean parse. */
   recovery?: RecoveryReport;
@@ -483,10 +531,12 @@ export class Document {
     let entries = new Map<number, XrefEntry>();
     let trailer: PdfDict | undefined;
     let xrefFailure: RecoveryReport | undefined;
+    let revisions: PdfRevision[] = [];
     try {
       const r = readXref(buf);
       entries = r.entries;
       trailer = r.trailer;
+      revisions = r.revisions;
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       // Classify by what is actually wrong, not by the message text: if the
@@ -550,6 +600,10 @@ export class Document {
       if (pass.objStmDamage.length > 0) xrefFailure.objectStreams = pass.objStmDamage;
       const doc = new Document(pass.objects, recovered);
       doc.originalBytes = buf;
+      doc.openOptions = opts;
+      doc.revisions = revisions;
+      if (pass.preserved)
+        doc.preservedEncryptor = buildEncryptorFromKeys(pass.preserved.keys, pass.preserved.encryptDict);
       doc.permissions = pass.permissions;
       doc.recovery = xrefFailure;
       return doc;
@@ -629,6 +683,10 @@ export class Document {
 
     const doc = new Document(pass.objects, trailer);
     doc.originalBytes = buf;
+    doc.openOptions = opts;
+    doc.revisions = revisions;
+    if (pass.preserved)
+      doc.preservedEncryptor = buildEncryptorFromKeys(pass.preserved.keys, pass.preserved.encryptDict);
     doc.permissions = pass.permissions;
     doc.recovery = report;
     return doc;
@@ -694,6 +752,7 @@ export class Document {
       o === undefined ? null : isRef(o) ? rawObject(o.num) : o;
 
     let decryptor: Decryptor | undefined;
+    let preserved: { keys: CryptKeys; encryptDict: PdfDict } | undefined;
     let permissions: Permissions | undefined;
     let encObjNum = -1;
     const encRef = trailer.get('Encrypt');
@@ -705,12 +764,14 @@ export class Document {
       if (isName(filter) && filter.name === 'Adobe.PubSec') {
         if (!opts.recipient) throw new InvalidPasswordError();
         const result = buildPubSecDecryptor(encDict, normalizeRecipient(opts.recipient), resolveRaw);
-        decryptor = { decryptObject: result.decryptObject };
+        decryptor = { decryptObject: result.decryptObject, keys: result.keys };
         permissions = result.permissions;
+        preserved = { keys: result.keys, encryptDict: encDict };
       } else {
         const idArr = trailer.get('ID');
         const id0 = isArray(idArr) && isString(idArr[0]) ? idArr[0].bytes : undefined;
         decryptor = buildDecryptor(encDict, id0, opts.password ?? '', resolveRaw);
+        if (decryptor) preserved = { keys: decryptor.keys, encryptDict: encDict };
         const P = resolveRaw(encDict.get('P'));
         if (typeof P === 'number') permissions = permissionsFromP(P);
       }
@@ -737,6 +798,14 @@ export class Document {
       inProgress.add(num);
       try {
         let value: PdfObject;
+        // A free entry is a tombstone: the number is not in use in this
+        // revision, so it produces no object at all. It must be tested BEFORE
+        // the offset/compressed split, which is a two-way branch that would
+        // otherwise read it as compressed and dereference a missing
+        // `streamObj`. Skipping it is what stops a superseded object being
+        // resurrected into the live map, where the all-objects scans behind
+        // PDF/A and PDF/X validation would still see it.
+        if (entry.type === 'free') { inProgress.delete(num); return null; }
         if (entry.type === 'offset') {
           const parser = new ObjectParser(new Lexer(buf, entry.offset), (lenObj) => {
             const r = isRef(lenObj) ? parseEntry(lenObj.num) : lenObj;
@@ -850,7 +919,7 @@ export class Document {
     for (const d of damagedStreams.values()) for (const n of d.lost) lostInObjStm.add(n);
 
     return {
-      objects, failed, lostInObjStm,
+      objects, failed, lostInObjStm, preserved,
       objStmDamage: [...damagedStreams.values()],
       repaired, permissions,
     };
@@ -913,6 +982,21 @@ export class Document {
   markModified(): void {
     this.modified = true;
     this.pendingSignedBytes = undefined;
+  }
+
+  /** A pristine object map re-parsed from the bytes this document was opened
+   *  from — the baseline an incremental save diffs the live model against.
+   *
+   *  Re-parsing rather than fingerprinting at open is deliberate: it puts the
+   *  whole cost inside the operation that asks for it, on a path that is
+   *  already writing a file, instead of taxing every `Open` in the library for
+   *  a feature most callers never use. */
+  private baselineObjects(): Map<number, PdfObject> {
+    if (!this.originalBytes)
+      throw new UnsupportedFeatureError(
+        'cannot compute an incremental delta: this document was authored in memory, '
+        + 'so there is no base byte image to compare against');
+    return Document.Open(this.originalBytes, this.openOptions).objects;
   }
 
   /** The live /Info dict, or undefined when there is none. */
@@ -1484,11 +1568,78 @@ export class Document {
   /** Serialize the live document to PDF bytes (mark-sweep from /Root, renumbered).
    *  Pass `{ compressed: true }` for cross-reference-stream + ObjStm output. */
   Save(options: SaveOptions = {}): Uint8Array {
+    // Incremental goes first so it can REFUSE a document signed in this
+    // session, which the verbatim return below would otherwise hide.
+    if (options.incremental) return this.saveIncremental(options);
     // A completed signature fixes the exact bytes; return them verbatim so the
     // signed byte image is never re-serialized (which would break the digest).
     if (this.pendingSignedBytes) return this.pendingSignedBytes;
     this.finalizeEmbeddedFonts();
-    return serializeDocument(this.objects, this.trailer, options);
+    // A retained key for R<=4 hashes /ID[0], so it is valid only against the
+    // SAME /ID -- and resolveIds invents a fresh random one when the trailer
+    // names none, which would yield a file nothing can decrypt, us included.
+    if (this.preservedEncryptor && options.encrypt === undefined && !isArray(this.trailer.get('ID')))
+      throw new UnsupportedFeatureError(
+        'cannot preserve encryption: the trailer names no /ID, which the file key '
+        + 'is derived from. Pass `encrypt` to re-encrypt with stated credentials, '
+        + 'or `encrypt: false` to write plaintext.');
+    return serializeDocument(this.objects, this.trailer, options, this.preservedEncryptor);
+  }
+
+  /** Append an incremental update carrying only what changed since `Open`.
+   *
+   *  The delta is REACHABILITY-BLIND, which is the exact inversion of `Save`'s
+   *  mark-sweep: an appended revision must write a changed object whether or
+   *  not it is still reachable from `/Root`, because earlier revisions still
+   *  point at the object it supersedes. Garbage-collecting here corrupts the
+   *  revision history this feature exists to provide. */
+  private saveIncremental(options: SaveOptions): Uint8Array {
+    // The live model is BEHIND the signed bytes for the signature object:
+    // `fillSignature` patches bytes and never the model, so the live `/Sig`
+    // carries a `/Contents` of length 0 while the signed bytes carry the real
+    // CMS. Diffing them would append the EMPTY one, destroying the signature —
+    // so this refuses rather than appending, and it refuses even with no edit
+    // at all, because the divergence is already there the moment Sign returns.
+    // Save() the signed bytes, reopen them, then edit: that is the path the
+    // whole feature exists for, and it is exercised in
+    // test/sign-incremental-survival.test.ts.
+    if (this.signedInSession)
+      throw new UnsupportedFeatureError(
+        'cannot save incrementally after signing in this session: the signature\'s '
+        + '/Contents exists only in the signed bytes, not in the live model, so an '
+        + 'appended revision would overwrite it with an empty one. Save() first, '
+        + 'reopen the result, then edit.');
+    if (!this.originalBytes)
+      throw new UnsupportedFeatureError(
+        'cannot save incrementally: this document was authored in memory, '
+        + 'so there is no base byte image to append to');
+    if (this.recovery)
+      throw new UnsupportedFeatureError(
+        'cannot save incrementally: this document was opened by recovery, so the '
+        + 'cross-reference an update would chain /Prev onto could not be read');
+    for (const k of ['encrypt', 'compressed', 'linearized', 'streamFilter'] as const)
+      if (options[k])
+        throw new UnsupportedFeatureError(`cannot save incrementally with \`${k}\``);
+
+    // After the refusals, so a rejected call leaves the document untouched —
+    // and before the diff, because font embedding allocates objects: taken
+    // first, every font added since Open is missing from the revision.
+    this.finalizeEmbeddedFonts();
+
+    const delta = diffObjects(this.baselineObjects(), this.objects);
+    const objects = new Map<number, PdfObject>();
+    for (const n of delta.replaced) objects.set(n, this.objects.get(n)!);
+    for (const n of delta.added) objects.set(n, this.objects.get(n)!);
+
+    const rootRef = this.trailer.get('Root');
+    const infoRef = this.trailer.get('Info');
+    return appendIncrementalUpdate(this.originalBytes, {
+      objects,
+      freed: delta.freed,
+      encryptor: this.preservedEncryptor,
+      rootNum: isRef(rootRef) ? rootRef.num : undefined,
+      infoNum: isRef(infoRef) ? infoRef.num : undefined,
+    });
   }
 
   /** Parse and register a font program (TrueType/OpenType sfnt bytes), returning
@@ -1752,6 +1903,7 @@ export class Document {
     );
   }
 
+
   private async signCore(signer: Signer, opts: SignOptions, docMdp?: DocMdpPermission): Promise<void> {
     this.assertNotRecovered('sign');
     if (this.Pages.length === 0)
@@ -1812,6 +1964,7 @@ export class Document {
         sigDict: sigValueDict,
         objects: this.collectObjects(touched),
         placeholderBytes,
+        encryptor: this.preservedEncryptor,
       })
       : serializeSignedDocument(this.objects, this.trailer, { signatureObj: sigRef.num, placeholderBytes });
 
@@ -1831,6 +1984,7 @@ export class Document {
     fillSignature(layout.bytes, layout, cms);
 
     this.pendingSignedBytes = layout.bytes;
+    this.signedInSession = true;
   }
 
   /** Embed long-term-validation (LTV) data in a `/DSS` (PAdES-B-LT): for each
@@ -1878,6 +2032,7 @@ export class Document {
     if (isRef(catRef)) collected.set(catRef.num, this.objects.get(catRef.num) ?? null);
 
     this.pendingSignedBytes = appendIncrementalUpdate(base, { objects: collected });
+    this.signedInSession = true;
   }
 
   /** Append a document timestamp (`/DocTimeStamp`, ETSI.RFC3161) as an
@@ -1924,12 +2079,14 @@ export class Document {
       sigDict: dtsDict,
       objects: this.collectObjects(touched),
       placeholderBytes,
+      encryptor: this.preservedEncryptor,
     });
     const imprint = digestByteRange(layout.bytes, layout.byteRange, hashAlg);
     const request = buildTimeStampRequest(imprint, hashAlg);
     const token = extractTimeStampToken(await tsa(request));
     fillSignature(layout.bytes, layout, token);
     this.pendingSignedBytes = layout.bytes;
+    this.signedInSession = true;
   }
 
   /** Whether `doc`'s catalog carries a DocMDP certification (`/Perms /DocMDP`). */

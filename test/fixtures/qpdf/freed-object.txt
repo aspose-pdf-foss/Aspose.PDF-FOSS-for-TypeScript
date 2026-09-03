@@ -1,0 +1,18 @@
+# freed-object
+# an `f` entry — the one thing our own reader provably cannot check, because readXref drops free entries (2yvi)
+# sha256 c837b00500262907cba3bbc8a413ecaf1bd18b41180a25307176e83bfe22bfaa
+
+$ qpdf --check
+checking freed-object.pdf
+PDF Version: 1.7
+File is not encrypted
+File is not linearized
+No syntax or stream encoding errors found; the file may still contain
+errors that qpdf cannot detect
+
+$ qpdf --show-xref
+1/0: uncompressed; offset = 19
+2/0: uncompressed; offset = 834
+3/0: uncompressed; offset = 155
+4/0: uncompressed; offset = 306
+6/0: uncompressed; offset = 544

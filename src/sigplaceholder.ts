@@ -1,4 +1,5 @@
 import { PdfDict } from './types.js';
+import { Encryptor } from './encrypt.js';
 import { serializeDict } from './serialize.js';
 import { PdfParseError } from './errors.js';
 
@@ -44,10 +45,21 @@ export interface SignatureLayout {
  *  and a zero-filled `/Contents` hex run of `placeholderBytes` capacity, plus the
  *  offsets to patch once final positions are known. Caller-supplied `/ByteRange`
  *  or `/Contents` entries are ignored — this owns them. */
-export function buildSigDictPlaceholder(sigDict: PdfDict, placeholderBytes: number): SignaturePlaceholder {
+export function buildSigDictPlaceholder(
+  sigDict: PdfDict, placeholderBytes: number,
+  /** Encrypt the dictionary's strings, for a document that carries `/Encrypt`.
+   *  `/Contents` is EXEMPT (32000-1 7.6.2) and `/ByteRange` is not a string —
+   *  both are deleted just below and re-emitted as raw text, so the exemption
+   *  is structural rather than a special case. Getting it wrong is silent in
+   *  opposite directions: encrypting `/Contents` breaks verification, and
+   *  leaving `/Name` clear leaks the signer from an encrypted document. */
+  encryptor?: Encryptor, objNum?: number,
+): SignaturePlaceholder {
   const dict: PdfDict = new Map(sigDict);
   dict.delete('ByteRange');
   dict.delete('Contents');
+  if (encryptor && objNum !== undefined)
+    for (const [k, v] of dict) dict.set(k, encryptor.encryptObject(v, objNum, 0));
 
   // serializeDict yields "<< …entries… >>"; reopen it to append our fields.
   const head = serializeDict(dict).slice(0, -2); // drop trailing ">>", keep "<< … "

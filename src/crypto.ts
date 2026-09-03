@@ -101,11 +101,38 @@ export function objectKeyV4(fileKey: Uint8Array, num: number, gen: number, isAes
   return md5(ext).subarray(0, Math.min(fileKey.length + 5, 16));
 }
 
-type Cipher = 'rc4' | 'aes128' | 'aes256' | 'identity';
+export type Cipher = 'rc4' | 'aes128' | 'aes256' | 'identity';
+
+/** Everything needed to encrypt or decrypt a document's objects: the file key
+ *  and the two crypt-filter choices. Password validation has already happened
+ *  by the time these exist, so they are the whole of the crypto state. */
+export interface CryptKeys {
+  readonly fileKey: Uint8Array;
+  readonly streamCipher: Cipher;
+  readonly stringCipher: Cipher;
+}
 type Resolve = (o: PdfObject | undefined) => PdfObject;
+
+/** A signature value dictionary, whose `/Contents` is EXEMPT from encryption
+ *  (32000-1 7.6.2) — in BOTH directions: never encrypted on write, never
+ *  decrypted on read. Breaking the symmetry is silent either way, and either
+ *  way yields an unverifiable signature rather than an error: encrypting on
+ *  write corrupts what the verifier reads, and decrypting on read corrupts
+ *  what was correctly left alone.
+ *
+ *  Detected by `/Type` where a producer states it, and otherwise by the
+ *  `/ByteRange` + `/Contents` pair, which only a signature dictionary has. */
+export function isSignatureDict(d: PdfDict): boolean {
+  const t = d.get('Type');
+  if (isName(t) && (t.name === 'Sig' || t.name === 'DocTimeStamp')) return true;
+  return d.has('ByteRange') && d.has('Contents');
+}
 
 export interface Decryptor {
   decryptObject(obj: PdfObject, num: number, gen: number): PdfObject;
+  /** The same key and ciphers, so a save can encrypt what it writes with them
+   *  instead of re-deriving from a password it does not have. */
+  readonly keys: CryptKeys;
 }
 
 const asNum = (o: PdfObject | undefined): number | undefined => (typeof o === 'number' ? o : undefined);
@@ -202,7 +229,12 @@ export function buildDecryptor(
   const decryptObject = (obj: PdfObject, num: number, gen: number): PdfObject => {
     if (isString(obj)) return { kind: 'string', bytes: applyCipher(stringCipher, obj.bytes, num, gen) };
     if (isArray(obj)) { for (let i = 0; i < obj.length; i++) obj[i] = decryptObject(obj[i], num, gen); return obj; }
-    if (isDict(obj)) { for (const [k, v] of obj) obj.set(k, decryptObject(v, num, gen)); return obj; }
+    if (isDict(obj)) {
+      // A signature dict's /Contents is exempt (32000-1 7.6.2).
+      const skip = isSignatureDict(obj) ? 'Contents' : undefined;
+      for (const [k, v] of obj) if (k !== skip) obj.set(k, decryptObject(v, num, gen));
+      return obj;
+    }
     if (isStream(obj)) {
       for (const [k, v] of obj.dict) obj.dict.set(k, decryptObject(v, num, gen));
       return { kind: 'stream', dict: obj.dict, raw: applyCipher(streamCipher, obj.raw, num, gen) };
@@ -210,7 +242,7 @@ export function buildDecryptor(
     return obj;
   };
 
-  return { decryptObject };
+  return { decryptObject, keys: { fileKey, streamCipher, stringCipher } };
 }
 
 /** Algorithm 2.B: the R6 hardened hash. `udata` is empty for the user-key path

@@ -1,0 +1,32 @@
+# encrypted-preserved
+# a document opened encrypted and saved again, checked by a reader that is not ours -- the only external check on the encryption work
+# sha256 9ece7bf3dece3c47146befe1e4cd208ff4e150d4be3a0a47772356f6a805f1db
+
+$ qpdf --check
+checking encrypted-preserved.pdf
+PDF Version: 1.7
+R = 3
+P = -44
+User password = 
+Supplied password is owner password
+Supplied password is user password
+extract for accessibility: allowed
+extract for any purpose: allowed
+print low resolution: allowed
+print high resolution: allowed
+modify document assembly: allowed
+modify forms: allowed
+modify annotations: not allowed
+modify other: not allowed
+modify anything: not allowed
+File is not linearized
+No syntax or stream encoding errors found; the file may still contain
+errors that qpdf cannot detect
+
+$ qpdf --show-xref
+1/0: uncompressed; offset = 19
+2/0: uncompressed; offset = 68
+3/0: uncompressed; offset = 129
+4/0: uncompressed; offset = 210
+5/0: uncompressed; offset = 290
+6/0: uncompressed; offset = 344

@@ -12,6 +12,7 @@ export type {
 } from './document.js';
 export type { LoadFontOptions, FontMatch, FontFamily } from './fontmatch.js';
 export type { ObjStmDamage } from './objstm.js';
+export type { PdfRevision } from './xref.js';
 export { Page } from './page.js';
 export { ImageInfo } from './image.js';
 export { InlineImageInfo } from './inlineimage.js';
