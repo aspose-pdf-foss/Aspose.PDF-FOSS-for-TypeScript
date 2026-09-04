@@ -3,7 +3,7 @@
  *
  * Pure bit arithmetic: no PDF objects, no colour spaces, no `Document`. The
  * colour rule arrives as a callback, so this module never learns what a
- * colour space is and `grayshading.ts` stays the one owner of "what is the
+ * colour space is and `colorshading.ts` stays the one owner of "what is the
  * luma of this colour" -- the split `docxtable.ts` makes against `docxflow.ts`.
  */
 
@@ -67,14 +67,16 @@ class BitWriter {
 }
 
 /**
- * Copy `data` verbatim except for each colour tuple, which collapses to the
- * single component `recolor` returns.
+ * Copy `data` verbatim except for each colour tuple, which is replaced by the
+ * components `recolor` returns -- one for a gray target, three or four for the
+ * others. The tuple's WIDTH therefore changes, which is why the caller must
+ * rewrite `/Decode`'s colour half to match.
  *
  * Coordinates are copied as raw bit patterns and never pass through a float, so
  * the geometry of the output is bit-identical to the input's.
  */
 export function respliceMesh(
-  data: Uint8Array, layout: MeshLayout, recolor: (comps: number[]) => number,
+  data: Uint8Array, layout: MeshLayout, recolor: (comps: number[]) => number[],
 ): MeshResult {
   const { bitsPerCoordinate: bpc, bitsPerComponent: bpp, bitsPerFlag: bpf } = layout;
   const n = layout.components;
@@ -84,7 +86,7 @@ export function respliceMesh(
   const maxIn = 2 ** bpp - 1;
   const maxOut = 2 ** bpp - 1;
 
-  /** One colour tuple: read n components, write one. */
+  /** One colour tuple: read n components, write however many `recolor` gives. */
   const color = (): void => {
     const comps: number[] = [];
     for (let k = 0; k < n; k++) {
@@ -92,8 +94,9 @@ export function respliceMesh(
       const hi = layout.colorDecode[k * 2 + 1] ?? 1;
       comps.push(lo + (hi - lo) * (r.read(bpp) / maxIn));
     }
-    const g = recolor(comps);
-    w.write(Math.round((g < 0 ? 0 : g > 1 ? 1 : g) * maxOut), bpp);
+    for (const g of recolor(comps)) {
+      w.write(Math.round((g < 0 ? 0 : g > 1 ? 1 : g) * maxOut), bpp);
+    }
   };
 
   const copy = (bits: number): void => w.write(r.read(bits), bits);

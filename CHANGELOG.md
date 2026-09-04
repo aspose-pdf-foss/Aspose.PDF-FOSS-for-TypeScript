@@ -19,6 +19,209 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`iccCmykTransform(profile)` converts RGB to CMYK through a real ICC
+  destination profile.** `85l8.3` added the seam; this fills it. Pass it to
+  `ConvertColors` and the conversion is genuinely colour managed:
+
+  ```ts
+  import { iccCmykTransform } from '@asposefoss/pdf';
+  doc.ConvertColors({ to: 'cmyk', transform: iccCmykTransform(profileBytes) });
+  ```
+
+  The difference is not marginal. Through U.S. Web Coated (SWOP), a mid grey
+  is C 24.8 M 20.9 Y 19.6 **K 35.8** — all four channels — where the bundled
+  naive transform gives C 0 M 0 Y 0 K 21.6, and its idea of green sits 36
+  points of cyan away from the profile's. It reaches image samples, shading
+  functions and mesh vertices as well as content operators, so a converted
+  document has no naive ink left anywhere.
+
+  **Scope, and each limit is a decline rather than a guess.** ICC **v2 CMYK
+  output profiles with a Lab connection space** — what press profiles are —
+  reading the `B2A` tag for the intent you name: `B2A0` perceptual (default),
+  `B2A1` media-relative, `B2A2` saturation. A **v4** profile is refused rather
+  than mis-read, its `B2A` being an `mBA ` with a different element order;
+  so are absolute colorimetric (which has no `B2A` of its own), a non-CMYK
+  device space, and a profile carrying no `B2A`. Every refusal happens before
+  any colour converts, so a rejected profile leaves the document
+  byte-identical. CLUT interpolation is trilinear, and black point
+  compensation is not applied.
+
+  Without a `transform` the default is unchanged and still naive, byte for
+  byte. (85l8.7)
+
+### Added
+
+- **A reported inline image now says which one it was.** `ColorSkipped` gains
+  `opIndex`, the index of the `BI` operator within the stream `objNum` names,
+  present for `what: 'inline-image'` and absent for every other kind — those
+  address an object rather than an op inside one. A stream may draw several
+  inline images, so the object number alone could not say which was left in
+  colour; together the two are exact, and resolve with
+  `parseContentStream(inflateStream(obj))[opIndex]`.
+
+  An op index rather than the `ContentAddr` that `inlineimage.ts` already
+  defines, and that is structural rather than a shortcut. A `ContentAddr` path
+  is an **XObject** chain, but the colour walk also visits tiling patterns,
+  Type 3 `/CharProcs` and ExtGState `/SMask /G` groups — any of which may hold
+  a `BI`, none of which such a path can name. A `ContentAddr` is also
+  page-relative, while the walk dedupes scopes by object number so that a form
+  reached from two pages is rewritten once; that form has no single page to
+  name. An object number plus an op index has neither problem and is uniform
+  across all five scope kinds. (85l8.6)
+
+### Added
+
+- **`ConvertColors({ to: 'cmyk', transform })` takes the RGB→CMYK leg from the
+  caller.** The bundled `rgbToCmyk` is naive maximum-black removal with no
+  destination profile, so its numbers are structurally CMYK and not
+  colorimetrically correct — which is why PDF/X remediation makes that rewrite
+  opt-in, and why the CMYK target has carried a warning since it shipped. A
+  caller who *is* colour managed, who has the profile and a CMS to apply it,
+  can now hand the right numbers in:
+
+  ```ts
+  doc.ConvertColors({ to: 'cmyk', transform: (r, g, b) => cms(r, g, b) });
+  ```
+
+  It replaces that leg alone and never the pivot, so every source space still
+  reaches RGB by the same route and a transform sees the same triple whatever
+  the document declared. It reaches **image samples, shading functions and mesh
+  vertices** as well as content operators and annotation colours — a transform
+  that stopped at the operators would leave naive ink in every picture, which
+  is the defect a colour-managed caller is trying to avoid. `report.cmykTransform`
+  is `'naive'` or `'supplied'`, absent for a target with no cmyk leg, so an
+  archived report answers "was this file colour managed?".
+
+  The transform is validated **once, up front** — probed at four corners for a
+  return of four finite numbers — so a rejected call leaves the document
+  byte-identical, and every later result is clamped to 0..1 with a non-finite
+  component becoming 0, because a `NaN` reaching a content stream is a corrupt
+  file rather than a wrong colour. Passing it with `to: 'gray'` or `'rgb'`
+  throws `RangeError` rather than being silently ignored.
+
+  **This does not make the library colour managed.** With no `transform` the
+  output is exactly as naive as before, byte for byte. Note also that declaring
+  *which* output condition the numbers are for is a separate job: an
+  `/OutputIntent` is a standards claim, and `ConvertToPdfX` already owns it.
+  (85l8.3)
+
+### Fixed
+
+- **A colour conversion no longer skips a page whose `/Resources` is inherited
+  from the page tree.** `/Resources` is an inheritable page attribute (32000-1
+  7.7.3.4) and Ghostscript, Word and others put it on the `/Pages` node, but the
+  colour walk read the page's own entry, which does not inherit. With no
+  resources in hand the whole pass degraded at once, and the damage was much
+  wider than a missed colour: every form XObject, tiling pattern, Type 3 glyph
+  procedure and soft-mask group reachable through those resources was **never
+  walked**, so a document converted with `ConvertToGrayscale` went on painting
+  pure blue; named shadings were never converted; and every `cs` naming a
+  resource fell back to DeviceGray. `report.skipped` was `[]` throughout. This
+  predates the `{ to }` target — `ConvertToGrayscale` has always behaved this
+  way on such a document. (85l8.5)
+
+- **A `cs` naming a colour space that cannot be resolved no longer converts the
+  colour from a space nobody established.** With the inheritance fixed this is
+  a damaged file rather than an everyday one, but the old fallback to DeviceGray
+  was wrong in two different ways at once. Converting to a non-gray target read
+  the following `sc`'s operands as a single grey component, so **`1 0 0 sc` —
+  red — came out `1 1 1 rg`, pure white**. Converting to gray retargeted the
+  `cs` while leaving the `sc` alone, emitting `/DeviceGray cs 1 0 0 sc`: three
+  operands in a one-component space, malformed rather than merely wrong. Both
+  operators are now left exactly as the document wrote them and the resource
+  name is reported in `skipped` under `what: 'content'`.
+
+  This is the one `skipped` entry that means colour **survives** in the output,
+  so the postcondition softens accordingly: after the call every colour is the
+  target space *except what `skipped` names*. That is the honest trade — a
+  reported refusal beats writing white where the document said red. (85l8.5)
+
+### Fixed
+
+- **A colour conversion no longer reports a clean run over content it left in
+  colour.** Two constructs declined silently, so `skipped: []` — the field a
+  caller reads to answer "did this document fully convert" — was reported for
+  documents that provably had not.
+
+  An **inline image** lives in the content stream and in no object, so
+  `colorimage.ts` never sees one and every decline it made was invisible: a
+  filtered `BI`, a `/Decode` array, a bit depth other than 8, a colour space
+  outside the six device spellings, malformed geometry or a truncated payload
+  all left the image drawing its original colour with nothing said. Each is now
+  a `skipped` entry under the new `what: 'inline-image'`, whose `objNum` is the
+  content stream that **drew** it — the only address an inline image has, and
+  the form's stream rather than the page's when it is drawn inside one. The
+  target check outranks every reason, so an image already in the target space
+  still reports nothing however it is coded; without that, every filtered gray
+  inline image would report a skip under `to: 'gray'` for work there was none
+  of.
+
+  An **annotation colour array** of an illegal width was worse than silent, it
+  was wrong. 32000-1 12.5.2 gives `/C`, `/IC`, `/MK /BG` and `/MK /BC` their
+  space by the array's length — 1 gray, 3 RGB, 4 CMYK — and any other width
+  fell through to the RGB arm, so `/C [0.25 0.5]` was rewritten as RGB with
+  blue 0, and an array holding no numbers at all was left in place unreported.
+  Both are now reported under the `what: 'annotation'` kind, which was declared
+  from the start and emitted by nothing, and the array is left exactly as the
+  document wrote it rather than guessed at. An **empty** array is untouched and
+  unreported, as before: it is legal and means *no colour*, so a record there
+  would fire on every annotation that asked for no border. (85l8.4)
+
+### Changed
+
+- **`ColorSkipped.what` gains `'inline-image'`.** Additive at runtime and
+  source-breaking for a caller doing an exhaustive `switch` on it. An inline
+  image is not an image XObject — it has no object of its own, so a caller
+  cannot address it the way `'image'` promises — and folding it into
+  `'content'` would say the stream failed to parse when it parsed fine.
+  (85l8.4)
+
+### Added
+
+- **`doc.ConvertColors({ to })` converts a document to one device space —
+  `'gray'`, `'rgb'` or `'cmyk'`.** Until now the only document-wide colour
+  operation was `ConvertToGrayscale`, and RGB→CMYK existed solely inside PDF/X
+  remediation, where it is a side effect of a standards conversion rather than
+  something a prepress caller can ask for on its own terms. The same walk now
+  takes a target: page content, form XObjects, tiling patterns, Type 3 glyph
+  procedures, image XObjects, inline images, shadings and annotations, with
+  every existing image route preserved. `ConvertToGrayscale` remains as the
+  named shorthand for `{ to: 'gray' }` and is byte-identical to it, which is
+  asserted directly rather than assumed.
+
+  Every colour ends up in the target space, DeviceGray content included — a
+  grey becomes pure K under `'cmyk'`, which renders identically. That keeps the
+  postcondition simple enough to check: after the call, every colour in the
+  document *is* the target.
+
+  Two limits worth stating before you reach for it. RGB→CMYK is the same naive
+  maximum-black transform PDF/X remediation uses, with **no colour
+  management**: without the destination profile there is no way to know what
+  ink these values produce, so the output is structurally CMYK and not
+  colorimetrically correct. And the coefficient-domain JPEG route is gray-only
+  — it works because a YCbCr JPEG's Y channel *is* Rec. 601 luma, and no such
+  identity exists for the other targets — so a photographic JPEG converted to
+  CMYK re-encodes and sets `lossy` where the same image converted to gray would
+  not. An unknown target throws `RangeError` before anything is converted, so a
+  rejected call leaves the document byte-identical. (85l8.2)
+
+### Changed
+
+- **BREAKING: the colour-conversion report types are renamed.**
+  `GrayscaleOptions` → `ColorConvertOptions`, `GrayscaleReport` →
+  `ColorConvertReport`, `GrayImageResult` → `ColorImageResult`, `GraySkipped` →
+  `ColorSkipped`, joined by the new `ConvertColorsOptions` and the re-exported
+  `TargetSpace`. The old names are **not** kept as aliases: a method called
+  `ConvertColors` returning a `GrayscaleReport` reads as a mistake, and
+  carrying four deprecated aliases into the first published release to avoid
+  that is worse than renaming now. Nothing has been published or tagged yet, so
+  this breaks no released consumer — it is marked BREAKING because the names
+  are exported from `index.ts` and anyone building against the repo will see
+  it. Field names, shapes and values are unchanged; only the type names moved.
+  (85l8.2)
+
 ### Changed
 
 - **BREAKING: `Save()` now preserves a document's encryption instead of silently writing it in the clear.** Opening an encrypted PDF and saving it produced a **plaintext** file with no `/Encrypt` and no signal — measured, an `/Info /Title` of `SecretTitle` was visible in the output and read back fine, so a caller who opened a confidential document and saved it got an unprotected one. It is now written encrypted again, reusing the original `/Encrypt` dictionary and file key. Reusing them is not an optimization but the only faithful route: the owner password is hashed into `/O` and is unrecoverable, and re-deriving through `EncryptOptions` defaults `ownerPassword ?? userPassword`, which would silently equate them — a permissions downgrade shipped as a confidentiality fix. Pass `Save({ encrypt: false })` for the old behaviour, or `Save({ encrypt })` to re-encrypt with stated credentials. Preserving requires the trailer's `/ID`, which the file key is derived from, and throws `UnsupportedFeatureError` without it. Unencrypted documents are byte-identical. (`0cr3`)

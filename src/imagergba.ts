@@ -129,7 +129,7 @@ function decodeStencilMaskAlpha(
  *
  * `comps` is the SAMPLE stride, not the colour space's component count: an
  * Indexed image stores one index per pixel while its base space has three or
- * four. The rule itself lives in `colorkey.ts`, shared with `grayimage.ts`, so
+ * four. The rule itself lives in `colorkey.ts`, shared with `colorimage.ts`, so
  * a converted document cannot mask differently from the original.
  */
 function colorKeyAlphaFor(

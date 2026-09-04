@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { grayscaleOps, type SpaceLookup } from '../src/grayops.js';
-import type { GraySpace } from '../src/grayscale.js';
+import { grayscaleOps, type SpaceLookup } from '../src/colorops.js';
+import type { GraySpace } from '../src/colorrule.js';
 import type { ContentOp } from '../src/content.js';
 import { name } from '../src/types.js';
 
@@ -67,10 +67,25 @@ describe('grayscaleOps — named colour spaces', () => {
     expect(r.ops).toEqual([op('cs', name('DeviceGray')), op('sc', 0.5)]);
   });
 
-  it('falls back to gray for an unresolvable space rather than throwing', () => {
-    const r = grayscaleOps([op('cs', name('Nope')), op('sc', 0.5)], none);
+  /**
+   * This asserted the OPPOSITE until `85l8.5` — that an unresolvable space
+   * fell back to DeviceGray and the `cs` was rewritten. It does not any more,
+   * and the change is deliberate: the fallback rewrote the `cs` while
+   * `isTarget` left the following `sc` alone, so `cs /Nope … 1 0 0 sc` became
+   * `/DeviceGray cs 1 0 0 sc` — three operands in a one-component space. The
+   * operators are left exactly as written now and the name is reported.
+   *
+   * The half of this case that was always the point survives unchanged: it
+   * must not THROW. Damaged content costs its own colour, never the
+   * conversion.
+   */
+  it('refuses an unresolvable space rather than throwing or guessing', () => {
+    const ops = [op('cs', name('Nope')), op('sc', 0.5)];
+    const r = grayscaleOps(ops, none);
     expect(() => r).not.toThrow();
-    expect(r.ops[0]).toEqual(op('cs', name('DeviceGray')));
+    expect(r.ops).toEqual(ops);
+    expect(r.changed).toBe(0);
+    expect([...r.unresolvedSpaces]).toEqual(['Nope']);
   });
 });
 

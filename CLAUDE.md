@@ -2233,7 +2233,7 @@ Source (`src/`):
   claims to precede, moving the picture to the front of the line. The two
   texts are identically styled precisely when it bites.
   **Invariant:** `resolveFamily` and `measure` are both INJECTED, the seam
-  `grayimage.ts` uses for `resolve`/`inflate`. `fontFamily` is a list of NAMES
+  `colorimage.ts` uses for `resolve`/`inflate`. `fontFamily` is a list of NAMES
   and `TextRun.font` is an `AuthoringFont`, and bridging them needs
   `Document.LoadFontByName`; shrink-to-fit needs `layoutRuns`. Either import
   would put a font stack inside a pure leaf.
@@ -4127,7 +4127,7 @@ Source (`src/`):
   holds the whole buffer while `fontsource.ts` holds a file descriptor and must
   not read one, and a bytes-only signature forces `fontsource.ts` to keep its own
   map parse — which is how an index and a loader come to disagree about how many
-  faces a file holds. Same seam `grayimage.ts` takes `resolve`/`inflate`
+  faces a file holds. Same seam `colorimage.ts` takes `resolve`/`inflate`
   through.
   **Four details that are silent when wrong, all mutation-checked:** both the
   type count and each type's resource count are stored **minus one**, so reading
@@ -4422,7 +4422,7 @@ Source (`src/`):
   `/Decode` renders the precise NEGATIVE of the intended transparency, which
   reads as deliberate rather than broken.
   **Invariant:** the colour-key rule itself lives in `colorkey.ts`, shared with
-  `grayimage.ts`, so a greyed document cannot mask differently from the
+  `colorimage.ts`, so a greyed document cannot mask differently from the
   original. `colorKeyAlphaFor` passes the SAMPLE stride, and for an Indexed
   image `resolveColorSpace` already reports one component — the `indexed` flag
   beside it is about SCALING (a raw index rather than a 0..1 fraction), not
@@ -5490,24 +5490,67 @@ Source (`src/`):
   **Note:** `decodeJpegFrame` exists because `decodeJpeg` built a `Frame` full of
   quantized coefficients and threw it away. It does not handle hierarchical
   JPEGs — those have no single frame — so a caller tests `isHierarchical` first.
-- **grayconvert.ts**, **grayops.ts**, **grayimage.ts**, **grayshading.ts**,
-  **graymesh.ts**, **grayscale.ts** — document-wide grayscale conversion
+- **colorconvert.ts**, **colorops.ts**, **colorimage.ts**, **colorshading.ts**,
+  **colormesh.ts**, **colorrule.ts** — document-wide colour conversion
   (`doc.ConvertToGrayscale`), across page content, form XObjects, tiling
   patterns, Type 3 glyph procedures, image XObjects, inline images, shadings and
-  annotations. `grayscale.ts` is the leaf holding the one greying rule (`luma`,
-  Rec. 601); `grayops.ts` rewrites colour operators in a content stream;
-  `grayimage.ts` converts one image XObject; `grayshading.ts` converts one
-  shading and `graymesh.ts` re-splices a mesh's bit-packed vertex colour;
-  `grayconvert.ts` is the only module of the six that touches a `Document` — the
+  annotations. `colorrule.ts` is the leaf holding the one conversion rule
+  (`convertComps`, over `luma` Rec. 601 and `rgbToCmyk`); `colorops.ts` rewrites
+  colour operators in a content stream;
+  `colorimage.ts` converts one image XObject; `colorshading.ts` converts one
+  shading and `colormesh.ts` re-splices a mesh's bit-packed vertex colour;
+  `colorconvert.ts` is the only module of the six that touches a `Document` — the
   split `svgdraw.ts`/`svgembed.ts` makes. It builds the `GrayscaleReport`.
+  **Invariant (`85l8.1`):** the walk takes a `TargetSpace` — `'gray' | 'rgb' |
+  'cmyk'` — and every module has a general entry plus a gray SPECIALIZATION
+  that keeps the existing name (`colorOps`/`grayscaleOps`,
+  `convertImageSpace`/`grayscaleImage`, `convertShadingSpace`/
+  `grayscaleShading`, `convertColors`/`convertToGrayscale`). The wrappers are
+  what let the seven pre-existing test files keep asserting the gray path
+  unedited — `colormesh.ts` is the one exception, since `respliceMesh`'s
+  callback genuinely changed arity, and only its three callback sites moved.
+  `doc.ConvertColors` is deliberately NOT public here; that is `85l8.2`, and
+  `convertColors` is exported from the module so the cmyk and rgb paths are
+  falsifiable now rather than dead code awaiting a caller.
+  **Invariant (`85l8.1`):** `rgbToCmyk` lives in `colorrule.ts`, not in
+  `pdfxcolor.ts` where it was written, because two callers need it and
+  `pdfxcolor.ts` imports `EditableContent` — importing it from the leaf would
+  drag the page-content machinery into the one file every colour rule is tested
+  from. `pdfxcolor.ts` re-exports it AND imports it locally beside that
+  (`export … from` creates no local binding), so its import path is unchanged.
+  **Invariant (`85l8.1`):** the `jpeg-exact` route is GRAY ONLY, and that is
+  structural rather than policy — it works because a YCbCr JPEG's Y channel IS
+  Rec. 601 luma, and no such identity exists for rgb or cmyk. Measured:
+  dropping the `to === 'gray'` gate reddens exactly two cmyk cases.
   **Invariant:** conversion is operator **NEUTRALIZATION**, not colour-space
-  retargeting. Every `rg`/`k`/`sc`/`scn` becomes `g`/`G` carrying the luma of the
-  colour it set, `cs` becomes `/DeviceGray`, and named `/ColorSpace` resources
+  retargeting. Every `rg`/`k`/`sc`/`scn` becomes the target's operator carrying
+  the converted colour, `cs` becomes the target's name, and named
+  `/ColorSpace` resources
   are left unreferenced for `Optimize`'s `dr` pass. That is what makes the two
   passes ORDER-INDEPENDENT: the content pass *reads* colour-space resources that
   no pass *writes*. Retargeting would have the content pass resolving spaces the
   object pass had already moved out from under it, and would leave a space shared
   between an image that converts and one that cannot self-inconsistent.
+  **Invariant (`85l8.1`):** a source ALREADY in the target space is returned
+  untouched by `convertComps`, and that is the byte-identity property rather
+  than an optimization — the Rec. 601 weights sum to 0.9999999999999999, so a
+  grey pivoted through RGB comes back one ulp low and every grey operand in the
+  document is re-rounded. **Note, measured, and it covers NOTHING:** the RGB
+  arm of that short-circuit is not load-bearing, since `rgbPivot` returns an
+  rgb source raw and `clamp01` is the identity in range — disabling it for rgb
+  ALONE leaves the whole suite green, where disabling it outright reddens the
+  gray and cmyk cases. Do not read the green suite as covering it.
+  **Note on the fence, and the obvious reading is wrong:**
+  `test/grayscale-identity.test.ts` hashes `Save()` output for five fixtures.
+  It does NOT uniquely catch a broken colour rule — routing `grayOf`'s gray arm
+  through `luma(g, g, g)` reddens `grayscale-core.test.ts` and leaves every
+  hash GREEN, because `colorops.ts` short-circuits before ever calling it with a
+  gray space. What it catches ALONE is an INCIDENTAL ENCODING change: making
+  `convertContent` re-deflate its output reddens one case there and nothing in
+  the other seven files. That is the class it exists for. Its fixtures reach
+  the `flate` and `jpeg-exact` routes, two shadings, one mesh and a colour-key
+  `/Mask` — NOT the `jpeg` or `palette` routes, so a JPEG quality change
+  reddens nothing there.
   **Invariant:** Rec. 601 rather than Rec. 709, because it is what Ghostscript
   and the rest of the PDF tooling emit — a document converted here matches the
   same document converted elsewhere — and because it is exactly JPEG's Y channel,
@@ -5521,13 +5564,13 @@ Source (`src/`):
   per component, where a decode hands samples back still packed), `jpeg-exact`
   (jpegtranscode.ts; does not set `lossy`), `jpeg` (decode and re-encode at
   `quality`; sets `lossy`) and `flate`.
-  **Invariant:** `grayimage.ts` and `grayshading.ts` take `resolve`/`inflate` as
+  **Invariant:** `colorimage.ts` and `colorshading.ts` take `resolve`/`inflate` as
   ARGUMENTS and never import `document.js`, so every rule is testable from a
   hand-built dict. Anything needing an object number is handed back for
-  `grayconvert.ts` to `allocObject` — which is how the colour-key stencil below
+  `colorconvert.ts` to `allocObject` — which is how the colour-key stencil below
   reaches the file, the split `imageembed.ts` already makes for an `/SMask`.
-  **Invariant:** `graymesh.ts` is pure BIT arithmetic and takes the colour rule
-  as a callback, so it never learns what a colour space is and `grayshading.ts`
+  **Invariant:** `colormesh.ts` is pure BIT arithmetic and takes the colour rule
+  as a callback, so it never learns what a colour space is and `colorshading.ts`
   stays the one owner of "what is the luma of this colour".
   **Invariant:** a mesh's coordinates are copied as raw BIT PATTERNS and never
   pass through a float, so the geometry of the output is bit-identical and a
@@ -5561,8 +5604,225 @@ Source (`src/`):
   DECLINE — a decline still converts, by the other route. Skips: a colour-key
   `/Mask` beside an `/SMask` (32000-1 makes them mutually exclusive), a
   `/Decode` array, a filtered inline image, a mesh whose data ends mid-record.
+  **Note, and this entry ASSERTED IT FOR SIX COMMITS BEFORE IT WAS TRUE:** the
+  inline-image half of that list did not exist until `85l8.4`. `colorops.ts`
+  had no skip channel at all, so every inline-image decline was invisible and
+  `test/convert-colors.test.ts` asserted `skipped: []` for a document whose
+  `BI` was still drawing full colour. Recorded because the entry read as
+  covered, which is how it stayed unimplemented.
+  **Invariant (`85l8.4`):** an inline image reports through
+  `GrayOpsResult.skipped` — reasons only, attributed to a containing stream by
+  `colorconvert.ts` — because an inline image lives in the content stream and
+  in no object, so `colorimage.ts` provably cannot see one and this is the only
+  place that can report it. `what` is `'inline-image'` rather than `'image'`,
+  since `objNum` names the stream that DREW it and there is no object to
+  address; folding it into `'content'` would claim the stream failed to parse.
+  **Invariant (`85l8.6`):** an `inline-image` skip carries `opIndex`, the index
+  of its `BI` within the stream `objNum` names, and NO other kind does — those
+  address an object rather than an op inside one. `colorops.ts` reports the
+  index relative to its OWN op list, which is what lets it stay a leaf that
+  knows no object numbers.
+  **Invariant (`85l8.6`), and it is why this is not a `ContentAddr`:** that
+  type exists in `inlineimage.ts` and `InlineImageInfo.Addr` is public, but it
+  cannot describe these skips. Its `path` is an XOBJECT chain — `cowXObject`
+  resolves every segment through `/Resources /XObject` — while `collectScopes`
+  also walks tiling patterns, Type 3 `/CharProcs` and ExtGState `/SMask /G`
+  groups, any of which may hold a `BI` and none of which such a path can name;
+  a `ContentAddr` field would be silently absent for three of the five scope
+  kinds. It is also PAGE-relative where the scope walk dedupes by object
+  number — the correctness rule that keeps a form reached from two pages
+  rewritten once — so a shared form has no single page to name. Do not "fix"
+  this into a `ContentAddr`.
+  **Invariant (`85l8.4`), and it is what keeps `skipped: []` meaningful:** the
+  TARGET check outranks every reason. `/CS` is in the dict rather than the
+  payload, so an image already in the target space needs nothing decoded and
+  cannot fail to convert however it is coded — put the filter test first, as
+  the pre-`85l8.4` order did, and every filtered gray inline image reports a
+  skip under `to: 'gray'` for work there was none of.
+  `build-inline-image-pdf.ts` writes every inline image as `/F /AHx`, so that
+  fixture is the one that shows it: two skips converting to cmyk, ONE
+  converting to gray. A case asserting only the cmyk count cannot tell the rule
+  from its absence.
+  **Invariant (`85l8.4`):** an annotation colour array of an illegal WIDTH is
+  reported and LEFT, never guessed at. 32000-1 12.5.2 gives `/C`, `/IC`,
+  `/MK /BG` and `/MK /BC` their space by length — 1 gray, 3 RGB, 4 CMYK — and
+  any other width used to fall through to the RGB arm, so `/C [0.25 0.5]` was
+  rewritten as RGB with blue 0 and an array holding no numbers was left with
+  nothing said. An EMPTY array is the exception and stays silent: it is legal
+  and means *no colour*, so a record there fires on every annotation that asked
+  for no border. This is also what makes `what: 'annotation'` reachable — the
+  kind was declared from the start and emitted by nothing.
+  **Note, measured:** all seven mutations aimed at these rules redden. Two are
+  worth naming, both because the obvious fixture misses them: pushing the
+  inline skip AFTER `convertContent`'s `changed === 0` bail reddens three cases
+  — a stream whose only colour is a declining inline image changes nothing, and
+  is precisely the stream whose skip must be heard — and reporting the
+  already-in-target decline reddens three, which is the silence rule above.
+  **Note:** `greyDA`'s `catch` is UNREACHABLE and no skip is reported from it.
+  `content.ts` contains no `throw` and `Lexer.next()` never throws, so
+  `parseContentStream` provably cannot fail; `convertContent`'s catch is a
+  different matter and IS reachable, since it wraps `inflateStream` too. The
+  `/DA` catch stays as defence, and as the shape every other parse site here
+  takes.
+  **Invariant (`85l8.5`):** page resources are read through `page.Resources`,
+  NEVER `page.Dict.get('Resources')`. `/Resources` is an INHERITABLE page
+  attribute (32000-1 7.7.3.4) and the raw read misses one held on the `/Pages`
+  node — where Ghostscript, Word and others put it. This module was the only
+  one in `src/` still getting it wrong, and it degraded the WHOLE pass rather
+  than one lookup: `collectScopes` never reached the form XObjects, tiling
+  patterns, Type 3 charprocs or SMask groups hanging off those resources, so a
+  greyscaled document went on painting pure blue; named shadings were never
+  converted; and every `cs` fell to the unknown branch. `skipped` was `[]`
+  throughout. It PREDATES `85l8.1` — `ConvertToGrayscale` always did this — so
+  do not read it as fallout from the target parameter.
+  **Note, measured, and the redundancy is real:** `convertShadings` has its own
+  page loop reading the same thing, and fixing it reddens NOTHING on any
+  document that has content — `collectScopes` already contributes the page's
+  resources to the shading set. It is load-bearing for exactly one shape, a
+  page with NO `/Contents`, which produces no scope at all;
+  `buildInheritedShadingOnlyPdf` exists for it and is the only case that goes
+  red. Two defences for one rule: breaking either alone proves nothing.
+  **Invariant (`85l8.5`):** a `cs`/`CS` naming a space no lookup resolves is
+  REFUSED, not guessed. The operator and every `sc`/`scn` under it are left
+  exactly as written and the resource key comes back on
+  `GrayOpsResult.unresolvedSpaces` — a `Set` of NAMES, `patternSpaces`' shape,
+  so the leaf hands back what it found and `colorconvert.ts` owns the report
+  wording. The old `?? GRAY` fallback was wrong in two ways at once: to a
+  non-gray target the following `sc 1 0 0` was read as ONE grey component and
+  came out `1 1 1 rg`, pure white; to gray the `cs` was retargeted while
+  `isTarget` left the `sc` alone, emitting `/DeviceGray cs 1 0 0 sc` — three
+  operands in a one-component space, malformed rather than merely wrong.
+  **Note:** `'unknown'` is LOCAL to `colorops.ts` (`StateSpace`), deliberately
+  not a `GraySpace` kind. `colorrule.ts` is the leaf every colour rule is
+  tested from and `colorimage.ts`/`colorshading.ts` resolve their space from a
+  dict they were handed, so neither can ever construct one — a kind only one of
+  three consumers can produce is a case the other two carry for nothing.
+  **Note:** this is the ONE `skipped` entry meaning colour SURVIVES in the
+  output, so the postcondition is "every colour is the target EXCEPT what
+  `skipped` names". README says so too.
+  **Invariant (`85l8.3`):** the RGB→CMYK leg is REPLACEABLE by the caller
+  (`ConvertColorsOptions.transform`, a `CmykTransform` in `colorrule.ts`), and
+  it replaces that leg ALONE — never the pivot. Every source space still
+  reaches RGB through `rgbPivot`, so a transform sees the same triple whatever
+  the document declared, and a gray or rgb target never consults it. This does
+  NOT make the library colour managed: the default is the same naive
+  maximum-black `rgbToCmyk`, and with no transform the output is byte-identical
+  (`grayscale-identity` is the fence).
+  **Invariant:** it is threaded to EVERY leg — content operators, inline
+  images, image samples (`GrayImageOptions.toCmyk`), shading functions, mesh
+  vertices and annotation colour arrays. Stopping at the operators leaves naive
+  ink in every picture, which is the defect a colour-managed caller is trying
+  to avoid. Each leg is mutation-checked SEPARATELY, because a fixture
+  exercising only operators leaves the other four unmeasured.
+  **Invariant:** validated ONCE, before anything converts, so a rejected call
+  leaves the document byte-identical — `checkTarget`'s rule. `TypeError` for a
+  non-function or a return that is not four finite numbers (wrong KIND of
+  thing), `RangeError` for a target with no cmyk leg (outside the allowed SET)
+  — `formcreate.ts`'s split. Silently ignoring it for `to: 'gray'` is the trap
+  `textedit.ts` records for `region`.
+  **Invariant, and BOTH halves are separately load-bearing:** every result is
+  also clamped on the way out, testing FINITENESS as well as range. The probe
+  cannot prove a transform well behaved for inputs it did not try, and
+  `clamp01(NaN)` is `NaN` — so a range-only clamp lets a `NaN` reach a content
+  stream, which is a CORRUPT FILE rather than a wrong colour. Measured:
+  dropping the clamp reddens one case, and weakening it to range-only reddens
+  one too.
+  **Note on the fixture, found by a failing run:** a case for the clamp must
+  misbehave for a colour the PROBE does not use. The probe corners are black,
+  white, RED and mid-grey, so a transform that misbehaves for red is rejected
+  up front and the case measures the wrong guard; the fixture keys on blue.
+  **Note:** no `/OutputIntent` is written and none should be. Its subtype is a
+  standards CLAIM (`GTS_PDFX`, `GTS_PDFA1`), and asserting PDF/X conformance
+  from a plain colour conversion would be false; `pdfxconvert.ts` and
+  `pdfaconvert.ts` own that through a conversion context this module cannot
+  reach. Declaring which output condition the numbers are FOR is
+  `ConvertToPdfX`'s job. `pdfxcolor.ts`'s `rewriteRgbToCmyk` likewise keeps the
+  naive transform: it is PDF/X remediation with its own opt-in and its own
+  caller.
+  **Note on what this is NOT:** there is no ICC engine here and no profile is
+  parsed — `colorspace.ts` still reads an ICCBased space through `/N` and
+  `/Alternate` alone, and `srgb.ts` is an opaque blob we embed. A real
+  destination-profile transform (B2A LUTs, PCS, rendering intents) is its own
+  subsystem and its own issue, and should not land without an oracle: colour
+  errors are silent, and checking our own arithmetic against itself is exactly
+  what this repo's real-world fixtures exist to prevent.
   **Invariant:** it throws `UnsupportedFeatureError` on a signed document, which
   converting would invalidate.
+- **icc.ts** — the ICC profile container (`85l8.7.1`): header, tag table, and
+  the `XYZ ` and `curv` tag types. A pure leaf importing only `errors.js` —
+  bytes in, structure out, no `Document` and no colour conversion; `icclut.ts`
+  and `icctransform.ts` (`85l8.7.2`) build the transform on top.
+  **Invariant:** a parser REPORTS what the file says and never corrects it.
+  The vendored sRGB profile declares a D65 media white point where its own
+  colorants sum to D50 — a known quirk of that file, asserted in the suite so
+  it reads as recorded rather than as a reader bug.
+  **Invariant:** tag bounds are checked ONCE, in `parseIccProfile`, not in each
+  tag reader: a tag running past the buffer is an out-of-bounds read rather
+  than a wrong colour.
+  **Invariant:** a four-character signature keeps its padding. `'RGB '` and
+  `'Lab '` are signatures rather than words, and a trimmed one stops comparing
+  equal to the constants `85l8.7.2` matches on.
+  **Invariant:** `iccTag` is a linear scan over an array, NOT a Map lookup. The
+  signature comes from a file, so a Map keyed by it would need
+  `hasOwnProperty` to keep `constructor` from finding
+  `Object.prototype.constructor` — `predefcmap.ts`'s hazard, and seventeen
+  tags do not need an index.
+  **Note, and each is silent when wrong:** header byte 9 packs minor and
+  bugfix in two nibbles (read raw it reports version 16 for 1.0);
+  `s15Fixed16` is SIGNED 16.16; and a `curv` tag's COUNT selects three
+  meanings — 0 identity, 1 a u8Fixed8 GAMMA where 0x0100 is 1.0, n a table.
+  Both of the last two are mutation-checked.
+  **Note, and it is a real-world shape a synthetic fixture would miss:** the
+  sRGB profile's `rTRC`, `gTRC` and `bTRC` all point at offset 1084 — three
+  tags SHARING one data block, which ICC permits to avoid storing an identical
+  curve three times. A reader that assumed tags partition the file gets two of
+  the three wrong.
+  **Note on the oracle:** there is none, and none is needed. Every rule is
+  checked against the sRGB profile already vendored in `srgb.ts`, and the
+  `s15Fixed16` reader is anchored OUTSIDE this code by summing the three
+  colorants to the published D50 illuminant — the rule that to check an
+  interpreter you assert against something it does not compute.
+- **icclut.ts**, **icctransform.ts** — an ICC destination profile as a real
+  `CmykTransform` (`85l8.7.2`). `icclut.ts` reads and evaluates the
+  `mft2`/`mft1` LUT pipeline; `icctransform.ts` composes sRGB → PCS → CMYK and
+  exposes `iccCmykTransform`, the only thing here `index.ts` exports. Both are
+  pure leaves over `icc.ts`; `85l8.3` already threads a `CmykTransform` to
+  every leg of the colour walk, so this added NO plumbing.
+  **Invariant:** the SOURCE leg is written out, never parsed from `srgb.ts`.
+  sRGB is defined by a specification rather than by a file, which keeps the
+  whole feature dependent on exactly ONE profile — the caller's destination.
+  **Invariant:** every refusal happens in the FACTORY, before any colour
+  converts, so a declined profile leaves the document byte-identical —
+  `checkTarget`'s rule. Declined rather than mis-read: v4 (its `B2A` is an
+  `mBA ` with a different element order), absolute colorimetric (no `B2A` tag
+  of its own), a non-CMYK device space, a non-Lab PCS, a missing `B2A`.
+  **Invariant:** interpolation is TRILINEAR, stated in the source. littlecms
+  and probably WCS use tetrahedral, and the two agree only on an AFFINE CLUT —
+  which is exactly why the fixture is affine and the goldens need no tolerance.
+  **Invariant:** the CLUT's FIRST input channel varies SLOWEST. Measured:
+  reversing the stride reddens three cases, which the fixture's
+  one-input-per-output design exists to catch.
+  **Invariant, and it was got WRONG TWICE — read this before touching
+  `labToV2`:** `L* 100` reaches the LUT at the FULL input range, while `a*`
+  and `b*` use the legacy `(v + 128) × 256` over 0..0xFFFF. The asymmetry
+  reads like an inconsistency and is what WCS does. The plausible wrong
+  reading for L is `× 65280/65535`, because ICC v2 genuinely does store Lab
+  with `0xFF00` as full scale — it costs 0.383% on every colour, proportional
+  to L\*, zero at black and worst at white, which is a uniformly
+  slightly-light document nobody notices without a reference. The plausible
+  wrong reading for a/b is `/255`, off by 2e-3 where the right one matches to
+  1e-4. BOTH were caught by the golden comparison and by NO hand-written case:
+  a hand-written case asserts the rule its author believed, which is the
+  argument for the oracle in miniature.
+  **Note on the oracle:** Windows Color System (`mscms.dll`), through a
+  profile `scripts/gen-icc-fixture.mjs` AUTHORS rather than vendors —
+  `RSWOP.icm` is Microsoft copyright and our engine needs profile bytes at
+  TEST time, so vendoring would cost the suite its hermeticity. ICC requires an
+  N-component output profile to carry all three intents plus `gamt`, and WCS
+  enforces it: a five-tag profile gets `ERROR_INVALID_PROFILE`.
+  `test/fixtures/icc/PROVENANCE.md` records the ceiling — one CMS with no
+  second to arbitrate, nothing said about real-world v4 or `para` or grid-17
+  profiles, and `mft1` exercised by no real profile at all.
 - **linearize.ts** — linearized (Fast Web View) output + `verifyLinearization`.
 - **node.ts** — file-based convenience wrappers, and the only module that
   reaches `node:fs` on behalf of a caller. Every wrapper but one is PDF-in;
@@ -5653,10 +5913,30 @@ Two rules apply to these, both learned the hard way:
 
   ```bash
   for f in src/*.ts; do b=$(basename "$f")
-    grep -q "[*][*]$b[*][*]" CLAUDE.md || echo "$b"
+    grep -q "[*\`]$b[*\`]" CLAUDE.md || echo "$b"
   done
   ```
 
+  **The output is EMPTY on a clean tree**, so a non-empty result means work.
+  That property is the whole value of the check: a sweep with permanent false
+  positives trains its reader to ignore it, which is not hypothetical — the
+  previous version matched a **bold** entry only, so it reported the five
+  modules below on every run, and three separate sessions read those as real
+  documentation debt and said so to the user before checking `2qkk` (`67mt`).
+
   A module the list genuinely does not need — one whose whole story is a clause
-  in a neighbour's entry — should be named in that neighbour's prose, so the
-  sweep's output stays short enough to read.
+  in a neighbour's entry — should be named in that neighbour's prose, which is
+  why the match accepts a name in **bold** or in `backticks` alike. Five are
+  deliberately in that position: `colorkey.ts` (under raster.ts), `errors.ts`
+  (under Conventions), `formremove.ts` (under struct.ts), `htmlforms.ts`
+  (under html.ts) and `tabletag.ts` (under tableauthor.ts).
+
+  **Do NOT "simplify" this to a bare `grep -q "$b"`.** `67mt` proposed exactly
+  that and it is worse than the bug: module names collide as SUFFIXES — 20-odd
+  pairs, including `flow.ts` inside `cssflow.ts`/`docxflow.ts`/`htmlflow.ts`/
+  `mdflow.ts`, and `font.ts` inside four more — so a bare match makes the
+  sweep structurally incapable of ever reporting `flow.ts`, `font.ts`,
+  `cmap.ts`, `content.ts` or `appearance.ts`. That trades five visible false
+  positives for silent false negatives. The delimiter is what prevents it:
+  measured, a bare match "finds" the undocumented `ap.ts` inside `cmap.ts`
+  while the delimited one correctly reports it missing.

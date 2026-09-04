@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { respliceMesh, type MeshLayout } from '../src/graymesh.js';
+import { respliceMesh, type MeshLayout } from '../src/colormesh.js';
 
-/** Take the red component, so a test asserts the SPLICE rather than the luma. */
-const red = (comps: number[]): number => comps[0] ?? 0;
+/** Take the red component, so a test asserts the SPLICE rather than the luma.
+ *  Returns an ARRAY since `85l8.1`: the callback emits one component per TARGET
+ *  component, so a gray target is the one-element case rather than the only one. */
+const red = (comps: number[]): number[] => [comps[0] ?? 0];
 
 const rgb8 = (type: number, extra: Partial<MeshLayout> = {}): MeshLayout => ({
   type,
@@ -141,7 +143,7 @@ describe('respliceMesh — component decoding and damaged data', () => {
     const layout = rgb8(4, { colorDecode: [0, 1, -100, 100, 0, 255] });
     const data = new Uint8Array([0, 0, 0, 0, 0, 0xff, 0x00, 0x80]);
 
-    respliceMesh(data, layout, (comps) => { seen.push(comps); return 0; });
+    respliceMesh(data, layout, (comps) => { seen.push(comps); return [0]; });
 
     expect(seen).toEqual([[1, -100, 128]]);
   });
@@ -149,7 +151,7 @@ describe('respliceMesh — component decoding and damaged data', () => {
   it('writes the grey at the source component width, over the range 0..1', () => {
     const data = new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0]);
 
-    const r = respliceMesh(data, rgb8(4), () => 0.5);
+    const r = respliceMesh(data, rgb8(4), () => [0.5]);
 
     if (r.kind !== 'ok') throw new Error(r.reason);
     expect(r.data[5]).toBe(128);                      // round(0.5 * 255)

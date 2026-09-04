@@ -2,7 +2,7 @@
  * Colour-key masking (32000-1 8.9.6.4): which pixels a `/Mask` ARRAY matches.
  *
  * A leaf, imported by both sides of a rule that must not drift.
- * `grayimage.ts` asks in order to convert the key into a stencil, and
+ * `colorimage.ts` asks in order to convert the key into a stencil, and
  * `raster.ts` asks in order to paint; if the two ever read the ranges
  * differently, a converted document renders differently from the original --
  * which is precisely the class of bug the conversion exists to avoid.

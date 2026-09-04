@@ -15,7 +15,7 @@
  *  nothing does not have; 0 means content-sized, which is what the box would
  *  have been anyway.
  *
- *  Invariant: `measure` is INJECTED, the seam grayimage.ts uses for
+ *  Invariant: `measure` is INJECTED, the seam colorimage.ts uses for
  *  resolve/inflate. Shrink-to-fit needs intrinsic widths, and measuring text
  *  means layoutRuns, which would drag a font stack into a pure leaf. */
 

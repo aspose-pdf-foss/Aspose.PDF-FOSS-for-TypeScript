@@ -223,8 +223,12 @@ export type {
   OptimizeImageOptions, ImageOptimization, SkippedImage, DrPruneResult,
 } from './optimize.js';
 export type {
-  GrayscaleOptions, GrayscaleReport, GrayImageResult, GraySkipped,
-} from './grayconvert.js';
+  ColorConvertOptions, ConvertColorsOptions, ColorConvertReport,
+  ColorImageResult, ColorSkipped,
+} from './colorconvert.js';
+export type { TargetSpace, CmykTransform } from './colorrule.js';
+export { iccCmykTransform } from './icctransform.js';
+export type { IccTransformOptions } from './icctransform.js';
 export { ascii85Encode, asciiHexEncode, runLengthEncode } from './ascii.js';
 export { lzwEncode } from './lzw.js';
 

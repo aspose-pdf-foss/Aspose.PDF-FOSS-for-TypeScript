@@ -37,7 +37,10 @@ import type { RedactOptions } from './redact.js';
 import type { ApplyRedactionsOptions, MarkRedactTextOptions } from './redactapply.js';
 import { flattenForm } from './flatten.js';
 import { optimizeDocument, OptimizeOptions, OptimizeReport } from './optimize.js';
-import { convertToGrayscale, GrayscaleOptions, GrayscaleReport } from './grayconvert.js';
+import {
+  convertColors, convertToGrayscale,
+  ColorConvertOptions, ColorConvertReport, ConvertColorsOptions,
+} from './colorconvert.js';
 import { Form } from './form.js';
 import { appendField, attachWidget, ensureAcroForm } from './formcreate.js';
 import {
@@ -1555,13 +1558,34 @@ export class Document {
     return optimizeDocument(this, opts);
   }
 
+  /** Convert the document's colour to `opts.to` in place — `'gray'`, `'rgb'`
+   *  or `'cmyk'` — across page content, form XObjects, tiling patterns, Type 3
+   *  glyph procedures, image XObjects, inline images, shadings and
+   *  annotations. Every colour ends up in the target space, DeviceGray content
+   *  included: a grey becomes pure K under `'cmyk'`, which renders identically.
+   *
+   *  Conversion is lossy in general and not reversible; the returned report
+   *  lists what converted, by which route, and what could not. RGB→CMYK is a
+   *  naive transform with no colour management, so the result is **not**
+   *  colorimetrically correct — without the destination profile there is no way
+   *  to know what ink these values produce.
+   *
+   *  Throws {@link RangeError} for an unknown target, before anything is
+   *  converted, and {@link UnsupportedFeatureError} for a signed document,
+   *  which converting would invalidate. */
+  ConvertColors(opts: ConvertColorsOptions): ColorConvertReport {
+    const { to, ...rest } = opts ?? ({} as ConvertColorsOptions);
+    return convertColors(this, to, rest);
+  }
+
   /** Convert the document's colour to DeviceGray in place: page content, form
    *  XObjects, tiling patterns, Type 3 glyph procedures, image XObjects,
-   *  shadings and annotations. Colour is discarded, so this is not reversible;
-   *  the returned report lists what converted and what could not. Throws
-   *  {@link UnsupportedFeatureError} for a signed document, which converting
-   *  would invalidate. */
-  ConvertToGrayscale(opts: GrayscaleOptions = {}): GrayscaleReport {
+   *  shadings and annotations. The named shorthand for
+   *  {@link ConvertColors}`({ to: 'gray' })`, and byte-identical to it. Colour
+   *  is discarded, so this is not reversible; the returned report lists what
+   *  converted and what could not. Throws {@link UnsupportedFeatureError} for a
+   *  signed document, which converting would invalidate. */
+  ConvertToGrayscale(opts: ColorConvertOptions = {}): ColorConvertReport {
     return convertToGrayscale(this, opts);
   }
 

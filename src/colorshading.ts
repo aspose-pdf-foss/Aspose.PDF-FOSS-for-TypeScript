@@ -3,10 +3,13 @@ import {
 } from './types.js';
 import { parseFunction } from './pdffunction.js';
 import { encodeStream } from './filters.js';
-import { respliceMesh, type MeshLayout } from './graymesh.js';
+import { respliceMesh, type MeshLayout } from './colormesh.js';
 import { resolveColorSpace, type ColorConverter } from './colorspace.js';
-import { grayNum, luma } from './grayscale.js';
-import type { Resolve, Inflate } from './grayimage.js';
+import {
+  convertComps, grayNum, targetComponents, targetName, type CmykTransform,
+  type GraySpace, type TargetSpace,
+} from './colorrule.js';
+import type { Resolve, Inflate } from './colorimage.js';
 
 export type ShadingOutcome =
   /** `raw` is present only for a mesh, whose per-vertex colour lives in the
@@ -45,12 +48,14 @@ function converterFor(
   return resolveColorSpace(cs, resolve, (s) => inflate(s as PdfStream));
 }
 
-/** The luma of one colour stated in `space`, via the one owner of that rule. */
-function greyComponent(
+/** One colour stated in `space`, expressed in `to`, via the one owner of that
+ *  rule. */
+function targetComponentsOf(
   comps: number[], space: PdfObject | undefined, resolve: Resolve, inflate: Inflate,
-): number {
-  const [r, g, b] = converterFor(space, comps.length, resolve, inflate).toRgb(comps);
-  return grayNum(luma(r / 255, g / 255, b / 255));
+  to: TargetSpace, toCmyk?: CmykTransform,
+): number[] {
+  const converter = converterFor(space, comps.length, resolve, inflate);
+  return convertComps(comps, { kind: 'other', converter }, to, toCmyk).map(grayNum);
 }
 
 /**
@@ -62,13 +67,13 @@ function greyComponent(
  * for a 2-in function emits a flat grey wash, which renders as a plausible
  * design choice rather than as a fault.
  */
-export function grayscaleFunction(
+export function convertShadingFunction(
   fn: PdfObject, resolve: Resolve, inflate: Inflate, inputs: number,
-  space?: PdfObject,
+  to: TargetSpace, space?: PdfObject, toCmyk?: CmykTransform,
 ): PdfObject {
   // An ARRAY of n one-output functions is not a recursion case but a joining
   // case: the whole array describes one colour, so it collapses to one function.
-  if (isArray(fn)) return resample(fn, resolve, inflate, inputs, space);
+  if (isArray(fn)) return resample(fn, resolve, inflate, inputs, to, space, toCmyk);
 
   const r = resolve(fn);
   const dict = isStream(r) ? r.dict : isDict(r) ? r : undefined;
@@ -80,27 +85,28 @@ export function grayscaleFunction(
     for (const key of ['C0', 'C1'] as const) {
       const c = numbers(resolve(dict.get(key)));
       const comps = c.length > 0 ? c : (key === 'C0' ? [0] : [1]);
-      out.set(key, [greyComponent(comps, space, resolve, inflate)]);
+      out.set(key, targetComponentsOf(comps, space, resolve, inflate, to, toCmyk));
     }
     return out;
   }
 
   if (type === 3) {
     const subs = resolve(dict.get('Functions'));
-    if (!isArray(subs)) return resample(fn, resolve, inflate, inputs, space);
+    if (!isArray(subs)) return resample(fn, resolve, inflate, inputs, to, space, toCmyk);
     const out: PdfDict = new Map(dict);
     out.set('Functions',
-      subs.map((s) => grayscaleFunction(s, resolve, inflate, inputs, space)));
+      subs.map((s) => convertShadingFunction(s, resolve, inflate, inputs, to, space, toCmyk)));
     return out;
   }
 
-  return resample(fn, resolve, inflate, inputs, space);
+  return resample(fn, resolve, inflate, inputs, to, space, toCmyk);
 }
 
-/** Evaluate any function (or array of them) and emit a 1-output type 0. */
+/** Evaluate any function (or array of them) and emit a type 0 with one output
+ *  per target component. */
 function resample(
   fn: PdfObject, resolve: Resolve, inflate: Inflate, inputs: number,
-  space: PdfObject | undefined,
+  to: TargetSpace, space: PdfObject | undefined, toCmyk?: CmykTransform,
 ): PdfObject {
   const inflateFn = (s: { dict: PdfDict; raw: Uint8Array }): Uint8Array =>
     inflate(s as PdfStream);
@@ -121,11 +127,13 @@ function resample(
 
   const size = inputs === 1 ? [SAMPLES_1D] : new Array(inputs).fill(SAMPLES_2D) as number[];
   const total = size.reduce((a, b) => a * b, 1);
-  const raw = new Uint8Array(total);
+  const outNc = targetComponents(to);
+  const raw = new Uint8Array(total * outNc);
 
   const converter = converterFor(space, evalAt(
     Array.from({ length: inputs }, (_, k) => dom[k * 2] ?? 0)).length,
     resolve, inflate);
+  const srcSpace: GraySpace = { kind: 'other', converter };
 
   // Sample index -> input coordinates. The FIRST input varies fastest, which is
   // 32000-1 7.10.2's ordering for a type 0 sample table.
@@ -139,14 +147,19 @@ function resample(
       const lo = dom[k * 2] ?? 0, hi = dom[k * 2 + 1] ?? 1;
       x.push(lo + (hi - lo) * (n === 1 ? 0 : j / (n - 1)));
     }
-    const [r, g, b] = converter.toRgb(evalAt(x));
-    raw[i] = Math.round(luma(r / 255, g / 255, b / 255) * 255);
+    const conv = convertComps(evalAt(x), srcSpace, to, toCmyk);
+    for (let k = 0; k < outNc; k++) {
+      raw[i * outNc + k] = Math.round((conv[k] ?? 0) * 255);
+    }
   }
 
   const dict: PdfDict = new Map<string, PdfObject>([
     ['FunctionType', 0],
     ['Domain', dom],
-    ['Range', [0, 1]],
+    // One interval per OUTPUT component. Stating a single [0 1] for a
+    // multi-component target makes a reader take the table to be
+    // one-component, and the ramp collapses.
+    ['Range', Array.from({ length: outNc * 2 }, (_, i) => i % 2)],
     ['Size', size],
     ['BitsPerSample', 8],
     ['Length', raw.length],
@@ -154,19 +167,34 @@ function resample(
   return { kind: 'stream', dict, raw };
 }
 
-/** True when the space already delivers a single grey component. */
-function alreadyGray(resolve: Resolve, cs: PdfObject | undefined): boolean {
+/** The device family a shading's space already delivers, or undefined when it
+ *  is not one of the three. */
+function deviceFamily(resolve: Resolve, cs: PdfObject | undefined): TargetSpace | undefined {
   const r = resolve(cs);
-  if (isName(r)) return r.name === 'DeviceGray' || r.name === 'CalGray' || r.name === 'G';
+  if (isName(r)) {
+    if (r.name === 'DeviceGray' || r.name === 'CalGray' || r.name === 'G') return 'gray';
+    if (r.name === 'DeviceRGB' || r.name === 'CalRGB' || r.name === 'RGB') return 'rgb';
+    if (r.name === 'DeviceCMYK' || r.name === 'CMYK') return 'cmyk';
+    return undefined;
+  }
   if (isArray(r) && r.length > 0) {
     const head = resolve(r[0]);
-    if (isName(head) && head.name === 'CalGray') return true;
+    if (isName(head) && head.name === 'CalGray') return 'gray';
+    if (isName(head) && head.name === 'CalRGB') return 'rgb';
     if (isName(head) && head.name === 'ICCBased') {
       const s = resolve(r[1]);
-      return isStream(s) && resolve(s.dict.get('N')) === 1;
+      const n = isStream(s) ? resolve(s.dict.get('N')) : undefined;
+      return n === 1 ? 'gray' : n === 3 ? 'rgb' : n === 4 ? 'cmyk' : undefined;
     }
   }
-  return false;
+  return undefined;
+}
+
+/** True when the space already delivers exactly the target's components. */
+function alreadyTargetSpace(
+  resolve: Resolve, cs: PdfObject | undefined, to: TargetSpace,
+): boolean {
+  return deviceFamily(resolve, cs) === to;
 }
 
 /**
@@ -174,12 +202,13 @@ function alreadyGray(resolve: Resolve, cs: PdfObject | undefined): boolean {
  *
  * A mesh states its colour in the stream data, not in a `/Function`, so this is
  * the one shading route that has to write bytes back. The splice itself is
- * `graymesh.ts`'s; everything decided here is what a colour space and a `/Decode`
+ * `colormesh.ts`'s; everything decided here is what a colour space and a `/Decode`
  * mean, which that module deliberately does not know.
  */
-function grayscaleMesh(
+function convertMesh(
   target: PdfDict | PdfStream, out: PdfDict, type: number,
-  cs: PdfObject, resolve: Resolve, inflate: Inflate,
+  cs: PdfObject, resolve: Resolve, inflate: Inflate, to: TargetSpace,
+  toCmyk?: CmykTransform,
 ): ShadingOutcome {
   const why = (reason: string): ShadingOutcome =>
     ({ kind: 'skip', reason: `mesh shading type ${type}: ${reason}` });
@@ -203,10 +232,12 @@ function grayscaleMesh(
   // mesh type prefixes each record with a flag we must copy through.
   if (bitsPerFlag === 0 && type !== 5) return why('missing /BitsPerFlag');
 
-  // The converter is built ONCE and the luma taken inline: `greyComponent`
-  // resolves the colour space on every call, which a mesh would pay per vertex.
+  // The converter is built ONCE and the conversion done inline:
+  // `targetComponentsOf` resolves the colour space on every call, which a mesh
+  // would pay per vertex.
   const conv = converterFor(cs, 3, resolve, inflate);
   const components = conv.components;
+  const srcSpace: GraySpace = { kind: 'other', converter: conv };
 
   // A mesh's /Decode is the coordinate ranges followed by one range per COLOUR
   // component -- it is where a Lab a* or an Indexed index learns its scale, so
@@ -220,15 +251,17 @@ function grayscaleMesh(
     type, bitsPerCoordinate, bitsPerComponent, bitsPerFlag, components,
     colorDecode: decode.slice(4, 4 + components * 2),
   };
-  const spliced = respliceMesh(inflate(target), layout, (comps) => {
-    const [r, g, b] = conv.toRgb(comps);
-    return luma(r / 255, g / 255, b / 255);
-  });
+  const spliced = respliceMesh(inflate(target), layout,
+    (comps) => convertComps(comps, srcSpace, to, toCmyk));
   if (spliced.kind === 'error') return why(spliced.reason);
 
   // The coordinate half survives untouched -- the geometry did not move -- and
-  // the colour half collapses to the one grey range the samples now carry.
-  out.set('Decode', [...decode.slice(0, 4), 0, 1]);
+  // the colour half becomes one [0 1] range per component the samples now
+  // carry, which is what tells a reader how wide each vertex's colour is.
+  out.set('Decode', [
+    ...decode.slice(0, 4),
+    ...Array.from({ length: targetComponents(to) * 2 }, (_, i) => i % 2),
+  ]);
   const raw = encodeStream(spliced.data, 'FlateDecode').raw;
   out.set('Filter', name('FlateDecode'));
   out.delete('DecodeParms');
@@ -238,38 +271,57 @@ function grayscaleMesh(
 }
 
 /**
- * Convert one shading to DeviceGray.
+ * Convert one shading to `to`.
  *
  * Takes the whole object rather than its dict because a mesh's colour lives in
  * the stream data: a dict alone cannot express the types this function must
  * handle.
  */
-export function grayscaleShading(
-  target: PdfDict | PdfStream, resolve: Resolve, inflate: Inflate,
+export function convertShadingSpace(
+  target: PdfDict | PdfStream, resolve: Resolve, inflate: Inflate, to: TargetSpace,
+  toCmyk?: CmykTransform,
 ): ShadingOutcome {
   const dict = isStream(target) ? target.dict : target;
   const cs = dict.get('ColorSpace');
   if (cs === undefined) return { kind: 'skip', reason: 'shading has no /ColorSpace' };
-  if (alreadyGray(resolve, cs)) return { kind: 'none' };
+  if (alreadyTargetSpace(resolve, cs, to)) return { kind: 'none' };
 
   const type = resolve(dict.get('ShadingType'));
   const fn = dict.get('Function');
 
   const out: PdfDict = new Map(dict);
-  out.set('ColorSpace', name('DeviceGray'));
+  out.set('ColorSpace', name(targetName(to)));
 
   const bg = numbers(resolve(dict.get('Background')));
-  if (bg.length > 0) out.set('Background', [greyComponent(bg, cs, resolve, inflate)]);
+  if (bg.length > 0) {
+    out.set('Background', targetComponentsOf(bg, cs, resolve, inflate, to, toCmyk));
+  }
 
   if (typeof type === 'number' && type >= 4 && fn === undefined) {
-    return grayscaleMesh(target, out, type, cs, resolve, inflate);
+    return convertMesh(target, out, type, cs, resolve, inflate, to, toCmyk);
   }
 
   if (fn !== undefined) {
     // A type 1 (function-based) shading's function takes TWO inputs, over its
     // /Domain rectangle. Every other shading type's takes one.
     const inputs = type === 1 ? 2 : 1;
-    out.set('Function', grayscaleFunction(fn, resolve, inflate, inputs, cs));
+    out.set('Function', convertShadingFunction(fn, resolve, inflate, inputs, to, cs, toCmyk));
   }
   return { kind: 'converted', dict: out };
+}
+
+/** The DeviceGray specialization of `convertShadingSpace`, and the name every
+ *  existing caller uses. */
+export function grayscaleShading(
+  target: PdfDict | PdfStream, resolve: Resolve, inflate: Inflate,
+): ShadingOutcome {
+  return convertShadingSpace(target, resolve, inflate, 'gray');
+}
+
+/** The DeviceGray specialization of `convertShadingFunction`. */
+export function grayscaleFunction(
+  fn: PdfObject, resolve: Resolve, inflate: Inflate, inputs: number,
+  space?: PdfObject,
+): PdfObject {
+  return convertShadingFunction(fn, resolve, inflate, inputs, 'gray', space);
 }

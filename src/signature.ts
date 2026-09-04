@@ -216,7 +216,7 @@ export function derTotalLength(bytes: Uint8Array): number {
 /** True when the document carries any signature field. Optimizing or converting
  *  one would invalidate it, and `Save()` returns the cached signed bytes
  *  verbatim, so every change would be discarded silently. One owner for the
- *  question: `optimize.ts` and `grayconvert.ts` both ask it. */
+ *  question: `optimize.ts` and `colorconvert.ts` both ask it. */
 export function hasSignatureField(doc: Document): boolean {
   const acro = doc.resolve(doc.catalog().get('AcroForm'));
   if (!isDict(acro)) return false;

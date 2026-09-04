@@ -49,6 +49,7 @@
     "gen:entities": "node scripts/gen-entities.mjs",
     "example:showcase": "tsx examples/feature-showcase/main.ts",
     "gen:cmaps": "tsx scripts/gen-cmaps.ts",
+    "gen:icc": "node scripts/gen-icc-fixture.mjs",
     "gen:cidunicode": "tsx scripts/gen-cidunicode.ts",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },

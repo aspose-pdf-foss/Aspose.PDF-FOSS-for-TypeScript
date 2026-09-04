@@ -3,18 +3,14 @@ import type { Page } from './page.js';
 import { EditableContent } from './editcontent.js';
 import { isName, name, type PdfObject } from './types.js';
 import type { ContentOp } from './content.js';
+import { rgbToCmyk } from './colorrule.js';
 
-/** Naive RGB → CMYK with maximum black removal and no color management. The
- *  result is **not** colorimetrically correct: without the destination profile
- *  there is no way to know what ink these values produce. It exists so a
- *  document can reach PDF/X-1a's structural requirements, not to produce
- *  accurate print output. */
-export function rgbToCmyk(r: number, g: number, b: number): [number, number, number, number] {
-  const k = 1 - Math.max(r, g, b);
-  if (k >= 1) return [0, 0, 0, 1];
-  const d = 1 - k;
-  return [(1 - r - k) / d, (1 - g - k) / d, (1 - b - k) / d, k];
-}
+/** The RGB → CMYK transform. It MOVED to `colorrule.ts` in `85l8.1` (then named `grayscale.ts`), because
+ *  `ConvertColors({ to: 'cmyk' })` needs it from a leaf and this module is not
+ *  one. Re-exported so this stays its import path for every existing caller;
+ *  `export … from` creates no local binding, so `rewriteOps` below imports it
+ *  beside this — `resprune.ts`'s arrangement against `redact.ts`. */
+export { rgbToCmyk } from './colorrule.js';
 
 /** Round to 4 decimals; PDF numbers gain nothing from more. */
 const num = (v: number): number => Number(v.toFixed(4));

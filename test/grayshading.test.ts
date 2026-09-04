@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { grayscaleShading, grayscaleFunction } from '../src/grayshading.js';
+import { grayscaleShading, grayscaleFunction } from '../src/colorshading.js';
 import { parseFunction } from '../src/pdffunction.js';
 import { PdfDict, PdfObject, PdfStream, isStream, name } from '../src/types.js';
-import { luma } from '../src/grayscale.js';
+import { luma } from '../src/colorrule.js';
 import { inflateSync } from 'node:zlib';
 
 const resolve = (o: PdfObject | undefined): PdfObject => o as PdfObject;

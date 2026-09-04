@@ -7,19 +7,22 @@ import { hasSignatureField } from './signature.js';
 import { parseContentStream, serializeContentStream } from './content.js';
 import { inflateStream } from './flate.js';
 import { resolveColorSpace } from './colorspace.js';
-import { grayscaleOps, type SpaceLookup } from './grayops.js';
-import { grayNum, grayOf, type GraySpace } from './grayscale.js';
-import { grayscaleImage } from './grayimage.js';
-import { grayscaleShading } from './grayshading.js';
+import { colorOps, type SpaceLookup } from './colorops.js';
+import {
+  convertComps, grayNum, targetComponents, targetName,
+  type CmykTransform, type GraySpace, type TargetSpace,
+} from './colorrule.js';
+import { convertImageSpace } from './colorimage.js';
+import { convertShadingSpace } from './colorshading.js';
 import { ImageInfo } from './image.js';
 
 /**
- * Document-wide grayscale conversion.
+ * Document-wide colour conversion.
  *
  * The approach is operator-level *neutralization*, not colour-space
- * retargeting: every colour-setting operator becomes `g`/`G` carrying the luma
- * of the colour it set, and named `/ColorSpace` resources are left unreferenced
- * rather than rewritten. That is what makes the two passes below
+ * retargeting: every colour-setting operator becomes the target's operator
+ * carrying the converted colour, and named `/ColorSpace` resources are left
+ * unreferenced rather than rewritten. That is what makes the two passes below
  * order-independent -- the content pass READS colour-space resources that no
  * pass WRITES. Retargeting would have had the content pass resolving spaces the
  * object pass had already moved out from under it.
@@ -28,12 +31,92 @@ import { ImageInfo } from './image.js';
  * because a `[/Pattern base]` array is referenced by nothing but `cs` + `scn`.
  */
 
-export interface GrayscaleOptions {
+export interface ColorConvertOptions {
   /** IJG quality for re-encoded DCT images, 1..100. Default 90. */
   quality?: number;
 }
 
-export interface GrayImageResult {
+export interface ConvertColorsOptions extends ColorConvertOptions {
+  /** The device space to convert to. Required: an implicit default would make
+   *  `ConvertColors()` a second spelling of `ConvertToGrayscale`. */
+  to: TargetSpace;
+  /**
+   * The RGB->CMYK leg, for a caller who is colour managed (85l8.3).
+   *
+   * The bundled default is naive maximum-black removal with NO destination
+   * profile, so its numbers are structurally CMYK and not colorimetrically
+   * correct. This does not make the library colour managed — it lets a caller
+   * who has the profile and a CMS hand the right numbers in. It reaches image
+   * samples, shading functions and mesh vertices as well as content
+   * operators, so a converted document has no naive ink left anywhere.
+   *
+   * Only meaningful with `to: 'cmyk'`; passing it with another target throws
+   * rather than being ignored. Declaring which output condition the numbers
+   * are FOR is a different job, and `ConvertToPdfX` already owns it — an
+   * `/OutputIntent` is a standards claim this call is in no position to make.
+   */
+  transform?: CmykTransform;
+}
+
+/**
+ * Validate a caller's transform ONCE, before anything is converted, so a
+ * rejected call leaves the document byte-identical — `checkTarget`'s rule.
+ *
+ * The probe cannot prove a transform well behaved for every input, so the
+ * returned wrapper also clamps: a component outside 0..1 is clipped and a
+ * non-finite one becomes 0. That is not belt-and-braces — a `NaN` reaching a
+ * content stream is a CORRUPT FILE rather than a wrong colour, and
+ * `clamp01(NaN)` is `NaN`, so the range test alone would let it through.
+ */
+function checkTransform(transform: CmykTransform, to: TargetSpace): CmykTransform {
+  if (typeof transform !== 'function') {
+    throw new TypeError('ConvertColors: transform must be a function');
+  }
+  if (to !== 'cmyk') {
+    throw new RangeError(
+      `ConvertColors: transform is the RGB->CMYK leg and has no meaning for `
+      + `target '${to}'; omit it or pass to: 'cmyk'`);
+  }
+  // Three corners plus a midpoint: enough to catch a transform that returns
+  // the wrong shape at all, which is what this can honestly check.
+  for (const probe of [[0, 0, 0], [1, 1, 1], [1, 0, 0], [0.5, 0.5, 0.5]]) {
+    const out = transform(probe[0] as number, probe[1] as number, probe[2] as number);
+    if (!Array.isArray(out) || out.length !== 4 || !out.every(Number.isFinite)) {
+      throw new TypeError(
+        'ConvertColors: transform must return four finite numbers; '
+        + `it returned ${JSON.stringify(out)} for [${probe.join(', ')}]`);
+    }
+  }
+  return (r, g, b) => {
+    const out = transform(r, g, b);
+    const at = (i: number): number => {
+      const v = out[i] as number;
+      return Number.isFinite(v) ? (v < 0 ? 0 : v > 1 ? 1 : v) : 0;
+    };
+    return [at(0), at(1), at(2), at(3)];
+  };
+}
+
+const TARGETS: readonly TargetSpace[] = ['gray', 'rgb', 'cmyk'];
+
+/**
+ * Reject an unknown target BEFORE anything is converted.
+ *
+ * A typo'd `'CMYK'` that quietly converted nothing while reporting
+ * `skipped: []` is the failure worth preventing -- the caller reads a clean
+ * report and believes the document converted. `RangeError` rather than
+ * `TypeError` because the value is outside an allowed set rather than the
+ * wrong kind of thing, which is `formcreate.ts`'s split.
+ */
+function checkTarget(to: TargetSpace): void {
+  if (!TARGETS.includes(to)) {
+    throw new RangeError(
+      `ConvertColors: unknown target ${JSON.stringify(to)}; `
+      + `expected one of ${TARGETS.map((t) => `'${t}'`).join(', ')}`);
+  }
+}
+
+export interface ColorImageResult {
   objNum: number;
   /** The colour space it came from, e.g. 'DeviceRGB', 'Indexed'. */
   from: string;
@@ -42,27 +125,42 @@ export interface GrayImageResult {
   bytesDelta: number;
 }
 
-export interface GraySkipped {
+export interface ColorSkipped {
+  /** The object that could not be converted -- or, for `inline-image`, the
+   *  content stream that DREW it, an inline image having no object of its own. */
   objNum?: number;
-  what: 'image' | 'shading' | 'content' | 'annotation';
+  what: 'image' | 'shading' | 'content' | 'inline-image' | 'annotation';
+  /**
+   * Which operator, for an `inline-image` — the index of its `BI` within the
+   * stream `objNum` names (85l8.6). Absent for every other kind, which
+   * addresses an object rather than an op inside one.
+   *
+   * Together with `objNum` this is exact: a stream may draw several inline
+   * images, and the stream alone cannot say which one was left in colour.
+   * Resolve it with `parseContentStream(inflateStream(obj))[opIndex]`.
+   */
+  opIndex?: number;
   reason: string;
 }
 
-export interface GrayscaleReport {
+export interface ColorConvertReport {
   /** Content streams rewritten. */
   streams: number;
   /** Colour operators changed across all of them. */
   operators: number;
-  images: GrayImageResult[];
+  images: ColorImageResult[];
   shadings: number;
   annotations: number;
   /** What could not be converted, and why. The first place to look when a
    *  converted document still shows colour. */
-  skipped: GraySkipped[];
+  skipped: ColorSkipped[];
   /** True when any image was re-encoded through JPEG: the output is no longer
    *  a lossless greying of the original. */
   lossy: boolean;
   bytesDelta: number;
+  /** Which RGB->CMYK leg ran (85l8.3). Absent for a target that has none —
+   *  naming one would state something about work that never happened. */
+  cmykTransform?: 'naive' | 'supplied';
 }
 
 const MAX_DEPTH = 32;
@@ -196,7 +294,14 @@ function collectScopes(doc: Document): Scope[] {
   };
 
   for (const page of doc.Pages) {
-    const resources = dictOf(doc, page.Dict.get('Resources'));
+    // `page.Resources`, NOT `page.Dict.get('Resources')`: /Resources is an
+    // INHERITABLE page attribute (32000-1 7.7.3.4), and the raw read misses one
+    // held on the /Pages node -- which is where Ghostscript, Word and others put
+    // it. With no resources the whole walk degrades at once: every named colour
+    // space falls to the unknown branch, and the form XObjects, tiling patterns,
+    // Type 3 charprocs and SMask groups hanging off them are never reached, so a
+    // greyscaled document went on painting blue with skipped: [] reported.
+    const resources = page.Resources;
     const contents = page.Dict.get('Contents');
     const c = doc.resolve(contents);
     if (isArray(c)) for (const e of c) addStream(e, resources, 0);
@@ -225,19 +330,21 @@ function collectScopes(doc: Document): Scope[] {
  *  The sole colour-space resource this design retargets -- safe because such an
  *  array is referenced by nothing but `cs` + `scn`, never by an image. */
 function retargetPatternSpaces(
-  doc: Document, resources: PdfDict | undefined, keys: Set<string>,
+  doc: Document, resources: PdfDict | undefined, keys: Set<string>, to: TargetSpace,
 ): void {
   if (keys.size === 0) return;
   const csDict = dictOf(doc, resources?.get('ColorSpace'));
   if (!csDict) return;
   for (const key of keys) {
     const arr = doc.resolve(csDict.get(key));
-    if (isArray(arr) && arr.length > 1) csDict.set(key, [arr[0], name('DeviceGray')]);
+    if (isArray(arr) && arr.length > 1) csDict.set(key, [arr[0], name(targetName(to))]);
   }
 }
 
 /** Rewrite every content stream. */
-function convertContent(doc: Document, report: GrayscaleReport): void {
+function convertContent(
+  doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk?: CmykTransform,
+): void {
   for (const scope of collectScopes(doc)) {
     let ops;
     try {
@@ -249,8 +356,28 @@ function convertContent(doc: Document, report: GrayscaleReport): void {
       });
       continue;
     }
-    const r = grayscaleOps(ops, spaceLookup(doc, scope.resources));
-    retargetPatternSpaces(doc, scope.resources, r.patternSpaces);
+    const r = colorOps(ops, spaceLookup(doc, scope.resources), to, toCmyk);
+    retargetPatternSpaces(doc, scope.resources, r.patternSpaces, to);
+    // BEFORE the no-change bail, not after: a stream whose only colour is an
+    // inline image that declined changes nothing, and that is precisely the
+    // stream whose skip the caller must hear about.
+    for (const s of r.skipped) {
+      report.skipped.push({
+        objNum: scope.objNum, what: 'inline-image', opIndex: s.opIndex,
+        reason: s.reason,
+      });
+    }
+    // A colour space no lookup could resolve. Its operators were left as the
+    // document wrote them, so this is the one entry that means colour SURVIVES
+    // in the output -- the honest cost of refusing to convert from a space
+    // nobody established.
+    for (const key of r.unresolvedSpaces) {
+      report.skipped.push({
+        objNum: scope.objNum, what: 'content',
+        reason: `colour space /${key} is not in the resources; `
+          + 'its colour operators were left unconverted',
+      });
+    }
     if (r.changed === 0) continue;
 
     const raw = serializeContentStream(r.ops);
@@ -271,7 +398,9 @@ function convertContent(doc: Document, report: GrayscaleReport): void {
  *  greys alongside the parent -- and must be read from the parent's ORIGINAL
  *  space, before the conversion retargets it. The /SMask stream itself is
  *  DeviceGray by specification and is left alone. */
-function convertMatte(doc: Document, original: PdfStream): void {
+function convertMatte(
+  doc: Document, original: PdfStream, to: TargetSpace, toCmyk?: CmykTransform,
+): void {
   const sm = doc.resolve(original.dict.get('SMask'));
   if (!isStream(sm)) return;
   const matte = doc.resolve(sm.dict.get('Matte'));
@@ -279,7 +408,8 @@ function convertMatte(doc: Document, original: PdfStream): void {
   const comps = matte.filter((v): v is number => typeof v === 'number');
   if (comps.length === 0) return;
   sm.dict.set('Matte',
-    [grayNum(grayOf(comps, baseSpace(doc, original.dict.get('ColorSpace'))))]);
+    convertComps(comps, baseSpace(doc, original.dict.get('ColorSpace')), to, toCmyk)
+      .map(grayNum));
 }
 
 /**
@@ -291,7 +421,8 @@ function convertMatte(doc: Document, original: PdfStream): void {
  * referrer follows untouched -- `imageopt.ts`'s rule.
  */
 function convertImages(
-  doc: Document, report: GrayscaleReport, opts: GrayscaleOptions,
+  doc: Document, report: ColorConvertReport, to: TargetSpace,
+  opts: ColorConvertOptions & { toCmyk?: CmykTransform },
 ): void {
   const resolve = (o: PdfObject | undefined): PdfObject => doc.resolve(o);
   // Codec-aware, not plain inflation: ImageInfo.Decode() is a passthrough for
@@ -307,15 +438,16 @@ function convertImages(
   }
 
   for (const [objNum, stream] of targets) {
-    const r = grayscaleImage(stream, resolve, inflate, { quality: opts.quality });
+    const r = convertImageSpace(stream, resolve, inflate, to,
+      { quality: opts.quality, toCmyk: opts.toCmyk });
     if (r.kind === 'none') continue;
     if (r.kind === 'skip') {
       report.skipped.push({ objNum, what: 'image', reason: r.reason });
       continue;
     }
-    convertMatte(doc, stream);              // the ORIGINAL space, not the new one
+    convertMatte(doc, stream, to, opts.toCmyk);          // the ORIGINAL space, not the new one
     // A colour-key /Mask became a stencil, which needs an object of its own.
-    // `grayimage.ts` builds it and never sees a `Document` -- the same split
+    // `colorimage.ts` builds it and never sees a `Document` -- the same split
     // `imageembed.ts` makes when it attaches an /SMask.
     if (r.mask) r.stream.dict.set('Mask', doc.allocObject(r.mask));
     doc.replaceObject(objNum, r.stream);
@@ -335,7 +467,9 @@ function convertImages(
  * dict is written back through its holder; an indirect one is replaced at its
  * own number so every referrer follows.
  */
-function convertShadings(doc: Document, report: GrayscaleReport): void {
+function convertShadings(
+  doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk?: CmykTransform,
+): void {
   const resolve = (o: PdfObject | undefined): PdfObject => doc.resolve(o);
   const inflate = (s: PdfStream): Uint8Array => inflateStream(s);
   const seen = new Set<PdfDict>();
@@ -347,7 +481,8 @@ function convertShadings(doc: Document, report: GrayscaleReport): void {
     if (!dict || seen.has(dict)) return;
     seen.add(dict);
 
-    const r = grayscaleShading(isStream(target) ? target : dict, resolve, inflate);
+    const r = convertShadingSpace(
+      isStream(target) ? target : dict, resolve, inflate, to, toCmyk);
     if (r.kind === 'none') return;
     if (r.kind === 'skip') {
       report.skipped.push({ objNum: refNum(entry), what: 'shading', reason: r.reason });
@@ -378,7 +513,7 @@ function convertShadings(doc: Document, report: GrayscaleReport): void {
   }
   const resources = new Set<PdfDict>();
   for (const page of doc.Pages) {
-    const r = dictOf(doc, page.Dict.get('Resources'));
+    const r = page.Resources;          // inherited; see collectScopes
     if (r) resources.add(r);
   }
   for (const scope of collectScopes(doc)) if (scope.resources) resources.add(scope.resources);
@@ -388,17 +523,43 @@ function convertShadings(doc: Document, report: GrayscaleReport): void {
   }
 }
 
-/** Collapse a 1-, 3- or 4-component colour array to one grey component.
- *  An EMPTY array is legal and means *no colour* -- it must stay empty, or a
- *  border appears where the document asked for none. */
-function greyColorArray(doc: Document, holder: PdfDict, key: string): boolean {
+/** What `greyColorArray` did: rewrote it, had nothing to do, or could not read
+ *  it at all -- which the caller reports rather than guessing past. */
+type ColorArrayOutcome = 'changed' | 'unchanged' | { reason: string };
+
+/**
+ * Collapse a 1-, 3- or 4-component colour array to the target's components.
+ *
+ * An annotation colour array states its space by its LENGTH (32000-1 12.5.2):
+ * 1 is gray, 3 is RGB, 4 is CMYK. An EMPTY array is legal and means *no
+ * colour* -- it must stay empty, or a border appears where the document asked
+ * for none, and it must report NOTHING, or every annotation that asked for no
+ * border produces a record.
+ *
+ * Any OTHER width states no colour this can read, and is reported rather than
+ * guessed at (85l8.4). Guessing is what it used to do, in both directions: a
+ * two-number array fell through to the RGB arm and was rewritten as RGB with
+ * blue 0, and one holding no numbers at all was left in the document with
+ * nothing said. Both leave a colour the report denied.
+ */
+function greyColorArray(
+  doc: Document, holder: PdfDict, key: string, to: TargetSpace,
+  label = `/${key}`, toCmyk?: CmykTransform,
+): ColorArrayOutcome {
   const arr = doc.resolve(holder.get(key));
-  if (!isArray(arr) || arr.length === 0) return false;
+  if (!isArray(arr) || arr.length === 0) return 'unchanged';
   const comps = arr.filter((v): v is number => typeof v === 'number');
-  if (comps.length <= 1) return false;                  // already one component
-  const space: GraySpace = comps.length === 4 ? { kind: 'cmyk' } : { kind: 'rgb' };
-  holder.set(key, [grayNum(grayOf(comps, space))]);
-  return true;
+  // Already the target's width means there is nothing to do -- which was
+  // `<= 1` while the target was always gray.
+  if (comps.length === targetComponents(to)) return 'unchanged';
+  if (comps.length !== 1 && comps.length !== 3 && comps.length !== 4) {
+    return { reason: `${label} states ${comps.length} components, expected 1, 3 or 4` };
+  }
+  const space: GraySpace =
+    comps.length === 4 ? { kind: 'cmyk' } : comps.length === 1 ? { kind: 'gray' }
+      : { kind: 'rgb' };
+  holder.set(key, convertComps(comps, space, to, toCmyk).map(grayNum));
+  return 'changed';
 }
 
 /** Rewrite a `/DA` string through the CONTENT rewriter.
@@ -406,12 +567,14 @@ function greyColorArray(doc: Document, holder: PdfDict, key: string): boolean {
  *  drop every operator it does not recognise on re-emission. A /DA is a
  *  content-stream fragment and deserves the content rewriter: one rewriter,
  *  two consumers. */
-function greyDA(doc: Document, holder: PdfDict): boolean {
+function greyDA(
+  doc: Document, holder: PdfDict, to: TargetSpace, toCmyk?: CmykTransform,
+): boolean {
   const da = doc.resolve(holder.get('DA'));
   if (!isString(da)) return false;
   let ops;
   try { ops = parseContentStream(da.bytes); } catch { return false; }
-  const r = grayscaleOps(ops, () => undefined);
+  const r = colorOps(ops, () => undefined, to, toCmyk);
   if (r.changed === 0) return false;
   // serializeContentStream ends each operator with a newline; a /DA is a
   // one-liner, so fold them back to spaces.
@@ -424,21 +587,35 @@ function greyDA(doc: Document, holder: PdfDict): boolean {
 /** Every annotation's own colour: /C, /IC, /MK /BG and /BC, and /DA.
  *  Appearance streams are already in the content enumeration, so a widget's
  *  drawn colour and its /MK cannot end up disagreeing. */
-function convertAnnotations(doc: Document, report: GrayscaleReport): void {
+function convertAnnotations(
+  doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk?: CmykTransform,
+): void {
   for (const page of doc.Pages) {
     const annots = doc.resolve(page.Dict.get('Annots'));
     if (!isArray(annots)) continue;
     for (const a of annots) {
       const ad = dictOf(doc, a);
       if (!ad) continue;
+      // The annotation's own object number, so a caller can find the one it
+      // could not read. `refNum` is undefined for a direct dict in /Annots,
+      // which is legal and leaves the entry unattributed rather than absent.
+      const objNum = refNum(a);
+      const apply = (holder: PdfDict, key: string, label?: string): boolean => {
+        const out = greyColorArray(doc, holder, key, to, label, toCmyk);
+        if (out === 'changed') return true;
+        if (out !== 'unchanged') {
+          report.skipped.push({ objNum, what: 'annotation', reason: out.reason });
+        }
+        return false;
+      };
       let touched = false;
-      touched = greyColorArray(doc, ad, 'C') || touched;
-      touched = greyColorArray(doc, ad, 'IC') || touched;
-      touched = greyDA(doc, ad) || touched;
+      touched = apply(ad, 'C') || touched;
+      touched = apply(ad, 'IC') || touched;
+      touched = greyDA(doc, ad, to, toCmyk) || touched;
       const mk = dictOf(doc, ad.get('MK'));
       if (mk) {
-        touched = greyColorArray(doc, mk, 'BG') || touched;
-        touched = greyColorArray(doc, mk, 'BC') || touched;
+        touched = apply(mk, 'BG', '/MK /BG') || touched;
+        touched = apply(mk, 'BC', '/MK /BC') || touched;
       }
       if (touched) report.annotations++;
     }
@@ -446,25 +623,53 @@ function convertAnnotations(doc: Document, report: GrayscaleReport): void {
 
   // The form-wide default appearance gets the same treatment.
   const acro = dictOf(doc, doc.catalog().get('AcroForm'));
-  if (acro) greyDA(doc, acro);
+  if (acro) greyDA(doc, acro, to, toCmyk);
 }
 
-/** Convert a document's colour to DeviceGray. See the module docs above. */
-export function convertToGrayscale(
-  doc: Document, opts: GrayscaleOptions = {},
-): GrayscaleReport {
+/**
+ * Convert a document's colour to `to`. See the module docs above.
+ *
+ * The target is validated FIRST, so a rejected call leaves the document
+ * byte-identical -- the rule `formcreate.ts` and `imageedit.ts`'s `Replace`
+ * already follow.
+ */
+export function convertColors(
+  doc: Document, to: TargetSpace, opts: Omit<ConvertColorsOptions, 'to'> = {},
+): ColorConvertReport {
+  checkTarget(to);
+  // Both checks run BEFORE any conversion, so a rejected call leaves the
+  // document byte-identical.
+  const toCmyk = opts.transform === undefined
+    ? undefined : checkTransform(opts.transform, to);
   if (hasSignatureField(doc)) {
+    throw new UnsupportedFeatureError(
+      `ConvertColors: the document is signed; converting it to ${targetName(to)} `
+      + 'would invalidate the signature and Save() would discard the change');
+  }
+  const report: ColorConvertReport = {
+    streams: 0, operators: 0, images: [], shadings: 0, annotations: 0,
+    skipped: [], lossy: false, bytesDelta: 0,
+    ...(to === 'cmyk'
+      ? { cmykTransform: toCmyk ? ('supplied' as const) : ('naive' as const) }
+      : {}),
+  };
+  convertImages(doc, report, to, { ...opts, toCmyk });
+  convertShadings(doc, report, to, toCmyk);
+  convertContent(doc, report, to, toCmyk);
+  convertAnnotations(doc, report, to, toCmyk);
+  return report;
+}
+
+/** Convert a document's colour to DeviceGray -- the specialization behind
+ *  `Document.ConvertToGrayscale`, and the name every existing caller uses. */
+export function convertToGrayscale(
+  doc: Document, opts: ColorConvertOptions = {},
+): ColorConvertReport {
+  if (hasSignatureField(doc)) {
+    // Worded for the entry point the caller actually used.
     throw new UnsupportedFeatureError(
       'ConvertToGrayscale: the document is signed; converting it would '
       + 'invalidate the signature and Save() would discard the change');
   }
-  const report: GrayscaleReport = {
-    streams: 0, operators: 0, images: [], shadings: 0, annotations: 0,
-    skipped: [], lossy: false, bytesDelta: 0,
-  };
-  convertImages(doc, report, opts);
-  convertShadings(doc, report);
-  convertContent(doc, report);
-  convertAnnotations(doc, report);
-  return report;
+  return convertColors(doc, 'gray', opts);
 }

@@ -8,7 +8,7 @@
  * would be the clearest possible sign that one half had drifted.
  *
  * Pure: bytes in, bytes out. It touches no `Document` and no PDF object, the
- * split `svgdraw.ts`/`svgembed.ts` and `grayimage.ts` already make, which is
+ * split `svgdraw.ts`/`svgembed.ts` and `colorimage.ts` already make, which is
  * what lets every rule below be tested from hand-built samples.
  *
  * **Note on what the suite can and cannot check, measured rather than assumed:**

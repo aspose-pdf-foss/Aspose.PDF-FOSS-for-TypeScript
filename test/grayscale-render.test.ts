@@ -29,7 +29,7 @@ import { buildEverythingColorPdf } from './helpers/build-grayscale-pdf.js';
  * reading full names, and no inline image rendered at all -- before or after
  * conversion. The fixture deliberately keeps that abbreviated spelling, being
  * what a real producer emits. Now that they render, this file covers the pass:
- * re-measured by disabling `grayops.ts`'s inline branch, which reddens the two
+ * re-measured by disabling `colorops.ts`'s inline branch, which reddens the two
  * cases above. test/grayops.test.ts's five inline cases remain the unit fence.
  *
  * Do not read this file's green as covering ANNOTATION COLOUR.

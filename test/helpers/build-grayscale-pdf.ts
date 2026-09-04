@@ -318,3 +318,103 @@ export function buildColorKeyMaskPdf(): Uint8Array {
         + `/Mask [250 255 0 5 0 5] /Length ${flate.length} >>`, raw: flate },
   ]);
 }
+
+/**
+ * A page whose three annotations carry colour arrays of illegal WIDTH.
+ *
+ * 32000-1 12.5.2 admits 1, 3 or 4 components and nothing else, so none of
+ * these states a colour any conversion can read. They exist so the conversion
+ * can be asked what it does with one -- before `85l8.4` it guessed: a
+ * two-number array was read as RGB with blue 0, and an array holding no
+ * numbers at all was left in place with nothing said.
+ *
+ * The empty `/C []` on the last one is the case that must stay SILENT: an
+ * empty array is legal and means *no colour*, so a report there would fire on
+ * every annotation that asked for no border.
+ */
+export function buildBadAnnotColorPdf(): Uint8Array {
+  return assemble([
+    '',                                                            // 0 (free)
+    '<< /Type /Catalog /Pages 2 0 R >>',                           // 1
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',                   // 2
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '        // 3
+      + '/Resources << >> /Contents 4 0 R /Annots [5 0 R 6 0 R 7 0 R] >>',
+    contentStream('1 0 0 rg 0 0 50 50 re f'),                      // 4
+    '<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] '          // 5
+      + '/C [0.25 0.5] >>',
+    '<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] '          // 6
+      + '/C [/DeviceRGB] /IC [1 0 0 0 0] >>',
+    '<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] '          // 7
+      + '/C [] >>',
+  ]);
+}
+
+/**
+ * A page whose `/Resources` sits on the `/Pages` NODE rather than on the page.
+ *
+ * Perfectly ordinary — 32000-1 7.7.3.4 makes `/Resources` an inheritable page
+ * attribute and Ghostscript, Word and others emit it this way — and the shape
+ * no fixture here had. Everything the page needs is reachable only by
+ * inheritance: the `/CS0` a `cs` names, the `/Fm0` a `Do` draws, and the
+ * `/Sh0` an `sh` paints.
+ *
+ * The colour is chosen so each conversion has a distinct right answer: the
+ * `sc` is pure red in DeviceRGB (0.299 grey) and the form paints pure blue
+ * (0.114), so a stream that came back unconverted is obvious rather than
+ * merely different.
+ */
+export function buildInheritedResourcesPdf(): Uint8Array {
+  const content = '/CS0 cs 1 0 0 sc 0 0 50 50 re f\n/Fm0 Do\n/Sh0 sh\n';
+  const form = '0 0 1 rg 0 0 50 50 re f';
+
+  return assemble([
+    '',                                                            // 0 (free)
+    '<< /Type /Catalog /Pages 2 0 R >>',                           // 1
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 '                      // 2
+      + '/Resources << /ColorSpace << /CS0 /DeviceRGB >> '
+      + '/XObject << /Fm0 5 0 R >> /Shading << /Sh0 6 0 R >> >> >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '        // 3
+      + '/Contents 4 0 R >>',
+    contentStream(content),                                        // 4
+    { dict: '<< /Type /XObject /Subtype /Form /BBox [0 0 50 50] '  // 5
+        + `/Length ${enc(form).length} >>`, raw: enc(form) },
+    '<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] '  // 6
+      + '/Function << /FunctionType 2 /Domain [0 1] '
+      + '/C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>',
+  ]);
+}
+
+/** A page whose `cs` names a `/CS0` that is in no resource dict at all -- the
+ *  damaged file `85l8.5`'s refusal is for. The `/Resources` is present and
+ *  empty, so this is genuinely an absent name rather than the inheritance
+ *  miss `buildInheritedResourcesPdf` covers. */
+export function buildUnresolvableSpacePdf(): Uint8Array {
+  return assemble([
+    '',                                                            // 0 (free)
+    '<< /Type /Catalog /Pages 2 0 R >>',                           // 1
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',                   // 2
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '        // 3
+      + '/Resources << >> /Contents 4 0 R >>',
+    contentStream('/CS0 cs 1 0 0 sc 0 0 50 50 re f\n'),            // 4
+  ]);
+}
+
+/** A page with an inherited `/Shading` and NO `/Contents` at all.
+ *
+ *  The one shape `convertShadings`' own page loop is needed for: with no
+ *  content stream `collectScopes` produces no scope for the page, so its
+ *  resources reach the shading walk by no other route. Every other document
+ *  gets them from the scope, which is why this fixture exists — without it,
+ *  fixing that loop's resource read reddens nothing at all. */
+export function buildInheritedShadingOnlyPdf(): Uint8Array {
+  return assemble([
+    '',                                                            // 0 (free)
+    '<< /Type /Catalog /Pages 2 0 R >>',                           // 1
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 '                      // 2
+      + '/Resources << /Shading << /Sh0 4 0 R >> >> >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>',     // 3
+    '<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] '  // 4
+      + '/Function << /FunctionType 2 /Domain [0 1] '
+      + '/C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>',
+  ]);
+}

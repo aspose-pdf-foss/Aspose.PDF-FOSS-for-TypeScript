@@ -97,7 +97,7 @@ const fixed = doc.ToDocx({ mode: 'textbox' });  // .docx keeping each page's own
 
 - **Optimization** — `doc.Optimize()` losslessly shrinks a document in place, and the next `Save()` writes the smaller file: it subsets already-embedded fonts to the glyphs actually shown (scanning page content, annotation `/AP` streams, tiling patterns, and Type3 charprocs to find them), merges byte-identical streams such as duplicated images and font programs, and recompresses stream payloads. Those three concerns are opt-out (`{ fonts, dedup, compress }`) and each is lossless — content and visual output are preserved exactly. Opting in to `{ images: { dpi, quality } }` adds a **lossy** pass that downsamples images to a target DPI (measured from where each is actually drawn) and recompresses them as JPEG. Returns an `OptimizeReport` with per-font glyph counts, per-image savings, `skipped`/`skippedImages` lists explaining anything it declined to touch, and a `lossy` flag.
 
-- **Grayscale conversion** — `doc.ConvertToGrayscale(opts?)` converts a document to DeviceGray in place, across page content, form XObjects, tiling patterns, Type 3 glyph procedures, image XObjects, inline images, shadings and annotations. Colour operators are *neutralized* rather than colour spaces retargeted: every `rg`/`k`/`sc`/`scn` becomes `g`/`G` carrying the Rec. 601 luma of the colour it set, resolved through the same colour-space machinery the renderer uses — so ICCBased, Indexed, Separation, DeviceN, CalRGB and Lab need no special cases. Images take the cheapest faithful route: an Indexed image greys by palette rewrite alone (lossless, and the only route that works below 8 bits per component), a YCbCr JPEG greys in the coefficient domain — component 0's quantized coefficients and its quantization table are kept verbatim and the chroma dropped, which is exact, smaller and does not set `lossy` — while a JPEG that route declines (CMYK, 12-bit, lossless, or an `'R','G','B'`-id file whose component 0 is red rather than luma) re-encodes as a grey JPEG (`quality`, default 90) and sets `lossy`, and other decodable samples become grey Flate. Shading functions convert exactly where that is free (type 2 through `/C0`/`/C1`, type 3 by recursion) and are resampled otherwise; a mesh shading (types 4–7) with no `/Function` carries its colour per vertex in its stream data, so that data is re-spliced to one grey component with the coordinate bits copied through untouched. Returns a `GrayscaleReport` with per-image routes and byte deltas, counts per concern, and a `skipped` list naming what could not convert and why — a filtered inline image, a mesh whose data ends mid-record, an image carrying both a colour-key `/Mask` and an `/SMask` — rather than silently leaving it in colour. Throws `UnsupportedFeatureError` on a signed document.
+- **Colour conversion** — `doc.ConvertColors({ to })` converts a document to one device space in place — `'gray'`, `'rgb'` or `'cmyk'`, with `doc.ConvertToGrayscale(opts?)` as the named shorthand for the first — across page content, form XObjects, tiling patterns, Type 3 glyph procedures, image XObjects, inline images, shadings and annotations. Colour operators are *neutralized* rather than colour spaces retargeted: every `rg`/`k`/`sc`/`scn` becomes the target's operator carrying the converted colour — Rec. 601 luma for `'gray'`, a naive maximum-black `rgbToCmyk` for `'cmyk'` — resolved through the same colour-space machinery the renderer uses — so ICCBased, Indexed, Separation, DeviceN, CalRGB and Lab need no special cases. Images take the cheapest faithful route: an Indexed image converts by palette rewrite alone (lossless, and the only route that works below 8 bits per component), a YCbCr JPEG greys in the coefficient domain when the target is `'gray'` (that route is gray-only, since a YCbCr Y channel IS Rec. 601 luma and no such identity exists for the other targets) — component 0's quantized coefficients and its quantization table are kept verbatim and the chroma dropped, which is exact, smaller and does not set `lossy` — while a JPEG that route declines (CMYK, 12-bit, lossless, or an `'R','G','B'`-id file whose component 0 is red rather than luma) re-encodes as a JPEG in the target space (`quality`, default 90) and sets `lossy`, and other decodable samples become Flate in the target space. Shading functions convert exactly where that is free (type 2 through `/C0`/`/C1`, type 3 by recursion) and are resampled otherwise; a mesh shading (types 4–7) with no `/Function` carries its colour per vertex in its stream data, so that data is re-spliced to the target's components with the coordinate bits copied through untouched. Every colour ends up in the target space, DeviceGray content included (a grey becomes pure K under `'cmyk'`). RGB→CMYK has no colour management by default, so its output is structurally CMYK but not colorimetrically correct; a colour-managed caller passes its own transform through the `transform` option. Returns a `ColorConvertReport` with per-image routes and byte deltas, counts per concern, and a `skipped` list naming what could not convert and why — a filtered inline image, an annotation colour array whose width is not 1, 3 or 4, a `cs` whose `/ColorSpace` resource cannot be resolved, a mesh whose data ends mid-record, an image carrying both a colour-key `/Mask` and an `/SMask` — rather than silently leaving it in colour. Throws `UnsupportedFeatureError` on a signed document.
 
 - **Markdown parsing** — `parseMarkdown(src)` turns CommonMark **0.31.2** text into an abstract syntax tree, verified against all **652** cases of the official spec suite with no allowlist. Blocks (`document`, `block_quote`, `list`, `item`, `paragraph`, `heading`, `code_block`, `html_block`, `thematic_break`) and inlines (`text`, `emph`, `strong`, `code`, `link`, `image`, `html_inline`, `softbreak`, `linebreak`) are plain tagged objects with `isMdBlock`/`isMdInline`/`isMdContainer` guards. A list carries `tight`, `ordered`, `start` and `delimiter`; a link or image carries a resolved `destination` and `title`, with reference and inline links indistinguishable in the tree. Destinations are stored **unencoded**, ready for a PDF `/URI`. The parser never throws — every string is a valid Markdown document, so damage shows up as literal text rather than an error. Nodes carry no source positions. Pass `{ gfm: true }` for the five **GitHub Flavored Markdown** extensions, verified against the **24** extension examples of GitHub's own spec: pipe tables (`MdTable` with per-column `align` and a `header` flag per row), task list items (`MdItem.checked`), strikethrough (`MdStrikethrough`), extended autolinks (bare `www.`, `http://`, `https://`, `ftp://` and email addresses become ordinary `MdLink` nodes), and disallowed raw HTML. The last is defined by the spec as a *rendering* transform, so it leaves the tree alone and is exported separately as `filterDisallowedHtml(html)` for consumers that emit HTML. GFM is off by default, so the default path stays strict CommonMark. Rendering the tree onto a page is `AddMarkdown` (above), which also accepts an already-parsed `MdDocument`.
 
@@ -2099,22 +2099,92 @@ when they are image masks, non-8-bit, indexed, bilevel (JBIG2/CCITT), carry a
 `/Mask` or `/Decode`, use a colorspace with no JPEG equivalent, or are never
 drawn by the content scan (which is what leaves an `/SMask` untouched).
 
-### Grayscale conversion
+### Colour conversion
 
-`doc.ConvertToGrayscale(opts?)` converts a document's colour to DeviceGray in
-place: page content, form XObjects, tiling patterns, Type 3 glyph procedures,
-image XObjects, inline images, shadings and annotations.
+`doc.ConvertColors({ to })` converts a document's colour to one device space in
+place — `'gray'`, `'rgb'` or `'cmyk'` — across page content, form XObjects,
+tiling patterns, Type 3 glyph procedures, image XObjects, inline images,
+shadings and annotations. `doc.ConvertToGrayscale(opts?)` is the named
+shorthand for `{ to: 'gray' }` and produces byte-identical output.
 
 ```ts
-const report = doc.ConvertToGrayscale({ quality: 90 });
+const report = doc.ConvertColors({ to: 'cmyk', quality: 90 });
 report.images;   // one entry per converted image, with its route and byte delta
 report.skipped;  // what could not convert, and why
 report.lossy;    // true when a JPEG was re-encoded
 ```
 
-Colour is discarded, so this is **not** reversible. A signed document throws
-`UnsupportedFeatureError`, since converting one would invalidate the signature
-and `Save()` would discard the change.
+`skipped` is the field to read to answer "did this document fully convert".
+Each entry carries a `reason` and a `what` — `'image'`, `'shading'`,
+`'content'`, `'inline-image'` or `'annotation'` — with `objNum` naming the
+object it could not convert. For `'inline-image'` that is the content stream
+that **drew** it, an inline image having no object of its own; expect the
+form's stream rather than the page's when one is drawn inside a form XObject.
+Such an entry also carries `opIndex`, the index of its `BI` within that
+stream, since one stream may draw several — `parseContentStream(inflateStream(obj))[opIndex]`
+resolves it. No other kind carries one; they address an object, not an
+operator inside one.
+An entry means the construct is still in its original colour space: an inline
+image that is filtered, carries a `/Decode` array, is not 8 bits per component
+or names a colour space outside the six device spellings cannot be rewritten by
+a pass that decodes nothing, and an annotation colour array whose width is not
+1, 3 or 4 states no colour that can be read, so it is reported and left rather
+than guessed at.
+
+Every colour ends up in the target space, DeviceGray content included: a grey
+becomes pure K under `'cmyk'`, which renders identically but costs four
+operands where one would do. The postcondition is deliberately simple — after
+the call, every colour in the document *is* the target space, **except what**
+`skipped` **names**. The one entry that means colour genuinely survives is a
+`cs` whose `/ColorSpace` resource could not be resolved: its operators are left
+exactly as the document wrote them rather than converted from a space nobody
+established, since guessing there turns red into white.
+
+**RGB → CMYK is naive and has no colour management by default.** Without the
+destination profile there is no way to know what ink these values produce, so
+the result is structurally CMYK but **not** colorimetrically correct; do not
+send it to press expecting matched colour. This is the same transform PDF/X
+remediation uses, and for the same reason it is opt-in there.
+
+If you *are* colour managed, hand the leg in and the library will use it
+everywhere — content operators, image samples, shading functions, mesh
+vertices and annotation colours alike:
+
+```ts
+import { iccCmykTransform } from '@asposefoss/pdf';
+
+const report = doc.ConvertColors({
+  to: 'cmyk',
+  transform: iccCmykTransform(profileBytes),   // or your own (r,g,b) => [c,m,y,k]
+});
+report.cmykTransform;   // 'supplied' | 'naive'; absent for a non-cmyk target
+```
+
+`iccCmykTransform(profile, { intent })` builds that transform from an ICC
+destination profile's `B2A` tag, so the conversion is genuinely colour
+managed — a mid grey inks all four channels the way the profile says, where
+the naive transform leaves three empty. It supports **ICC v2 CMYK output
+profiles with a Lab connection space**, which is what press profiles are;
+`intent` selects `B2A0` (perceptual, the default), `B2A1` (media-relative) or
+`B2A2` (saturation). CLUT interpolation is trilinear. A v4 profile, absolute
+colorimetric, a non-CMYK device space and a profile with no `B2A` are each
+**declined before anything converts**, so a rejected profile leaves the
+document byte-identical. If you already have a CMS, pass its output instead.
+
+It replaces that one leg and never the pivot, so a transform sees the same RGB
+triple whatever space the document declared. It is validated once before
+anything converts — four finite numbers, probed at four corners — so a rejected
+call leaves the document byte-identical, and results are clamped to 0..1 on the
+way out. Passing it with `to: 'gray'` or `'rgb'` throws rather than being
+ignored. **This does not make the library colour managed**; it lets its caller
+be. Declaring *which* output condition the numbers are for is a separate job —
+an `/OutputIntent` is a standards claim, and `ConvertToPdfX` owns it.
+
+Conversion is lossy in general and **not** reversible. An unknown target throws
+`RangeError` before anything is converted, so a rejected call leaves the
+document byte-identical. A signed document throws `UnsupportedFeatureError`,
+since converting one would invalidate the signature and `Save()` would discard
+the change.
 
 Every colour goes through one rule — Rec. 601 luma, `0.299R + 0.587G + 0.114B`
 — reached through the same colour-space resolution the renderer uses, so
@@ -2129,30 +2199,33 @@ rewriting its palette alone — lossless, smaller, and the only route that works
 below 8 bits per component.
 
 A **YCbCr JPEG** — which is nearly every photographic JPEG — takes a shorter
-route still. Its Y channel already *is* Rec. 601 luma, so greying it needs no
-decode at all: component 0's quantized coefficients and its quantization table
+route still, and only when the target is `'gray'`. Its Y channel already *is*
+Rec. 601 luma, so greying it needs no decode at all: component 0's quantized coefficients and its quantization table
 are carried over untouched and the two chroma components dropped, giving an
 exact, generation-free greying that is smaller than the original and reports
 `route: 'jpeg-exact'` without setting `lossy`. Progressive and arithmetic JPEGs
 take it too, and come out baseline.
 
-A JPEG that route declines — CMYK or YCCK, 12-bit, lossless, hierarchical, or a
-three-component file whose colour transform is 0, where component 0 is red
-rather than luma — re-encodes as a grey JPEG at `quality` (default 90), which is
+A JPEG that route declines — any target but `'gray'`, or CMYK or YCCK, 12-bit,
+lossless, hierarchical, or a three-component file whose colour transform is 0,
+where component 0 is red rather than luma — re-encodes as a JPEG in the target
+space at `quality` (default 90), which is
 the one thing here that loses information beyond the colour, and sets
 `report.lossy`. A decline is not a `skipped` entry: the image converts either
-way, and `route` is what says how. Other decodable samples become grey Flate;
+way, and `route` is what says how. Other decodable samples become Flate in the
+target space;
 a JPX image takes that route too, since the library has a JPEG 2000 decoder and
 no encoder, and will usually grow — `bytesDelta` says so rather than surprising
 you.
 
 Shading functions convert exactly where that is free (type 2 through `/C0` and
 `/C1`, type 3 by recursion) and are resampled into a one-output sampled function
-otherwise. A mesh shading (types 4–7) with no `/Function` states its colour per
+otherwise, with one output per target component. A mesh shading (types 4–7)
+with no `/Function` states its colour per
 vertex in its own stream data rather than in a function, so it is converted by
-re-splicing that data: each colour tuple collapses to one grey component, the
-coordinates are copied bit for bit so the geometry cannot drift, and `/Decode`
-keeps its coordinate ranges and gains the single grey one.
+re-splicing that data: each colour tuple is replaced by the target's components,
+the coordinates are copied bit for bit so the geometry cannot drift, and
+`/Decode` keeps its coordinate ranges and gains one [0 1] per target component.
 
 A colour-key `/Mask` is converted rather than refused, and not by re-deriving
 the range: two colours can share a luma — (255,0,0) and (0,130,0) both grey to
@@ -2306,7 +2379,8 @@ document is odd but not invalid, and replacing it is PDF/X remediation's job.
 | `doc.ExportFdf(opts?)` / `doc.ExportXfdf(opts?)` | Export form-field values as FDF / XFDF bytes (`{ includeEmpty, file, annotations }`) |
 | `doc.ImportFdf(bytes, opts?)` / `doc.ImportXfdf(bytes, opts?)` | Import field values, regenerating appearances → `ImportReport` (`imported`, `skipped`, `importedAnnots`, `skippedAnnots`); `{ annotations }` to apply annotations |
 | `doc.Optimize(opts?)` | Shrink in place: fonts/dedup/compress (lossless, each opt-out) plus opt-in lossy `images` → `OptimizeReport` |
-| `doc.ConvertToGrayscale(opts?)` | Convert content, images, shadings and annotations to DeviceGray in place → `GrayscaleReport` |
+| `doc.ConvertColors({ to, quality? })` | Convert content, images, shadings and annotations to `'gray'`/`'rgb'`/`'cmyk'` in place → `ColorConvertReport` |
+| `doc.ConvertToGrayscale(opts?)` | The named shorthand for `{ to: 'gray' }` → `ColorConvertReport` |
 | `doc.AutoTag(opts?)` | Infer a `/StructTreeRoot` (headings/paragraphs/figures/tables) from layout; marks Tagged; returns per-type counts |
 | `element.MarkContent(page, region)` | Tag existing page content under a structure element (returns the MCID) |
 | `page.ToSvg(options?)` | Render the page to a standalone `<svg>` string (paths, `<text>`, images, clipping, gradients, annotation `/AP` appearances; honors `/Rotate` + `CropBox`; `{ box: 'media' }` for the MediaBox, `{ annotations: false }` for content only) |

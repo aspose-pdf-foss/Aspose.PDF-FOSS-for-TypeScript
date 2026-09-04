@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { grayscaleImage } from '../src/grayimage.js';
+import { grayscaleImage } from '../src/colorimage.js';
 import { PdfDict, PdfObject, PdfStream, isStream, name } from '../src/types.js';
 import { encodeJpeg } from '../src/jpegencode.js';
 import { decodeJpeg } from '../src/jpeg.js';

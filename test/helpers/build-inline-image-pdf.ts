@@ -62,3 +62,35 @@ export function buildInlineInFormPdf(): Uint8Array {
   objs[5] = { dict: `<< /Length ${content.length} >>`, raw: content };
   return emitObjs(objs, 5);
 }
+
+/**
+ * One page drawing a single UNFILTERED 2x2 RGB inline image, which a colour
+ * conversion can actually rewrite.
+ *
+ * The counterpart to `buildInlineImagePdf`, whose images are all `/F /AHx` and
+ * so all decline: without this one, "reports nothing when every inline image
+ * converted" has no fixture and `skipped: []` is only ever asserted for a
+ * document with no inline image in it.
+ *
+ * The samples carry no `E` (0x45) or `I` (0x49) byte, so the `EI` scan cannot
+ * end the image early -- and `/L` is stated besides, which is the path
+ * `readInlineImage` prefers.
+ */
+export function buildConvertibleInlinePdf(): Uint8Array {
+  const samples = Uint8Array.from([
+    0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00,
+  ]);
+  const head = enc(`q 40 0 0 20 10 10 cm BI /W 2 /H 2 /CS /RGB /BPC 8 /L ${samples.length} ID `);
+  const tail = enc(' EI Q');
+  const content = new Uint8Array(head.length + samples.length + tail.length);
+  content.set(head, 0);
+  content.set(samples, head.length);
+  content.set(tail, head.length + samples.length);
+
+  const objs: Obj[] = [];
+  objs[1] = `<< /Type /Catalog /Pages 2 0 R >>`;
+  objs[2] = `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`;
+  objs[3] = `<< /Type /Page /Parent 2 0 R /Resources << >> /Contents 4 0 R >>`;
+  objs[4] = { dict: `<< /Length ${content.length} >>`, raw: content };
+  return emitObjs(objs, 4);
+}

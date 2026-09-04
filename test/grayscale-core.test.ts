@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { luma, grayOf, grayNum, componentsOf, type GraySpace } from '../src/grayscale.js';
+import { luma, grayOf, grayNum, componentsOf, type GraySpace } from '../src/colorrule.js';
 import type { ColorConverter } from '../src/colorspace.js';
 
 const GRAY: GraySpace = { kind: 'gray' };
