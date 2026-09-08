@@ -1,17 +1,20 @@
 import type { Document } from './document.js';
 import {
-  PdfObject, PdfDict, PdfRef, isName, isDict, isArray, isRef, isStream, name,
+  PdfObject, PdfDict, PdfRef, isName, isDict, isArray, isRef, isStream, isString, name,
 } from './types.js';
 import type { Page } from './page.js';
 import { type ValidationIssue } from './validation.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
-import { validatePdfA, parseLevel, type PdfALevel } from './pdfavalidate.js';
+import {
+  validatePdfA, parseLevel, destProfileRefExempt, widgetActionKeys, type PdfALevel,
+} from './pdfavalidate.js';
 import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
 
 export type ConvertCategory =
-  | 'javascript' | 'multimedia' | 'embeddedFiles' | 'xfa' | 'optionalContent' | 'postScript';
+  | 'javascript' | 'multimedia' | 'embeddedFiles' | 'xfa' | 'optionalContent'
+  | 'postScript' | 'info' | 'formActions';
 
 export interface ConvertOptions {
   /** Output-intent ICC profile. Defaults to a bundled sRGB profile. */
@@ -24,8 +27,8 @@ export interface ConvertOptions {
 export interface Cctx {
   doc: Document;
   catalog: PdfDict;
-  part: 1 | 2 | 3;
-  level: 'b' | 'u' | 'a';
+  part: 1 | 2 | 3 | 4;
+  level: 'b' | 'u' | 'a' | '' | 'e' | 'f';
   preserve: Set<ConvertCategory>;
   icc: { bytes: Uint8Array; n: 1 | 3 | 4; identifier: string };
   R(o: PdfObject | undefined): PdfObject;
@@ -60,30 +63,94 @@ function nameOf(ctx: Cctx, dict: PdfDict, key: string): string | undefined {
 
 // ---- passes ----------------------------------------------------------------
 
-/** Write identification XMP (pdfaid + /Info mirror) via the facade. */
+/** The pdfaid:conformance to write. PDF/A-4's base conformance is spelled by
+ *  ABSENCE (ISO 19005-4 6.7.3-3), and `null` is how mergeXmp deletes a field —
+ *  `ctx.level.toUpperCase()` would write `pdfaid:conformance=""`, which is the
+ *  precise thing the part-4 refusal this replaced existed to prevent. */
+function conformanceUpdate(ctx: Cctx): string | null {
+  if (ctx.part !== 4) return ctx.level.toUpperCase();       // 'B' | 'U' | 'A'
+  return ctx.level === '' ? null : ctx.level.toUpperCase(); // 'E' | 'F'
+}
+
+/** Write identification XMP (pdfaid + /Info mirror) via the facade.
+ *
+ *  Ordering invariant: this MUST run before infoPass. It reads /Info through
+ *  GetMetadata() to mirror the fields into XMP, and at part 4 infoPass then
+ *  strips or deletes that dictionary — strip it first and the mirror silently
+ *  comes out empty, a loss invisible in the converted file, which validates
+ *  either way. The /ModDate mirror is part-4 ONLY, because it exists to rescue
+ *  the one field PDF/A-4 would otherwise permit and this conversion removes;
+ *  mirroring it at parts 1-3 would move bytes for every existing caller. */
 const identificationPass: Pass = (ctx) => {
-  const conf = ctx.level.toUpperCase(); // 'B' | 'U' | 'A'
+  const conf = conformanceUpdate(ctx);
   const info = ctx.doc.GetMetadata();
   ctx.doc.SetXmp({
     pdfaPart: ctx.part,
     pdfaConformance: conf,
+    ...(ctx.part === 4 ? { pdfaRev: 2020 } : {}),
     ...(info.title !== undefined ? { title: info.title } : {}),
     ...(info.author !== undefined ? { authors: [info.author] } : {}),
     ...(info.subject !== undefined ? { description: info.subject } : {}),
     ...(info.keywords !== undefined ? { keywords: info.keywords } : {}),
+    ...(ctx.part === 4 && info.modDate !== undefined ? { modifyDate: info.modDate } : {}),
   });
-  return [{ rule: 'PdfaIdentification', action: `Wrote pdfaid:part ${ctx.part}/conformance ${conf} and mirrored /Info into XMP.` }];
+  const idPart = conf === null ? `part ${ctx.part} (no conformance)` : `part ${ctx.part}/conformance ${conf}`;
+  return [{ rule: 'PdfaIdentification', action: `Wrote pdfaid:${idPart}${ctx.part === 4 ? '/rev 2020' : ''} and mirrored /Info into XMP.` }];
 };
 
-/** Declare the part's version ceiling in the catalog. This is unconditional:
- *  the serializer emits the catalog /Version as the `%PDF-x.y` header and
- *  defaults to 1.7 without it, so a converted file would otherwise always
- *  breach the part 1 ceiling no matter what the input header said. */
+/** Declare the part's version in the catalog. This is unconditional: the
+ *  serializer emits the catalog /Version as the `%PDF-x.y` header and defaults
+ *  to 1.7 without it, so a converted file would otherwise breach its own rule
+ *  no matter what the input header said.
+ *
+ *  Note part 4 is NOT a ceiling but an exact major (ISO 19005-4 6.1.2-1): a
+ *  perfectly good PDF 1.7 file is simply not PDF/A-4, so the value is raised
+ *  here where parts 1-3 lower it. */
 const versionPass: Pass = (ctx) => {
-  const ceiling = ctx.part === 1 ? '1.4' : '1.7';
-  if (nameOf(ctx, ctx.catalog, 'Version') === ceiling) return [];
-  ctx.catalog.set('Version', name(ceiling));
-  return [{ rule: 'Version', action: `Set catalog /Version to ${ceiling}.` }];
+  const target = ctx.part === 4 ? '2.0' : ctx.part === 1 ? '1.4' : '1.7';
+  if (nameOf(ctx, ctx.catalog, 'Version') === target) return [];
+  ctx.catalog.set('Version', name(target));
+  return [{ rule: 'Version', action: `Set catalog /Version to ${target}.` }];
+};
+
+/** PDF/A-4 near-bans the document information dictionary: ISO 19005-4 6.1.3-4
+ *  permits /Info only alongside a catalog /PieceInfo, and 6.1.3-5 then allows
+ *  it to hold nothing but /ModDate. Essentially every real document carries a
+ *  title, author, producer and dates, so converting one to PDF/A-4 destroys
+ *  that dictionary; the `'info'` category is how a caller declines the trade
+ *  and takes an unresolved InfoRestriction instead.
+ *
+ *  Note the two branches are NOT alternatives to pick between. Reducing to
+ *  /ModDate is legal ONLY beside a /PieceInfo: infoRestrictionRule reports a
+ *  present /Info without one whatever it holds, so a reduce-only pass could
+ *  never reach passed === true for a document that has no /PieceInfo. Deleting
+ *  discards nothing, because identificationPass has already mirrored the title,
+ *  author, subject, keywords AND /ModDate into XMP - which is where PDF 2.0
+ *  wants them, and why identificationPass must run first.
+ *
+ *  Note it must run even for a document that HAD no /Info: SetXmp calls
+ *  ensureInfo() unconditionally, so identificationPass itself creates an empty
+ *  one, and an empty /Info with no /PieceInfo is still an error. */
+const infoPass: Pass = (ctx) => {
+  if (ctx.part !== 4 || ctx.preserve.has('info')) return [];
+  const infoObj = ctx.doc.trailer.get('Info');
+  if (infoObj === undefined) return [];
+  const info = ctx.R(infoObj);
+  if (!isDict(info)) return [];
+  const object = isRef(infoObj) ? infoObj : undefined;
+
+  if (ctx.catalog.get('PieceInfo') !== undefined) {
+    const dropped = [...info.keys()].filter((k) => k !== 'ModDate');
+    if (dropped.length === 0) return [];
+    for (const k of dropped) info.delete(k);
+    return [{ rule: 'InfoRestriction', object,
+      action: `Reduced /Info to /ModDate (dropped ${dropped.map((k) => `/${k}`).join(', ')}).` }];
+  }
+
+  ctx.doc.trailer.delete('Info');
+  if (isRef(infoObj)) ctx.doc.deleteObject(infoObj.num);
+  return [{ rule: 'InfoRestriction', action:
+    'Removed the document information dictionary (PDF/A-4 permits one only alongside a catalog /PieceInfo); its fields were mirrored into XMP first.' }];
 };
 
 /** Ensure the trailer carries an /ID. */
@@ -144,7 +211,10 @@ const annotationFlagsPass: Pass = (ctx) => {
     if (nameOf(ctx, dict, 'Subtype') === 'Popup') continue;
     const f = ctx.R(dict.get('F'));
     const flags = typeof f === 'number' ? f : 0;
-    const fixed = (flags | 4) & ~(1 | 2 | 32); // set Print(4), clear Invisible(1)/Hidden(2)/NoView(32)
+    // set Print(4); clear Invisible(1)/Hidden(2)/NoView(32), and at part 4 also
+    // ToggleNoView(256), which ISO 19005-4 6.3.2-2 adds and parts 1-3 permit.
+    const clear = ctx.part === 4 ? (1 | 2 | 32 | 256) : (1 | 2 | 32);
+    const fixed = (flags | 4) & ~clear;
     if (fixed !== flags) {
       dict.set('F', fixed);
       actions.push({ rule: 'AnnotationFlags', action: 'Normalized annotation /F flags.', object: ref, page });
@@ -249,35 +319,90 @@ const cosmeticPass: Pass = (ctx) => {
 };
 
 const PROHIBITED_ANNOTS = new Set(['Movie', 'Sound', 'Screen', '3D', 'RichMedia']);
+
+/** ISO 19005-4 6.3.1-1: FileAttachment joins the prohibited set. 3D and
+ *  RichMedia come back off it at 4e — that allowance is most of what makes
+ *  PDF/A-4e the engineering conformance. Mirrors pdfavalidate.ts's set. */
+const PROHIBITED_ANNOTS_A4 = new Set([
+  'Movie', 'Sound', 'Screen', '3D', 'RichMedia', 'FileAttachment',
+]);
+
+function prohibitedAnnots(ctx: Cctx): Set<string> {
+  if (ctx.part !== 4) return PROHIBITED_ANNOTS;
+  if (ctx.level !== 'e') return PROHIBITED_ANNOTS_A4;
+  const s = new Set(PROHIBITED_ANNOTS_A4);
+  s.delete('3D');
+  s.delete('RichMedia');
+  return s;
+}
+
 const PROHIBITED_ACTIONS = new Set([
   'Launch', 'Sound', 'Movie', 'ResetForm', 'ImportData', 'JavaScript', 'SetState', 'Hide', 'SetOCGState',
 ]);
 
-/** True when the named action dict is prohibited. */
-function isProhibitedAction(ctx: Cctx, actionObj: PdfObject | undefined): boolean {
-  const a = ctx.R(actionObj);
-  return isDict(a) && PROHIBITED_ACTIONS.has(nameOf(ctx, a, 'S') ?? '');
+/** ISO 19005-4 6.6.1-1. Note what is ABSENT: JavaScript is PERMITTED in
+ *  PDF/A-4, where parts 1-3 prohibit it — so conversion must stop removing it,
+ *  and stop deleting the /Names /JavaScript tree with it. */
+const PROHIBITED_ACTIONS_A4 = new Set([
+  'Launch', 'Sound', 'Movie', 'ResetForm', 'ImportData', 'Hide',
+  'Rendition', 'Trans', 'SetOCGState', 'GoTo3DView', 'SetState', 'NoOp',
+]);
+
+/** The prohibited-action set for the target. PDF/A-4e re-permits SetOCGState
+ *  and GoTo3DView, which is most of what makes it the engineering level. */
+function prohibitedActions(ctx: Cctx): Set<string> {
+  if (ctx.part !== 4) return PROHIBITED_ACTIONS;
+  if (ctx.level !== 'e') return PROHIBITED_ACTIONS_A4;
+  const s = new Set(PROHIBITED_ACTIONS_A4);
+  s.delete('SetOCGState');
+  s.delete('GoTo3DView');
+  return s;
 }
 
-/** Remove JavaScript and other prohibited actions (and /AA at part 1). */
+/** ISO 19005-4 6.6.3-1: the permitted additional-action triggers. */
+const PERMITTED_AA_KEYS_A4 = new Set(['E', 'X', 'D', 'U', 'Fo', 'Bl']);
+
+/** True when the named action dict is prohibited for this target. */
+function isProhibitedAction(ctx: Cctx, actionObj: PdfObject | undefined): boolean {
+  const a = ctx.R(actionObj);
+  return isDict(a) && prohibitedActions(ctx).has(nameOf(ctx, a, 'S') ?? '');
+}
+
+/** Remove prohibited actions (and /AA at part 1). What counts as prohibited is
+ *  the TARGET's set, so JavaScript survives at part 4 — including its /Names
+ *  tree, which is gated on the same set rather than on the part number. */
 const actionsPass: Pass = (ctx) => {
   if (ctx.preserve.has('javascript')) return [];
+  const banned = prohibitedActions(ctx);
   const actions: ConvertAction[] = [];
   if (isProhibitedAction(ctx, ctx.catalog.get('OpenAction'))) {
     ctx.catalog.delete('OpenAction');
     actions.push({ rule: 'Actions', action: 'Removed prohibited /OpenAction.' });
   }
   const names = ctx.R(ctx.catalog.get('Names'));
-  if (isDict(names) && names.get('JavaScript') !== undefined) {
+  if (banned.has('JavaScript') && isDict(names) && names.get('JavaScript') !== undefined) {
     names.delete('JavaScript');
     actions.push({ rule: 'Actions', action: 'Removed /Names /JavaScript tree.' });
   }
-  const stripAA = (dict: PdfDict): void => {
+  const stripAA = (dict: PdfDict, subtype?: string): void => {
     const aa = ctx.R(dict.get('AA'));
     if (!isDict(aa)) return;
     if (ctx.part === 1) { dict.delete('AA'); actions.push({ rule: 'AdditionalActions', action: 'Removed /AA.' }); return; }
-    for (const k of [...aa.keys()]) {
-      if (isProhibitedAction(ctx, aa.get(k))) { aa.delete(k); actions.push({ rule: 'AdditionalActions', action: `Removed prohibited /AA /${k}.` }); }
+    if (ctx.part === 4) {
+      // 6.6.3-1 restricts the KEY SET rather than the action types, and exempts
+      // Widget annotations, whose triggers are the form's.
+      if (subtype !== 'Widget') {
+        for (const k of [...aa.keys()]) {
+          if (!PERMITTED_AA_KEYS_A4.has(k)) {
+            aa.delete(k);
+            actions.push({ rule: 'AdditionalActions', action: `Removed /AA /${k} (not one of E, X, D, U, Fo, Bl).` });
+          }
+        }
+      }
+    } else {
+      for (const k of [...aa.keys()]) {
+        if (isProhibitedAction(ctx, aa.get(k))) { aa.delete(k); actions.push({ rule: 'AdditionalActions', action: `Removed prohibited /AA /${k}.` }); }
+      }
     }
     if (aa.size === 0) dict.delete('AA');
   };
@@ -288,7 +413,7 @@ const actionsPass: Pass = (ctx) => {
       dict.delete('A');
       actions.push({ rule: 'Actions', action: 'Removed prohibited annotation /A.', object: ref });
     }
-    stripAA(dict);
+    stripAA(dict, nameOf(ctx, dict, 'Subtype'));
   }
   return actions;
 };
@@ -303,13 +428,15 @@ function removeAnnot(ctx: Cctx, target: PdfDict): void {
   }
 }
 
-/** Remove multimedia annotations. */
+/** Remove prohibited annotation subtypes — the target's set, so part 4 also
+ *  takes FileAttachment and 4e keeps 3D and RichMedia. */
 const multimediaPass: Pass = (ctx) => {
   if (ctx.preserve.has('multimedia')) return [];
+  const banned = prohibitedAnnots(ctx);
   const actions: ConvertAction[] = [];
   for (const { ref, dict, page } of eachAnnotation(ctx)) {
     const st = nameOf(ctx, dict, 'Subtype');
-    if (st && PROHIBITED_ANNOTS.has(st)) {
+    if (st && banned.has(st)) {
       removeAnnot(ctx, dict);
       actions.push({ rule: 'AnnotationSubtype', action: `Removed /${st} annotation.`, object: ref, page });
     }
@@ -350,6 +477,38 @@ const embeddedFilesPass: Pass = (ctx) => {
       if (nameOf(ctx, dict, 'Subtype') === 'FileAttachment') {
         removeAnnot(ctx, dict);
         actions.push({ rule: 'EmbeddedFiles', action: 'Removed /FileAttachment annotation (part 1).', object: ref });
+      }
+    }
+    return actions;
+  }
+  if (ctx.part === 4) {
+    // ISO 19005-4 6.9-1/-2/-4. Note the direction: part 4 never REMOVES an
+    // attachment — 4f is built on carrying one — so this only adds what the
+    // clause newly requires, and is not gated on the 'embeddedFiles' preserve
+    // category, which names destructive removals and has nothing to skip here.
+    for (const [object, obj] of ctx.doc.objectEntries()) {
+      if (!isDict(obj)) continue;
+      if (nameOf(ctx, obj, 'Type') !== 'Filespec' || obj.get('EF') === undefined) continue;
+      if (obj.get('AFRelationship') === undefined) {
+        obj.set('AFRelationship', name('Unspecified'));
+        actions.push({ rule: 'EmbeddedFileSpec', action: 'Set /AFRelationship on a file spec.', object });
+      }
+      const f = ctx.R(obj.get('F'));
+      if (obj.get('UF') === undefined && isString(f)) {
+        obj.set('UF', { kind: 'string' as const, bytes: f.bytes });
+        actions.push({ rule: 'EmbeddedFileSpec', action: 'Copied /F to /UF on a file spec.', object });
+      }
+      const ef = ctx.R(obj.get('EF'));
+      if (!isDict(ef)) continue;
+      for (const v of ef.values()) {
+        const stream = ctx.R(v);
+        if (isStream(stream) && stream.dict.get('Subtype') === undefined) {
+          // A MIME type is a NAME: build it from the RAW text and let
+          // escapeName emit `/application#2foctet-stream`.
+          stream.dict.set('Subtype', name('application/octet-stream'));
+          actions.push({ rule: 'EmbeddedFileSpec', object: isRef(v) ? v : object,
+            action: 'Set /Subtype application/octet-stream on an embedded file stream.' });
+        }
       }
     }
     return actions;
@@ -457,9 +616,229 @@ const toUnicodePass: Pass = (ctx) => {
   return actions;
 };
 
+// ---- PDF/A-4 (ISO 19005-4) passes ------------------------------------------
+
+/** ISO 19005's catalog prohibitions: /NeedsRendering (6.4.2), /Requirements
+ *  (6.12), /Names /AlternatePresentations and page /PresSteps (6.11), and every
+ *  /Perms key but /DocMDP (6.1.11). All name behaviour a conforming reader must
+ *  not have rather than content the page draws, so none is gated on a preserve
+ *  category. */
+const catalogKeysPass: Pass = (ctx) => {
+  const actions: ConvertAction[] = [];
+
+  // /NeedsRendering is the ONE key here the older parts also prohibit
+  // (ISO 19005-2/-3 6.4.2-2), so it is scoped per key rather than the pass
+  // being gated whole — which is what left it detected-but-unrepaired at parts
+  // 2/3 when the rule widened, found by the messy-document acceptance case.
+  const keys = ctx.part === 4 ? ['NeedsRendering', 'Requirements'] as const
+    : ctx.part === 1 ? [] as const
+      : ['NeedsRendering'] as const;
+  for (const key of keys) {
+    if (ctx.catalog.get(key) !== undefined) {
+      ctx.catalog.delete(key);
+      actions.push({ rule: key, action: `Removed catalog /${key}.` });
+    }
+  }
+  // Everything below is part-4-only: /Requirements above, and these three.
+  if (ctx.part !== 4) return actions;
+
+  const names = ctx.R(ctx.catalog.get('Names'));
+  if (isDict(names) && names.get('AlternatePresentations') !== undefined) {
+    names.delete('AlternatePresentations');
+    actions.push({ rule: 'AlternatePresentations', action: 'Removed /Names /AlternatePresentations.' });
+  }
+  for (const page of ctx.doc.Pages) {
+    if (page.Dict.get('PresSteps') !== undefined) {
+      page.Dict.delete('PresSteps');
+      actions.push({ rule: 'AlternatePresentations', action: 'Removed page /PresSteps.', page });
+    }
+  }
+
+  const perms = ctx.R(ctx.catalog.get('Perms'));
+  if (isDict(perms)) {
+    for (const k of [...perms.keys()]) {
+      if (k === 'DocMDP') continue;
+      perms.delete(k);
+      actions.push({ rule: 'Permissions', action: `Removed catalog /Perms /${k}.` });
+    }
+    if (perms.size === 0) ctx.catalog.delete('Perms');
+  }
+  return actions;
+};
+
+/** Transfer functions and halftones (ISO 19005-1 6.2.8 / -2/-3 6.2.5 / -4
+ *  6.2.5), the image keys (6.2.4 / 6.2.8 / 6.2.7.1) and Form XObject /OPI
+ *  (6.2.4 / 6.2.9 / 6.2.8.1). Renamed off the `pdfa4` prefix in `pjy7`, which
+ *  became a lie the moment it ran at part 2.
+ *
+ *  Invariant: the per-part scope matches the RULES' — /HTO at part 4 only,
+ *  halftones from part 2, the rest everywhere. A pass that decided
+ *  independently which parts it serves is how a converter comes to fix
+ *  something the validator does not report, or leave something it does.
+ *
+ *  Note what is NOT fixed and why: a halftone TYPE outside {1,5} and a
+ *  /BitsPerComponent outside the permitted set would need the page to print
+ *  differently or the image re-encoded, so they are left for the re-validation
+ *  to report. */
+const graphicsKeysPass: Pass = (ctx) => {
+  const actions: ConvertAction[] = [];
+
+  for (const { ref: object, dict } of extGStates(ctx)) {
+    // /HTO is a PDF 2.0 key and appears in the part-4 profile alone.
+    for (const k of ctx.part === 4 ? ['TR', 'HTO'] : ['TR']) {
+      if (dict.get(k) !== undefined) {
+        dict.delete(k);
+        actions.push({ rule: 'ExtGStateKeys', action: `Removed ExtGState /${k}.`, object });
+      }
+    }
+    // 6.2.5-2: /TR2 survives, but only as /Default - so it is SET, not deleted.
+    if (dict.get('TR2') !== undefined && nameOf(ctx, dict, 'TR2') !== 'Default') {
+      dict.set('TR2', name('Default'));
+      actions.push({ rule: 'ExtGStateKeys', action: 'Set ExtGState /TR2 to /Default.', object });
+    }
+    // The halftone rules start at part 2; repairing at part 1 would "fix" what
+    // ISO 19005-1 permits.
+    const ht = ctx.part === 1 ? undefined : ctx.R(dict.get('HT'));
+    if (isDict(ht) && ht.get('HalftoneName') !== undefined) {
+      ht.delete('HalftoneName');
+      actions.push({ rule: 'Halftone', action: 'Removed /HalftoneName from a halftone dictionary.', object });
+    }
+  }
+
+  for (const [object, obj] of ctx.doc.objectEntries()) {
+    if (!isStream(obj)) continue;
+    const subtype = nameOf(ctx, obj.dict, 'Subtype');
+    if (subtype === 'Image') {
+      for (const k of ['Alternates', 'OPI']) {
+        if (obj.dict.get(k) !== undefined) {
+          obj.dict.delete(k);
+          actions.push({ rule: 'ImageKeys', action: `Removed image /${k}.`, object });
+        }
+      }
+    } else if (subtype === 'Form' && obj.dict.get('OPI') !== undefined) {
+      obj.dict.delete('OPI');
+      actions.push({ rule: 'FormXObjectOpi', action: 'Removed Form XObject /OPI.', object });
+    }
+  }
+  return actions;
+};
+
+/** ISO 19005-2/-3 6.2.3-3 and -4 6.2.3-3: no /DestOutputProfileRef, which names
+ *  a profile the file does not carry. Registered AFTER outputIntentPass, which
+ *  may add an intent — policing the array before it is populated polices the
+ *  wrong array.
+ *
+ *  Invariant: the GTS_PDFX exemption comes from `destProfileRefExempt`, the
+ *  same helper the rule reads, so the pass cannot strip a key the validator
+ *  permits. The surplus-intent drop stays part-4-only for the same reason. */
+const outputIntentKeysPass: Pass = (ctx) => {
+  if (ctx.part === 1) return [];
+  const ois = ctx.R(ctx.catalog.get('OutputIntents'));
+  if (!isArray(ois)) return [];
+  const actions: ConvertAction[] = [];
+  const kept: PdfObject[] = [];
+  let seenPdfa = false;
+  for (const e of ois) {
+    const oi = ctx.R(e);
+    if (!isDict(oi)) { kept.push(e); continue; }
+    const object = isRef(e) ? e : undefined;
+    const s = nameOf(ctx, oi, 'S');
+    if (oi.get('DestOutputProfileRef') !== undefined && !destProfileRefExempt(ctx.part, s)) {
+      oi.delete('DestOutputProfileRef');
+      actions.push({ rule: 'OutputIntentKeys', action: 'Removed OutputIntent /DestOutputProfileRef.', object });
+    }
+    if (s === 'GTS_PDFA1') {
+      if (ctx.part === 4 && seenPdfa) {
+        actions.push({ rule: 'OutputIntentKeys', object,
+          action: 'Dropped a surplus PDF/A OutputIntent (at most one is permitted).' });
+        continue;
+      }
+      seenPdfa = true;
+    }
+    kept.push(e);
+  }
+  if (kept.length !== ois.length) ctx.catalog.set('OutputIntents', kept);
+  return actions;
+};
+
+/** An appearance dictionary may hold only /N (ISO 19005-1 6.5.3-4, -2/-3
+ *  6.3.3-2, -4 6.3.3-1), and a Widget may carry no action (19005-1 6.6.1-3 and
+ *  6.6.2-1, -2/-3 6.4.1-1, -4 6.4.1-1). Registered after formsPass, which
+ *  generates the /AP dictionaries this then prunes.
+ *
+ *  Note the asymmetry between the two halves, and it is why only one is gated
+ *  on a category: pruning /AP is non-destructive normalisation — a /D or /R
+ *  entry is alternate ARTWORK for a state the document may never reach — while
+ *  stripping a Widget's /A and /AA deletes real behaviour: a push button's
+ *  action, a field's keystroke and format scripts.
+ *
+ *  Invariant: WHICH keys go comes from `widgetActionKeys`, the same helper the
+ *  rule reads, so part 4 keeps its 6.6.3-1 exemption for /AA here too. */
+const annotKeysPass: Pass = (ctx) => {
+  const actions: ConvertAction[] = [];
+  const keys = ctx.preserve.has('formActions') ? [] : widgetActionKeys(ctx.part);
+  for (const { ref: object, dict, page } of eachAnnotation(ctx)) {
+    const ap = ctx.R(dict.get('AP'));
+    if (isDict(ap)) {
+      for (const k of [...ap.keys()]) {
+        if (k === 'N') continue;
+        ap.delete(k);
+        actions.push({ rule: 'AppearanceKeys', action: `Removed appearance /${k}.`, object, page });
+      }
+    }
+    if (nameOf(ctx, dict, 'Subtype') !== 'Widget') continue;
+    for (const k of keys) {
+      if (dict.get(k) === undefined) continue;
+      dict.delete(k);
+      actions.push({ rule: 'WidgetAction', action: `Removed /${k} from a Widget annotation.`, object, page });
+    }
+  }
+  return actions;
+};
+
+/** ISO 19005-4 6.10-1/-2: every optional-content configuration needs a /Name,
+ *  and the names must be unique. Only the missing-name half is remediable — the
+ *  names already in use are collected first, so this pass cannot MANUFACTURE
+ *  the duplicate the same clause forbids. */
+const ocConfigPass: Pass = (ctx) => {
+  if (ctx.part !== 4) return [];
+  const ocp = ctx.R(ctx.catalog.get('OCProperties'));
+  if (!isDict(ocp)) return [];
+  const configs: PdfDict[] = [];
+  const d = ctx.R(ocp.get('D'));
+  if (isDict(d)) configs.push(d);
+  const alt = ctx.R(ocp.get('Configs'));
+  if (isArray(alt)) for (const c of alt) { const cd = ctx.R(c); if (isDict(cd)) configs.push(cd); }
+
+  const used = new Set<string>();
+  for (const cfg of configs) {
+    const nm = ctx.R(cfg.get('Name'));
+    if (isString(nm)) used.add(new TextDecoder('latin1').decode(nm.bytes));
+  }
+
+  const actions: ConvertAction[] = [];
+  for (const cfg of configs) {
+    if (isString(ctx.R(cfg.get('Name')))) continue;
+    let label = 'Default';
+    for (let i = 2; used.has(label); i++) label = `Default ${i}`;
+    used.add(label);
+    cfg.set('Name', { kind: 'string' as const, bytes: new TextEncoder().encode(label) });
+    actions.push({ rule: 'OcConfig', action: `Named an optional-content configuration '${label}'.` });
+  }
+  return actions;
+};
+
 const PASSES: Pass[] = [
   identificationPass, versionPass, fileIdPass, outputIntentPass,
   annotationFlagsPass, formsPass, cosmeticPass,
   actionsPass, multimediaPass, xfaPass, optionalContentPass, embeddedFilesPass, postScriptPass,
   toUnicodePass,
+  // Widened to parts 1-3 in pjy7; only catalogKeysPass's tail and ocConfigPass are
+  // still part-4-only, so only they keep the part in their name.
+  graphicsKeysPass, outputIntentKeysPass, annotKeysPass,
+  catalogKeysPass, ocConfigPass,
+  // LAST, and deliberately: identificationPass reads /Info through
+  // GetMetadata() and SetXmp's mirror writes it back, so anything that strips
+  // /Info must follow every pass that could touch it.
+  infoPass,
 ];

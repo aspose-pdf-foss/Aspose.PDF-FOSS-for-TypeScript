@@ -3,8 +3,9 @@ import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
 import { FloatingBox } from './floatbox.js';
 import {
-  flowTextBlock, stampText, measureText, measureTextBlock,
+  flowTextBlock, stampText, measureText, measureTextBlock, resolveAtomics,
   type TextBlockOptions, type StampOptions, type AuthoringFont, type BlockAtomic,
+  type AtomicSpec,
 } from './stamp.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { coverageOf, type Undrawable } from './textcoverage.js';
@@ -181,48 +182,20 @@ function drawFlowText(
 /** A box placed among a paragraph's runs — an image on a line of text.
  *
  *  `data` is IMAGE BYTES rather than a built XObject, so a pure mapper like
- *  cssflow.ts can produce one without importing any PDF object module; this
- *  builder does the same `buildImageXObject` call `image()` already does. */
-export interface FlowAtomic {
-  /** The run index this sits BEFORE; `runs.length` places it at the end. */
-  beforeRun: number;
-  data: Uint8Array;
-  /** Drawn size in POINTS. Both > 0, or the atomic draws nothing. */
-  width: number;
-  height: number;
-  /** Default 'baseline' — the box's bottom edge sits on the text baseline.
-   *  'middle' is not offered: CSS defines it against half the x-height, which
-   *  the AFM tables do not expose. */
-  align?: 'baseline' | 'top' | 'bottom';
-}
-
-/** Validate and build. Every atomic is checked BEFORE any XObject is
- *  allocated, so a rejected call leaves the document byte-identical — the rule
- *  every authoring entry point here follows. */
-function resolveAtomics(list: FlowAtomic[] | undefined): BlockAtomic[] | undefined {
-  if (list === undefined) return undefined;
-  if (!Array.isArray(list)) throw new TypeError('atomics must be an array');
-  for (let i = 0; i < list.length; i++) {
-    const a = list[i];
-    if (!Number.isInteger(a?.beforeRun) || a.beforeRun < 0)
-      throw new TypeError(`atomic ${i}: beforeRun must be a non-negative integer`);
-    if (!(a.data instanceof Uint8Array))
-      throw new TypeError(`atomic ${i}: data must be a Uint8Array`);
-    for (const k of ['width', 'height'] as const) {
-      if (!Number.isFinite(a[k]) || a[k] < 0)
-        throw new TypeError(`atomic ${i}: ${k} must be a non-negative finite number`);
-    }
-    if (a.align !== undefined && !['baseline', 'top', 'bottom'].includes(a.align))
-      throw new TypeError(`atomic ${i}: align must be 'baseline', 'top' or 'bottom'`);
-  }
-  return list.map((a) => ({
-    beforeRun: a.beforeRun,
-    built: buildImageXObject(a.data),
-    width: a.width,
-    height: a.height,
-    align: a.align ?? 'baseline',
-  }));
-}
+/**
+ * A box placed among a paragraph's runs — an image on a line of text.
+ *
+ * `data` is IMAGE BYTES rather than a built XObject, so a pure mapper like
+ * cssflow.ts can produce one without importing any PDF object module; the
+ * builder does the same `buildImageXObject` call `image()` already does.
+ *
+ * **The shape and its validator live in `stamp.ts` as `AtomicSpec`**, because
+ * a table cell needs both (`dsw8`) and `tableauthor.ts` cannot reach this
+ * module: `flow.ts` → `flowtable.ts` → `tableauthor.ts`, so that edge would
+ * close a cycle. The name stays `FlowAtomic` here, which is what the
+ * authoring API exports.
+ */
+export type FlowAtomic = AtomicSpec;
 
 export interface FlowParagraphOptions {
   /** Boxes to place among the runs — an image on a line of text. A PARALLEL
@@ -660,13 +633,32 @@ class ListItemElement implements FlowElement {
     public spaceAfter: number,
     private readonly holder: ListStructHolder,
     private readonly state: ItemState,
+    private readonly atomics?: BlockAtomic[],
   ) {}
+
+  /** The list's body options plus THIS item's atomics.
+   *
+   *  Atomics cannot live in `bodyOptions`, which is keyed on the LIST — so this
+   *  is the single definition that keeps `measure` and `place` from drifting,
+   *  for the same reason `bodyOptions` itself is one. */
+  private bodyOpts(): TextBlockOptions {
+    const o = bodyOptions(this.opts);
+    return this.atomics === undefined ? o : { ...o, atomics: this.atomics };
+  }
+
+  /** Whether this item would paint nothing at all. An item holding an IMAGE
+   *  and no text draws, so the emptiness test cannot be `isEmptyFlowText`
+   *  alone — read that way, an image-only item gets no `/LI` and no `/LBody`
+   *  and its picture lands in no structure element. */
+  private drawsNothing(): boolean {
+    return isEmptyFlowText(this.text)
+      && (this.atomics === undefined || this.atomics.length === 0);
+  }
 
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
-    const bodyOpts = bodyOptions(this.opts);
     const { usedHeight, remainder } =
-      measureFlowText(this.text, ctx.width - this.indent, ctx.availHeight, bodyOpts);
+      measureFlowText(this.text, ctx.width - this.indent, ctx.availHeight, this.bodyOpts());
     return { usedHeight, fits: remainder === null };
   }
 
@@ -678,18 +670,19 @@ class ListItemElement implements FlowElement {
     // that draws nothing leaves the nodes childless until the item draws. A nested
     // sub-list attaches its /L under the parent item's /LBody (parentBody), falling
     // back to the flow's struct parent at the top level.
-    if (!isEmptyFlowText(this.text))
+    if (!this.drawsNothing())
       ensureItemStruct(ctx, this.marker, this.holder, this.state);
 
     const bodyOpts: TextBlockOptions = {
-      ...bodyOptions(this.opts),
+      ...this.bodyOpts(),
       ...(this.state.lbody ? { tag: this.state.lbody } : {}),
     };
     const rect: [number, number, number, number] = [
       ctx.x + this.indent, ctx.top - ctx.availHeight,
       ctx.width - this.indent, ctx.availHeight,
     ];
-    const { remainder, usedHeight } = drawFlowText(ctx.doc, ctx.page, this.text, rect, bodyOpts);
+    const { remainder, remainderAtomics, usedHeight } =
+      drawFlowText(ctx.doc, ctx.page, this.text, rect, bodyOpts);
 
     if (usedHeight === 0) {
       // Nothing drawn: null remainder = empty (discard); else it did not fit the
@@ -705,8 +698,13 @@ class ListItemElement implements FlowElement {
     // started), same spaceAfter.
     return {
       usedHeight,
+      // `remainderAtomics` and NOT `this.atomics`: the originals index the
+      // ORIGINAL run list, and sliceContent has re-based these onto the sliced
+      // one. Carrying the originals forward puts an image at the wrong place,
+      // or off the end where it vanishes at the column break — `TextElement`
+      // records the same trap.
       remainder: new ListItemElement(remainder, this.marker, this.indent, this.opts,
-        0, this.spaceAfter, this.holder, this.state),
+        0, this.spaceAfter, this.holder, this.state, remainderAtomics),
       drew: true,
     };
   }
@@ -764,6 +762,12 @@ export interface FlowListItem {
    *  within the item; a bare string is one style throughout. Optional only when
    *  `blocks` is given — an item must have one or the other. */
   text?: FlowText;
+  /** Boxes to place among THIS item's `text` — an image on the item's line.
+   *
+   *  Per ITEM rather than per list, because `beforeRun` indexes that item's own
+   *  run list and nothing else. An item that is nothing but an image is
+   *  legitimate: give it `text: []` and one atomic. */
+  atomics?: FlowAtomic[];
   /** Draw a task-list checkbox for THIS item instead of the computed marker.
    *  Vector-drawn: WinAnsi has no ballot-box glyph. */
   marker?: 'checkbox' | 'checked';
@@ -835,6 +839,11 @@ function validateNode(n: FlowListNode): FlowListItem {
   }
   if (n.text === undefined && (n.blocks === undefined || n.blocks.length === 0))
     throw new TypeError('a list item must have text or blocks');
+  // Shape only; `resolveAtomics` does the per-entry checking when the item is
+  // built. An item whose text is `[]` and whose atomics hold one image is the
+  // image-only item, so atomics are NOT a reason to require text.
+  if (n.atomics !== undefined && !Array.isArray(n.atomics))
+    throw new TypeError('item.atomics must be an array');
   if (n.marker !== undefined && n.marker !== 'checkbox' && n.marker !== 'checked')
     throw new TypeError("item.marker must be 'checkbox' or 'checked'");
   if (n.items !== undefined && !Array.isArray(n.items))
@@ -955,7 +964,7 @@ function buildListElements(items: FlowListNode[], options: FlowListOptions): Flo
     const indent = p.item.indent ?? cumulative[p.depth];
     if (p.item.text !== undefined)
       p.elements.push(new ListItemElement(p.item.text, p.marker, indent, p.opts, 0, 0,
-        p.holder, p.state));
+        p.holder, p.state, resolveAtomics(p.item.atomics)));
     for (const b of p.item.blocks ?? [])
       p.elements.push(new ListBlockElement(b, p.marker, indent, p.opts, p.holder, p.state,
         b.spaceBefore ?? 0, b.spaceAfter ?? 0));

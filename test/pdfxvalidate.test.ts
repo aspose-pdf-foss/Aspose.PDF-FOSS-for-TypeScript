@@ -195,3 +195,20 @@ describe('ValidatePdfX — annotations and actions', () => {
     expect(rules(buildPdfxPdf({ jsAction: true }))).toContain('Actions');
   });
 });
+
+describe('ValidatePdfX — an empty pdfxid declaration is present, not absent (ugxr)', () => {
+  // Both readings REPORT, so only the diagnostic can tell them apart - and the
+  // difference is the actionable half: "carries no pdfxid" sends an author to
+  // add one, where the packet already has it and the VALUE is empty.
+  it('reports an empty GTS_PDFXVersion as a wrong version, not a missing one', () => {
+    const report = open(buildPdfxPdf({ pdfxVersion: '' }, '4')).ValidatePdfX('4');
+    const msg = report.Errors.find((e) => e.rule === 'PdfxIdentification')?.message ?? '';
+    expect(msg).toContain("declares pdfxid:GTS_PDFXVersion ''");
+    expect(msg).not.toContain('carries no');
+  });
+
+  it('still reports a genuinely absent pdfxid as missing', () => {
+    const report = open(buildPdfxPdf({ omitXmp: true }, '4')).ValidatePdfX('4');
+    expect(report.Errors.map((e) => e.rule)).toContain('PdfxIdentification');
+  });
+});

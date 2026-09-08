@@ -53,10 +53,26 @@ function sliceWidth(pieces: Piece[], from: number, to: number): number {
   return w;
 }
 
-/** The widest single LINE (max-content) and widest single WORD (min-content) of
- *  `text`, in points. A run's own `font`/`fontSize` win over the block's. */
+/**
+ * The widest single LINE (max-content) and widest single WORD (min-content) of
+ * `text`, in points. A run's own `font`/`fontSize` win over the block's.
+ *
+ * `atomics` are boxes placed among the runs (`dsw8`) — a table cell's inline
+ * images. They widen both answers, and the rule is deliberately APPROXIMATE in
+ * the direction that is safe:
+ *
+ * - **max-content** adds every atomic's width, because a line holding all the
+ *   text also holds all the boxes. Exact whenever the cell is one line, which
+ *   is what max-content means.
+ * - **min-content** takes the widest atomic as a floor. An atomic is U+FFFC to
+ *   the wrapping engine, a non-space character, so `a<img>b` is really ONE
+ *   unbreakable unit and the true min-content can be wider than this. Erring
+ *   NARROW is the safe direction: `layoutRuns` clamps an atomic wider than its
+ *   box, so the picture shrinks to fit a column rather than overflowing it.
+ */
 export function textExtents(
   text: string | TextRun[], font: AuthoringFont, fontSize: number,
+  atomics?: readonly { width: number }[],
 ): { longestLine: number; longestWord: number } {
   const pieces: Piece[] = isTextRunList(text)
     ? text.map((r) => ({
@@ -78,6 +94,12 @@ export function textExtents(
     if (ch === '\n') {
       longestLine = Math.max(longestLine, sliceWidth(pieces, lineStart, i));
       lineStart = i + 1;
+    }
+  }
+  if (atomics !== undefined && atomics.length > 0) {
+    for (const a of atomics) {
+      longestLine += a.width;
+      longestWord = Math.max(longestWord, a.width);
     }
   }
   return { longestLine, longestWord };

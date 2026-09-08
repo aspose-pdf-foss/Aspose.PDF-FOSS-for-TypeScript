@@ -123,13 +123,115 @@ function sampleTable(t: Float64Array, x: number): number {
 }
 
 /**
+ * MULTILINEAR interpolation over the `2**n` corners of the enclosing cell,
+ * each weighted by its distance. The arithmetic reads straight off the spec,
+ * and it is the only reading available for an input count other than three:
+ * a tetrahedral decomposition is a property of the CUBE, so there is no
+ * 4-input counterpart for an `A2B`'s CMYK side.
+ */
+function multilinear(
+  clut: Float64Array, grid: number, outputChannels: number,
+  base: readonly number[], frac: readonly number[], out: number[],
+): void {
+  const corners = 1 << base.length;
+  for (let mask = 0; mask < corners; mask++) {
+    let weight = 1;
+    let index = 0;
+    for (let c = 0; c < base.length; c++) {
+      const hi = (mask >> c) & 1;
+      weight *= hi ? (frac[c] as number) : 1 - (frac[c] as number);
+      // The FIRST input channel varies SLOWEST, so its stride is the largest.
+      index = index * grid + ((base[c] as number) + hi);
+    }
+    if (weight === 0) continue;
+    const o = index * outputChannels;
+    for (let k = 0; k < outputChannels; k++) {
+      out[k] = (out[k] as number) + weight * (clut[o + k] as number);
+    }
+  }
+}
+
+/**
+ * TETRAHEDRAL interpolation, for a 3-input CLUT (`m3gs`).
+ *
+ * The cell is split into six tetrahedra sharing the `000`–`111` diagonal, and
+ * which one holds the point is decided by the ORDER of the three fractions
+ * alone — no geometry, six branches. Within it the interpolation is linear,
+ * so only four of the eight corners are read.
+ *
+ * **Invariant, and it is what makes this a correction rather than a
+ * preference:** this is what a reference CMS does. Measured against Windows
+ * Color System through a purpose-built curved profile, our previous
+ * multilinear walk missed WCS by up to **4.0×10⁻²** — four percentage points
+ * of ink — where tetrahedral tracks it to 4.8×10⁻³, and typically to
+ * 1.3×10⁻⁴. littlecms and Adobe's CMM subdivide the same way. See
+ * `test/fixtures/icc/PROVENANCE.md`.
+ *
+ * **Invariant, and it is why the switch cost the shipped fixture nothing:**
+ * the two methods agree EXACTLY on an affine CLUT, because both reproduce an
+ * affine function. `synthetic-cmyk.icc` is affine by construction, so every
+ * golden it anchors held unedited — measured at 1.1×10⁻¹⁶, one ulp. That is
+ * also why a second, CURVED fixture had to exist before this could be
+ * changed at all: the affine one provably cannot see the method.
+ *
+ * **Note the deviation is grid-dependent, so do not read the 4% as the
+ * error on a real file.** It falls as the square of the cell size — measured
+ * over a dense sweep of one curved function at 1.9×10⁻¹ (grid 2), 7.0×10⁻²
+ * (3), 2.1×10⁻² (5), 5.3×10⁻³ (9), 1.4×10⁻³ (17) and 3.3×10⁻⁴ (33). A real
+ * profile's `B2A0` is grid 17, so the practical change to output is about a
+ * tenth of a percent. The reason to make it is agreement with the reference,
+ * not the magnitude.
+ */
+function tetrahedral(
+  clut: Float64Array, grid: number, outputChannels: number,
+  base: readonly number[], frac: readonly number[], out: number[],
+): void {
+  const at = (i: number, j: number, k: number): number =>
+    ((((base[0] as number) + i) * grid + ((base[1] as number) + j)) * grid
+      + ((base[2] as number) + k)) * outputChannels;
+  const o000 = at(0, 0, 0), o001 = at(0, 0, 1);
+  const o010 = at(0, 1, 0), o011 = at(0, 1, 1);
+  const o100 = at(1, 0, 0), o101 = at(1, 0, 1);
+  const o110 = at(1, 1, 0), o111 = at(1, 1, 1);
+  const f0 = frac[0] as number, f1 = frac[1] as number, f2 = frac[2] as number;
+
+  // The three edges of the chosen tetrahedron, as (high, low) corner pairs.
+  // Every branch starts at `000` and ends at `111`, which is what makes all
+  // eight corners exact and the result continuous across the shared faces.
+  let h0: number, l0: number, h1: number, l1: number, h2: number, l2: number;
+  if (f0 >= f1) {
+    if (f1 >= f2) {          // f0 >= f1 >= f2
+      h0 = o100; l0 = o000; h1 = o110; l1 = o100; h2 = o111; l2 = o110;
+    } else if (f0 >= f2) {   // f0 >= f2 > f1
+      h0 = o100; l0 = o000; h1 = o111; l1 = o101; h2 = o101; l2 = o100;
+    } else {                 // f2 > f0 >= f1
+      h0 = o101; l0 = o001; h1 = o111; l1 = o101; h2 = o001; l2 = o000;
+    }
+  } else {
+    if (f2 >= f1) {          // f2 >= f1 > f0
+      h0 = o111; l0 = o011; h1 = o011; l1 = o001; h2 = o001; l2 = o000;
+    } else if (f2 >= f0) {   // f1 > f2 >= f0
+      h0 = o111; l0 = o011; h1 = o010; l1 = o000; h2 = o011; l2 = o010;
+    } else {                 // f1 > f0 > f2
+      h0 = o110; l0 = o010; h1 = o010; l1 = o000; h2 = o111; l2 = o110;
+    }
+  }
+  for (let k = 0; k < outputChannels; k++) {
+    out[k] = (clut[o000 + k] as number)
+      + ((clut[h0 + k] as number) - (clut[l0 + k] as number)) * f0
+      + ((clut[h1 + k] as number) - (clut[l1 + k] as number)) * f1
+      + ((clut[h2 + k] as number) - (clut[l2 + k] as number)) * f2;
+  }
+}
+
+/**
  * Evaluate the pipeline: input curves, CLUT, output curves.
  *
- * The CLUT is interpolated TRILINEARLY (multilinearly, for any input count):
- * the arithmetic reads straight off the spec, where tetrahedral interpolation
- * — which littlecms and probably WCS use — is a different subdivision that
- * agrees with it only for an AFFINE CLUT. `test/fixtures/icc/`'s profile is
- * affine precisely so the two coincide and the goldens admit no tolerance.
+ * The CLUT is interpolated TETRAHEDRALLY for three inputs and MULTILINEARLY
+ * otherwise — see those two functions for the measurement behind the split.
+ * Three inputs is the `B2A` direction, which is the only one this library
+ * evaluates today; the multilinear arm is what an `A2B`'s four CMYK inputs
+ * would take, and is unreachable through `icctransform.ts`.
  *
  * The 3x3 matrix is deliberately NOT applied. ICC allows it only for an XYZ
  * PCS, and it is the identity in every profile this library reads;
@@ -152,7 +254,9 @@ export function evalLut(lut: IccLut, inputs: readonly number[]): number[] {
     pos.push((v < 0 ? 0 : v > 1 ? 1 : v) * (grid - 1));
   }
 
-  // Multilinear interpolation over the 2**n corners of the enclosing cell.
+  // The enclosing cell, and where in it the point sits. `grid - 2` is the
+  // last cell origin, so a point at the very top of the range interpolates
+  // within the final cell rather than off the end of the CLUT.
   const base: number[] = [];
   const frac: number[] = [];
   for (const q of pos) {
@@ -160,22 +264,12 @@ export function evalLut(lut: IccLut, inputs: readonly number[]): number[] {
     base.push(i);
     frac.push(q - i);
   }
+
   const out = new Array<number>(outputChannels).fill(0);
-  const corners = 1 << inputs.length;
-  for (let mask = 0; mask < corners; mask++) {
-    let weight = 1;
-    let index = 0;
-    for (let c = 0; c < inputs.length; c++) {
-      const hi = (mask >> c) & 1;
-      weight *= hi ? (frac[c] as number) : 1 - (frac[c] as number);
-      // The FIRST input channel varies SLOWEST, so its stride is the largest.
-      index = index * grid + ((base[c] as number) + hi);
-    }
-    if (weight === 0) continue;
-    const o = index * outputChannels;
-    for (let k = 0; k < outputChannels; k++) {
-      out[k] = (out[k] as number) + weight * (clut[o + k] as number);
-    }
+  if (inputs.length === 3) {
+    tetrahedral(clut, grid, outputChannels, base, frac, out);
+  } else {
+    multilinear(clut, grid, outputChannels, base, frac, out);
   }
 
   // Output curves.

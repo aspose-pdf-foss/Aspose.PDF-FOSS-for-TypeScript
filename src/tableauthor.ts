@@ -1,10 +1,16 @@
-import { AuthoringFont, validateFont } from './stamp.js';
+import {
+  AuthoringFont, validateFont, resolveAtomics,
+  type AtomicSpec, type BlockAtomic,
+} from './stamp.js';
 import {
   validateDecoration, validateBackground, isTextRunList,
   type Decoration, type Background, type TextRun,
 } from './textdecor.js';
 import { EmbeddedFont } from './embeddedfont.js';
-import { FontDriver, winAnsiDriver, layoutText, layoutRuns } from './layout.js';
+import {
+  FontDriver, winAnsiDriver, layoutText, layoutRuns, weaveByBeforeRun,
+  type LayoutRun,
+} from './layout.js';
 import { buildImageXObject, BuiltImage } from './imageembed.js';
 import { buildSpanGrid, applySpanDeficits, type SpanGrid } from './tablespan.js';
 import { textExtents } from './textextents.js';
@@ -131,6 +137,13 @@ export interface CellOptions extends CellTextOptions {
    *  headers, every other cell is a /TD. Ignored when the table is drawn
    *  untagged. */
   header?: CellHeader;
+  /** Boxes to place among this cell's runs — an image on a line of cell text
+   *  (`dsw8`). Image BYTES, built once here.
+   *
+   *  Distinct from {@link CellBuilder.setImage}, which is ONE picture aspect-fit
+   *  to the whole cell box and painted UNDER the text. These sit IN the text,
+   *  on its lines, and there may be several. A cell can carry both. */
+  atomics?: AtomicSpec[];
 }
 
 /** `addRow` options: the row-level text style plus row-only geometry. */
@@ -210,8 +223,9 @@ function measuringDriverFor(font: AuthoringFont): FontDriver {
  *  "how wide does this content want to be". */
 function cellExtents(
   text: string | TextRun[], st: ResolvedStyle,
+  atomics?: readonly { width: number }[],
 ): { longestLine: number; longestWord: number } {
-  return textExtents(text, st.font, st.fontSize);
+  return textExtents(text, st.font, st.fontSize, atomics);
 }
 
 /** Distribute `total` across columns from their measured content.
@@ -415,6 +429,10 @@ export class CellBuilder {
     readonly colSpan: number = 1,
     readonly rowSpan: number = 1,
     readonly header?: CellHeader,
+    /** Boxes among this cell's runs, built once by `addCell` (`dsw8`). The
+     *  SAME array reaches both the measure and the paint, which is what stops
+     *  a cell being sized against one set of pictures and drawn with another. */
+    readonly atomics?: BlockAtomic[],
   ) {}
 
   /** Embed `data` (JPEG/PNG) in this cell, aspect-fit to the cell box. Validates
@@ -475,12 +493,15 @@ export class RowBuilder {
    *  which renders the same inline vocabulary a paragraph does — mixed fonts,
    *  sizes, colours, decorations and links. */
   addCell(text: string | TextRun[] = '', opts: CellOptions = {}): CellBuilder {
-    const { colSpan = 1, rowSpan = 1, header, ...style } = opts;
+    const { colSpan = 1, rowSpan = 1, header, atomics, ...style } = opts;
     validateColSpan(colSpan);
     validateRowSpan(rowSpan);
     validateHeader(header);
     validateStyleOpts(style);
-    const c = new CellBuilder(text, style, colSpan, rowSpan, header);
+    // LAST, so a rejected cell has still built no XObject — and `resolveAtomics`
+    // itself validates every entry before building any of them.
+    const built = resolveAtomics(atomics);
+    const c = new CellBuilder(text, style, colSpan, rowSpan, header, built);
     this.cells.push(c);
     return c;
   }
@@ -583,7 +604,7 @@ export class TableBuilder {
         if (p.colSpan === 1 && p.col < n) {
           const st = resolveCellStyle(cell, row.style, this.defaults, tablePadding);
           const pad = st.padding.left + st.padding.right;
-          const { longestLine, longestWord } = cellExtents(cell.text, st);
+          const { longestLine, longestWord } = cellExtents(cell.text, st, cell.atomics);
           max[p.col] = Math.max(max[p.col], longestLine + pad);
           min[p.col] = Math.max(min[p.col], longestWord + pad);
         }
@@ -679,9 +700,15 @@ export class TableBuilder {
   /** Measure the table's natural laid-out height given resolved `columnWidths`
    *  (points). A cell spans `cell.colSpan` adjacent columns (default 1); its
    *  outer width is the sum of those columns and its text is wrapped to
-   *  `outer - (padding.left + padding.right)`. Cell height is
-   *  `max(1, lineCount) * leading + padding.top + padding.bottom`; row height is
-   *  the tallest cell, floored at the row's `minHeight`; total is the row sum.
+   *  `outer - (padding.left + padding.right)`.
+   *
+   *  Cell height is the SUM OF ITS LINE BANDS plus vertical padding — NOT
+   *  `lineCount * leading`, which is what this comment said until `dsw8` and
+   *  is worth correcting loudly: a whole issue was filed on the stale reading,
+   *  proposing to replace a height model that had already been replaced. A
+   *  band is as tall as its tallest content, so a larger run — or an inline
+   *  image (`cell.atomics`) — grows the row by itself. Row height is the
+   *  tallest cell, floored at the row's `minHeight`; total is the row sum.
    *  Padding resolves per cell through cell ?? row ?? `cellPadding` ?? table ??
    *  2pt, so it is read inside the cell loop rather than once up front. */
   measure(columnWidths: number[], opts: { cellPadding?: number } = {}): TableMetrics {
@@ -731,15 +758,25 @@ export class TableBuilder {
         }
         // Runs measure through layoutRuns, the SAME engine layoutText wraps, so
         // a cell's computed height cannot disagree with what the renderer draws.
-        const res = isTextRunList(cell.text)
-          ? layoutRuns(
-            cell.text.map((run) => ({
-              text: run.text,
-              driver: measuringDriverFor(run.font ?? st.font),
-              fontSize: run.fontSize ?? st.fontSize,
-            })),
-            innerWidth, Infinity, st.leading, st.fontSize)
-          : layoutText(cell.text, measuringDriverFor(st.font), st.fontSize, innerWidth, Infinity, st.leading);
+        // Atomics are woven in through layout.ts's `weaveByBeforeRun`, the SAME
+        // ordering stampTextBlock paints with — a second weave is how a cell
+        // comes to measure one way and draw another. A string cell weaves too:
+        // its single piece is one run, so an atomic can sit before or after it.
+        const pieces: LayoutRun[] = isTextRunList(cell.text)
+          ? cell.text.map((run) => ({
+            text: run.text,
+            driver: measuringDriverFor(run.font ?? st.font),
+            fontSize: run.fontSize ?? st.fontSize,
+          }))
+          : [{ text: cell.text, driver: measuringDriverFor(st.font), fontSize: st.fontSize }];
+        const res = cell.atomics === undefined && !isTextRunList(cell.text)
+          // No atomics and a plain string: the pre-existing path, kept so a
+          // cell that states none is byte-identical to what it measured before.
+          ? layoutText(cell.text, measuringDriverFor(st.font), st.fontSize, innerWidth, Infinity, st.leading)
+          : layoutRuns(
+            weaveByBeforeRun(pieces, cell.atomics,
+              (a) => ({ atomic: { width: a.width, height: a.height, align: a.align } })),
+            innerWidth, Infinity, st.leading, st.fontSize);
         // Sum the line bands rather than lineCount * leading: a cell run larger
         // than the cell's font size claims a taller band, and a row sized on the
         // flat product would let its glyphs spill out of the row.

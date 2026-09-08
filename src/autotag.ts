@@ -7,7 +7,7 @@ import type { TableAttributes } from './structattr.js';
 import { dominantSize, headingRanks } from './textrank.js';
 import { EditableContent } from './editcontent.js';
 import { wrapRegionOps, regionOpSpan } from './structwrite.js';
-import { name, isDict, type PdfDict, type PdfObject } from './types.js';
+import { name } from './types.js';
 import { UnsupportedFeatureError } from './errors.js';
 
 /** Options for {@link Document.AutoTag}. */
@@ -84,11 +84,10 @@ export function autoTag(doc: Document, opts: AutoTagOptions = {}): AutoTagReport
   if (opts.lang !== undefined) doc.Lang = opts.lang;
   if (opts.title !== undefined) {
     doc.SetMetadata({ title: opts.title });
-    // A title only satisfies PDF/UA when the viewer is told to show it.
-    const cat = doc.catalog();
-    let vp = doc.resolve(cat.get('ViewerPreferences'));
-    if (!isDict(vp)) { vp = new Map<string, PdfObject>(); cat.set('ViewerPreferences', vp); }
-    (vp as PdfDict).set('DisplayDocTitle', true);
+    // A title only satisfies PDF/UA when the viewer is told to show it. Through
+    // the property, which is viewerprefs.ts's one writer — this was a third
+    // hand-rolled copy of the ensure-the-dict dance until 72nc.3.
+    doc.DisplayDocTitle = true;
   }
 
   const ranks = headingRanks(doc);

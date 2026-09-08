@@ -278,6 +278,9 @@ export interface GlyphEvent {
   mcid?: number;
   /** True when this glyph was drawn inside an /Artifact marked-content scope. */
   artifact?: boolean;
+  /** Address of the innermost enclosing /Artifact BMC/BDC. `artifact` says THAT
+   *  this is decoration; this says WHICH scope declared it. */
+  artifactScope?: ContentAddr;
   /** The fill colour in force when this glyph was shown, RGB 0..255.
    *
    *  Absent when the fill is black, which is the PDF initial value — the fence
@@ -310,6 +313,8 @@ export interface ImageEvent {
   mcid?: number;
   /** True when drawn inside an /Artifact marked-content scope. */
   artifact?: boolean;
+  /** Address of the innermost enclosing /Artifact BMC/BDC. */
+  artifactScope?: ContentAddr;
 }
 
 /** A painted vector path, its subpaths flattened to page-space segments. */
@@ -324,12 +329,33 @@ export interface PathEvent {
   mcid?: number;
   /** True when this path was painted inside an /Artifact marked-content scope. */
   artifact?: boolean;
+  /** Address of the innermost enclosing /Artifact BMC/BDC. */
+  artifactScope?: ContentAddr;
+}
+
+/** An /Artifact marked-content scope opening: `/Artifact BMC` or
+ *  `/Artifact <<props>> BDC`.
+ *
+ *  Fired at the OPENING op, so it precedes every ink event inside it — and an
+ *  artifact enclosing nothing is still reported, which is the one shape a
+ *  consumer reading only ink events provably cannot see. */
+export interface ArtifactEvent {
+  /** Where the BMC/BDC op sits. Every ink event inside this scope carries an
+   *  equal `artifactScope`. */
+  addr: ContentAddr;
+  /** The property list: a BDC's inline dict, or the dict its name resolved to
+   *  through /Resources /Properties. Undefined for a bare `/Artifact BMC`. */
+  properties?: PdfDict;
+  /** The enclosing artifact scope, when this one opened inside another —
+   *  including one inherited across a Form XObject boundary. */
+  parent?: ContentAddr;
 }
 
 export interface ContentVisitor {
   glyph?(e: GlyphEvent): void;
   image?(e: ImageEvent): void;
   path?(e: PathEvent): void;
+  artifact?(e: ArtifactEvent): void;
 }
 
 const MAX_XOBJECT_DEPTH = 8;
@@ -441,7 +467,7 @@ function walkScope(
   ctx: Ctx, streams: { bytes: Uint8Array; streamIndex: number }[],
   resources: PdfDict | undefined, path: string[], baseCtm: Matrix,
   depth: number, seen: Set<PdfDict>,
-  inheritedMcid?: number, inheritedArtifact = false,
+  inheritedMcid?: number, inheritedArtifact?: ContentAddr,
   inheritedFill?: Rgb,
 ): void {
   const st = newState();
@@ -454,8 +480,8 @@ function walkScope(
   const properties = resolveDict(ctx.doc, resources?.get('Properties'));
   const mcidStack: (number | undefined)[] = [];
   let activeMcid: number | undefined = inheritedMcid;
-  const artifactStack: boolean[] = [];
-  let inArtifact = inheritedArtifact;
+  const artifactStack: (ContentAddr | undefined)[] = [];
+  let artScope: ContentAddr | undefined = inheritedArtifact;
 
   // Path construction state (page-space points).
   let lineWidth = 1;
@@ -472,7 +498,7 @@ function walkScope(
       ctx.visitor.path({
         addr, segments: segs, stroke, fill,
         lineWidth: stroke ? lineWidth * vscale(curCtm) : 0,
-        mcid: activeMcid, artifact: inArtifact || undefined,
+        mcid: activeMcid, artifact: artScope ? true : undefined, artifactScope: artScope,
       });
     subpaths = []; cur = undefined; start = undefined;
   };
@@ -565,35 +591,37 @@ function walkScope(
         case 'TD': { const [tx, ty] = nums(op.operands); st.leading = -ty; lineMove(st, tx, ty); break; }
         case 'Tm': { const m = nums(op.operands); if (m.length === 6) { st.tlm = m as Matrix; st.tm = m as Matrix; } break; }
         case 'T*': lineMove(st, 0, -st.leading); break;
-        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, inArtifact, fill); break;
-        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, inArtifact, fill); break;
-        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, inArtifact, fill); break;
+        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill); break;
+        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill); break;
+        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill); break;
         case '"': {
           st.wordSp = num(op.operands[0]); st.charSp = num(op.operands[1]);
-          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, inArtifact, fill); break;
+          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill); break;
         }
         case 'BMC':
-          mcidStack.push(activeMcid); artifactStack.push(inArtifact);
-          if (isArtifactTag(op.operands[0])) inArtifact = true;
+          mcidStack.push(activeMcid); artifactStack.push(artScope);
+          if (isArtifactTag(op.operands[0]))
+            artScope = openArtifact(ctx, addr, undefined, properties, artScope);
           break;
         case 'BDC': {
-          mcidStack.push(activeMcid); artifactStack.push(inArtifact);
-          if (isArtifactTag(op.operands[0])) inArtifact = true;
+          mcidStack.push(activeMcid); artifactStack.push(artScope);
+          if (isArtifactTag(op.operands[0]))
+            artScope = openArtifact(ctx, addr, op.operands[1], properties, artScope);
           const m = mcidFromProps(ctx.doc, properties, op.operands[1]);
           if (m !== undefined) activeMcid = m;
           break;
         }
         case 'EMC':
           if (mcidStack.length) activeMcid = mcidStack.pop();
-          if (artifactStack.length) inArtifact = artifactStack.pop()!;
+          if (artifactStack.length) artScope = artifactStack.pop();
           break;
-        case 'BI': if (op.inlineImage) emitImage(ctx, curCtm, addr, 'inline', activeMcid, inArtifact); break;
+        case 'BI': if (op.inlineImage) emitImage(ctx, curCtm, addr, 'inline', activeMcid, artScope); break;
         case 'Do': {
           const xn = op.operands[0];
           if (!isName(xn) || !xobjects) break;
           const xo = ctx.doc.resolve(xobjects.get(xn.name));
           if (!isStream(xo)) break;
-          if (isImageXObject(ctx.doc, xo.dict)) { emitImage(ctx, curCtm, addr, 'xobject', activeMcid, inArtifact, xo); break; }
+          if (isImageXObject(ctx.doc, xo.dict)) { emitImage(ctx, curCtm, addr, 'xobject', activeMcid, artScope, xo); break; }
           if (isFormXObject(ctx.doc, xo.dict) && depth < MAX_XOBJECT_DEPTH && !seen.has(xo.dict)) {
             seen.add(xo.dict);
             const mat = nums(ctx.doc.resolve(xo.dict.get('Matrix')) as PdfObject[] | undefined);
@@ -601,7 +629,7 @@ function walkScope(
             const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
             walkScope(ctx, [{ bytes: inflateStream(xo), streamIndex: 0 }],
               childRes, [...path, xn.name], childCtm, depth + 1, seen,
-              activeMcid, inArtifact, fill);
+              activeMcid, artScope, fill);
             seen.delete(xo.dict);
           }
           break;
@@ -629,7 +657,7 @@ function lineMove(st: TextState, tx: number, ty: number): void {
 }
 
 /** Emit one glyph event per code in a show string, advancing the text matrix. */
-function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artifact?: boolean, fill?: Rgb): void {
+function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb): void {
   if (!isString(strObj) || !st.font) return;
   for (const g of st.font.decodeGlyphs(strObj.bytes)) {
     const startTm = st.tm;
@@ -655,7 +683,8 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
     ctx.visitor.glyph?.({
       addr, font: st.font, quad, text: g.text,
       fontSize: size, angle, elementIndex, byteStart: g.byteStart, byteLen: g.byteLen, advance, mcid,
-      artifact: artifact || undefined,
+      artifact: artScope ? true : undefined,
+      artifactScope: artScope,
       vertical: g.vertical ? true : undefined,
       color: fill,
     });
@@ -663,10 +692,10 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
 }
 
 /** Handle a TJ array: strings emit glyphs, numbers shift the text matrix. */
-function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artifact?: boolean, fill?: Rgb): void {
+function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb): void {
   if (!isArray(arrObj) || !st.font) return;
   arrObj.forEach((el, idx) => {
-    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artifact, fill);
+    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, st.fontSize, st.hscale, st.font!.wmode === 1);
       st.tm = mul(translate(dx, dy), st.tm);
@@ -675,9 +704,12 @@ function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix,
 }
 
 /** Emit an image-placement event for the unit square under the current CTM. */
-function emitImage(ctx: Ctx, ctm: Matrix, addr: ContentAddr, kind: 'xobject' | 'inline', mcid?: number, artifact?: boolean, stream?: PdfStream): void {
+function emitImage(ctx: Ctx, ctm: Matrix, addr: ContentAddr, kind: 'xobject' | 'inline', mcid?: number, artScope?: ContentAddr, stream?: PdfStream): void {
   if (!ctx.visitor.image) return;
-  ctx.visitor.image({ addr, quad: bboxOfUnitSquare(ctm), ctm, kind, stream, mcid, artifact: artifact || undefined });
+  ctx.visitor.image({
+    addr, quad: bboxOfUnitSquare(ctm), ctm, kind, stream, mcid,
+    artifact: artScope ? true : undefined, artifactScope: artScope,
+  });
 }
 
 function bboxOfUnitSquare(ctm: Matrix): [number, number, number, number] {
@@ -1101,6 +1133,25 @@ function mcidFromProps(doc: Document, properties: PdfDict | undefined, operand: 
   const m = doc.resolve(dict.get('MCID'));
   return typeof m === 'number' ? m : undefined;
 }
+/** Open an /Artifact scope: report it, and hand back its address as the scope
+ *  every op until the matching EMC belongs to.
+ *
+ *  The property list is resolved by the same rule `mcidFromProps` applies — an
+ *  inline dict, or a name through /Resources /Properties — so the BDC operand
+ *  has one grammar here rather than two. */
+function openArtifact(
+  ctx: Ctx, addr: ContentAddr, operand: PdfObject | undefined,
+  properties: PdfDict | undefined, parent: ContentAddr | undefined,
+): ContentAddr {
+  if (ctx.visitor.artifact) {
+    let d: PdfObject | undefined = operand;
+    if (isName(operand)) d = properties?.get(operand.name);
+    const dict = ctx.doc.resolve(d);
+    ctx.visitor.artifact({ addr, properties: isDict(dict) ? dict : undefined, parent });
+  }
+  return addr;
+}
+
 /** True when a BMC/BDC tag operand is the /Artifact tag. */
 function isArtifactTag(operand: PdfObject | undefined): boolean {
   return isName(operand) && operand.name === 'Artifact';

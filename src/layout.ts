@@ -54,6 +54,41 @@ export interface AtomicLayoutRun { atomic: AtomicBox }
 
 export type LayoutRun = TextLayoutRun | AtomicLayoutRun;
 
+/**
+ * Runs and atomics interleaved into ONE list, in document order: every atomic
+ * whose `beforeRun` is `i` comes before run `i`, and `runs.length` places one
+ * at the end.
+ *
+ * **Invariant, and it is the whole reason this is a shared function rather
+ * than ten lines written twice:** the ORDER is one rule. `stamp.ts` weaves to
+ * paint a block and `tableauthor.ts` weaves to measure a cell, and a second
+ * copy is how a cell comes to measure one way and paint another — the failure
+ * the one-wrapping-engine rule exists to prevent. It lives here because
+ * `layout.ts` is the leaf both reach.
+ *
+ * Generic over the element, because the two callers weave different things —
+ * `stamp.ts` a `ResolvedRun` carrying font and colour, `tableauthor.ts` a bare
+ * `LayoutRun`. `make` receives the index the atomic lands at, which is what
+ * lets a caller record a woven-index map without a second walk.
+ *
+ * With no atomics it returns `runs` UNCHANGED — the same array, not a copy —
+ * which is what keeps every existing caller's bytes identical.
+ */
+export function weaveByBeforeRun<R, A extends { beforeRun: number }>(
+  runs: R[], atomics: readonly A[] | undefined, make: (a: A, wovenIndex: number) => R,
+): R[] {
+  if (atomics === undefined || atomics.length === 0) return runs;
+  const woven: R[] = [];
+  const at = (i: number): void => {
+    for (const a of atomics) {
+      if (a.beforeRun === i) woven.push(make(a, woven.length));
+    }
+  };
+  for (let i = 0; i < runs.length; i++) { at(i); woven.push(runs[i] as R); }
+  at(runs.length);
+  return woven;
+}
+
 export function isAtomicRun(r: LayoutRun): r is AtomicLayoutRun {
   return (r as AtomicLayoutRun).atomic !== undefined;
 }

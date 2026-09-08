@@ -10,6 +10,9 @@ import { measureText, stampText, stampTextBlock, StampOptions, TextBlockOptions,
 import { isTextRunList, type TextRun } from './textdecor.js';
 import { PageGraphics } from './graphics.js';
 import { PageFormat } from './pageformat.js';
+import {
+  readTransition, readDuration, setTransition, setDuration, type PageTransition,
+} from './pagetransition.js';
 import { renderPageToSvg, SvgOptions } from './svgrender.js';
 import { renderPageToHtml, HtmlOptions } from './html.js';
 import { renderPageToDocx, type DocxOptions } from './docxexport.js';
@@ -32,6 +35,7 @@ import { stampWith, StampWithOptions, resizePage, scalePage, ResizeOptions } fro
 import type { Rect } from './text.js';
 import { extractTables, type Table, type TableExtractOptions } from './table.js';
 import { extractPaths, type PagePath } from './paths.js';
+import { extractArtifacts, type PageArtifact } from './artifact.js';
 import {
   Annotation, wrapAnnotation, addTextNote, TextAnnotation, TextNoteOptions,
   addStamp, StampAnnotation, StampAnnotationOptions,
@@ -192,6 +196,44 @@ export class Page {
   set Rotate(deg: number) {
     this.Dict.set('Rotate', ((Math.trunc(deg) % 360) + 360) % 360);
     this.doc.markModified();
+  }
+
+  /** The page's /Trans transition dictionary, or undefined when it states none
+   *  (32000-1 Table 165) — what a viewer plays on arriving at this page in a
+   *  presentation. A present but empty dict reads as `{}`.
+   *
+   *  Not inherited: /Trans is not an inheritable page attribute, unlike the
+   *  {@link Rotate} and {@link Resources} beside it. */
+  get Transition(): PageTransition | undefined {
+    return readTransition(this.doc, this.Dict);
+  }
+
+  /** Replace the page's /Trans WHOLLY; `null` or `undefined` deletes it.
+   *
+   *  Whole-value rather than `SetViewerPreferences`' merge, because the
+   *  dictionary is a UNIT — a style plus that style's parameters — and merging
+   *  would leave a stale /SS, or a Glitter-only 315, beside a newly-set style.
+   *
+   *  Throws TypeError for the wrong kind of value and RangeError for one
+   *  outside its allowed set, validating the whole object before writing
+   *  anything, so a rejected assignment leaves the page byte-identical. */
+  set Transition(t: PageTransition | null | undefined) {
+    setTransition(this.doc, this.Dict, t);
+  }
+
+  /** The page's /Dur — how long it is displayed before advancing in a
+   *  presentation, in seconds — or undefined when it states none.
+   *
+   *  Distinct from {@link PageTransition.duration} (/D), which is how long the
+   *  transition EFFECT runs. Not inherited. */
+  get Duration(): number | undefined {
+    return readDuration(this.doc, this.Dict);
+  }
+
+  /** Write the page's /Dur; `null` or `undefined` deletes it. Throws TypeError
+   *  for a value that is not a finite number and RangeError for a negative one. */
+  set Duration(seconds: number | null | undefined) {
+    setDuration(this.doc, this.Dict, seconds);
   }
 
   /** The page's resource dictionary, or undefined when absent; inherited. */
@@ -407,6 +449,22 @@ export class Page {
    *  `InlineImageInfo.Remove`. */
   get InlineImages(): InlineImageInfo[] {
     return collectInlineImages(this.doc, this);
+  }
+
+  /** The `/Artifact` marked-content scopes the page declares — decoration
+   *  (running heads, rules, backgrounds) that carries no meaning and that a
+   *  screen reader skips.
+   *
+   *  Each entry reports what the artifact says about itself — `/Type`,
+   *  `/Subtype`, `/Attached`, `/BBox` — and, where it declares no `/BBox`,
+   *  the measured extent of the ink it encloses. Most artifacts declare
+   *  nothing: a bare `/Artifact BMC` is what this library writes and what most
+   *  producers write, so `bboxSource` says which of the two `bbox` is.
+   *
+   *  Nested scopes are reported one entry each, the inner naming the outer as
+   *  its `parent`. Descends into Form XObjects. Read-only. */
+  get Artifacts(): PageArtifact[] {
+    return extractArtifacts(this.doc, this);
   }
 
   /** Extract visible text from the page with reasonable word/line ordering.

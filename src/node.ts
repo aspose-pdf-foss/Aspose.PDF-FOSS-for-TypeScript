@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Document, SplitOptions } from './document.js';
 import { Metadata, MetadataUpdate } from './metadata.js';
 import { ImageOptions } from './raster.js';
+import { imageExtension, imageKey, type SaveImageOptions } from './imagehref.js';
 import type { ExportFormDataOptions, ImportOptions, ImportReport } from './formdata.js';
 import type { MarkdownExportOptions } from './mdexport.js';
 import type { DocxOptions } from './docxexport.js';
@@ -39,6 +40,82 @@ export async function savePageImageFile(
   const doc = Document.Open(input);
   const png = doc.Pages[pageIndex].ToImage(options);
   await writeFile(outPath, png);
+}
+
+/** How {@link saveImagesFile} encodes what it writes: {@link ImageInfo.Save}'s
+ *  options, forwarded verbatim, so this module invents no image vocabulary of
+ *  its own. */
+export type SaveImagesOptions = SaveImageOptions;
+
+/** One image the extraction could not write, and why. */
+export interface SkippedImage {
+  /** 0-based index of the page whose resources reached it. */
+  page: number;
+  /** Its resource key on that page, e.g. `Im0`. Unique within one resource
+   *  dictionary, which is why it names an image here rather than a file. */
+  name: string;
+  /** What went wrong, from the encoder. */
+  reason: string;
+}
+
+/** Read a PDF from disk and write every image it embeds into `outDir` as a
+ *  file, returning the paths written and the images that could not be.
+ *
+ *  Names are `img-1`, `img-2`, … in document order, and **the extension always
+ *  comes from the media type the encoder reports, never from the source image**
+ *  — that one step is what the wrapper exists to get right, since JPEG bytes
+ *  written under `.png` give a file no viewer opens. Encoding is
+ *  {@link ImageInfo.Save}'s: faithful by default, so an unmasked `DCTDecode`
+ *  is extracted byte for byte with no generation loss; pass `format` to force
+ *  one.
+ *
+ *  **One file per DISTINCT picture.** Identity is a hash of the encoded bytes
+ *  ({@link imageKey}), not the stream object, so a logo drawn on forty pages —
+ *  or a merged document holding forty copies of it — is written once. This is
+ *  the rule the Markdown and `.docx` exports already use for the same reason.
+ *
+ *  A picture that will not encode costs ITSELF and not the run: it lands in
+ *  `skipped` and its neighbours are still written, which is `encodeImage`'s
+ *  posture rather than `ImageInfo.Save`'s — a caller asking about ONE image
+ *  wants to be told, and a caller asking for all of them wants the other 199.
+ *  A document with no images is not a failure: it returns two empty arrays and
+ *  an empty directory, which is a true answer.
+ *
+ *  **Inline `BI … EI` images are out of reach**, not silently missed:
+ *  `page.Images` structurally never sees one, since an inline image occupies
+ *  no `/XObject` entry, and `InlineImageInfo` has no `Save`. */
+export async function saveImagesFile(
+  inputPath: string,
+  outDir: string,
+  options?: SaveImagesOptions,
+): Promise<{ written: string[]; skipped: SkippedImage[] }> {
+  const input = new Uint8Array(await readFile(inputPath));
+  const doc = Document.Open(input);
+  await mkdir(outDir, { recursive: true });
+
+  const seen = new Set<string>();
+  const written: string[] = [];
+  const skipped: SkippedImage[] = [];
+
+  const pages = doc.Pages;
+  for (let i = 0; i < pages.length; i++) {
+    for (const image of pages[i].Images) {
+      let enc;
+      try {
+        enc = image.Save(options);
+      } catch (e) {
+        skipped.push({ page: i, name: image.Name, reason: (e as Error).message });
+        continue;
+      }
+      const key = imageKey(enc.bytes);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const p = join(outDir, `img-${written.length + 1}.${imageExtension(enc.mediaType)}`);
+      await writeFile(p, enc.bytes);
+      written.push(p);
+    }
+  }
+  return { written, skipped };
 }
 
 /** Read a PDF from disk, export it to Markdown, and write it to `outPath`.

@@ -41,7 +41,7 @@ function chunk(type: string, data: number[]): number[] {
 
 /** Build an 8-bit PNG. colorType: 0 gray, 2 RGB, 3 palette, 6 RGBA.
  *  `rows` is the unfiltered sample data, one number per byte, row-major. */
-function buildPng(
+export function buildPng(
   width: number, height: number, colorType: 0 | 2 | 3 | 6,
   rows: number[], opts: { palette?: number[]; trns?: number[] } = {},
 ): Uint8Array {

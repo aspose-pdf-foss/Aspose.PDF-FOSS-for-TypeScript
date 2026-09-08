@@ -65,8 +65,11 @@ export function infoString(ctx: XCtx, key: string): string | undefined {
 
 /** The pdfxid:GTS_PDFXVersion value carried by an XMP packet, if any. */
 function xmpVersion(xmp: string): string | undefined {
-  const m = /pdfxid:GTS_PDFXVersion\s*=\s*["']([^"']+)["']/.exec(xmp)
-    ?? /<pdfxid:GTS_PDFXVersion>\s*([^<]+?)\s*<\/pdfxid:GTS_PDFXVersion>/.exec(xmp);
+  // `*` rather than `+` (ugxr): an empty declaration is a present property with
+  // an invalid value, so it is reported as the wrong version rather than read
+  // as no identification at all.
+  const m = /pdfxid:GTS_PDFXVersion\s*=\s*["']([^"']*)["']/.exec(xmp)
+    ?? /<pdfxid:GTS_PDFXVersion>\s*([^<]*?)\s*<\/pdfxid:GTS_PDFXVersion>/.exec(xmp);
   return m?.[1].trim();
 }
 

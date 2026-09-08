@@ -1,6 +1,6 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { stampTextBlock } from './stamp.js';
+import { stampTextBlock, type BlockAtomic } from './stamp.js';
 import { isTextRunList, type TextRun } from './textdecor.js';
 import { PageGraphics } from './graphics.js';
 import { drawBuiltImage } from './imageembed.js';
@@ -74,6 +74,9 @@ export interface AddTableResult {
 interface Placed {
   x: number; bottom: number; w: number; h: number;
   text: string | TextRun[]; style: ResolvedStyle;
+  /** Boxes among this cell's runs, built by addCell (dsw8). The SAME array
+   *  the measure sized the row against. */
+  atomics?: BlockAtomic[];
   image?: { built: BuiltImage; width: number; height: number; opts: CellImageOptions };
   /** The /TD or /TH this cell's text is tagged into. Tagged mode only. */
   struct?: StructElement;
@@ -159,7 +162,7 @@ function placeRows(
         x: columnX[p.col], bottom: rowTop - cellH, w: cellW, h: cellH,
         text: cell.text,
         style: resolveCellStyle(cell, row.style, table.defaults, tablePadding),
-        image: cell.image, struct, figure,
+        image: cell.image, atomics: cell.atomics, struct, figure,
       });
     }
     rowTop = rowBottom;
@@ -232,6 +235,7 @@ function paintPlaced(
       color: p.style.color, align: p.style.align, valign: p.style.valign,
       underline: p.style.underline, strikethrough: p.style.strikethrough,
       background: p.style.textBackground, tag: p.struct,
+      atomics: p.atomics,
     };
     // Two identical arms: TypeScript resolves an overloaded call by picking one
     // signature, and a `string | TextRun[]` argument matches neither. The same

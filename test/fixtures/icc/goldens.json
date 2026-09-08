@@ -4,6 +4,7 @@
   "source": "Windows Color System (mscms.dll) via scripts/gen-icc-goldens.ps1",
   "sourceProfile": "sRGB Color Space Profile.icm (Windows)",
   "intent": 0,
+  "note": "affine B2A CLUT, grid 2 — the exact comparison",
   "samples": [
     {
       "rgb": [

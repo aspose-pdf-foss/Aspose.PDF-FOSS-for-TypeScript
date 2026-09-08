@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { parseIccProfile, iccTag } from '../src/icc.js';
-import { readLutTag, evalLut } from '../src/icclut.js';
+import { readLutTag, evalLut, type IccLut } from '../src/icclut.js';
 import { PdfParseError } from '../src/errors.js';
 
 const fixture = (): Uint8Array =>
@@ -110,8 +110,9 @@ describe('evalLut', () => {
   });
 
   // The affine rule evaluated between corners. With an affine CLUT this is
-  // exact under trilinear interpolation — which is the whole reason the
-  // fixture is affine.
+  // exact under EVERY interpolation method, since every one of them
+  // reproduces an affine function — which is the whole reason the fixture is
+  // affine, and why these cases held unedited when the method changed.
   it('interpolates between corners', () => {
     const out = evalLut(lut, [0.5, 0.25, 0.75]);
     expect(out[0]).toBeCloseTo(0.10 + 0.40 * 0.5, 4);
@@ -137,5 +138,132 @@ describe('evalLut', () => {
 
   it('refuses a wrong number of inputs', () => {
     expect(() => evalLut(lut, [0, 0])).toThrow(RangeError);
+  });
+});
+
+/**
+ * How the CLUT is interpolated (`m3gs`): TETRAHEDRALLY for three inputs,
+ * MULTILINEARLY otherwise.
+ *
+ * Driven from hand-built LUTs rather than the fixture, so every expectation
+ * is arithmetic anyone can check on paper. The end-to-end evidence that
+ * tetrahedral is the RIGHT choice is `test/icc-goldens.test.ts`'s curved
+ * profile, where a reference CMS is the judge.
+ */
+describe('evalLut CLUT interpolation', () => {
+  /** A LUT whose curves are the identity, so only the CLUT is under test. */
+  const build = (
+    inputChannels: number, outputChannels: number, grid: number, clut: number[],
+  ): IccLut => ({
+    inputChannels,
+    outputChannels,
+    grid,
+    matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    inputTables: Array.from({ length: inputChannels },
+      () => Float64Array.from([0, 1])),
+    clut: Float64Array.from(clut),
+    outputTables: Array.from({ length: outputChannels },
+      () => Float64Array.from([0, 1])),
+  });
+
+  // The PURE TRIPLE PRODUCT i*j*k: zero at seven corners, one at (1,1,1).
+  // It is the term multilinear interpolation carries and tetrahedral does
+  // not, so it separates the two as sharply as a CLUT can.
+  const triple = build(3, 1, 2, [0, 0, 0, 0, 0, 0, 0, 1]);
+
+  it('reproduces every corner of the cell exactly', () => {
+    for (const [i, j, k] of [
+      [0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
+      [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1],
+    ]) {
+      expect(evalLut(triple, [i, j, k])[0]).toBeCloseTo(i * j * k, 10);
+    }
+  });
+
+  /**
+   * The cell centre is where the two methods disagree most. Multilinear
+   * averages all eight corners and gives 1/8; tetrahedral reads only the four
+   * corners of the tetrahedron holding the point — here `000`, `100`, `110`,
+   * `111` — and gives 1/2.
+   *
+   * Asserting BOTH numbers is the point: `not.toBeCloseTo(0.125)` alone would
+   * pass for any wrong answer at all.
+   */
+  it('interpolates a 3-input CLUT tetrahedrally, not multilinearly', () => {
+    expect(evalLut(triple, [0.5, 0.5, 0.5])[0]).toBeCloseTo(0.5, 10);
+    expect(evalLut(triple, [0.5, 0.5, 0.5])[0]).not.toBeCloseTo(0.125, 3);
+  });
+
+  /**
+   * Which tetrahedron holds the point is decided by the ORDER of the three
+   * fractions, so permuting them routes through different branches. For THIS
+   * CLUT every branch reduces to `min(f0, f1, f2)` — which is what makes the
+   * case discriminating rather than uniform: a build stuck in one branch
+   * answers with a FIXED fraction instead. Hardcode the `f0 >= f1 >= f2` arm
+   * and the second and fifth lines below return 0.6 and 0.9.
+   */
+  it('selects the tetrahedron from the order of the fractions', () => {
+    const at = (a: number, b: number, c: number): number =>
+      evalLut(triple, [a, b, c])[0] as number;
+    expect(at(0.6, 0.5, 0.4)).toBeCloseTo(0.4, 10);   // f0 >= f1 >= f2
+    expect(at(0.4, 0.5, 0.6)).toBeCloseTo(0.4, 10);   // f2 >= f1 >  f0
+    expect(at(0.5, 0.6, 0.4)).toBeCloseTo(0.4, 10);   // f1 >  f0 >  f2
+    expect(at(0.9, 0.5, 0.1)).toBeCloseTo(0.1, 10);   // f0 >= f1 >= f2
+    expect(at(0.1, 0.5, 0.9)).toBeCloseTo(0.1, 10);   // f2 >= f1 >  f0
+  });
+
+  /**
+   * An AFFINE CLUT is where the two methods agree exactly, and that is not a
+   * curiosity — it is why `synthetic-cmyk.icc`'s 29 goldens held unedited
+   * through the switch, and why a second curved fixture had to be authored
+   * before the method could be changed at all.
+   */
+  it('agrees with the multilinear answer on an affine CLUT', () => {
+    // C = 0.1 + 0.4*i + 0.2*j + 0.1*k — no cross terms, so both methods are
+    // exact and the expectation is the formula itself.
+    const affine = build(3, 1, 2, [
+      0.1, 0.2, 0.3, 0.4,   // i = 0: (j,k) = 00, 01, 10, 11
+      0.5, 0.6, 0.7, 0.8,   // i = 1
+    ]);
+    for (const [a, b, c] of [
+      [0.5, 0.5, 0.5], [0.25, 0.75, 0.5], [0.9, 0.1, 0.3], [0.33, 0.66, 0.99],
+    ]) {
+      expect(evalLut(affine, [a, b, c])[0])
+        .toBeCloseTo(0.1 + 0.4 * a + 0.2 * b + 0.1 * c, 10);
+    }
+  });
+
+  /**
+   * Four inputs keep the multilinear walk. A tetrahedral decomposition is a
+   * property of the CUBE, so there is no 4-input counterpart — which is why
+   * the dispatch is on the input count rather than on a flag.
+   */
+  it('interpolates a 4-input CLUT multilinearly', () => {
+    const quad = build(4, 1, 2, [...Array.from({ length: 15 }, () => 0), 1]);
+    expect(evalLut(quad, [0.5, 0.5, 0.5, 0.5])[0]).toBeCloseTo(1 / 16, 10);
+  });
+
+  /**
+   * Which CELL the point falls in, which grid 2 provably cannot test: there
+   * the origin is always 0, so `Math.min(Math.floor(q), grid - 2)` is
+   * unreachable arithmetic. The curved fixture is grid 3 for this reason too.
+   */
+  it('picks the enclosing cell on a grid larger than 2', () => {
+    // Depends on the first axis alone, with a KINK at the middle grid point:
+    // 0, 0.25, 1. A build stuck in cell 0 reads the 0 -> 0.25 slope
+    // throughout and answers 0.375 where 0.625 is right.
+    const kink = [0, 0.25, 1];
+    const clut: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) {
+        clut.push(kink[i] as number);
+      }
+    }
+    const lut = build(3, 1, 3, clut);
+    expect(evalLut(lut, [0.75, 0, 0])[0]).toBeCloseTo(0.625, 10);
+    expect(evalLut(lut, [0.25, 0, 0])[0]).toBeCloseTo(0.125, 10);
+    // The top of the range stays inside the LAST cell rather than running
+    // off the end of the CLUT.
+    expect(evalLut(lut, [1, 0, 0])[0]).toBeCloseTo(1, 10);
   });
 });

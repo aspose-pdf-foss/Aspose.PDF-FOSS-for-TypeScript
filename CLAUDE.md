@@ -111,8 +111,10 @@ npm run gen:cidunicode # cidunidata.ts   — CID->Unicode, mapping-resources-pdf
 `npm run example:showcase` builds the feature-showcase document under
 `examples/feature-showcase/`; the remaining `scripts/gen-*` entries
 regenerate committed test fixtures (the corrupt files, the JPX and JBIG2
-streams, the SVG inputs, the headless-Chrome SVG and filter goldens) and are
-likewise never run by the suite — it reads what they produced.
+streams, the SVG inputs, the headless-Chrome SVG and filter goldens, the
+WCS ICC goldens, and `gen:dfont`'s FontForge-written Macintosh suitcase) and
+are likewise never run by the suite — it reads what they produced. Each needs
+a tool that is NOT a dependency: headless Chrome, `mscms.dll`, FontForge.
 
 **Note, and do NOT "fix" it back:** `.gitignore` deliberately carries **no**
 rule for `examples/feature-showcase/.reference/`. That directory was a fetched
@@ -292,6 +294,26 @@ Source (`src/`):
 - **extractor.ts** — single-page / object-graph extraction with a `PrunePolicy`.
 - **serializer.ts**, **serialize.ts** — output: classic xref table (default) and
   compressed (cross-reference stream + `/ObjStm`) via `Save({ compressed: true })`.
+  **Invariant (`909q`):** the `%PDF-x.y` header is `headerVersion()`'s answer —
+  the catalog `/Version`, else 1.7 — in EVERY write path, the sign-on-save one
+  included. It is threaded as a `ver` parameter rather than read inside each
+  writer, because `serializeSignedDocument` and `serializeDocument` are separate
+  entry points over the same five writers. `serializeClassicSigned` hardcoded
+  `'%PDF-1.7'` until `909q`, so signing silently overwrote the document's own
+  declared version. **Note which flow makes that reachable, since a hardcoded
+  header sounds harmless:** `choosePath()` takes the full rewrite whenever the
+  document is `modified`, and every `ConvertToPdfA` calls `markModified()` — so
+  convert-then-sign is exactly the path that lands there, and it breached the
+  version rule the conversion had just satisfied, in both directions (PDF/A-4
+  demands 2.n, PDF/A-1 forbids anything above 1.4).
+  **Invariant:** the header is inside the SIGNED byte range, so the version is
+  chosen where the placeholder is laid out and never patched afterwards —
+  patching it would move the digest out from under `/ByteRange`.
+  **Note the deliberate asymmetry:** the INCREMENTAL signing path
+  (`incremental.ts`) emits no header at all and must not, since an append may
+  not rewrite a byte of its base — including a header that disagrees with the
+  catalog. `test/sign-header-version.test.ts` asserts that from the other side,
+  as a byte-identical prefix.
 - **incrementaldelta.ts** — what an incremental update must write, relative to
   the document as opened: `diffObjects(baseline, live)` returning `replaced`,
   `added` and `freed` object numbers. A pure leaf over `types.js` and
@@ -360,6 +382,33 @@ Source (`src/`):
   **Note, measured:** widening this moved NO existing test. No fixture in the
   suite wrapped an image draw in a `gs` or a clip, which is why the bug
   survived — do not read the green suite as having covered redaction here.
+- **imagedecode.ts** — stream-level image decoding: which codec an image
+  XObject uses (`filterName`) and its decoded samples (`decodeImageStream`),
+  moved VERBATIM out of `image.ts` by `72nc.5`. `ImageInfo.Filter` and
+  `.Decode()` delegate here and are otherwise unchanged.
+  **Invariant, and it is the whole reason the module exists:** it is a LEAF and
+  must NOT import `image.js`. `ImageInfo.Save` delegates to `imagehref.ts`,
+  while `imagehref.ts` and `imagergba.ts` each used to construct a throwaway
+  `ImageInfo` purely to reach `.Width`/`.Filter`/`.Decode()` — so that method
+  would have closed the codebase's FIRST import cycle, through two modules.
+  **Measured, and it is why this was worth doing rather than shrugging at:** a
+  sweep over every module in `src/` finds ZERO value-import 2-cycles, so one
+  here would have been a genuine first rather than a style quibble, and
+  `imageedit.ts`'s own invariant already records avoiding exactly this shape.
+  The sweep is worth re-running before adding any edge back toward a facade:
+
+  ```bash
+  node -e 'const fs=require("fs");const f=fs.readdirSync("src").filter(x=>x.endsWith(".ts"));
+  const m={};for(const a of f){const s=fs.readFileSync("src/"+a,"utf8");const t=new Set();
+  for(const x of s.matchAll(/^import\s+(?!type\s)[\s\S]*?from\s+"\.\/([a-z0-9]+)\.js"/gm))t.add(x[1]+".ts");m[a]=t;}
+  for(const a of f)for(const b of m[a])if(m[b]?.has(a)&&a<b)console.log("CYCLE",a,b);'
+  ```
+
+  **Note:** it is the same extraction `colornames.ts`, `preformat.ts`,
+  `bordersides.ts`, `resprune.ts` and `datauri.ts` each already made — two
+  consumers that must not reach each other through a third — and like those it
+  keeps the ORIGINAL import path working, since `ImageInfo` still answers
+  `.Decode()`.
 - **imageedit.ts** — editing an embedded image in place, behind
   `ImageInfo.Replace` and `ImageInfo.Remove`. Object-graph and content-stream
   work only; no decoding.
@@ -688,6 +737,30 @@ Source (`src/`):
   the active floats exclude, where those bands end, and where a new box may go.
   It knows nothing about PDF or drawing, so the geometry that is silently wrong
   when reversed is testable without building a file.
+  **Invariant (`092q`):** `FlowListItem.atomics` is PER ITEM, because
+  `beforeRun` indexes that item's own run list and nothing else. It cannot ride
+  `bodyOptions`, which is keyed on the LIST — so `ListItemElement.bodyOpts()`
+  is the single definition that keeps `measure` and `place` from drifting, for
+  the same reason `bodyOptions` itself is one. **Measured load-bearing:** with
+  a 20pt image inside an already-taller band the two agree whatever the code
+  does, so the mutation reddened NOTHING until `test/flow-atomics.test.ts`
+  grew a 60pt image in a 12pt block — the case where the line band genuinely
+  has to grow.
+  **Invariant (`092q`), and it is the same trap `TextElement` records:** a
+  continuation is handed `remainderAtomics`, re-based onto the sliced run list
+  by `sliceContent`, NEVER `this.atomics`. **Measured, and the fixture shape is
+  load-bearing three ways:** it needs MANY STYLED RUNS EARLY so the first
+  column consumes whole runs and the remainder's list is genuinely shorter (a
+  single-run item cannot discriminate — `beforeRun` is the same small number
+  either way), and the image must sit MID-TAIL with words after it, since an
+  overshooting index lands a TRAILING image where it belonged anyway. Got
+  right, the picture VANISHES under the mutation — zero draws across both
+  pages.
+  **Invariant (`092q`):** an item that is NOTHING but an image draws. Its run
+  list is EMPTY, so the emptiness test is `drawsNothing()` — text empty AND no
+  atomics — not `isEmptyFlowText` alone; read the latter way such an item gets
+  no `/LI` and no `/LBody`, and since the marker is drawn only once the body
+  has painted, no bullet either.
   Note the two placements are different features on one box: `AddFloatBox` is a
   *side* float (narrows the channel, needs floatstack's band bookkeeping),
   `AddFloatingBox` is *in-flow* (consumes the band outright, excludes nothing,
@@ -976,11 +1049,63 @@ Source (`src/`):
   string path; setting the block's own font on every run would restate it
   needlessly and move bytes.
   **Invariant:** a construct that does not render names itself in `skipped` and
-  still contributes its text where it has any — a table, raw HTML, an inline or
+  still contributes its text where it has any — a table, raw HTML, an
   unresolvable image. Visible content beats a silently dropped subtree, the rule
   `svgdraw.ts` already sets. `MdList.tight` is the one mapping input no HTML
   oracle can see, which is why the loose-versus-tight spacing is asserted on
   rendered heights.
+  **Invariant (`z77w`), and it REVERSES what that list used to say:** an image
+  AMONG WORDS is DRAWN, as a `FlowAtomic` on the line, where it used to be
+  reported and flattened to its alt text. A LONE image in its own paragraph
+  still takes the block-figure path — `loneImage` is untouched, exactly as
+  `cssflow.ts` keeps its own lone path — so the two shapes stay different
+  features rather than one.
+  **Invariant:** the resolver is INJECTED (`RunContext.atomic`), the seam
+  `cssinline.ts` takes for `resolveFamily`: resolving a destination needs the
+  caller's `resolveImage`, and `mdruns.ts` must stay a pure leaf. It is asked
+  exactly ONCE per image, which is why the fall-back-to-alt-text decision is
+  made INSIDE the walk rather than by re-resolving afterwards — a descriptor
+  emitted first and resolved later cannot splice the alt text back at the
+  right run index without shifting every later `beforeRun`.
+  **Invariant, and it is the rule that renders WRONGLY rather than failing:**
+  an atomic is a MERGE BARRIER. It records the run index it sits BEFORE, so
+  `push` drops its `lastKey` after one — let `a` and `b` in `a![](x)b` merge
+  into a single run and the image claims to precede index 0, moving the
+  picture to the front of the line, and precisely when the two texts are
+  identically styled. `cssinline.ts` records the same rule.
+  **Invariant:** the atomics channel is a property of the CALLER, not a rule
+  repeated in `mdruns.ts` — and since `dsw8` EVERY block that can hold inline
+  text passes a resolver: a paragraph, a heading, a list item and a table
+  cell. `mdruns.ts` itself never changed across the three issues, which is
+  what that invariant buys.
+  **Note, and it is the sharpest instance in this repo of a STALE DOC COMMENT
+  costing real work:** `dsw8` was filed asserting a cell's height was
+  `max(1, lineCount) * leading`, a model that could not express a line an
+  image made taller, and scoped as a replacement of the table height model.
+  That was `measure`'s own doc comment; the CODE had already been summing
+  per-line BANDS out of `layoutRuns`. The real change was plumbing, and the
+  comment is now corrected in place. Read the code before believing a comment
+  about the code.
+  **Note:** an image in an item's leading paragraph is an ATOMIC on the item's
+  line and is NOT lifted to a block figure the way a top-level paragraph's
+  lone image is — a figure fills the column width, which inside a list item
+  would tower over the marker beside it. An image in one of the item's FURTHER
+  blocks needs nothing special: those go through `blockElements` and so
+  through `paragraphElements`.
+  **Invariant:** an inline image draws at **0.75pt per intrinsic PIXEL**, the
+  96-dpi convention, so `![a](x)` and the `<img src=x>` `AddHtml` renders come
+  out the same size. **Note this is NOT `cssflow.ts`'s CSS px → pt rule**,
+  whose "here and nowhere else" is about the CSS px UNIT: Markdown has no CSS,
+  and what converts here is an image's own pixel count — which `docxflow.ts`
+  already reads the same way. Two rules sharing a constant are not one rule.
+  A BLOCK figure is deliberately different and unchanged, `ImageElement`
+  defaulting its width to the whole region.
+  **Note, measured, and it covers NOTHING:** narrowing an empty atomics list
+  to `undefined` before handing it to `paragraph()` is COSMETIC. Verified on
+  emitted page bytes rather than inferred — `resolveAtomics([])` allocates no
+  XObject and weaves nothing, so the two hash identically and the mutation
+  reddens not one case. Retained as the clearer statement; do not cite the
+  green suite as covering it.
   **Invariant:** a link's destination is part of its run identity. `stateKey`
   folds the URI in, so `[a](x)[b](y)` stays two runs — merge them and the first
   destination is lost and the whole phrase points at the second, which renders
@@ -2737,11 +2862,51 @@ Source (`src/`):
   back, and a document that looks fine and is broken is worse than a refused
   call. `ToMarkdownAssets` is the entry that returns them, and `ToMarkdown` is a
   thin wrapper over the same render so the two cannot drift.
+  **Invariant (`72nc.8`):** `imageKey` is the ONE owner of "are these two
+  images the same" — a sha256 of the ENCODED BYTES, never the `PdfStream`
+  object, since a merged document holds distinct stream objects with identical
+  content. It lives here, beside `encodeImage` that produces an encoded image
+  and `imageExtension` that names one. **Note what forced the extraction:**
+  `mdexport.ts` and `docxexport.ts` had each written the same three lines out,
+  and docxexport.ts's own comment already claimed the rule was "mdexport.ts's
+  rule, reused rather than re-derived" — which it was not. `node.ts`'s image
+  extractor would have been the third copy. Measured: neutering `imageKey`
+  reddens all three consumers.
   **Invariant:** `imagehref.ts` has one decoder. `encodeImage` returns bytes plus
   a media type — which is what tells the external path its extension, a `.png`
   holding JPEG bytes being a file no viewer opens — and `imageHref` is the base64
   wrapper over it, so the inline and external paths cannot disagree about what an
   image is.
+  **Invariant (`72nc.5`):** `ImageInfo.Save` is that SAME encoder, reached
+  through an optional fourth argument on `encodeImage` rather than a second
+  function beside it — which is what makes the five existing callers
+  byte-identical BY CONSTRUCTION rather than by test (`html-identity`,
+  `grayscale-identity` and `docx-flow-identity` are the fences, and none moved).
+  **Invariant:** with no `format` the encoding is FAITHFUL — an unmasked
+  `DCTDecode` hands back its embedded bytes verbatim, so extraction costs no
+  generation loss. A NAMED format the faithful encoding already satisfies
+  changes nothing, which is what keeps `Save({ format: 'png' })` on a Flate
+  image byte-identical to `Save()` and is also the cheaper answer.
+  **Invariant:** naming an OPAQUE format IS the request to flatten, so
+  `format: 'jpeg'` composites alpha onto WHITE — the page a viewer would show
+  the picture against, deliberately not the stencil `fill`, which is the colour
+  an `/ImageMask` paints with. Refusing instead (`raster.ts`'s posture for
+  `background: 'transparent'`) would make one loop over `page.Images` throw on
+  whichever images happen to carry a mask; there the caller ASKED for
+  transparency, here it is a property of the document.
+  **Invariant:** `Save` THROWS where `encodeImage` returns undefined. Its other
+  callers are rendering a whole document, where skipping one damaged picture is
+  right; a caller asking for THIS image wants to be told. The format check runs
+  BEFORE any decoding, so a rejected call costs nothing.
+  **Note, measured, and the reasoning is the interesting half:** the re-encode
+  path writes an opaque picture WITHOUT an alpha channel, a third of the bytes,
+  and that is the common case rather than a corner — the branch is reached only
+  when the faithful encoding was a JPEG, so extracting a photo as PNG is
+  precisely what takes it. It follows that `reencode`'s RGBA arm is UNREACHABLE
+  today: every transparent image is handled by the faithful path before a
+  re-encode is ever considered, so forcing that arm to RGB reddens NOTHING.
+  Retained as defence, and recorded rather than left to be discovered — do not
+  read the green suite as covering it.
   **Invariant:** a code fence is `max(3, longest backtick run inside + 1)`
   backticks. A fixed three-backtick fence lets a block containing a fenced
   example break out of itself, producing valid Markdown that says something
@@ -2857,6 +3022,36 @@ Source (`src/`):
   the tree through `paintPlaced` would blur "where the ink goes". Note the
   direction — `tablestruct.ts` is table *extraction*, and the two never import
   each other.
+  **Invariant (`dsw8`):** a cell's height is the SUM OF ITS LINE BANDS, never
+  `lineCount * leading`. `measure`'s doc comment said the latter long after the
+  code stopped doing it, and that staleness cost a whole misfiled issue — one
+  proposing to replace a height model that had already been replaced. A band is
+  as tall as its tallest content, so a larger run, or an inline image, grows the
+  row on its own.
+  **Invariant (`dsw8`):** `CellOptions.atomics` are boxes among the cell's runs
+  — an image ON a line of cell text — and they are DISTINCT from
+  `CellBuilder.setImage`, which is ONE picture aspect-fit to the whole cell box
+  and painted UNDER the text. A cell may carry both, which is asserted.
+  **Invariant (`dsw8`), and it is what makes the feature small AND safe:**
+  measure and paint share ONE interleaving, `layout.ts`'s `weaveByBeforeRun`.
+  `stamp.ts` weaves `ResolvedRun`s to paint and this module weaves bare
+  `LayoutRun`s to measure, so the ORDER is the one thing they must agree on;
+  a second copy is how a cell comes to be sized against one arrangement and
+  drawn with another. Measured: reversing the order in that one function
+  reddens both consumers.
+  **Invariant (`dsw8`):** `resolveAtomics` lives in `stamp.ts`, not `flow.ts`,
+  because THREE callers need it — a paragraph, a list item and a cell — and
+  this module cannot reach `flow.ts`: `flow.ts` → `flowtable.ts` →
+  `tableauthor.ts`, so that edge would close a cycle. `flow.ts`'s public
+  `FlowAtomic` is now an alias of `stamp.ts`'s `AtomicSpec`, so the authoring
+  name is unchanged.
+  **Note:** auto-fit sees an atomic's width through `textExtents`, and the rule
+  is deliberately APPROXIMATE in the safe direction — max-content adds every
+  atomic's width, min-content takes the widest as a FLOOR. An atomic is U+FFFC
+  to the wrapping engine, a non-space character, so `a<img>b` is truly one
+  unbreakable unit and the real min-content can be wider; erring narrow is safe
+  because `layoutRuns` CLAMPS an atomic wider than its box, shrinking the
+  picture rather than overflowing the column.
 - **tablespan.ts** — the occupancy grid behind an AUTHORED table's spans: where
   each cell's top-left corner lands, how many physical columns the table has,
   where it may legally be cut, and how a spanning cell's height shortfall is
@@ -3040,6 +3235,12 @@ Source (`src/`):
   `regenerateAppearance`, which builds an appearance from an existing dict
   rather than from an options object); appearance *resolution* for rendering and
   flattening lives in **annotappearance.ts**.
+  **Note (`6t2v.5`), a SCOPE DECISION rather than a gap — do not "finish" it:**
+  MULTIMEDIA is out of scope. `/Screen` annotations and `/Rendition` actions
+  embed audio and video; almost no viewer honours them and Node has nothing to
+  play them with, so no typed constructor will be added. They read back as a
+  base `Annotation` and round-trip like any other, which is the whole contract.
+  README's Limitations says so, so the absence is stated rather than inferred.
 - **formdata.ts**, **fdf.ts**, **xfdf.ts**, **xml.ts**, **annotdata.ts**,
   **fdfannot.ts**, **xfdfannot.ts** — FDF/XFDF data exchange
   (`ExportFdf`/`ExportXfdf`/`ImportFdf`/`ImportXfdf`). Two format-neutral middles
@@ -3108,6 +3309,24 @@ Source (`src/`):
   crypto.ts.
 - **xmp.ts** — read (`GetXmp`) and build (`SetXmp`) the `/Root /Metadata` XMP
   packet with a dependency-free scan, mirroring shared fields with `/Info`.
+  **Invariant (`ugxr`):** an attribute's value is matched with `*`, never `+` —
+  a present-but-EMPTY property is not an absent one. Every value regex here and
+  in `pdfavalidate.ts`'s `pdfaIdValue` and `pdfxvalidate.ts`'s `xmpVersion`
+  follows it. **Note where the bug hid, because it is the sharpest example in
+  this repo of one module answering a question two ways:** `scalar` had always
+  matched `([^"]*)`, so `pdf:Producer=""` read back as `''`, while the five
+  IDENTIFICATION fields used `+` and read `''` as absent. The two forms only
+  diverge where ABSENCE IS ITSELF THE DECLARATION — ISO 19005-4 6.7.3-3 spells
+  the PDF/A-4 base conformance by genuine absence — so a file declaring
+  `pdfaid:conformance=""` passed `ValidatePdfA('4')`. Everywhere else an empty
+  value fails the same comparison an absent one did, which is why widening
+  changes MESSAGE TEXT and nothing else across parts 1-3 and PDF/X.
+  **Invariant (`ugxr`):** a numeric identification field reads an empty value as
+  **NaN**, never `Number('')`'s 0 — a 0 reads as a document CLAIMING part 0.
+  Junk (`part="x"`) already yielded NaN, so empty and junk get ONE rule.
+  **Note, measured:** the five reads go through `idValue`/`idNumber` rather than
+  ten inline regexes, because five copies of the widened pattern is how they
+  would drift apart again — which is exactly how this bug existed.
 - **text.ts** — coordinate-based text extraction (`Page.GetText()`): walks
   content ops, emits positioned glyph runs, and assembles them into words/lines
   (affine matrix helpers live here too). **font.ts** — `TextFont`, the per-font
@@ -3587,6 +3806,52 @@ Source (`src/`):
   (`page.GetPaths`): a focused content walker (cf. `imageusage.ts`, separate from
   `text.ts`'s `visitContent`) that tracks CTM/paint/clip and emits one positioned
   `PagePath` per paint op.
+- **artifact.ts** — `page.Artifacts`: the `/Artifact` marked-content scopes a
+  page declares (32000-1 14.8.2.2). The READ side of a vocabulary this library
+  previously only WROTE — `wrapArtifact`, `PageGraphics.BeginArtifact`, the
+  `artifact: true` option on every vector producer, `AutoTag`'s undescribed
+  images.
+  **Invariant:** it MEASURES NOTHING ITSELF. Glyph, image and path extents are
+  `text.ts`'s answers, subscribed to through `visitContent` — which is also the
+  one owner of the marked-content stack, so "which scope is open" is decided
+  once. A private walk here would need the whole text state machine (fonts,
+  `Tf`, `Tm`, `TJ`) to place a glyph, and would be a second answer to a
+  question `GetPaths` and `GetText` already agree on. That is what `zch2`-style
+  focused walkers like `paths.ts` do NOT do, and the difference is the reason:
+  `paths.ts` re-derives geometry it alone needs, where an artifact's extent is
+  geometry three other modules already compute.
+  **Invariant (`text.ts`):** the three ink events carry `artifactScope`, the
+  ADDRESS of the innermost open artifact, beside the pre-existing `artifact`
+  boolean — that boolean says THAT content is decoration and cannot say WHICH
+  scope declared it, so attribution is impossible from it. The precedent is
+  `PathEvent` gaining `mcid`/`artifact` for `hdsx` so `structvalidate.ts` could
+  subscribe at all. `ArtifactEvent` fires at the OPENING op, which is what
+  makes an artifact enclosing NOTHING reportable — the one shape a consumer
+  reading only ink events provably cannot see.
+  **Invariant:** a declared `/BBox` wins and is reported VERBATIM, never pushed
+  through the CTM. 14.8.2.2 says default user space, so a producer is taken at
+  its word; transforming would be a second rule that is wrong whenever a `cm`
+  merely preceded the `BMC`. The residue — a `/BBox` declared INSIDE a form,
+  in that form's own coordinates — is documented in README as a limit rather
+  than guessed at. Absent a declaration the extent is MEASURED, and
+  `bboxSource` is what says which of the two a caller is holding.
+  **Invariant:** an outer scope's measured extent UNIONS its nested scopes' —
+  an inner artifact is inside the outer one geometrically as well as
+  syntactically. One reverse pass over the records does it, which is sound
+  because a parent always opens before its child.
+  **Invariant:** the scope key joins `path`, `streamIndex` and `opIndex` on a
+  separator, because concatenating them raw COLLIDES: `['A']`/0/12 and
+  `['A0']`/1/2 both spell `A012`. Pinned by a fixture whose page and form
+  artifacts both sit at stream 0, op 0.
+  **Note, measured:** all 17 mutations aimed at this module and its `text.ts`
+  half redden. THREE needed fixtures built for them first, and each names a
+  real gap rather than a spurious mutation — no fixture had an IMAGE or TEXT
+  inside an artifact (every one drew paths), none put a non-edge name in
+  `/Attached`, and none made two scopes collide on address. Do not read a
+  path-only fixture as covering the glyph or image attribution.
+  **Note:** `Remove` is deliberately absent and the writer is unchanged —
+  teaching `wrapArtifact` to declare a `/Type` would move bytes in every tagged
+  document we write, and no caller has asked.
 - **editcontent.ts** (`EditableContent` — per-stream op model with Form-XObject
   copy-on-write), **redact.ts** + **imageredact.ts** (`Redact`/`RedactText`:
   drop covered glyphs, delete/partially re-encode images, prune orphans),
@@ -4150,12 +4415,24 @@ Source (`src/`):
   removing `.dfont` from `FONT_EXT` reddens the by-name, by-default and
   corrupt-file cases but leaves the EXTENSIONLESS case GREEN, because that path
   never consults the extension at all.
-  **Note, and do NOT read the green suite as covering it:** there is no real
-  `.dfont` in `test/fixtures/`. `test/helpers/build-dfont.ts` and this module
-  share one reading of Inside Macintosh, so the suite proves they agree, not that
-  either matches what Apple writes — the shared-convention class this repo keeps
-  real-world fixtures for, uncovered here. `test/fixtures/fonts/PROVENANCE.md`
-  records it.
+  **Note (`l1my.7`), and the gap it replaced was total:** there IS now a real
+  suitcase, `test/fixtures/fonts/LiberationSans.dfont` — four OFL Liberation
+  faces wrapped by FONTFORGE, a container writer we did not write, so its
+  resource map is somebody else's reading of Inside Macintosh rather than a
+  second copy of ours. **Apple's own suitcases CANNOT be vendored** (`Monaco`,
+  `Geneva`, `Courier` are Apple copyright with no grant — `RSWOP.icm`'s
+  objection, and unlike a golden TABLE our tests need the BYTES), which is why
+  the payload is one the repo already licenses; the payload's identity does not
+  matter, since what is under test is the container around it.
+  **Note, measured, and TWO of the five rules are still NOT anchored — no
+  FontForge output can anchor them:** it emits `sfnt` as type 0 and `FOND` as
+  type 1, so reading the type count RAW still yields type 0, and taking type 0
+  BLINDLY still lands on `sfnt`. Both mutations survive the real file and are
+  held by `dfont.test.ts` alone (9 and 2 cases), whose hand-built suitcases can
+  order the types freely *because* they are hand-built. The other three rules
+  redden on the real file at 2, 5 and 2. A real Apple suitcase, carrying `FOND`
+  and often `NFNT` and `POST`, might order its types the other way — that is the
+  whole of what remains, where before it was the whole rule set.
   **Note:** a `.dfont` whose `sfnt` resource is itself a `ttcf` is out of scope.
   `faceIndex` is consumed by the container layer before such a payload reaches
   the collection test, so it would need two-level addressing nobody has asked
@@ -4409,6 +4686,165 @@ Source (`src/`):
   `R(d.get(k)) !== undefined` is true for *every* absent key. This silently
   fired PDF/X rules on keys that were not there; a fixture with no ExtGState at
   all is what let it through.
+  **Invariant (`72nc.1`):** PDF/A-4 has NO accessibility level. ISO 19005-4 has
+  no clause 6.8, so `'4a'` is *unrepresentable* rather than unsupported, and
+  `validatePdfA`'s `lvl === 'a'` PDF/UA chain provably cannot fire at part 4.
+  Expect "why doesn't PDF/A-4 check tagging" to be filed as a bug; it is the
+  standard's decision, and tagging is declared separately through PDF/UA.
+  **Invariant (`72nc.1`), and it is the trap:** PDF/A-4's rule set is NOT a
+  superset of parts 1–3 — it INVERTS four rules, which must go SILENT at part 4.
+  `/ToUnicode` has no presence requirement (only a content constraint if one
+  exists); `/CIDSet` and `/CharSet` have no rule at all; JavaScript actions are
+  PERMITTED; and `/Info` is near-banned, so the `/Info`-versus-XMP consistency
+  check has nothing left to compare. A document that fails at `'2u'` can pass at
+  `'4'` for the same reason. The `/ToUnicode` one contradicts the widespread
+  "PDF/A-4 ≈ PDF/A-2u" folklore.
+  **Invariant (`72nc.1`):** each inversion is pinned by a CROSS-PART PAIR in
+  `test/pdfa4-validate.test.ts` — the fixture must report at its part-1/2/3 level
+  AND stay silent at `'4'`. A single-part assertion provably cannot tell a rule
+  that correctly went quiet from one that was never wired up, which is the
+  failure mode this file is otherwise most exposed to. **Note the `/CIDSet` pair
+  reads `Issues` rather than `Errors` on BOTH halves:** that rule is an error
+  only at part 1 and a warning at parts 2/3, so an `Errors`-only assertion finds
+  nothing at `'2b'` and measures nothing. The first version did exactly that.
+  **Invariant (`72nc.1`):** the part-4 checks that ALSO apply to parts 1–3
+  (`/Requirements`, `/NeedsRendering`, `/PresSteps`, `/TR`, `/HTO`, halftone
+  types, `/Alternates`, `/OPI`, `BitsPerComponent`, filespec `/F`+`/UF`+
+  `/AFRelationship`) are gated at `ctx.part === 4` DELIBERATELY, tracked as
+  their own issue. Not tidiness: `ConvertToPdfA` re-runs `ValidatePdfA` and
+  mirrors it into `unresolved`/`passed`, so widening a rule to parts 1–3
+  silently changes the outcome of a shipped feature. `test/pdfavalidate.test.ts`
+  and `test/pdfaconvert.test.ts` passing UNEDITED is the fence for that claim.
+  **Note on the anchor, and it is a TRANSCRIPTION rather than a differential
+  test:** the part-4 rules come from veraPDF's published validation profiles
+  (`veraPDF/veraPDF-validation-profiles`, `integration` branch,
+  `PDF_A/PDFA-4{,E,F}.xml`, fetched 2026-09-04). veraPDF is not installed and a
+  profile is a rule list rather than bytes, so unlike `test/fixtures/pdfx/` there
+  is NO runnable oracle. The suite proves the implementation agrees with our
+  reading of the profile; it proves nothing about whether either matches
+  ISO 19005-4. Do not read a green suite as conformance evidence.
+  **Note, three deliberate divergences, each recorded in the source:**
+  `psXObjectRule` fires at part 4 though the profile has no such rule, because
+  PDF 2.0 removed PostScript XObjects — a hit can only be a real defect.
+  `ocConfigRule` implements 6.10-1 and 6.10-2 but not 6.10-3 (`/Order` naming
+  every OCG). And `transparencyBlendingSpaceRule` detects transparency only from
+  a page's own `/Group /S /Transparency`, never from an ExtGState soft mask,
+  because `extGStates()` is document-wide.
+  **Note, measured, and THREE fixtures had to be rebuilt because the obvious one
+  measures nothing — this is the densest cluster of the redundant-defence trap
+  in the repo.** A `/PieceInfo` case whose `/Info` carries a `/Title` also trips
+  the "only `/ModDate`" branch, so the `/PieceInfo` mutation stayed green; it
+  needs an `/Info` holding ONLY `/ModDate`. A halftone dictionary carrying both
+  a bad type AND a `/HalftoneName` passes with either branch deleted, so the two
+  need separate dictionaries. And an embedded-file spec missing `/UF`,
+  `/AFRelationship` AND `/Subtype` still reports with any single branch deleted,
+  so `noUf` and `noMime` each omit exactly one thing. Every other mutation
+  across the nine tasks reddened first time.
+  **Invariant (`72nc.2`):** part 4 joins the ONE `PASSES` array, gated with
+  `if (ctx.part === 4)`. A second `PASSES_A4` table would duplicate the ~8
+  passes identical across eras, and "two copies is how they come to disagree"
+  is this repo's most-recorded failure.
+  **Invariant (`72nc.2`), and it is the ordering mistake the design exists to
+  prevent:** `identificationPass` runs BEFORE `infoPass`, which is why the
+  latter is LAST in `PASSES`. It reads `/Info` through `GetMetadata()` to
+  mirror title, author, subject, keywords and `/ModDate` into XMP; strip
+  `/Info` first and the mirror silently comes out empty — a loss invisible in
+  the converted file, which validates either way. Measured: moving `infoPass`
+  to the front reddens 8 cases.
+  **Invariant (`72nc.2`), and the design got this half WRONG:** `infoPass` has
+  TWO branches, because reducing `/Info` to `/ModDate` is legal ONLY beside a
+  catalog `/PieceInfo`. `infoRestrictionRule` reports a present `/Info` without
+  one whatever the dictionary holds — `test/pdfa4-validate.test.ts` pins
+  exactly that, with a `/ModDate`-only `/Info` — so a reduce-only pass could
+  never reach `passed === true` for a document that has no `/PieceInfo`, which
+  is essentially every real document. With a `/PieceInfo` it reduces; without
+  one it DELETES, which discards nothing because the mirror already ran.
+  **Note (`72nc.2`), and it is why the pass is mandatory rather than
+  conditional:** `SetXmp` calls `ensureInfo()` unconditionally, so
+  `identificationPass` CREATES an `/Info` for a document that had none — and an
+  empty `/Info` with no `/PieceInfo` is still an `InfoRestriction` error.
+  Measured on the clean part-4 fixture, whose `/Info` is absent by design.
+  **Invariant (`72nc.2`):** `preserve: ['info']` is the one new
+  `ConvertCategory`. Everything else part 4 adds is either non-destructive
+  normalisation or falls under a category that already exists — which is also
+  why `embeddedFilesPass`'s part-4 half is NOT gated on `'embeddedFiles'`: that
+  category names destructive removals, and part 4 never removes an attachment.
+  **Invariant (`72nc.2`):** a MIME `/Subtype` is built through `name()` from the
+  RAW text and escaped by the serializer (`/application#2foctet-stream`).
+  Pre-escaping double-escapes; a bare `/application/octet-stream` is not one
+  name. Asserted on saved bytes.
+  **Invariant (`72nc.2`):** `versionPass` RAISES to `2.0` at part 4 where parts
+  1-3 lower to a ceiling — 6.1.2-1 is an exact major, so a perfectly good PDF
+  1.7 file is simply not PDF/A-4.
+  **Note (`72nc.2`):** `TransparencyBlendingSpace` gets no pass and needs none.
+  `outputIntentPass` adds a PDF/A output intent whenever there is none, and
+  6.2.9-2 fires only when there is none, so the rule is unreachable after
+  conversion by construction. Asserted directly so it reads as reasoning rather
+  than as a pass somebody forgot.
+  **Note (`72nc.2`), measured, and it is the sharpest instance here of an
+  assertion that cannot see what it claims to:** the mutation writing
+  `pdfaid:conformance=""` at the part-4 base level reddened NOTHING at first.
+  Both `pdfaIdValue` and `readXmp` match `["']([^"']+)["']`, so an EMPTY
+  attribute reads back as ABSENT to the validator and to `GetXmp` alike, and
+  `expect(xmp.pdfaConformance).toBeUndefined()` passes either way. The case
+  asserts the emitted PACKET now. That the validator cannot see an empty
+  conformance is a real gap in `72nc.1`'s rule and is filed separately rather
+  than widened here.
+  **Note on the oracle (`72nc.2`), and it is sharper than it was for
+  validation:** there is NONE that runs here. Conversion is verified against
+  our own validator, itself a transcription of veraPDF's profiles, so the two
+  halves now agree with each other BY CONSTRUCTION. Do not read a green suite
+  as evidence that a certified validator would pass the output.
+  **Note, measured:** all 16 mutations aimed at `72nc.2` redden something, the
+  conformance one only after the packet assertion above was added.
+  **Invariant (`pjy7`):** a rule applies at exactly the parts whose veraPDF
+  profile carries it, and cites THAT standard's clause through `partClause` —
+  the same test is numbered 6.2.4 in 19005-1, 6.2.8 in -2/-3 and 6.2.7.1 in -4,
+  so a widened rule that keeps citing -4 reports the right defect against the
+  wrong document. Nine rules widened; `/HTO`, `ocConfigRule`,
+  `toUnicodeContentRule`, `requirementsRule`, `alternatePresentationsRule`,
+  `permissionsRule`, `infoRestrictionRule`, `embeddedFileSpecRule` and the
+  surplus-output-intent count stay part-4-only, each because the older profiles
+  carry no such test.
+  **Invariant (`pjy7`), and it reads backwards:** parts 1-3 are STRICTER than
+  part 4 on Widget actions. ISO 19005-1 6.6.1-3/6.6.2-1 and -2/-3 6.4.1-1 ban
+  a Widget's `/A` AND its `/AA`; 19005-4 6.4.1-1 bans `/A` alone and 6.6.3-1
+  exempts the additional actions "whose triggers are the form's". Widening part
+  4 to match reports a document ISO 19005-4 permits.
+  **Invariant (`pjy7`):** `permittedBpc` excludes 16 at part 1 — PDF 1.4 had no
+  16-bit images — so this is the ONE check that can fail a document at an
+  EARLIER part than it passes at a later one, and the one genuinely new failure
+  the backport introduced.
+  **Invariant (`pjy7`):** `destProfileRefExempt` — parts 2/3 permit
+  `/DestOutputProfileRef` on a `GTS_PDFX` intent (their test is
+  `S != 'GTS_PDFX' || …`) and part 4 does not. Those standards allow a PDF/X
+  intent beside the PDF/A one, and the key is legal there.
+  **Invariant (`pjy7`):** the converter passes read the SAME helpers the rules
+  do (`permittedBpc`, `destProfileRefExempt`, `widgetActionKeys`, exported from
+  `pdfavalidate.ts`). A pass deciding its own parts is how a converter comes to
+  fix what the validator does not report — which happened anyway for
+  `/NeedsRendering`, whose rule widened while its pass stayed gated, and was
+  caught only by the messy-document acceptance case rather than by any
+  single-rule test.
+  **Note (`pjy7`):** the passes are `graphicsKeysPass`, `outputIntentKeysPass`,
+  `annotKeysPass` and `catalogKeysPass`; only `ocConfigPass` is still
+  part-4-only throughout. `catalogKeysPass` scopes PER KEY, since
+  `/NeedsRendering` backports and its three neighbours do not.
+  **Note (`pjy7`), and it is the sharpest example here of a bug hiding behind
+  a fixture gap:** widening the rules gave part 1 an ExtGState for the first
+  time, which immediately exposed a PRE-EXISTING false positive in
+  `transparencyRule` — `ctx.R(dict.get('SMask'))` returns `null` for an absent
+  key and `null !== undefined`, so every part-1 ExtGState reported a soft mask
+  it did not have. The same trap this file already records two entries up for
+  PDF/X. Presence is tested on the RAW dict now.
+  **Note, measured:** all 15 mutations aimed at `pjy7` redden something,
+  including both directions of each of the three divergences.
+  **Note on the fence, and it differs from `72nc.1`'s and `72nc.2`'s:** four
+  pre-existing cases moved, and all four were the same category — cases
+  asserting the GATING this issue reverses, rather than stale fixtures or the
+  backport reaching too far. Each was repointed at what genuinely stays
+  part-4-only rather than deleted, so those files still record where the
+  boundary sits.
 - **svgrender.ts**, **raster.ts**, **pagerender.ts** — rendering (`ToSvg` /
   `ToImage`): a shared content-stream interpreter, a pure-TS scanline rasterizer,
   and glyph-outline drawing.
@@ -5398,6 +5834,174 @@ Source (`src/`):
   tree is a B-tree and a producer is entitled to rely on that — ignoring the
   limits still finds the key by brute force on a small file and silently misses
   it on a large one, which is the worst possible failure shape.
+- **viewerprefs.ts** — the catalog `/ViewerPreferences` dictionary, 32000-1
+  Table 150 in full (`72nc.3`): how a producer says a document should OPEN and
+  PRINT. A leaf importing `Document` as a TYPE only, `docaction.ts`'s
+  arrangement, so every rule is drivable from a hand-built catalog. It never
+  throws on READ.
+  **Note (`6t2v.5`), a SCOPE DECISION and the reason this module is the whole
+  of "printing":** there is NO printing subsystem and there will not be one.
+  Java's `PdfPrinterSettings`/`PrintPaperSize`/`DuplexKind` exist because they
+  map onto `java.awt.print`, and Node has nothing to map onto — driving a
+  device is the host application's job. What a DOCUMENT may say about printing
+  is print INTENT, which is exactly the seven Table 150 entries here
+  (`PrintArea`, `PrintClip`, `PrintScaling`, `Duplex`, `PickTrayByPDFSize`,
+  `NumCopies`, `PrintPageRange`). Expect "add printing" to be proposed; the
+  answer is that it already ships, spelled as intent. README says so too.
+  **Invariant:** it is the ONE owner of the dictionary. `/DisplayDocTitle` was
+  reachable before this module and its ensure-the-dict dance had been
+  hand-rolled in THREE places (`document.ts`, `autotag.ts`, and through the
+  property in `pdfuaconvert.ts`) — which is how three callers come to disagree
+  about whether an empty `<< >>` may be left behind. `Document.DisplayDocTitle`
+  keeps its signature, since PDF/UA reaches for exactly that flag, and delegates.
+  **Invariant:** the getter reports only what the document STATES. An unstated
+  entry is `undefined`, never the spec default — the present-versus-absent rule
+  `parseSimpleWidths` records for `/MissingWidth`, and the reason a stated
+  `false` stays distinguishable from silence. Defaulting also makes a round trip
+  write keys the document never had.
+  **Invariant, and the two halves only work together:** READ LENIENTLY, WRITE
+  NARROWLY. A value of the wrong type, a name outside its enumeration or a
+  malformed `/PrintPageRange` reads as `undefined` rather than throwing
+  (`GetXmp`'s rule); the merge then touches ONLY the keys the update states, so
+  what the reader declined is still in the file afterwards. Lenient reading
+  alone is how a read-modify-write comes to strip PDF 2.0's `/Enforce` — which
+  is deliberately not modelled here, being Table 150 of no edition and a
+  constraint on a VIEWER rather than a preference.
+  **Invariant:** `undefined` leaves, `null` deletes, a value sets —
+  `MetadataUpdate`'s convention, not a second one.
+  **Invariant:** `/PrintPageRange` is inclusive 1-based `[first, last]` PAIRS,
+  not the flat wire array. An odd-length or descending flat array is exactly the
+  mistake that produces a plausible wrong PRINT JOB rather than an error; the
+  writer flattens and the reader re-pairs.
+  **Note the deliberate ASYMMETRY on that range:** the writer range-checks each
+  pair against `doc.Pages.length` (`setOpenDestination`'s rule) while the reader
+  does not. A document split out of a longer one legitimately carries a range
+  past its own end, so reading reports what the PRODUCER said where writing must
+  not manufacture a range no dialog can honour. It reads like an inconsistency,
+  so it is asserted directly.
+  **Invariant:** the whole update is validated BEFORE a single key is written,
+  so a rejected call leaves the document byte-identical (`formcreate.ts`'s rule).
+  `TypeError` for the wrong KIND of thing, `RangeError` for outside the allowed
+  SET — the same split. Measured load-bearing: validating as we write reddens
+  four cases.
+  **Note, MEASURED, and it is the redundant-defence trap in miniature:** THREE
+  guards keep an empty `<< >>` out of the catalog — the empty-update return, the
+  pure-delete return and the prune — and ANY TWO can be deleted with
+  `test/viewer-prefs.test.ts` still green. Only removing all three reddens. They
+  are kept because they answer different questions: the first two also decline to
+  call `markModified()` for a call that changed nothing, which nothing in the
+  suite can see, and only the prune reaches the delete-the-last-of-several case.
+  Breaking any one alone proves nothing — do not read the green suite as
+  covering any of them, and do not "simplify" one away.
+  **Note, measured, and two more that cover NOTHING.** `readPageRange`'s
+  odd-length test is redundant and provably CANNOT be otherwise: an odd array
+  always ends unpaired and `doc.resolve(undefined)` is `null`, which
+  `isPositiveInt` rejects — while the `length === 0` half beside it IS
+  load-bearing, since an empty array otherwise reads back as an empty range
+  list. And the writer's pair-SHAPE check is redundant with the integer check
+  that follows, a flat `[1, 4]` failing either way because `(1)[0]` is not an
+  integer. Both retained as the honest spelling of their rules.
+  **Note:** the `autotag.ts` fold is a DE-DUPLICATION and reverting it reddens
+  nothing, correctly — the two spellings write the same key. What that case pins
+  is that `AutoTag({ title })` still reaches the flag at all.
+  **Note, measured:** every other mutation aimed at this module reddens —
+  11 of 16 across the sweep, with the five green ones each accounted for above.
+- **pagemode.ts** — the two catalog entries that say how a document should
+  OPEN: `/PageMode` and `/PageLayout`, 32000-1 Table 28 (`72nc.7`). A leaf
+  importing `Document` as a TYPE only, `viewerprefs.ts`'s arrangement, so every
+  rule is drivable from a hand-built catalog. It never throws on READ.
+  **Invariant, and it is why the module exists rather than being two accessors
+  in `document.ts`:** it OWNS the page-mode vocabulary, and `viewerprefs.ts`
+  reaches for it. `/NonFullScreenPageMode` IS "a page mode that is not full
+  screen" — Table 150's four names are Table 28's six minus two — so its public
+  type is `Exclude<PageMode, 'FullScreen' | 'UseAttachments'>` and its permitted
+  list is `PAGE_MODES.filter(...)`. The type half is checked by the COMPILER,
+  which a hand-copied list of four never was. Measured: giving `viewerprefs.ts`
+  its own list back reddens.
+  **Note the direction of that edge:** `viewerprefs.ts` → `pagemode.ts`, never
+  back. These keys are NOT in the `/ViewerPreferences` dictionary, so a
+  `viewerprefs.ts` holding them contradicts its own opening line; and the
+  extraction is the one `colornames.ts`, `preformat.ts` and `bordersides.ts`
+  each already made — a shared vocabulary in a leaf both consumers may reach.
+  **Invariant:** every rule here is BORROWED from `setViewerPreferences` rather
+  than invented, which is the point of the neighbouring module existing.
+  Reports only what the document STATES (`undefined`, never the `UseNone`/
+  `SinglePage` default — the present-versus-absent rule); reads LENIENTLY (a
+  name outside the enumeration, or a value that is not a name, reads as absent);
+  validates the WHOLE write before touching the catalog, `TypeError` for the
+  wrong KIND and `RangeError` for outside the SET, so a rejected assignment
+  leaves the document byte-identical.
+  **Invariant, and a save alone provably cannot see it:** deleting a key the
+  catalog HAS NOT GOT touches nothing and does NOT `markModified()`. A full
+  rewrite of an untouched model reproduces the same bytes either way, so the
+  byte-identity assertion is blind to this. What it costs is the SIGN path:
+  `choosePath()` takes the incremental append only for an UNMODIFIED base, so a
+  no-op delete that marks the document modified silently turns a sign-on-save
+  into a full rewrite — which rewrites bytes an earlier signature covered.
+  `test/page-mode.test.ts` signs and asserts the base survives as a
+  byte-identical prefix; that case is the only thing in the suite that reddens.
+  **Note, measured, and it covers NOTHING — the obvious reading is wrong:** the
+  `isName` half of the read is a TYPE-level necessity, not a runtime guard, and
+  dropping it reddens nothing and PROVABLY cannot. No other `PdfObject` shape
+  carries a `name` property — a dict is a `Map`, a stream is `{ dict, raw }`, a
+  ref, string and array have none — so `.name` is `undefined` for all of them
+  and no enumeration contains `undefined`. The enumeration test alone decides
+  every case. Same class as `incrementaldelta.ts`'s `Map.has` note; do not cite
+  the non-name fixture as covering it.
+  **Note:** `/PageLayout` shipped BESIDE `/PageMode` although `72nc.7` asked for
+  the latter alone — same table, same shape, one set of tests, and shipping one
+  would have left the other as an identical follow-up.
+  **Note, measured:** 10 of 11 mutations redden; the eleventh is the `isName`
+  one above.
+- **pagetransition.ts** — a page's `/Trans` transition dictionary, 32000-1
+  Table 165 in full, and the `/Dur` beside it (`72nc.4`): what a viewer plays on
+  ARRIVING at this page in a presentation, and how long the page then stays.
+  A leaf importing `Document` as a TYPE only, `viewerprefs.ts`'s arrangement, so
+  every rule is drivable from a hand-built page dict. It never throws on READ.
+  **Invariant:** neither key is INHERITABLE. Table 30 makes only `/Resources`,
+  `/MediaBox`, `/CropBox` and `/Rotate` inheritable, so both read from the
+  page's OWN dict — reaching for `Page.inherited`, which sits right beside these
+  accessors and is what the four boxes use, gives every page in a document the
+  transition somebody set on the `/Pages` node.
+  **Invariant, and it is a DELIBERATE divergence from `viewerprefs.ts`:** the
+  write REPLACES the dictionary WHOLLY where `setViewerPreferences` merges. That
+  module's narrow write exists because `/ViewerPreferences` is a large shared
+  dictionary in which an entry we do not model must survive a
+  read-modify-write; `/Trans` is a UNIT — a style plus THAT STYLE's parameters —
+  so a merge leaves a stale `/SS`, or a Glitter-only 315, beside a newly-set
+  style. It is also what keeps the two style-dependent checks SELF-CONTAINED:
+  they read the object handed in and never the document.
+  **Invariant:** a present but EMPTY `/Trans` reads as `{}` where an absent one
+  reads as `undefined`. Presence is itself the statement that this page has a
+  transition — the spec's defaults then describe it, which is a Replace — so
+  collapsing the two loses a fact the file states. The same asymmetry governs
+  the write: `page.Transition = {}` emits the dictionary.
+  **Invariant:** a value the STATED style does not admit is refused, while a
+  merely INAPPLICABLE key is written as given. 315 is Glitter's alone and the
+  name `None` is Fly's alone (Table 165), so either elsewhere is a value no
+  viewer honours and renders as a plain transition rather than as an error — but
+  an `/SS` on a Wipe is simply ignored, and refusing it would force a caller to
+  clear keys on every style change.
+  **Invariant:** `/Di` is a number OR the one name `/None`, and the read must
+  test that name rather than merely accept a name. **Measured, and it was a real
+  gap the mutation sweep found:** with the read admitting any name, `/Di /Left`
+  came back as `direction: 'Left'` — past the union type — and NOTHING reddened,
+  because the fixtures seeded a bad `/Dm` and `/M` but only a bad *number* for
+  `/Di`. `test/page-transition.test.ts`'s "drops a /Di naming anything but None"
+  is the only case that covers it.
+  **Note, and the collision is in the English rather than in the file:**
+  `PageTransition.duration` is `/D`, how long the EFFECT runs, while
+  `Page.Duration` is `/Dur`, how long the PAGE is shown before advancing. A
+  viewer honours both, and swapping them is invisible in any single rendering.
+  `/Dur` is a sibling key of `/Trans` rather than an entry inside it, so it is
+  its own accessor — auto-advance with no transition is perfectly legal, and
+  folding it in would misdescribe the file.
+  **Note:** `/PageMode /FullScreen`, the catalog entry that makes a viewer
+  actually PRESENT the document, is not here and is not modelled anywhere — so
+  these two keys describe a slide deck that a viewer still opens as a document.
+  Tracked as `72nc.7`, being catalog work.
+  **Note, measured:** all seven mutations aimed at this module redden, the
+  `/Di` one only after the case above was added.
 - **signature.ts**, **signer.ts**, **sigalg.ts**, **sigappearance.ts**,
   **sigplaceholder.ts**, **incremental.ts**, **pkcs12.ts**, **docmdp.ts** —
   digital signing (`Sign`/`Certify`): CMS/PAdES build, credential sources,
@@ -5796,9 +6400,40 @@ Source (`src/`):
   `checkTarget`'s rule. Declined rather than mis-read: v4 (its `B2A` is an
   `mBA ` with a different element order), absolute colorimetric (no `B2A` tag
   of its own), a non-CMYK device space, a non-Lab PCS, a missing `B2A`.
-  **Invariant:** interpolation is TRILINEAR, stated in the source. littlecms
-  and probably WCS use tetrahedral, and the two agree only on an AFFINE CLUT —
-  which is exactly why the fixture is affine and the goldens need no tolerance.
+  **Invariant (`m3gs`), and it REVERSES what `85l8.7.2` shipped:**
+  interpolation is TETRAHEDRAL for three inputs and MULTILINEAR otherwise.
+  Trilinear was the original choice, on the reasoning that its arithmetic
+  reads straight off the spec — but no spec text settles the method, and
+  measurement does: WCS is tetrahedral, and littlecms and Adobe's CMM
+  subdivide the same way. Through a purpose-built CURVED profile the old walk
+  missed WCS by **4.0e-2**, four percentage points of ink, where tetrahedral
+  tracks it to 4.8e-3.
+  **Note the split is on the INPUT COUNT rather than a flag,** because a
+  tetrahedral decomposition is a property of the CUBE and has no 4-input
+  counterpart. `icctransform.ts` evaluates the `B2A` direction only, so the
+  multilinear arm is unreachable through the public API and is held by a
+  hand-built case in `test/icclut.test.ts` alone.
+  **Note, measured, and do NOT read the 4% as the error on a real file:** the
+  gap falls as the SQUARE of the cell size — 1.9e-1 at grid 2, 7.0e-2 (3),
+  2.1e-2 (5), 5.3e-3 (9), 1.4e-3 (17), 3.3e-4 (33). A real profile's `B2A0`
+  is grid 17, so the practical change to output is about a tenth of a
+  percent. The reason to make it is agreement with the reference, not the
+  magnitude.
+  **Invariant, and it is why a SECOND fixture had to exist before the method
+  could be touched at all:** every interpolation method agrees EXACTLY on an
+  affine CLUT, so `synthetic-cmyk.icc` is structurally blind to the one rule
+  it was designed around — measured at 1.1e-16, one ulp, and all 29 of its
+  exact goldens held UNEDITED through the change. They are the FENCE for it,
+  not the evidence. `synthetic-curved-cmyk.icc` (grid 3, cross terms, a pure
+  `u*v*w` term in K) is what carries the evidence, and it is the ONE
+  comparison in this feature with a tolerance — 6e-3, stated from the worst
+  measured residual. That tolerance is itself pinned: the suite walks the
+  SAME LUT multilinearly and asserts the result lands in [3.5e-2, 4.5e-2], so
+  the margin provably cannot absorb the method.
+  **Note:** the curved fixture is grid 3 for a second reason worth its own
+  line — with grid 2 the cell origin is ALWAYS 0, so
+  `Math.min(Math.floor(q), grid - 2)` is unreachable arithmetic and the
+  affine fixture cannot test cell selection either.
   **Invariant:** the CLUT's FIRST input channel varies SLOWEST. Measured:
   reversing the stride reddens three cases, which the fixture's
   one-input-per-output design exists to catch.
@@ -5814,15 +6449,22 @@ Source (`src/`):
   1e-4. BOTH were caught by the golden comparison and by NO hand-written case:
   a hand-written case asserts the rule its author believed, which is the
   argument for the oracle in miniature.
-  **Note on the oracle:** Windows Color System (`mscms.dll`), through a
-  profile `scripts/gen-icc-fixture.mjs` AUTHORS rather than vendors —
+  **Note on the oracle:** Windows Color System (`mscms.dll`), through TWO
+  profiles `scripts/gen-icc-fixture.mjs` AUTHORS rather than vendors —
   `RSWOP.icm` is Microsoft copyright and our engine needs profile bytes at
   TEST time, so vendoring would cost the suite its hermeticity. ICC requires an
   N-component output profile to carry all three intents plus `gamt`, and WCS
   enforces it: a five-tag profile gets `ERROR_INVALID_PROFILE`.
   `test/fixtures/icc/PROVENANCE.md` records the ceiling — one CMS with no
-  second to arbitrate, nothing said about real-world v4 or `para` or grid-17
-  profiles, and `mft1` exercised by no real profile at all.
+  second to arbitrate, which since `m3gs` includes the choice of
+  interpolation method, since no spec text settles it; nothing said about
+  real-world v4 or `para` or grid-17 profiles; `mft1` exercised by no real
+  profile at all; and the 4-input multilinear arm reached by no profile here.
+  It also records the one residual that is measured but NOT fully explained —
+  4.8e-3 on the curved fixture, mechanically tied to the L\* cell boundary
+  where that CLUT's C ramp trebles in slope, with the three worst samples the
+  three nearest it in order of distance, but of a magnitude the affine
+  fixture's Lab agreement does not account for.
 - **linearize.ts** — linearized (Fast Web View) output + `verifyLinearization`.
 - **node.ts** — file-based convenience wrappers, and the only module that
   reaches `node:fs` on behalf of a caller. Every wrapper but one is PDF-in;
@@ -5845,6 +6487,38 @@ Source (`src/`):
   rest of the options are forwarded to `AddHtml` — the rule `textedit.ts`
   already records for `region`, so a key this module owns cannot reach a
   consumer that would silently accept it.
+  **Invariant (`72nc.8`):** `saveImagesFile` turns
+  `ImageInfo.Save`'s `{ bytes, mediaType }` into files, and it exists because
+  the caller's own loop gets ONE step wrong: the extension. It always comes
+  from the encoder's media type, never from the source image — JPEG bytes under
+  a `.png` are a file no viewer opens, which is the mistake the media type
+  exists to prevent, so it is prevented once here rather than at every call
+  site.
+  **Invariant:** ONE file per DISTINCT picture, through `imagehref.ts`'s
+  `imageKey` rather than a fourth copy of the hashing rule. A logo drawn on
+  forty pages is one XObject reached from forty resource dicts, and a merged
+  document holds forty distinct stream objects with identical content — keyed on
+  the object, both write forty files. **Note the fixture:** two `AddImage` calls
+  with the SAME bytes, which is exactly the merged-document shape; one shared
+  `ImageInfo` would dedup under either reading and measure nothing.
+  **Invariant:** it returns `{ written, skipped }` where every neighbour in this
+  module returns `string[]`, and the asymmetry is the point. `ImageInfo.Save`
+  THROWS for an image it cannot encode — right for a caller asking about ONE
+  image — but this caller is asking for all of them, which is `encodeImage`'s
+  situation, where a damaged picture must cost itself and not the run
+  (`imagepages.ts`, `svgdraw.ts`). A bare path list would then lose three
+  pictures out of two hundred with nothing anywhere saying so. It is the first
+  helper here with a PER-ITEM failure mode, which is why it is the first with a
+  report. Both halves are pinned: rethrowing reddens, and swallowing reddens.
+  **Note:** it does NOT copy `imagepages.ts`'s throw-when-nothing-decoded. A
+  document with no images returns two empty arrays and an empty directory, which
+  is a true answer rather than a failure.
+  **Note:** inline `BI … EI` images are structurally out of reach, not silently
+  missed — one occupies no `/XObject` entry, so `page.Images` never sees it, and
+  `InlineImageInfo` has no `Save`. Documented in README as a limit.
+  **Note:** no page filter. The task the issue names is the whole document, and
+  `pages` is additive later.
+  **Note, measured:** all 11 mutations aimed at this redden.
   **index.ts** — public exports.
 
 Tests live in `test/` (vitest). Most fixtures are built programmatically by the
@@ -5859,7 +6533,7 @@ output, and what the fixture does and does **not** cover:
 
 | Directory | Provenance | Covers |
 |---|---|---|
-| `fixtures/fonts/` | `PROVENANCE.md` | WOFF2 from wawoff2 and fontTools — `glyf`, `hmtx`, and CFF-flavoured (`OTTO`) input |
+| `fixtures/fonts/` | `PROVENANCE.md` | WOFF2 from wawoff2 and fontTools — `glyf`, `hmtx`, and CFF-flavoured (`OTTO`) input — plus `LiberationSans.dfont`, a Macintosh suitcase written by FontForge, since Apple`s own cannot be vendored. Two of its five container rules stay unanchored and PROVENANCE says which |
 | `fixtures/jpeg/` | `PROVENANCE.md` | libjpeg-turbo's own images, plus `cjpeg`-generated synthetics (incl. CMYK/YCCK) |
 | `fixtures/svg-input/` | `PROVENANCE.md` | SVG→PDF **input**: an SVGO-optimized pair, a bootstrap-icons file, a d3-shape chart — path-grammar lexis our builders never write. Distinct from `fixtures/svg/`, which is PDF→SVG **output** goldens |
 | `fixtures/svg-filter/` | `PROVENANCE.md` | Browser-rendered goldens for feTurbulence and the lighting primitives — ports of published reference implementations, which cannot validate themselves |
@@ -5904,9 +6578,19 @@ Two rules apply to these, both learned the hard way:
   fixture (above) only to validate a format against bytes we did not produce.
 - **Errors** — throw `PdfParseError`, `UnsupportedFeatureError`, or
   `InvalidPasswordError` (see `errors.ts`); these are the public error types.
-- **Docs** — keep `README.md` (user-facing: Features, Quick start, API overview,
-  Limitations) in sync when adding or changing a public API. Per-feature design
-  specs and plans live under `docs/superpowers/`.
+- **Docs** — keep `README.md` (user-facing: **Key Capabilities**, **Quick
+  Start**, **Additional Examples**, **API Reference**, **Scope and
+  Limitations**) in sync when adding or changing a public API. Per-feature
+  design specs and plans live under `docs/superpowers/`.
+  **Note the section names above are the GITHUB-facing ones and changed with
+  the file:** `README.md` was replaced by what had been `README.gh.md`, so the
+  old headings (Features, Quick start, API overview, Limitations) are gone and
+  a search for them finds nothing. Its example headings are IMPERATIVE — "Set
+  Viewer Preferences", "Extract Text" — rather than noun phrases, and the API
+  Reference is split into typed tables (Core API, Annotations, Forms, Text, …)
+  plus a types table whose rows are several ALPHABETICAL RUNS concatenated,
+  not one sorted list; inserting a row by scanning for the first name that
+  sorts higher lands it in the wrong table.
   A new `src/*.ts` module earns an entry in the Source list above **when it
   lands**, not when someone next happens to touch that area — which is how eight
   of them came to have none at all (`2qkk`). The sweep that finds the gap:

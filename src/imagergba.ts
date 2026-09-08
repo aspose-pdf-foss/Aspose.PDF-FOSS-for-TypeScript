@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import { PdfDict, PdfStream, PdfObject, isStream, isArray } from './types.js';
 import { Rgb, ColorConverter, resolveColorSpace } from './colorspace.js';
 import { arrNums } from './pagerender.js';
-import { ImageInfo } from './image.js';
+import { decodeImageStream, filterName, numOf } from './imagedecode.js';
 import { colorKeyAlpha } from './colorkey.js';
 import { inflateStream } from './flate.js';
 import { decodeJpeg, type JpegImage } from './jpeg.js';
@@ -52,17 +52,16 @@ export function isIndexedCs(doc: Document, csObj: PdfObject | undefined): boolea
 function decodeSMaskAlpha(doc: Document, dict: PdfDict, w: number, h: number): Uint8Array | undefined {
   const sm = doc.resolve(dict.get('SMask'));
   if (!isStream(sm)) return undefined;
-  const info = new ImageInfo(doc, '', sm);
-  const sw = info.Width, sh = info.Height;
+  const sw = numOf(doc, sm.dict, 'Width', 0), sh = numOf(doc, sm.dict, 'Height', 0);
   if (!sw || !sh) return undefined;
 
   // Source alpha: one byte per pixel, row-major over `gw`×`gh`.
   let src: Uint8Array;
   let gw = sw, gh = sh;
-  const filt = info.Filter ?? '';
+  const filt = filterName(doc, sm.dict) ?? '';
   if (filt === 'DCTDecode' || filt === 'DCT') {
     let dec: JpegImage;
-    try { dec = decodeJpeg(info.Decode()); } catch { return undefined; } // progressive/arith/malformed → degrade
+    try { dec = decodeJpeg(decodeImageStream(doc, sm)); } catch { return undefined; } // progressive/arith/malformed → degrade
     gw = dec.width; gh = dec.height;
     const nc = dec.comps;
     if (nc === 1) src = dec.data;
@@ -70,7 +69,7 @@ function decodeSMaskAlpha(doc: Document, dict: PdfDict, w: number, h: number): U
   } else {
     if (NO_RASTER_DECODER.has(filt)) return undefined;
     if ((resolveNum(doc, sm.dict.get('BitsPerComponent'), 8)) !== 8) return undefined;
-    try { src = info.Decode(); } catch { return undefined; }
+    try { src = decodeImageStream(doc, sm); } catch { return undefined; }
   }
 
   const out = new Uint8Array(w * h);
@@ -101,11 +100,10 @@ function decodeStencilMaskAlpha(
 ): Uint8Array | undefined {
   const mk = doc.resolve(dict.get('Mask'));
   if (!isStream(mk)) return undefined;
-  const info = new ImageInfo(doc, '', mk);
-  const mw = info.Width, mh = info.Height;
+  const mw = numOf(doc, mk.dict, 'Width', 0), mh = numOf(doc, mk.dict, 'Height', 0);
   if (!mw || !mh) return undefined;
   let bits: Uint8Array;
-  try { bits = info.Decode(); } catch { return undefined; } // JBIG2/CCITT/malformed → degrade
+  try { bits = decodeImageStream(doc, mk); } catch { return undefined; } // JBIG2/CCITT/malformed → degrade
   const rowBytes = (mw + 7) >> 3;
   if (bits.length < rowBytes * mh) return undefined;
 
@@ -148,14 +146,13 @@ function colorKeyAlphaFor(
  *  decode to samples via the generic path. Returns undefined when undecodable
  *  (JPEG has a dedicated branch above, or unusual bit depths). */
 export function decodeImageRgba(doc: Document, stream: PdfStream, fill: Rgb): ImageRgba | undefined {
-  const info = new ImageInfo(doc, '', stream);
-  const w = info.Width, h = info.Height;
+  const w = numOf(doc, stream.dict, 'Width', 0), h = numOf(doc, stream.dict, 'Height', 0);
   if (!w || !h || w * h > 64 * 1024 * 1024) return undefined;
 
-  const filt = info.Filter;
+  const filt = filterName(doc, stream.dict);
   if (filt === 'DCTDecode' || filt === 'DCT') {
     let dec: JpegImage;
-    try { dec = decodeJpeg(info.Decode()); } catch { return undefined; } // progressive/arith/malformed → degrade
+    try { dec = decodeJpeg(decodeImageStream(doc, stream)); } catch { return undefined; } // progressive/arith/malformed → degrade
     const { width: jw, height: jh, comps, data: s } = dec;
     // /SMask, then either form of /Mask. The two /Mask forms are one entry so
     // only one can be present; /SMask outranks both, being the richer mask and
@@ -177,9 +174,9 @@ export function decodeImageRgba(doc: Document, stream: PdfStream, fill: Rgb): Im
     return { w: jw, h: jh, data: out };
   }
 
-  if (NO_RASTER_DECODER.has(info.Filter ?? '')) return undefined;
+  if (NO_RASTER_DECODER.has(filt ?? '')) return undefined;
   let samples: Uint8Array;
-  try { samples = info.Decode(); } catch { return undefined; }
+  try { samples = decodeImageStream(doc, stream); } catch { return undefined; }
 
   const dict = stream.dict;
   const data = new Uint8Array(w * h * 4);

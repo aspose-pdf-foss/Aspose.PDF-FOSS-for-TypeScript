@@ -5,13 +5,14 @@ import { StdFont } from './metrics.js';
 import {
   layoutText, layoutRuns, LaidLine, LaidSegment, FontDriver, winAnsiDriver,
   type LayoutRun, type RunSlice, isAtomicRun,
+  weaveByBeforeRun,
 } from './layout.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { emitLine } from './otemit.js';
 import { shapeText, type ShapeOpts } from './shape.js';
 import { enc, serializeString } from './serialize.js';
 import type { StructElement } from './struct.js';
-import { drawBuiltImage, type BuiltImage } from './imageembed.js';
+import { buildImageXObject, drawBuiltImage, type BuiltImage } from './imageembed.js';
 import { allocContentMcid, reserveContentMcid } from './structwrite.js';
 import {
   num, freshKey, ensureOwnResources, ensureOwnSubdict, registerExtGState, appendContent,
@@ -333,6 +334,65 @@ export interface BlockAtomic {
   align: 'baseline' | 'top' | 'bottom';
 }
 
+/**
+ * A box among the runs as a CALLER states it: image BYTES rather than a built
+ * XObject, so a pure mapper can produce one without importing any PDF object
+ * module.
+ *
+ * `flow.ts` re-exports this as `FlowAtomic`, which is the name the authoring
+ * API uses.
+ */
+export interface AtomicSpec {
+  /** The run index this sits BEFORE; `runs.length` places it at the end. */
+  beforeRun: number;
+  data: Uint8Array;
+  /** Drawn size in POINTS. Both > 0, or the atomic draws nothing. */
+  width: number;
+  height: number;
+  /** Default 'baseline' — the box's bottom edge sits on the text baseline.
+   *  'middle' is not offered: CSS defines it against half the x-height, which
+   *  the AFM tables do not expose. */
+  align?: 'baseline' | 'top' | 'bottom';
+}
+
+/**
+ * Validate a caller's atomics and build them.
+ *
+ * **Invariant:** every atomic is checked BEFORE any XObject is allocated, so a
+ * rejected call leaves the document byte-identical — the rule every authoring
+ * entry point follows.
+ *
+ * ONE owner, here rather than in `flow.ts`, because THREE callers need it —
+ * `paragraph`/`heading`, a list item, and a table cell — and `tableauthor.ts`
+ * cannot reach `flow.ts`: `flow.ts` → `flowtable.ts` → `tableauthor.ts`, so
+ * that edge would close a cycle. `stamp.ts` is the leaf all three already
+ * reach, and it owns {@link BlockAtomic}, which is what this produces.
+ */
+export function resolveAtomics(list: AtomicSpec[] | undefined): BlockAtomic[] | undefined {
+  if (list === undefined) return undefined;
+  if (!Array.isArray(list)) throw new TypeError('atomics must be an array');
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (!Number.isInteger(a?.beforeRun) || a.beforeRun < 0)
+      throw new TypeError(`atomic ${i}: beforeRun must be a non-negative integer`);
+    if (!(a.data instanceof Uint8Array))
+      throw new TypeError(`atomic ${i}: data must be a Uint8Array`);
+    for (const k of ['width', 'height'] as const) {
+      if (!Number.isFinite(a[k]) || a[k] < 0)
+        throw new TypeError(`atomic ${i}: ${k} must be a non-negative finite number`);
+    }
+    if (a.align !== undefined && !['baseline', 'top', 'bottom'].includes(a.align))
+      throw new TypeError(`atomic ${i}: align must be 'baseline', 'top' or 'bottom'`);
+  }
+  return list.map((a) => ({
+    beforeRun: a.beforeRun,
+    built: buildImageXObject(a.data),
+    width: a.width,
+    height: a.height,
+    align: a.align ?? 'baseline',
+  }));
+}
+
 export interface TextBlockOptions extends Omit<StampOptions, 'align' | 'rotate'> {
   /** Boxes to place among the runs — an image on a line of text. A PARALLEL
    *  channel rather than a field on TextRun, so textdecor.ts's model — read by
@@ -508,27 +568,22 @@ function weaveAtomics(
   resolved: ResolvedRun[], atomics: BlockAtomic[] | undefined,
 ): { woven: ResolvedRun[]; atomicOf: Map<number, BlockAtomic> } {
   const atomicOf = new Map<number, BlockAtomic>();
-  if (atomics === undefined || atomics.length === 0)
-    return { woven: resolved, atomicOf };
-  const woven: ResolvedRun[] = [];
-  const at = (i: number): void => {
-    for (const a of atomics) {
-      if (a.beforeRun !== i) continue;
-      atomicOf.set(woven.length, a);
-      woven.push({
-        layout: { atomic: { width: a.width, height: a.height, align: a.align } },
-        // An atomic has no font, colour, decoration or link of its own. These
-        // are inert and exist only so the array stays homogeneous; the painter
-        // returns before reading any of them.
-        font: resolved[0]?.font ?? resolved[resolved.length - 1]?.font,
-        color: [0, 0, 0],
-        decor: undefined,
-        link: undefined,
-      } as ResolvedRun);
-    }
-  };
-  for (let i = 0; i < resolved.length; i++) { at(i); woven.push(resolved[i]); }
-  at(resolved.length);
+  // The interleaving ORDER is layout.ts's, shared with tableauthor.ts's cell
+  // measurement so the two cannot drift. What is local here is the SHAPE of
+  // the woven element and the woven-index map the painter reads.
+  const woven = weaveByBeforeRun(resolved, atomics, (a, i) => {
+    atomicOf.set(i, a);
+    return {
+      layout: { atomic: { width: a.width, height: a.height, align: a.align } },
+      // An atomic has no font, colour, decoration or link of its own. These
+      // are inert and exist only so the array stays homogeneous; the painter
+      // returns before reading any of them.
+      font: resolved[0]?.font ?? resolved[resolved.length - 1]?.font,
+      color: [0, 0, 0],
+      decor: undefined,
+      link: undefined,
+    } as ResolvedRun;
+  });
   return { woven, atomicOf };
 }
 

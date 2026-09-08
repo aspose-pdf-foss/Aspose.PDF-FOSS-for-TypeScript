@@ -21,6 +21,250 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An image among words in Markdown is now DRAWN, not described.**
+  `AddMarkdown` rendered only a *lone* image — one alone in its paragraph, the
+  figure shape — and flattened every other one to its alt text with an
+  `image:<destination>` entry in `skipped`. So `see ![a cat](cat.png) here`
+  came out as the words `see a cat here`: a page that looks deliberate and is
+  quietly missing its picture. It now becomes a box on the line, placed by the
+  same engine an inline `<img>` already used, in a paragraph and in a heading
+  alike.
+
+  **Sizing is 0.75pt per intrinsic pixel** — the 96-dpi convention a browser
+  uses — so `![a](x)` and the `<img src=x>` that `AddHtml` renders come out the
+  same size, and an image wider than the column is clamped to it with its
+  aspect kept. The lone-image figure path is deliberately unchanged and still
+  fills the column width, which is what every Markdown figure has always drawn
+  at.
+
+  **What still falls back to alt text, and still reports:** an image whose
+  bytes cannot be had or decoded, which is the standing rule that visible
+  content beats a silently dropped subtree. `data:` URIs are decoded without
+  help and anything else comes through the existing `resolveImage` option,
+  asked exactly once per image. (z77w)
+
+- **…and inside a list item, so `- ![badge](x) text` draws too.** A list item
+  is the one body that both paginates and carries a marker, so it took two
+  rules a paragraph does not need. A continuation is handed the atomics
+  *re-based* onto the sliced run list, never the originals — carry those
+  forward and the picture vanishes at the column break rather than moving.
+  And an item that is *nothing but* an image has an empty run list, so
+  emptiness is "no text **and** no atomics": read it as "no text" alone and
+  such an item gets no `/LI`, no `/LBody` and no bullet.
+
+  Note a lone image in an item is **not** lifted to a block figure the way a
+  top-level paragraph's is — a figure fills the column width, which inside a
+  list item would tower over the marker beside it — so it draws at its natural
+  size on the item's line. An image in one of the item's *further* blocks was
+  already a figure and is unchanged.
+
+  `FlowListItem.atomics` is public, so a hand-built flow can place one without
+  going through Markdown. (092q)
+
+- **…and inside a GFM table cell, which completes the set.** Every Markdown
+  construct that can hold inline text can now hold an inline image. The row
+  grows to fit the picture, because a cell's height has long been the sum of
+  its line bands rather than a line count times a leading — the doc comment
+  that said otherwise was stale, and correcting it turned a proposed rewrite
+  of the table height model into plumbing. Column auto-fit sees the picture's
+  width too, so a wide image widens its column instead of being silently
+  scaled down to fit a column measured on text alone.
+
+  `CellOptions.atomics` is public and is **distinct from `cell.setImage`**:
+  that is one picture aspect-fit to the whole cell box and painted under the
+  text, while these sit *in* the text, on its lines, and there may be several.
+  A cell may carry both. (dsw8)
+
+- **`saveImagesFile` — every embedded image, straight to disk.** `ImageInfo.Save`
+  hands back `{ bytes, mediaType }`, and turning that into files was a loop the
+  caller had to assemble — read the media type, map it through
+  `imageExtension`, build the name, write the bytes — where getting the
+  extension step wrong yields a `.png` holding JPEG bytes, a file no viewer
+  opens. That is exactly the mistake the media type exists to prevent, so it is
+  now prevented once: `saveImagesFile(inputPath, outDir, options?)` writes
+  `img-1`, `img-2`, … in document order with the extension always taken from
+  the encoder's media type and never from the source image. Encoding is
+  `ImageInfo.Save`'s, so the default is faithful and an unmasked `DCTDecode`
+  comes out byte for byte with no generation loss.
+  **One file per distinct picture**, identity being a hash of the encoded bytes,
+  so a logo drawn on forty pages — or a merged document carrying forty copies of
+  it — is written once. A picture that will not encode costs itself and not the
+  run: it lands in `skipped` with its page, resource key and reason while its
+  neighbours are still written, which is why this returns
+  `{ written, skipped }` rather than the bare `string[]` its neighbours in
+  `node.ts` return — a plain path list would silently lose three pictures out of
+  two hundred. A document with no images returns two empty arrays rather than
+  throwing. Inline `BI … EI` images are out of reach and documented as such:
+  they occupy no `/XObject` entry, so `page.Images` structurally never sees one.
+  (72nc.8)
+
+- **`doc.PageMode` and `doc.PageLayout` — how a document asks to be opened.**
+  Both catalog entries (32000-1 Table 28) were absent: `/PageMode` says which
+  of a viewer's panels is open — and its `FullScreen` value is what makes a
+  viewer PRESENT a document rather than show it as a page in a window, without
+  which the `page.Transition` and `page.Duration` shipped in 72nc.4 describe a
+  slide deck nothing plays. `/PageLayout` says how pages are arranged, its
+  `...Left`/`...Right` pairs differing in which side the first page falls on,
+  which is what puts a cover opposite the right-hand first page of a book.
+  Property pairs on `Document`, reporting only what the file STATES — absent
+  reads `undefined` rather than the `UseNone`/`SinglePage` default, so a
+  producer's silence stays distinguishable from its choice — read leniently, and
+  validated before anything is written so a rejected assignment leaves the
+  document byte-identical. Assign `null` to remove an entry; removing one the
+  catalog has not got touches nothing, which matters because marking a document
+  modified turns a later sign-on-save from an incremental append into a full
+  rewrite. The page-mode vocabulary now has one owner: `NonFullScreenPageMode`
+  is an `Exclude` over `PageMode` rather than the same four names written out
+  twice. (72nc.7)
+
+- **`page.Artifacts` — the read side of a vocabulary we only wrote.** An
+  `/Artifact` marked-content scope is decoration a screen reader skips, and
+  this library has always been able to *write* one — `PageGraphics.BeginArtifact`,
+  the `artifact: true` option on every vector producer, `AutoTag`'s undescribed
+  images — with no way to ask what a page declares. Each entry reports the
+  property list (32000-1 14.8.2.2: `/Type`, `/Subtype`, `/Attached`, `/BBox`,
+  plus the raw dict for keys the model does not name) and where the scope sits,
+  as the `ContentAddr` the rest of the content API addresses ops by. Nested
+  scopes are one entry each, the inner naming the outer as its `parent`, and the
+  walk descends into Form XObjects.
+  A declared `/BBox` is reported verbatim; absent one — which is the common
+  case, since the whole property list is optional and a bare `/Artifact BMC` is
+  what this library and most producers write — the entry carries the measured
+  extent of the ink the scope encloses instead, with `bboxSource` saying which
+  of the two it is. Measured through `visitContent`, so a glyph, image and path
+  extent is text.ts's answer rather than a second one: `GetPaths`, `GetText` and
+  this agree by construction. Read-only. (72nc.6)
+
+- **`ImageInfo.Save` — an embedded image as a file, not just as samples.**
+  `page.Images` exposed `Decode()` and `RawData`, so a caller could get pixels
+  but not something writable to disk: turning either into a file meant knowing
+  which codec the image used and re-implementing the PNG wrapping the exports
+  already do. `img.Save()` returns `{ bytes, mediaType }`, and the media type is
+  the point — it is what says whether to write `.jpg` or `.png`, and
+  `imageExtension(mediaType)` is now exported for it. With no `format` the
+  encoding is *faithful*: an unmasked `DCTDecode` hands back its embedded bytes
+  verbatim, with no re-encode and no generation loss, and anything else becomes
+  a PNG carrying alpha. `{ format: 'png' | 'jpeg' }` forces one — a forced
+  format the faithful encoding already satisfies changes nothing — with
+  `'jpeg'` compositing transparency onto white, since naming an opaque format is
+  the request to flatten. It is the encoder five exports already share, so an
+  extracted image is the same picture the HTML, Markdown and DOCX exports embed
+  (`72nc.5`).
+
+- **Page transitions and page duration — `/Trans` and `/Dur`.**
+  `page.Transition` reads and writes 32000-1 Table 165 in full (the twelve
+  styles, the effect `duration`, `dimension`, `motion`, `direction`, Fly's
+  `scale` and `opaque`), and `page.Duration` the `/Dur` beside it — how long the
+  page is shown before advancing. Neither key had an accessor, so a PDF meant to
+  be presented could not be authored at all. Assigning replaces the dictionary
+  wholly rather than merging, because a transition is a unit — a style plus that
+  style's parameters — and merging would leave a stale `scale`, or a
+  Glitter-only `315`, beside a newly-set style; `null` deletes. Reading is
+  lenient (an entry of the wrong type or outside its enumeration reads as
+  absent) while writing refuses a value the stated style does not admit, `315`
+  off Glitter and `'None'` off Fly being values no viewer honours. Note the two
+  durations are different clocks: `Transition.duration` is `/D`, how long the
+  *effect* runs. Presenting still needs the catalog's `/PageMode /FullScreen`,
+  which remains unmodelled (`72nc.4`).
+
+- **The whole `/ViewerPreferences` dictionary, not just one flag of it.**
+  `doc.GetViewerPreferences()` and `doc.SetViewerPreferences(update)` read and
+  merge all 17 entries of 32000-1 Table 150 — the window and chrome flags,
+  `NonFullScreenPageMode`, `Direction`, the view/print area and clip boxes,
+  `PrintScaling`, `Duplex`, `PickTrayByPDFSize`, `NumCopies` and
+  `PrintPageRange`. Only `/DisplayDocTitle` was reachable before, and only
+  because PDF/UA needs it; everything a producer says about how a document
+  should *open and print* had no accessor at all.
+
+  The getter reports **only what the document states** — an entry it does not
+  carry is `undefined` rather than the spec default — so a stated `false` stays
+  distinguishable from silence, which is what lets a caller tell a producer's
+  decision from its omission. Values are read leniently: one of the wrong type,
+  or a name outside its enumeration, reads as `undefined` rather than throwing.
+  The setter is the other half of that and merges narrowly, touching only the
+  keys the update names, so an entry this library does not model — PDF 2.0's
+  `/Enforce`, say — survives a read-modify-write instead of being silently
+  stripped. `undefined` leaves an entry, `null` deletes it, a value sets it;
+  the dictionary is created on the first write and removed when its last entry
+  goes, since an empty `<< >>` gives a document that "has viewer preferences"
+  and does not.
+
+  `/PrintPageRange` is modelled as inclusive 1-based `[first, last]` pairs
+  rather than the flat array on the wire, because an odd-length or descending
+  flat array is exactly the mistake that produces a plausible wrong print job
+  rather than an error. Writing range-checks each pair against the page count;
+  reading reports whatever the producer wrote, since a document split out of a
+  longer one legitimately carries a range past its own end. A bad value throws
+  `TypeError` (wrong kind of thing) or `RangeError` (outside the permitted set)
+  before anything is written, so a rejected call leaves the document
+  byte-identical. `doc.DisplayDocTitle` keeps its signature and becomes a
+  shorthand over the new writer, which is now the single owner of the
+  dictionary — the ensure-the-dict dance had been hand-rolled in three places.
+  (72nc.3)
+
+- **PDF/A-4 conversion.** `doc.ConvertToPdfA('4' | '4e' | '4f')` remediates
+  toward ISO 19005-4:2020 instead of throwing `UnsupportedFeatureError`. Part
+  4's rules are not a superset of parts 1–3, so conversion runs in both
+  directions: it *stops* removing JavaScript actions (and their `/Names`
+  tree) and embedded files, and *starts* raising the catalog `/Version` to
+  2.0 — an exact major there rather than a ceiling — writing
+  `pdfaid:rev="2020"` with the conformance **absent** at the base level,
+  clearing the ToggleNoView annotation flag, adding `/UF`,
+  `/AFRelationship` and a `/Subtype` MIME type to embedded files, and
+  removing `/NeedsRendering`, `/Requirements`, `/AlternatePresentations`,
+  page `/PresSteps`, non-`/DocMDP` `/Perms` keys, ExtGState `/TR` and
+  `/HTO` (forcing `/TR2` to `/Default`), `/HalftoneName`, image
+  `/Alternates` and `/OPI`, Form XObject `/OPI`, `/DestOutputProfileRef`,
+  surplus PDF/A output intents, appearance keys other than `/N`, and a
+  Widget's `/A`. PDF/A-4e keeps 3D and RichMedia annotations and the
+  SetOCGState and GoTo3DView actions, which is most of what makes it the
+  engineering level.
+
+  The casualty is the document information dictionary. PDF/A-4 permits
+  `/Info` only alongside a catalog `/PieceInfo` and then only holding
+  `/ModDate`, so essentially every real document loses it: conversion
+  mirrors its title, author, subject, keywords **and** `/ModDate` into XMP
+  first, then reduces the dictionary to `/ModDate` beside a `/PieceInfo` or
+  removes it without one. The two branches are not a preference — a
+  reduce-only pass can never pass validation for a document that has no
+  `/PieceInfo`. `preserve: ['info']` keeps the dictionary and reports
+  `InfoRestriction` unresolved instead. A PDF/A-4f file with no attachment
+  reports `EmbeddedFilesRequired`, which conversion cannot synthesize, and a
+  bad `/BitsPerComponent`, a prohibited halftone type and a `/ToUnicode`
+  CMap with prohibited code points are reported rather than fixed —
+  re-encoding an image, changing how a page prints, and destroying text
+  extraction are all worse than saying so. `XmpMetadata.pdfaRev` is the one
+  public type addition. Verified against this library's own PDF/A-4
+  validator, itself a transcription of veraPDF's profiles: the two halves
+  now agree by construction, which is not evidence that a certified
+  validator would. (72nc.2)
+
+- **PDF/A-4 validation.** `doc.ValidatePdfA('4' | '4e' | '4f')` checks the
+  ISO 19005-4:2020 rule set. PDF/A-4 is a PDF 2.0-era standard whose rules are
+  **not** a superset of parts 1–3: four checks this library makes at `'2u'` go
+  *silent* at `'4'`, so a document can fail the older level and pass the newer
+  one for the same reason. `/ToUnicode` is no longer required to be present
+  (only constrained if it exists), `/CIDSet` has no rule at all, JavaScript
+  actions are permitted, and `/Info` is near-banned — allowed only alongside a
+  catalog `/PieceInfo` and then holding nothing but `/ModDate`, which supersedes
+  the `/Info`-versus-XMP consistency check. New checks cover PDF 2.0 versioning,
+  `pdfaid:rev`, the conformance-by-absence identification, `/Perms`,
+  `/NeedsRendering`, `/Requirements`, alternate presentations, ExtGState `/TR`
+  and `/HTO`, halftone types, image keys and bit depths, `/OPI`, output-intent
+  keys, the transparency blending colour space, appearance keys, widget actions,
+  optional-content configurations and embedded-file specifications. `'4e'`
+  permits 3D and RichMedia annotations plus the `SetOCGState` and `GoTo3DView`
+  actions; `'4f'` permits arbitrary embedded files and is the one conformance
+  that *requires* the document to carry some. Clause 6.9-3 — embedded files must
+  themselves be PDF/A — is reported as a warning rather than checked, since this
+  validator does not recursively validate embedded documents. The rules are
+  transcribed from veraPDF's published validation profiles and there is no
+  runnable oracle here, so a passing report attests agreement with that
+  transcription rather than certified ISO 19005-4 conformance. Conversion to
+  part 4 is not yet supported: `ConvertToPdfA('4')` throws
+  `UnsupportedFeatureError` rather than running part-2-shaped remediation, which
+  would write a `pdfaid:conformance` PDF/A-4 forbids. (72nc.1)
+
 - **`iccCmykTransform(profile)` converts RGB to CMYK through a real ICC
   destination profile.** `85l8.3` added the seam; this fills it. Pass it to
   `ConvertColors` and the conversion is genuinely colour managed:
@@ -45,8 +289,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so are absolute colorimetric (which has no `B2A` of its own), a non-CMYK
   device space, and a profile carrying no `B2A`. Every refusal happens before
   any colour converts, so a rejected profile leaves the document
-  byte-identical. CLUT interpolation is trilinear, and black point
-  compensation is not applied.
+  byte-identical. Black point compensation is not applied.
+
+  **CLUT interpolation is tetrahedral**, which is what a reference CMS does —
+  measured against Windows Color System rather than assumed, and matching
+  littlecms and Adobe's CMM. This started out trilinear, on the reasoning that
+  its arithmetic reads straight off the spec; no spec text settles the method,
+  and through a purpose-built curved profile the trilinear walk missed WCS by
+  four percentage points of ink where tetrahedral tracks it to under one. The
+  gap falls as the square of the CLUT cell size, so on a real profile — grid
+  17, where ours is grid 3 — it is nearer a tenth of a percent; the reason to
+  do it this way is agreement with the reference, not the magnitude. (85l8.7,
+  m3gs)
 
   Without a `transform` the default is unchanged and still naive, byte for
   byte. (85l8.7)
@@ -108,6 +362,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (85l8.3)
 
 ### Fixed
+
+- **Nine structural checks now report at PDF/A parts 1–3, not only part 4.**
+  `72nc.1` landed them gated at part 4, so a document violating ExtGState
+  `/TR`/`/TR2`, image `/Alternates`/`/OPI`/`BitsPerComponent`, Form XObject
+  `/OPI`, an appearance dictionary holding more than `/N`, a Widget action, a
+  halftone, `/NeedsRendering`, a transparency blending space or
+  `/DestOutputProfileRef` was reported at `'4'` and passed at `'2b'` — the
+  validator was quietly more lenient about the older, stricter parts. Each rule
+  now applies at exactly the parts veraPDF's PDFA-1B/2B/3B profiles carry it,
+  and cites that standard's own clause number rather than ISO 19005-4's. Three
+  divergences are real and are not smoothed over: a 16-bit image is legal at
+  parts 2/3/4 and **illegal at part 1** (PDF 1.4 had none), so a document that
+  converts clean to `'2b'` can fail `'1b'`; `/DestOutputProfileRef` is exempt on
+  a `GTS_PDFX` output intent at parts 2/3 but not at part 4; and a Widget's
+  `/AA` is prohibited at parts 1–3 while ISO 19005-4 6.6.3-1 explicitly exempts
+  it. `ConvertToPdfA` repairs the same set at the same parts, so conversions
+  that reported clean keep doing so — except for a prohibited halftone type and
+  a bad `BitsPerComponent`, which are reported rather than repaired because
+  fixing them would change how a page prints or need the image re-encoded.
+  Stripping a Widget's `/A` and `/AA` deletes real form behaviour (a push
+  button's action, a field's keystroke and format scripts), so it is opt-out
+  through the new `preserve: ['formActions']` category. (pjy7)
+
+- **PDF/A-1 no longer reports transparency for an ExtGState that has no
+  `/SMask`.** `ctx.R(dict.get('SMask'))` returns `null` for an absent key and
+  `null !== undefined`, so every part-1 ExtGState was reported as carrying a
+  soft mask — the exact trap this file already records for PDF/X. It had never
+  fired because no part-1 test fixture carried an ExtGState at all until the
+  backport above gave one to part 1, which is how a validator can hold a
+  false positive nobody meets. A real `/ca` below 1 and a non-standard blend
+  mode still report, since PDF/A-1 does prohibit those. (pjy7)
+
+- **An empty XMP identification attribute no longer reads back as an absent
+  one.** `pdfaid:part`, `pdfaid:conformance`, `pdfaid:rev`, `pdfuaid:part` and
+  `pdfxid:GTS_PDFXVersion` each matched `["']([^"']+)["']` — one or more — so a
+  packet declaring `pdfaid:conformance=""` was indistinguishable from one
+  declaring nothing, in `GetXmp` and in both validators. That mattered most
+  where absence is itself the declaration: ISO 19005-4 6.7.3-3 spells PDF/A-4's
+  base conformance by genuine absence, so such a file passed `ValidatePdfA('4')`
+  when it should have been reported. The general `scalar()` helper in the same
+  module had always matched `([^"]*)`, so `pdf:Producer=""` already read back as
+  `''` — the identification fields were the outliers, and they now follow one
+  rule through a shared reader. A present-but-empty **string** field surfaces as
+  `''`; a present-but-empty **numeric** field surfaces as `NaN` rather than
+  `Number('')`'s `0`, which would read as a document claiming part 0 — junk like
+  `part="x"` already yielded `NaN`, so empty and junk get one answer instead of
+  two. Genuinely absent stays `undefined`. Found by a mutation during 72nc.2:
+  a build writing `conformance=""` reddened nothing. (ugxr)
+
+- **Signing no longer writes a `%PDF-1.7` header over the document's own
+  version.** The sign-on-save (full-rewrite) writer hardcoded that header,
+  where every other write path emits the catalog `/Version` through
+  `headerVersion()`. Signing a document therefore silently overwrote its
+  declared version — and the reachable case is the damaging one: `Sign` takes
+  the full rewrite whenever the document is modified, and `ConvertToPdfA`
+  marks it modified, so convert-then-sign breached the very version rule the
+  conversion had just satisfied. A PDF/A-4 file requires PDF 2.n exactly
+  (ISO 19005-4 6.1.2-1, not a ceiling) and a PDF/A-1 file forbids anything
+  above 1.4, so both directions were wrong. The header sits inside the signed
+  byte range, so it is chosen when the placeholder is laid out rather than
+  patched afterwards; the incremental path is untouched and still preserves
+  its base bytes verbatim, header included, which is asserted from the other
+  side. (909q)
 
 - **A colour conversion no longer skips a page whose `/Resources` is inherited
   from the page tree.** `/Resources` is an inheritable page attribute (32000-1

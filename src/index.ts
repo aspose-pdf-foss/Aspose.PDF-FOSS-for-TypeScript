@@ -15,6 +15,8 @@ export type { ObjStmDamage } from './objstm.js';
 export type { PdfRevision } from './xref.js';
 export { Page } from './page.js';
 export { ImageInfo } from './image.js';
+export { imageExtension } from './imagehref.js';
+export type { EncodedImage, SaveImageOptions, SaveImageFormat } from './imagehref.js';
 export { InlineImageInfo } from './inlineimage.js';
 export { tiffPageCount } from './tiff.js';
 export { Form } from './form.js';
@@ -56,13 +58,17 @@ export type { ContentOp } from './content.js';
 export { EditableContent } from './editcontent.js';
 export type { ContentAddr } from './editcontent.js';
 export { visitContent, mapRegions } from './text.js';
-export type { GlyphEvent, ImageEvent, PathEvent, ContentVisitor, Rect, RegionHits, TextFragment, TextLine, TextBlock } from './text.js';
+export type { GlyphEvent, ImageEvent, PathEvent, ArtifactEvent, ContentVisitor, Rect, RegionHits, TextFragment, TextLine, TextBlock } from './text.js';
 export { extractTables, Table } from './table.js';
 export { extractTaggedTables } from './tablestruct.js';
 export { stitchTables } from './tablestitch.js';
 export type { TableCell, TableRow, TableExtractOptions } from './table.js';
 export { extractPaths } from './paths.js';
 export type { PagePath, PathSubpath, PathSegment, PathPaint } from './paths.js';
+export type { PageMode, PageLayout } from './pagemode.js';
+export { extractArtifacts } from './artifact.js';
+export { imageKey } from './imagehref.js';
+export type { PageArtifact, ArtifactEdge, ArtifactBBoxSource } from './artifact.js';
 export type { TableStitchOptions } from './tablestitch.js';
 export { StructTreeRoot, StructElement, STANDARD_STRUCTURE_TYPES } from './struct.js';
 export type { ContentItem } from './struct.js';
@@ -148,6 +154,14 @@ export { PageGraphics, VectorGraphics } from './graphics.js';
 export { Template } from './template.js';
 export type { PlaceOptions } from './template.js';
 export type { OpenAction, DocumentJavaScript } from './docaction.js';
+export type {
+  ViewerPreferences, ViewerPreferencesUpdate, NonFullScreenPageMode,
+  ReadingDirection, PageBoundary, PrintScaling, Duplex, PrintPageRange,
+} from './viewerprefs.js';
+export type {
+  PageTransition, TransitionStyle, TransitionDimension, TransitionMotion,
+  TransitionDirection,
+} from './pagetransition.js';
 export type { GradientStop, LinearGradient, RadialGradient, Gradient } from './gradient.js';
 export type {
   TilingPattern, ColoredTilingPattern, UncoloredTilingPattern, TilingPatternOptions,

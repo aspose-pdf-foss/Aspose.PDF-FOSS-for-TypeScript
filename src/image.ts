@@ -1,31 +1,15 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfStream, PdfObject, isDict, isStream, isName, isArray } from './types.js';
-import { applyDecodeFilters } from './filters.js';
-import { decodeCcitt } from './ccitt.js';
-import { decodeJpx } from './jpx.js';
-import { decodeJbig2 } from './jbig2.js';
+import { decodeImageStream, filterName, numOf } from './imagedecode.js';
+import {
+  encodeImage, type EncodedImage, type SaveImageOptions,
+} from './imagehref.js';
 import { UnsupportedFeatureError } from './errors.js';
 import {
   replaceImage, removeImage,
   type ReplaceImageOptions, type RemoveImageOptions,
 } from './imageedit.js';
-
-function numOf(doc: Document, dict: PdfDict, key: string, dflt: number): number {
-  const v = doc.resolve(dict.get(key));
-  return typeof v === 'number' ? v : dflt;
-}
-
-/** Effective single codec filter name (last in a chain), or undefined when none. */
-function filterName(doc: Document, dict: PdfDict): string | undefined {
-  const f = doc.resolve(dict.get('Filter'));
-  if (isName(f)) return f.name;
-  if (isArray(f) && f.length > 0) {
-    const last = doc.resolve(f[f.length - 1]);
-    if (isName(last)) return last.name;
-  }
-  return undefined;
-}
 
 /** A single embedded image XObject: a live, read-only handle over its stream. */
 export class ImageInfo {
@@ -76,57 +60,49 @@ export class ImageInfo {
   /** Raw encoded stream bytes (still Flate/DCT-encoded). Never throws. */
   get RawData(): Uint8Array { return this.stream.raw; }
 
-  /** Resolved filter names + per-filter DecodeParms (indirects dereferenced). */
-  private resolvedFilters(): { names: string[]; parms: (PdfDict | undefined)[] } {
-    const f = this.doc.resolve(this.Dict.get('Filter'));
-    const names = isName(f) ? [f.name]
-      : isArray(f)
-        ? f.map((x) => this.doc.resolve(x)).filter(isName).map((n) => n.name)
-        : [];
-    const p = this.doc.resolve(this.Dict.get('DecodeParms') ?? this.Dict.get('DP'));
-    const parms = isArray(p)
-      ? p.map((x) => { const r = this.doc.resolve(x); return isDict(r) ? r : undefined; })
-      : names.map(() => (isDict(p) ? p : undefined));
-    return { names, parms };
-  }
-
   /** Decoded bytes. JPEG passthrough for DCTDecode; decoded 8-bit samples for
    *  Flate/LZW/ASCII chains, CCITTFaxDecode, and JPXDecode (JPEG 2000); decoded
    *  1-bpp samples for JBIG2Decode (arithmetic generic/symbol/text + MMR). */
   Decode(): Uint8Array {
-    const { names, parms } = this.resolvedFilters();
-    const { bytes, terminal } = applyDecodeFilters(this.stream.raw, names, parms);
-    if (!terminal) return bytes;
-    if (terminal.name === 'DCTDecode' || terminal.name === 'DCT') return bytes;
-    if (terminal.name === 'CCITTFaxDecode' || terminal.name === 'CCF') {
-      const dp = terminal.parms;
-      const n = (k: string, d: number) => {
-        const v = dp ? this.doc.resolve(dp.get(k)) : undefined;
-        return typeof v === 'number' ? v : d;
-      };
-      const b = (k: string, d: boolean) => {
-        const v = dp ? this.doc.resolve(dp.get(k)) : undefined;
-        return typeof v === 'boolean' ? v : d;
-      };
-      return decodeCcitt(bytes, {
-        k: n('K', 0),
-        columns: n('Columns', 1728),
-        rows: n('Rows', this.Height),
-        blackIs1: b('BlackIs1', false),
-        byteAlign: b('EncodedByteAlign', false),
-        endOfLine: b('EndOfLine', false),
-        endOfBlock: b('EndOfBlock', true),
-      });
+    return decodeImageStream(this.doc, this.stream);
+  }
+
+  /** This image as a FILE: its encoded bytes and their media type.
+   *
+   *  With no `format`, the encoding is FAITHFUL — an unmasked `DCTDecode` hands
+   *  back the embedded JPEG bytes verbatim, with no re-encode and no generation
+   *  loss, and anything else becomes a PNG (carrying alpha where the image has
+   *  an `/SMask` or `/Mask`). Name a `format` to force one; a forced format the
+   *  faithful encoding already satisfies changes nothing.
+   *
+   *  JPEG has no alpha channel, so `format: 'jpeg'` composites any transparency
+   *  onto white — naming an opaque format is the request to flatten.
+   *
+   *  Pair it with {@link imageExtension} for the file name: the media type is
+   *  what says whether the bytes are a `.jpg` or a `.png`, and writing JPEG
+   *  bytes under `.png` gives a file no viewer opens.
+   *
+   *  Throws {@link UnsupportedFeatureError} for a format it cannot encode
+   *  (checked before any decoding, so a rejected call costs nothing) and for an
+   *  image it cannot decode. Note `encodeImage` returns `undefined` there
+   *  instead: its other callers are rendering a whole document, where skipping
+   *  one damaged picture is right, while a caller asking for THIS image wants
+   *  to be told. */
+  Save(opts: SaveImageOptions = {}): EncodedImage {
+    const format = opts.format;
+    if (format !== undefined && format !== 'png' && format !== 'jpeg') {
+      throw new UnsupportedFeatureError(
+        `unsupported image format ${JSON.stringify(format)}; supported: png, jpeg`);
     }
-    if (terminal.name === 'JPXDecode') return decodeJpx(bytes).data;
-    if (terminal.name === 'JBIG2Decode') {
-      const dp = terminal.parms;
-      let globals: Uint8Array | undefined;
-      const g = dp ? this.doc.resolve(dp.get('JBIG2Globals')) : undefined;
-      if (isStream(g)) globals = new ImageInfo(this.doc, '', g).Decode(); // handles a Flate-wrapped globals stream
-      return decodeJbig2(bytes, globals, this.Width, this.Height);
+    // Black is the PDF initial fill, and it is what a stencil /ImageMask is
+    // painted with when nobody has said otherwise.
+    const enc = encodeImage(this.doc, this.stream, [0, 0, 0], opts);
+    if (!enc) {
+      throw new UnsupportedFeatureError(
+        `image ${this.Name || '<unnamed>'} cannot be encoded: ` +
+        `filter ${this.Filter ?? 'none'}, ${this.Bits} bits per component`);
     }
-    throw new UnsupportedFeatureError(`Image.Decode: unsupported filter ${terminal.name}`);
+    return enc;
   }
 
   /** Swap this image's picture for `data` (JPEG, PNG, BMP or TIFF), keeping its

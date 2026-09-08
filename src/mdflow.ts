@@ -16,13 +16,15 @@ import type {
 } from './mdast.js';
 import type { FlowElement } from './flowelement.js';
 import {
-  paragraph, heading, list, image, type FlowListItem, type FlowListNode,
+  paragraph, heading, list, image,
+  type FlowAtomic, type FlowListItem, type FlowListNode,
 } from './flow.js';
+import { imageSize } from './imageembed.js';
 import { codeBlock, quote, rule } from './flowblock.js';
 import type { Undrawable } from './textcoverage.js';
 import { table } from './flowtable.js';
 import { createTable, type TableBuilder } from './tableauthor.js';
-import { inlineRuns, plainText } from './mdruns.js';
+import { inlineRuns, plainText, type AtomicResolver } from './mdruns.js';
 import { decodeDataUri } from './datauri.js';
 import { resolveMarkdownStyle, type MarkdownStyle, type ResolvedMarkdownStyle } from './mdstyle.js';
 
@@ -75,6 +77,59 @@ function undrawableSink(c: Ctx): (u: Undrawable) => void {
   return (u) => { c.skipped.push(u.all ? 'text' : 'text:partial'); };
 }
 
+/** Points per intrinsic image PIXEL, for an image drawn among words (`z77w`).
+ *
+ *  0.75 is the 96-dpi convention a browser uses, so `![a](x)` and the
+ *  `<img src=x>` that `AddHtml` renders come out the SAME size — the CSS path
+ *  reaches the same number for an unstyled `<img>`, whose used width is its
+ *  intrinsic pixels.
+ *
+ *  **Note this is NOT `cssflow.ts`'s CSS px → pt rule**, whose "here and
+ *  nowhere else" is about the CSS px UNIT. Markdown has no CSS; what is
+ *  converted here is an image's own pixel count, which `docxflow.ts` already
+ *  reads the same way. Two rules that share a constant are not one rule.
+ *
+ *  A BLOCK figure is deliberately different and unchanged: `ImageElement`
+ *  defaults its width to the whole region, which is what a lone Markdown image
+ *  has always drawn at. */
+const PT_PER_PIXEL = 0.75;
+
+/** How an inline image becomes a box on the line.
+ *
+ *  Returns undefined — falling the image back to its alt text, reported by
+ *  `inlineRuns` — when the destination cannot be resolved, or when the bytes
+ *  are not something `buildImageXObject` accepts. `imageSize` swallows that
+ *  throw already, so no format check is needed here. */
+function atomicResolver(c: Ctx): AtomicResolver {
+  return (n) => {
+    const data = decodeDataUri(n.destination)
+      ?? c.opts.resolveImage?.(n.destination, n.title);
+    if (data === undefined) return undefined;
+    const nat = imageSize(data);
+    if (nat === undefined || !(nat.width > 0) || !(nat.height > 0)) return undefined;
+    return {
+      data,
+      width: nat.width * PT_PER_PIXEL,
+      height: nat.height * PT_PER_PIXEL,
+    };
+  };
+}
+
+/** The atomics a block should carry, or undefined when it has none.
+ *
+ *  `cssflow.ts` narrows the same way, and it is the honest spelling of "this
+ *  block has no atomics" rather than "it has an empty list of them".
+ *
+ *  **Note, measured, and it covers NOTHING — the obvious reading is wrong:**
+ *  returning `[]` here is byte-identical. `resolveAtomics([])` allocates no
+ *  XObject and weaves nothing, so a paragraph holding no image hashes the same
+ *  either way (verified directly on emitted page bytes, not inferred), and the
+ *  mutation reddens not one case across the Markdown suite. Retained as the
+ *  clearer statement, not as a byte-identity guard — do not cite the green
+ *  suite as covering it. */
+const atomicsOrNone = (a: FlowAtomic[]): FlowAtomic[] | undefined =>
+  (a.length > 0 ? a : undefined);
+
 /** The single image a paragraph consists of, ignoring surrounding whitespace and
  *  soft breaks; undefined for a paragraph that holds anything else. This is the
  *  shape every Markdown author means as a figure. */
@@ -114,8 +169,11 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
     // Unresolvable: report it once HERE and render the alt text below.
     // inlineRuns would otherwise report the same destination a second time.
     c.skipped.push(`image:${img.destination}`);
+    // Its ALT inlines, which hold no image node, so nothing here can report
+    // the same destination twice or ask the resolver for it again.
     return paragraph(
-      inlineRuns(img.children, c.st, { family: c.st.family, fontSize: c.st.fontSize }, c.skipped),
+      inlineRuns(img.children, c.st, { family: c.st.family, fontSize: c.st.fontSize },
+        c.skipped).runs,
       {
         font: c.st.family.regular, fontSize: c.st.fontSize, color: c.st.color,
         leading: c.st.leading, align: c.st.align,
@@ -123,9 +181,10 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
         onUndrawable: undrawableSink(c),
       });
   }
-  const runs = inlineRuns(n.children, c.st, { family: c.st.family, fontSize: c.st.fontSize },
-    c.skipped);
-  return paragraph(runs, {
+  const content = inlineRuns(n.children, c.st,
+    { family: c.st.family, fontSize: c.st.fontSize, atomic: atomicResolver(c) }, c.skipped);
+  return paragraph(content.runs, {
+    atomics: atomicsOrNone(content.atomics),
     font: c.st.family.regular,
     fontSize: c.st.fontSize,
     color: c.st.color,
@@ -139,9 +198,13 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
 
 function headingElements(n: MdHeading, c: Ctx, extraBefore: number): FlowElement[] {
   const size = c.st.heading.sizes[n.level - 1];
-  const runs = inlineRuns(n.children, c.st, { family: c.st.heading.family, fontSize: size },
-    c.skipped);
-  return heading(n.level, runs, {
+  // A heading takes atomics too: FlowHeadingOptions extends the paragraph
+  // options, so supporting one and not the other would be an arbitrary hole
+  // in `# Title ![icon](x)`.
+  const content = inlineRuns(n.children, c.st,
+    { family: c.st.heading.family, fontSize: size, atomic: atomicResolver(c) }, c.skipped);
+  return heading(n.level, content.runs, {
+    atomics: atomicsOrNone(content.atomics),
     font: c.st.heading.family.regular,
     fontSize: size,
     color: c.st.heading.color,
@@ -180,10 +243,19 @@ function itemNode(item: MdItem, parent: MdList, c: Ctx): FlowListItem {
   const kids = item.children;
   const leading = kids.length > 0 && kids[0].type === 'paragraph'
     ? (kids[0] as MdParagraph) : undefined;
-  const text = leading
-    ? inlineRuns(leading.children, c.st, { family: c.st.family, fontSize: c.st.fontSize },
+  // An image in the item's LEADING paragraph is a box on the item's own line
+  // (`092q`). Note a lone one is NOT lifted to a block figure the way a
+  // top-level paragraph's is: a figure fills the column width, which inside a
+  // list item would tower over the marker beside it, so `- ![badge](x)` draws
+  // at its natural size on the item's line. An image in one of the item's
+  // FURTHER blocks needs nothing here — those go through `blockElements` and
+  // so through `paragraphElements`, which has lifted them since `z77w`.
+  const content = leading
+    ? inlineRuns(leading.children, c.st,
+      { family: c.st.family, fontSize: c.st.fontSize, atomic: atomicResolver(c) },
       c.skipped)
     : undefined;
+  const text = content?.runs;
   // A loose item opens a gap above its second block; a tight one does not.
   const gap = parent.tight ? 0 : c.st.paragraphSpacing;
   const blocks = blockElements(leading ? kids.slice(1) : kids, c, gap);
@@ -193,6 +265,9 @@ function itemNode(item: MdItem, parent: MdList, c: Ctx): FlowListItem {
   // an empty run list draws nothing and the engine discards it.
   if (text !== undefined) node.text = text;
   else if (blocks.length === 0) node.text = [];
+  // An item that is NOTHING but an image has an empty run list and one atomic,
+  // which is why `text: []` above is a body rather than an absence.
+  if (content !== undefined && content.atomics.length > 0) node.atomics = content.atomics;
   if (blocks.length > 0) node.blocks = blocks;
   if (item.checked !== undefined) node.marker = item.checked ? 'checked' : 'checkbox';
   return node;
@@ -252,8 +327,14 @@ function mdTable(n: MdTable, c: Ctx): TableBuilder {
       ? { background: st.headerBackground }
       : {});
     row.children.forEach((cell, i) => {
-      r.addCell(inlineRuns(cell.children, c.st, row.header ? header : body, c.skipped),
-        { align: n.align[i] ?? 'left' });
+      // A cell places atomics too (`dsw8`), so an image in a Markdown table
+      // draws rather than flattening to its alt text.
+      const content = inlineRuns(cell.children, c.st,
+        { ...(row.header ? header : body), atomic: atomicResolver(c) }, c.skipped);
+      r.addCell(content.runs, {
+        align: n.align[i] ?? 'left',
+        ...(content.atomics.length > 0 ? { atomics: content.atomics } : {}),
+      });
     });
   }
   // GFM puts the header at row 0 and nowhere else, so repeating one row is

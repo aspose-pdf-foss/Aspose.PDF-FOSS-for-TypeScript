@@ -13,7 +13,7 @@ const inlinesOf = (src: string, gfm = true) => {
   return (doc.children[0] as MdParagraph).children;
 };
 const runs = (src: string, skipped: string[] = []) =>
-  inlineRuns(inlinesOf(src), STYLE, CTX, skipped);
+  inlineRuns(inlinesOf(src), STYLE, CTX, skipped).runs;
 
 describe('inlineRuns', () => {
   it('plain text is ONE run carrying no overrides at all', () => {
@@ -53,7 +53,7 @@ describe('inlineRuns', () => {
   });
 
   it('inline code scales to the block it sits in, not to the body size', () => {
-    const big = inlineRuns(inlinesOf('`x`'), STYLE, { family: STYLE.family, fontSize: 24 }, []);
+    const big = inlineRuns(inlinesOf('`x`'), STYLE, { family: STYLE.family, fontSize: 24 }, []).runs;
     expect(big[0].fontSize).toBeCloseTo(24 * 0.9, 6);
   });
 
@@ -70,14 +70,14 @@ describe('inlineRuns', () => {
 
   it('an inline image falls back to its alt text and reports itself', () => {
     const skipped: string[] = [];
-    const r = inlineRuns(inlinesOf('see ![a cat](cat.png) here'), STYLE, CTX, skipped);
+    const r = inlineRuns(inlinesOf('see ![a cat](cat.png) here'), STYLE, CTX, skipped).runs;
     expect(r.map((x) => x.text).join('')).toBe('see a cat here');
     expect(skipped).toEqual(['image:cat.png']);
   });
 
   it('inline HTML is dropped and reported', () => {
     const skipped: string[] = [];
-    const r = inlineRuns(inlinesOf('a <b>c'), STYLE, CTX, skipped);
+    const r = inlineRuns(inlinesOf('a <b>c'), STYLE, CTX, skipped).runs;
     expect(r.map((x) => x.text).join('')).toBe('a c');
     expect(skipped).toEqual(['html_inline']);
   });
@@ -87,7 +87,7 @@ describe('inlineRuns', () => {
       regular: 'Helvetica' as const, bold: 'Helvetica' as const,
       italic: 'Helvetica' as const, boldItalic: 'Helvetica' as const,
     };
-    const r = inlineRuns(inlinesOf('**b**'), STYLE, { family: fam, fontSize: 11 }, []);
+    const r = inlineRuns(inlinesOf('**b**'), STYLE, { family: fam, fontSize: 11 }, []).runs;
     expect(r).toEqual([{ text: 'b' }]);
   });
 });
@@ -95,5 +95,86 @@ describe('inlineRuns', () => {
 describe('plainText', () => {
   it('flattens every inline to its characters', () => {
     expect(plainText(inlinesOf('**a** *b* `c` [d](/x)'))).toBe('a b c d');
+  });
+});
+
+/**
+ * Inline images as atomics (`z77w`).
+ *
+ * The resolver is INJECTED, so these drive it with a fake box and never decode
+ * a byte — which is what keeps mdruns.ts a pure leaf and lets every rule here
+ * be checked as arithmetic over indices.
+ */
+describe('inlineRuns atomics', () => {
+  const BOX = { data: new Uint8Array([1, 2, 3]), width: 10, height: 5 };
+  const withAtomic = (src: string, skipped: string[] = []) =>
+    inlineRuns(inlinesOf(src), STYLE, { ...CTX, atomic: () => BOX }, skipped);
+
+  it('emits an inline image as an atomic rather than reporting it', () => {
+    const skipped: string[] = [];
+    const c = withAtomic('see ![a cat](cat.png) here', skipped);
+    expect(skipped).toEqual([]);
+    expect(c.atomics).toHaveLength(1);
+    expect(c.atomics[0]).toEqual({ beforeRun: 1, ...BOX });
+    // The alt text is NOT emitted: the picture is drawn instead of described.
+    expect(c.runs.map((r) => r.text).join('')).toBe('see  here');
+  });
+
+  /**
+   * THE MERGE BARRIER, and it is the rule that renders wrongly rather than
+   * failing when broken. An atomic records the run index it sits BEFORE, so
+   * the identically-styled text on either side must NOT merge — if `a` and `b`
+   * became one run, the atomic's `beforeRun: 1` would point past the end and
+   * its intended index 1 would name the wrong boundary.
+   */
+  it('an atomic is a merge barrier between identically styled text', () => {
+    const c = withAtomic('a![x](i.png)b');
+    expect(c.runs.map((r) => r.text)).toEqual(['a', 'b']);
+    expect(c.atomics[0].beforeRun).toBe(1);
+  });
+
+  it('an atomic before any text records beforeRun 0', () => {
+    const c = withAtomic('![x](i.png)tail');
+    expect(c.atomics[0].beforeRun).toBe(0);
+    expect(c.runs.map((r) => r.text)).toEqual(['tail']);
+  });
+
+  it('an atomic after all text records beforeRun at the end', () => {
+    const c = withAtomic('head ![x](i.png)');
+    expect(c.atomics[0].beforeRun).toBe(c.runs.length);
+  });
+
+  it('several images each keep their own place among the runs', () => {
+    const c = withAtomic('a![1](i.png)b![2](j.png)c');
+    expect(c.runs.map((r) => r.text)).toEqual(['a', 'b', 'c']);
+    expect(c.atomics.map((a) => a.beforeRun)).toEqual([1, 2]);
+  });
+
+  it('a resolver that declines falls back to the alt text and reports', () => {
+    const skipped: string[] = [];
+    const c = inlineRuns(inlinesOf('see ![a cat](cat.png) here'), STYLE,
+      { ...CTX, atomic: () => undefined }, skipped);
+    expect(skipped).toEqual(['image:cat.png']);
+    expect(c.runs.map((r) => r.text).join('')).toBe('see a cat here');
+    expect(c.atomics).toEqual([]);
+  });
+
+  it('no resolver at all is the same fallback, which is what a table cell gets', () => {
+    const skipped: string[] = [];
+    const c = inlineRuns(inlinesOf('see ![a cat](cat.png) here'), STYLE, CTX, skipped);
+    expect(skipped).toEqual(['image:cat.png']);
+    expect(c.atomics).toEqual([]);
+  });
+
+  it('asks the resolver once per image and no more', () => {
+    let calls = 0;
+    inlineRuns(inlinesOf('![a](1.png) ![b](2.png)'), STYLE,
+      { ...CTX, atomic: () => { calls++; return BOX; } }, []);
+    expect(calls).toBe(2);
+  });
+
+  it('a link around an image still resolves the image', () => {
+    const c = withAtomic('[![badge](b.png)](https://example.com)');
+    expect(c.atomics).toHaveLength(1);
   });
 });

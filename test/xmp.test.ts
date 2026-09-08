@@ -216,6 +216,30 @@ describe('xmp pdfaid', () => {
     expect(back.pdfaConformance).toBe('B');
     expect(back.title).toBe('T');
   });
+
+  it('round-trips pdfaid:rev', () => {
+    const packet = buildXmp({ pdfaPart: 4, pdfaRev: 2020 });
+    expect(packet).toContain('pdfaid:rev="2020"');
+    const back = readXmp(enc(packet));
+    expect(back.pdfaPart).toBe(4);
+    expect(back.pdfaRev).toBe(2020);
+  });
+
+  it('emits no pdfaid:rev when it is unset', () => {
+    // Parts 1-3 have no rev property at all; a packet rebuilt for one must not
+    // grow the attribute, which is what keeps the parts-1-3 fence still.
+    expect(buildXmp({ pdfaPart: 2, pdfaConformance: 'B' })).not.toContain('pdfaid:rev');
+  });
+
+  it('emits a pdfaid block for a rev with no part or conformance', () => {
+    expect(buildXmp({ pdfaRev: 2020 })).toContain('pdfaid:rev="2020"');
+  });
+
+  it('reads pdfaid:rev written in element form', () => {
+    const xml = '<rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">'
+      + '<pdfaid:part>4</pdfaid:part><pdfaid:rev>2020</pdfaid:rev></rdf:Description>';
+    expect(readXmp(enc(xml)).pdfaRev).toBe(2020);
+  });
 });
 
 describe('xmp pdfuaid', () => {
@@ -307,5 +331,53 @@ describe('XMP custom namespaced properties', () => {
     expect(bad({ ...prop, name: 'has space' })).toThrow(/custom property/);
     expect(bad({ ...prop, value: 7 })).toThrow(/custom property/);
     expect(bad({ ...prop, prefix: 'rdf' })).toThrow(/custom property/);
+  });
+});
+
+describe('xmp identification: an empty attribute is PRESENT, not absent (ugxr)', () => {
+  // The general scalar() helper already matched `([^"]*)`, so pdf:Producer=""
+  // read back as ''. The five identification fields used `+` instead, so an
+  // empty one read back as ABSENT - two answers to one question inside one
+  // module, and the reason a written pdfaid:conformance="" was invisible.
+  const packet = (attrs: string) =>
+    enc(`<rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/" ${attrs}/>`);
+
+  it('surfaces an empty conformance as the empty string', () => {
+    const meta = readXmp(packet('pdfaid:part="4" pdfaid:conformance=""'));
+    expect(meta.pdfaConformance).toBe('');
+    expect(meta.pdfaPart).toBe(4);
+  });
+
+  it('surfaces an empty numeric attribute as NaN, not 0', () => {
+    // Number('') is 0, which reads as a document CLAIMING part 0. NaN is the
+    // honest answer and is what junk (part="x") already yields today.
+    const meta = readXmp(packet('pdfaid:part="" pdfaid:rev=""'));
+    expect(meta.pdfaPart).toBeNaN();
+    expect(meta.pdfaRev).toBeNaN();
+    expect(readXmp(packet('pdfaid:part="x"')).pdfaPart).toBeNaN();  // unchanged
+  });
+
+  it('treats a whitespace-only numeric attribute as NaN too', () => {
+    expect(readXmp(packet('pdfaid:part="   "')).pdfaPart).toBeNaN();
+  });
+
+  it('leaves a genuinely absent attribute undefined', () => {
+    const meta = readXmp(packet('pdfaid:part="2"'));
+    expect(meta.pdfaPart).toBe(2);
+    expect(meta.pdfaConformance).toBeUndefined();
+    expect(meta.pdfaRev).toBeUndefined();
+  });
+
+  it('reads the empty ELEMENT form as present too', () => {
+    const xml = '<rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">'
+      + '<pdfaid:conformance></pdfaid:conformance></rdf:Description>';
+    expect(readXmp(enc(xml)).pdfaConformance).toBe('');
+  });
+
+  it('applies the same rule to pdfuaid:part and pdfxid:GTS_PDFXVersion', () => {
+    const ua = enc('<rdf:Description xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/" pdfuaid:part=""/>');
+    expect(readXmp(ua).pdfuaPart).toBeNaN();
+    const x = enc('<rdf:Description xmlns:pdfxid="http://www.npes.org/pdfx/ns/id/" pdfxid:GTS_PDFXVersion=""/>');
+    expect(readXmp(x).pdfxVersion).toBe('');
   });
 });

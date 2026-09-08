@@ -569,23 +569,91 @@ caught the `hmtx` gap, which a green suite had been quietly hiding.
 
 ---
 
-## What is NOT here: a real `.dfont`
 
-`l1my.6` added `src/dfont.ts`, a reader for Macintosh `.dfont` suitcases, and
-**no real one is vendored**. Its tests build suitcases with
-`test/helpers/build-dfont.ts`, which transcribes the same section of Inside
-Macintosh the reader does.
+## `LiberationSans.dfont` — a Macintosh suitcase
 
-So this is precisely the shared-convention class the fixtures above exist to
-guard against, left uncovered: the builder and the reader can agree with each
-other and both disagree with what Apple writes. The suite demonstrates that the
-two halves of our own understanding are consistent; it is not evidence that the
-understanding is right.
+**File:** `LiberationSans.dfont`, 1,633,529 bytes,
+sha256 `ee86a00a589577892dc65f501d3c24ccb2aa6d8e5c1f8f8fab444d7b32e7436b`.
 
-The mutation checks recorded in `l1my.6`'s commits are worth more here than the
-green suite is — they show each rule is load-bearing, not that it is correct.
+**Producer:** FontForge 20251009 (git `c41bdb92`), driven by
+`scripts/gen-dfont-fixture.mjs` (`npm run gen:dfont`, not run by `npm test`).
 
-Vendoring `Monaco.dfont`, `Geneva.dfont` or `Courier.dfont` from a macOS
-`/System/Library/Fonts` and asserting the face count and family names against
-them would close this. It needs a macOS machine, which is the only reason it was
-not done.
+**Payload:** the four `fonts/LiberationSans-*.ttf` faces already vendored here
+— Regular, Bold, Italic, Bold Italic — unmodified, wrapped into one resource
+fork. The suitcase carries two resource types, `sfnt` (4 resources) and `FOND`
+(1).
+
+**Deterministic:** FontForge writes identical bytes on every run, verified by
+generating twice and comparing sha256, so re-running produces no diff.
+`test/dfont-real.test.ts` asserts the hash, because the fixture is produced by
+a tool rather than by hand and a FontForge upgrade that changed the container
+would otherwise silently rewrite what the assertions are measured against.
+
+### Why this exists
+
+`l1my.6` added `src/dfont.ts` with no real-world fixture. Its unit tests build
+suitcases with `test/helpers/build-dfont.ts`, which transcribes the same
+section of Inside Macintosh the reader does — the shared-convention class this
+directory exists to guard against, where both halves of one understanding
+agree and are both wrong. FontForge is a container writer we did not write, so
+its resource map is somebody else's reading of the format.
+
+### Why not a real Apple suitcase
+
+`l1my.7` proposed vendoring `Monaco.dfont`, `Geneva.dfont` or `Courier.dfont`
+from a macOS `/System/Library/Fonts`. **They cannot be vendored.** Those are
+Apple copyright with no redistribution grant — the same objection
+`test/fixtures/icc/PROVENANCE.md` records for `RSWOP.icm` — and unlike a
+golden *table*, our tests need the BYTES at test time, so it cannot be reduced
+to a committed table with the file left out. Every other fixture here is
+OFL-1.1 or AGPL+font-exception with its grant in the repo; an Apple system
+font would be the only one without one.
+
+Liberation is OFL-1.1, already vendored, and its identity does not matter:
+what is under test is the container around the payload, and the payload's own
+parsing is anchored by the 14 sfnt fixtures above.
+
+### What it pins, measured
+
+Each mutation was applied to `src/dfont.ts` and BOTH dfont suites re-run, so
+the split says what this file ADDS over the builder-anchored one:
+
+| Rule | here | `dfont.test.ts` |
+|---|---|---|
+| resource count is stored **minus one** | 2 | 7 |
+| type count is stored **minus one** | **0** | 9 |
+| reference list is based on the **type list**, not the map | 5 | 8 |
+| the u24 addresses a **length**, so the sfnt begins 4 bytes on | 2 | 4 |
+| faces are selected **by tag**, not by position | **0** | 2 |
+
+### The ceiling — what this does NOT cover
+
+- **Two of the five rules are not anchored here, and no FontForge output can
+  anchor them.** It emits `sfnt` as type 0 and `FOND` as type 1, so reading
+  the type count raw still yields type 0, and taking type 0 blindly still
+  lands on `sfnt`. Both mutations survive this file. `dfont.test.ts` holds
+  them alone, and its hand-built suitcases can order the types freely
+  *because* they are hand-built.
+- **A real Apple suitcase might order its types the other way** — it carries
+  `FOND`, and often `NFNT` strikes and `POST` fragments — which is the one
+  thing this fixture cannot stand in for. That is now the whole of the
+  remaining gap, where before it was the whole rule set.
+- **One writer, no second to arbitrate.** The same limit
+  `test/fixtures/icc/PROVENANCE.md` records for WCS and
+  `test/fixtures/css-selectors/PROVENANCE.md` for Blink. If FontForge and we
+  are both wrong about the container in the same way, this file agrees with
+  us.
+- **No `.suit`**, whose resources live in a true resource fork, so on any
+  non-Mac filesystem its data fork is empty or arbitrary — out of scope for
+  `dfont.ts` by design.
+- **No `.dfont` whose `sfnt` resource is itself a `ttcf`.** `faceIndex` is
+  consumed by the container layer before such a payload reaches the collection
+  test, so it would need two-level addressing nobody has asked for.
+
+### Licence
+
+Liberation is OFL-1.1, covered by the grant already in
+`fonts/LICENSE-OFL.txt`. FontForge is GPLv3+, but only the *tool* is — it
+grants no rights over its output, which carries the input's licence, so the
+suitcase is OFL-1.1 exactly as its four faces are. `package.json` `files` is
+`["dist"]`, so `test/` never enters the published tarball.

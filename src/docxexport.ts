@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { buildDocModel } from './docmodel.js';
-import { encodeImage, imageExtension } from './imagehref.js';
+import { encodeImage, imageExtension, imageKey } from './imagehref.js';
 import { ImageInfo } from './image.js';
 import type { PdfStream } from './types.js';
 import { docxBody, type DocxImage } from './docxflow.js';
@@ -82,7 +81,7 @@ function imageRegistry(
   const seen = new Map<string, DocxImage>();
 
   const addBytes = (bytes: Uint8Array, mediaType: string): DocxImage => {
-    const key = createHash('sha256').update(bytes).digest('hex');
+    const key = imageKey(bytes);
     const hit = seen.get(key);
     if (hit) return hit;
 

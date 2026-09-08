@@ -63,6 +63,13 @@ import {
   setDocumentJavaScript,
 } from './docaction.js';
 import {
+  ViewerPreferences, ViewerPreferencesUpdate, readDisplayDocTitle,
+  readViewerPreferences, setViewerPreferences,
+} from './viewerprefs.js';
+import {
+  PageMode, PageLayout, readPageMode, setPageMode, readPageLayout, setPageLayout,
+} from './pagemode.js';
+import {
   AttachmentOptions, Attachment, buildFilespec, readAttachments,
   upsertEmbeddedFile, removeEmbeddedFile,
 } from './embeddedfile.js';
@@ -1259,20 +1266,79 @@ export class Document {
   /** Catalog /ViewerPreferences /DisplayDocTitle: whether a viewer shows the
    *  document's title rather than its file name. PDF/UA requires it true, and a
    *  /Info /Title without it satisfies neither — which is why the two are set
-   *  together wherever this library sets either. */
+   *  together wherever this library sets either.
+   *
+   *  A named shorthand over {@link GetViewerPreferences}/{@link
+   *  SetViewerPreferences}, which own the dictionary. It predates them and is
+   *  kept because PDF/UA reaches for exactly this flag; note it reports `false`
+   *  for a document that states nothing, where the accessor distinguishes that
+   *  from a stated false. */
   get DisplayDocTitle(): boolean {
-    const vp = this.resolve(this.catalog().get('ViewerPreferences'));
-    return isDict(vp) && this.resolve(vp.get('DisplayDocTitle')) === true;
+    return readDisplayDocTitle(this);
   }
 
   set DisplayDocTitle(v: boolean) {
-    let vp = this.resolve(this.catalog().get('ViewerPreferences'));
-    if (!isDict(vp)) {
-      vp = new Map<string, PdfObject>();
-      this.catalog().set('ViewerPreferences', vp);
-    }
-    (vp as PdfDict).set('DisplayDocTitle', v);
-    this.markModified();
+    setViewerPreferences(this, { displayDocTitle: v });
+  }
+
+  /** Catalog /PageMode (32000-1 Table 28): which of a viewer's panels is open
+   *  when the document opens — 'UseNone', 'UseOutlines', 'UseThumbs',
+   *  'FullScreen', 'UseOC' or 'UseAttachments'.
+   *
+   *  'FullScreen' is what makes a viewer PRESENT the document rather than show
+   *  it as a page in a window, which is what {@link Page.Transition} and
+   *  {@link Page.Duration} need to describe a slide deck rather than a document
+   *  that happens to carry transitions.
+   *
+   *  Reports only what the document STATES: `undefined` when it carries no
+   *  /PageMode, never the 'UseNone' default. Read leniently — a name outside
+   *  the enumeration reads as `undefined` rather than throwing. Assign `null`
+   *  to remove the entry. */
+  get PageMode(): PageMode | undefined {
+    return readPageMode(this);
+  }
+
+  set PageMode(v: PageMode | null) {
+    setPageMode(this, v);
+  }
+
+  /** Catalog /PageLayout (32000-1 Table 28): how a viewer arranges pages when
+   *  the document opens — 'SinglePage', 'OneColumn', 'TwoColumnLeft',
+   *  'TwoColumnRight', 'TwoPageLeft' or 'TwoPageRight'.
+   *
+   *  The `...Left`/`...Right` pairs differ in which side the FIRST page falls
+   *  on, which is what puts a cover opposite the right-hand first page of a
+   *  book. Absent, lenient and `null`-deletable exactly as {@link PageMode} is;
+   *  the default it does not state is 'SinglePage'. */
+  get PageLayout(): PageLayout | undefined {
+    return readPageLayout(this);
+  }
+
+  set PageLayout(v: PageLayout | null) {
+    setPageLayout(this, v);
+  }
+
+  /** What the catalog /ViewerPreferences states about how this document should
+   *  be opened and printed — 32000-1 Table 150 in full.
+   *
+   *  Only what the document STATES: an entry it does not carry is `undefined`
+   *  rather than the spec default, so a stated `false` stays distinguishable
+   *  from silence. Read leniently — a value of the wrong type or a name outside
+   *  its enumeration reads as `undefined` rather than throwing. */
+  GetViewerPreferences(): ViewerPreferences {
+    return readViewerPreferences(this);
+  }
+
+  /** Merge `update` into the catalog /ViewerPreferences: `undefined` leaves an
+   *  entry alone, `null` deletes it, a value sets it.
+   *
+   *  Only the keys `update` states are touched, so an entry this library does
+   *  not model survives a read-modify-write. The dictionary is created on the
+   *  first write and removed when its last entry goes. Throws `TypeError` for a
+   *  value of the wrong kind and `RangeError` for one outside the permitted
+   *  set, in both cases before anything is written. */
+  SetViewerPreferences(update: ViewerPreferencesUpdate): void {
+    setViewerPreferences(this, update);
   }
 
   /** @internal Map a page object ref to its Page handle, or undefined. */

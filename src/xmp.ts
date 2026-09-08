@@ -14,6 +14,7 @@ export interface XmpMetadata {
   rights?: string;                // dc:rights
   pdfaPart?: number;              // pdfaid:part (PDF/A identification)
   pdfaConformance?: string;       // pdfaid:conformance (A/B/U)
+  pdfaRev?: number;               // pdfaid:rev (PDF/A-4 identification; 2020)
   pdfuaPart?: number;             // pdfuaid:part (PDF/UA identification)
   pdfxVersion?: string;           // pdfxid:GTS_PDFXVersion (PDF/X identification)
   /** Namespaced properties outside the schemas above — how a product stamps its
@@ -130,6 +131,32 @@ function scalar(xml: string, prop: string): string | undefined {
   return undefined;
 }
 
+/** An identification property's value: the attribute form, else the element
+ *  form. `prop` is a controlled schema literal (e.g. 'pdfaid:part'), so no
+ *  regex-escaping — the rule `matchBlock` already follows.
+ *
+ *  Note the `*` rather than `+`, and it is the whole of `ugxr`: an EMPTY value
+ *  is a present property with an invalid value, not a missing one, and a `+`
+ *  made the two indistinguishable. `scalar` has always matched `([^"]*)` for
+ *  every other property, so the five identification fields were the outliers
+ *  in their own module — which is how a packet declaring pdfaid:conformance=""
+ *  read back as conformant. */
+function idValue(xml: string, prop: string): string | undefined {
+  const m = new RegExp(`${prop}\\s*=\\s*["']([^"']*)["']`).exec(xml)
+    ?? new RegExp(`<${prop}>\\s*([^<]*?)\\s*</${prop}>`).exec(xml);
+  return m ? m[1].trim() : undefined;
+}
+
+/** An identification property typed as a number. An empty or blank value is
+ *  NaN, never `Number('')`'s 0 — a 0 reads as a document CLAIMING part 0,
+ *  where NaN says "present, not a number" and is what junk (part="x") already
+ *  yields. One rule for empty and junk rather than two. */
+function idNumber(xml: string, prop: string): number | undefined {
+  const v = idValue(xml, prop);
+  if (v === undefined) return undefined;
+  return v === '' ? NaN : Number(v);
+}
+
 /** Parse an ISO-8601 date, or keep the raw string when unparseable. */
 function parseXmpDate(s: string): Date | string {
   const d = new Date(s);
@@ -153,18 +180,14 @@ export function readXmp(bytes: Uint8Array): XmpMetadata {
   const createDate = scalar(raw, 'xmp:CreateDate'); if (createDate !== undefined) meta.createDate = parseXmpDate(createDate);
   const modifyDate = scalar(raw, 'xmp:ModifyDate'); if (modifyDate !== undefined) meta.modifyDate = parseXmpDate(modifyDate);
 
-  const partAttr = /pdfaid:part\s*=\s*["']([^"']+)["']/.exec(raw)
-    ?? /<pdfaid:part>\s*([^<]+?)\s*<\/pdfaid:part>/.exec(raw);
-  if (partAttr) meta.pdfaPart = Number(partAttr[1].trim());
-  const confAttr = /pdfaid:conformance\s*=\s*["']([^"']+)["']/.exec(raw)
-    ?? /<pdfaid:conformance>\s*([^<]+?)\s*<\/pdfaid:conformance>/.exec(raw);
-  if (confAttr) meta.pdfaConformance = confAttr[1].trim();
-  const uaPart = /pdfuaid:part\s*=\s*["']([^"']+)["']/.exec(raw)
-    ?? /<pdfuaid:part>\s*([^<]+?)\s*<\/pdfuaid:part>/.exec(raw);
-  if (uaPart) meta.pdfuaPart = Number(uaPart[1].trim());
-  const xVersion = /pdfxid:GTS_PDFXVersion\s*=\s*["']([^"']+)["']/.exec(raw)
-    ?? /<pdfxid:GTS_PDFXVersion>\s*([^<]+?)\s*<\/pdfxid:GTS_PDFXVersion>/.exec(raw);
-  if (xVersion) meta.pdfxVersion = xVersion[1].trim();
+  // ISO 19005-4 6.7.3-5 requires pdfaid:rev="2020"; parts 1-3 have no rev
+  // property at all, so an absent one stays absent rather than defaulting.
+  const part = idNumber(raw, 'pdfaid:part'); if (part !== undefined) meta.pdfaPart = part;
+  const conf = idValue(raw, 'pdfaid:conformance'); if (conf !== undefined) meta.pdfaConformance = conf;
+  const rev = idNumber(raw, 'pdfaid:rev'); if (rev !== undefined) meta.pdfaRev = rev;
+  const uaPart = idNumber(raw, 'pdfuaid:part'); if (uaPart !== undefined) meta.pdfuaPart = uaPart;
+  const xVersion = idValue(raw, 'pdfxid:GTS_PDFXVersion');
+  if (xVersion !== undefined) meta.pdfxVersion = xVersion;
 
   const custom = readCustom(raw);
   if (custom.length) meta.custom = custom;
@@ -229,10 +252,12 @@ export function buildXmp(meta: XmpMetadata): string {
   if (meta.createDate !== undefined) lines.push(simple('xmp:CreateDate', dateStr(meta.createDate)));
   if (meta.modifyDate !== undefined) lines.push(simple('xmp:ModifyDate', dateStr(meta.modifyDate)));
 
-  const pdfaDesc = (meta.pdfaPart !== undefined || meta.pdfaConformance !== undefined)
+  const pdfaDesc = (meta.pdfaPart !== undefined || meta.pdfaConformance !== undefined
+    || meta.pdfaRev !== undefined)
     ? `\n  <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"`
       + (meta.pdfaPart !== undefined ? ` pdfaid:part="${meta.pdfaPart}"` : '')
       + (meta.pdfaConformance !== undefined ? ` pdfaid:conformance="${escapeXml(meta.pdfaConformance)}"` : '')
+      + (meta.pdfaRev !== undefined ? ` pdfaid:rev="${meta.pdfaRev}"` : '')
       + `/>`
     : '';
 

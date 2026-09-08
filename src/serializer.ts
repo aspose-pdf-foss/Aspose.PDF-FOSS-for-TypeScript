@@ -192,20 +192,26 @@ export function serializeSignedDocument(
 
   const placeholderBytes = options.placeholderBytes ?? DEFAULT_PLACEHOLDER_BYTES;
   const ph = buildSigDictPlaceholder(sigObj, placeholderBytes);
-  return serializeClassicSigned(plan, trailer, sigNew, ph, placeholderBytes);
+  return serializeClassicSigned(
+    plan, trailer, sigNew, ph, placeholderBytes, headerVersion(objects, trailer));
 }
 
 /** Classic-xref serialization that emits object `sigNew` as a placeholder body. */
 function serializeClassicSigned(
   plan: Plan, trailer: PdfDict, sigNew: number,
-  ph: ReturnType<typeof buildSigDictPlaceholder>, placeholderBytes: number,
+  ph: ReturnType<typeof buildSigDictPlaceholder>, placeholderBytes: number, ver = '1.7',
 ): SignatureLayout {
   const { rootRef, oldToNew, objs } = plan;
   const chunks: Uint8Array[] = [];
   let length = 0;
   const push = (b: Uint8Array): void => { chunks.push(b); length += b.length; };
 
-  push(enc('%PDF-1.7\n%âãÏÓ\n'));
+  // The catalog /Version, exactly as every other write path emits it (909q).
+  // This one hardcoded 1.7, so signing a converted document breached the very
+  // version rule the conversion had just satisfied — a PDF/A-4 file demands
+  // 2.n and a PDF/A-1 file forbids anything above 1.4. The header sits inside
+  // the signed byte range, so it must be chosen HERE rather than patched after.
+  push(enc(`%PDF-${ver}\n%âãÏÓ\n`));
   const n = objs.length;
   const offsets: number[] = new Array(n + 1).fill(0);
   let bodyStart = 0;

@@ -4,9 +4,8 @@ import {
   buildDocModel, styledChildren,
   type DocFigure, type DocList, type DocListItem, type DocNode,
 } from './docmodel.js';
-import { createHash } from 'node:crypto';
 import type { PdfStream } from './types.js';
-import { encodeImage, imageExtension } from './imagehref.js';
+import { encodeImage, imageExtension, imageKey } from './imagehref.js';
 import { emphasizeMarkdown, escapeLinkDestination, escapeMarkdown } from './mdescape.js';
 
 export { escapeMarkdown } from './mdescape.js';
@@ -66,7 +65,7 @@ function imageCtx(opts: MarkdownExportOptions): ImageCtx {
 function imageRef(doc: Document, ctx: ImageCtx, stream: PdfStream): string | undefined {
   const enc = encodeImage(doc, stream, [0, 0, 0]);
   if (!enc) return undefined;
-  const key = createHash('sha256').update(enc.bytes).digest('hex');
+  const key = imageKey(enc.bytes);
   const hit = ctx.seen.get(key);
   if (hit !== undefined) return hit;
 

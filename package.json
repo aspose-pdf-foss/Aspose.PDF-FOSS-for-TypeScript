@@ -51,7 +51,8 @@
     "gen:cmaps": "tsx scripts/gen-cmaps.ts",
     "gen:icc": "node scripts/gen-icc-fixture.mjs",
     "gen:cidunicode": "tsx scripts/gen-cidunicode.ts",
-    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "gen:dfont": "node scripts/gen-dfont-fixture.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

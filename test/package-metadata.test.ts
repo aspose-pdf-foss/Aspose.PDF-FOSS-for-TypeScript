@@ -18,8 +18,15 @@ describe('package metadata', () => {
     // manifest named none, so an installer had nothing to check against. The
     // two are stated in different files by different kinds of author, so
     // nothing but a test keeps them in step.
+    //
+    // What is pinned is the NUMBER, not the spelling. The pattern accepts
+    // `≥ 22`, `>= 22` and `22 or later` because the README has been written
+    // all three ways — replacing it with the GitHub-facing rewrite moved it
+    // from the first to the third and turned this red, which is the drift
+    // working as intended rather than a reason to narrow the prose.
     const declared = /(\d+)/.exec(pkg.engines?.node ?? '')?.[1];
-    const documented = /Node\.js\s*≥\s*(\d+)/.exec(readme)?.[1];
+    const m = /Node\.js\s*(?:≥|>=)\s*(\d+)|Node\.js\s+(\d+)\s+or later/.exec(readme);
+    const documented = m?.[1] ?? m?.[2];
     expect(documented).toBeDefined();      // the README claim still parses
     expect(declared).toBe(documented);
   });
