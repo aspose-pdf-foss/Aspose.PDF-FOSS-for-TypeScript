@@ -41,6 +41,10 @@ import {
   convertColors, convertToGrayscale,
   ColorConvertOptions, ColorConvertReport, ConvertColorsOptions,
 } from './colorconvert.js';
+import {
+  convertXfaToAcroForm,
+  type XfaConvertOptions, type XfaConvertReport,
+} from './xfaconvert.js';
 import { Form } from './form.js';
 import { appendField, attachWidget, ensureAcroForm } from './formcreate.js';
 import {
@@ -1653,6 +1657,31 @@ export class Document {
    *  signed document, which converting would invalidate. */
   ConvertToGrayscale(opts: ColorConvertOptions = {}): ColorConvertReport {
     return convertToGrayscale(this, opts);
+  }
+
+  /** Convert this document's XFA form to a real `/AcroForm` field tree.
+   *
+   *  Fields whose template layout chain is positioned throughout get widgets
+   *  with rects and appearance streams; every other field gets a geometry-less
+   *  field dict, which {@link Form} still finds, fills and exports. `/XFA` and
+   *  the catalog's `/NeedsRendering` are removed by default once something has
+   *  converted — pass `{ removeXfa: false }` to keep them.
+   *
+   *  The returned {@link XfaConvertReport} names what did not convert, and is
+   *  the first place to look when a converted document is missing a field or
+   *  renders nothing. `report.dataOnly` says the document converted to data and
+   *  renders nothing at all, which is what a dynamic XFA form does: this makes
+   *  its fields addressable, it does not build the pages the layout engine
+   *  would have.
+   *
+   *  Conversion is one-way — nothing is written back into the XFA packets — and
+   *  the dynamic layout engine is not implemented, so a field under any flow
+   *  layout gets no geometry, ever, and is reported rather than guessed at.
+   *
+   *  Throws {@link UnsupportedFeatureError} for a signed document, which adding
+   *  fields would invalidate. */
+  ConvertXfaToAcroForm(opts: XfaConvertOptions = {}): XfaConvertReport {
+    return convertXfaToAcroForm(this, opts);
   }
 
   /** Serialize the live document to PDF bytes (mark-sweep from /Root, renumbered).

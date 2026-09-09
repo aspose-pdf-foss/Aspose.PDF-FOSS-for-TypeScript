@@ -21,6 +21,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **XFA forms convert to real AcroForm fields.** `doc.ConvertXfaToAcroForm()`
+  decodes `/AcroForm /XFA` — a single-stream XDP or the alternating name/stream
+  array — models the `template` packet's field set, binds values out of
+  `datasets`, and emits an `/AcroForm` field tree, so a form that only Acrobat
+  could fill becomes one this library, and every other viewer, can read, fill,
+  flatten, redact and export. `/XFA` and the catalog's `/NeedsRendering` are
+  removed once something has converted, unless `{ removeXfa: false }`.
+
+  The issue this closes was filed as decline-or-build, and its own framing —
+  read plus flatten, minus the dynamic layout engine — is close to an empty set:
+  a static or hybrid form already carries a complete AcroForm this library read
+  before today, so there is nothing to flatten, while a dynamic form carries no
+  field geometry anywhere, so there is nothing to flatten *to*. What makes the
+  feature worth having is that **XFA geometry is not all-or-nothing**. A
+  `<subform layout="position">` states absolute `x`/`y`/`w`/`h` on its children,
+  so static and XFAF forms have their rects in the template: those fields become
+  **real widgets with appearance streams**. Only the flow layouts need the engine
+  that is out of scope, and a field under one becomes a **geometry-less field
+  dict** — `doc.Form` finds it, fills it and `ExportFdf` exports it, and nothing
+  draws it. No rect is ever approximated: a field drawn in the wrong place looks
+  right and is wrong, so every geometry refusal is reported instead — a `px` or
+  `pc` measurement (whose readings are not transcribed from the XFA
+  specification here), a `rotate`, a `<pageArea>` whose declared `<medium>`
+  disagrees with its page's CropBox by more than 1pt, a `pageArea` count that
+  disagrees with the document's page count. `report.dataOnly` says the document
+  converted to data and renders nothing at all, which is what a **dynamic** XFA
+  form does: its fields become addressable, and the pages its layout engine
+  would have built do not appear.
+
+  A **hybrid** document reconciles rather than duplicating. The synthesized name
+  is the SOM expression with occurrence indices, which is exactly what LiveCycle
+  writes into the AcroForm half — so an existing field has its `/V` updated and
+  its geometry left alone, and an FDF exported from a converted document stays
+  interchangeable with Acrobat's. Values come from `datasets` and the template's
+  own `<value>` becomes `/DV`, because conflating them destroys the difference
+  between what a form was authored with and what someone entered, which for a
+  filled archived form is the entire content.
+
+  Conversion is **one-way** — nothing is written back into the XFA packets — and
+  `<signature>`, `<imageEdit>` and `<barcode>` fields are refused and reported
+  rather than synthesized. It throws `UnsupportedFeatureError` on a signed
+  document, since `docmdp.ts` permits `/AcroForm /Fields` to change for *filling*
+  and adding two hundred fields is not filling. `ConvertToPdfA` still drops
+  `/XFA`, so the useful order is `ConvertXfaToAcroForm` **then** `ConvertToPdfA`:
+  the fields survive as a real AcroForm and PDF/A's prohibition is satisfied for
+  free, where the other order deletes them.
+
+  **What was measured.** The oracle is the hybrid form itself: a static XFA
+  document carries two independent descriptions of one field set — the template,
+  and the `/AcroForm` LiveCycle generated from it — so the suite strips
+  `/AcroForm /Fields` in a copy of IRS f1040, converts from the template alone,
+  and compares against what Adobe wrote. All 199 names reproduce exactly, and so
+  do **all 151 placed rects** — worst 0.0006pt, which is floating-point residue
+  from the mm-to-pt conversions and nothing else.
+
+  That comparison **found three rules the design had missed**, which is the whole
+  reason to have one. First, an XFA field's box includes its label, and the
+  widget covers only the edit region — the box minus the `<caption>` reserve;
+  worst rect error across 151 fields was 229pt before that fix and 12pt after.
+  Second, the point-or-two still left is the field's own `<margin>` insets, and
+  a sweep of all 54 distinct text-field declaration shapes in that form shows
+  the width error was exactly `leftInset + rightInset` and the height error
+  exactly `topInset + bottomInset`, with no exception — worst error 12pt → 6.4pt
+  and exact matches 53 → 105. The `<border>` turns out to contribute nothing at
+  all, which reverses the guess that residue had been filed under. Third, a
+  `<checkButton size>` states the button's own box rather than the field's, so
+  the widget is the button: every one of Adobe's 54 button rects across both
+  forms is exactly 8×8 where the reduced field box is commonly 12×12, and a
+  converted checkbox had been drawn half again too large. Its placement default
+  turned out to be two defaults — a caption on the right puts the button flush
+  left, a caption on the left or none at all puts it flush right — and what
+  settled that was fw9, a form the library declines to place at all but whose
+  own `/AcroForm` still holds Adobe's rects. The oracle also confirmed the one
+  judgement call the implementation adds, that a field's layout chain starts
+  below the subform carrying the `<pageSet>`: f1040's root subform is
+  `layout="tb"`, so the other reading would have placed nothing at all.
+
+  The ceiling is worth stating: one producer's output is evidence for the forms
+  it covers, not conformance. No second XFA implementation arbitrates any of
+  this. (`6t2v.3`, `mw1m`, `17vo`)
+
 - **An image among words in Markdown is now DRAWN, not described.**
   `AddMarkdown` rendered only a *lone* image — one alone in its paragraph, the
   figure shape — and flattened every other one to its alt text with an

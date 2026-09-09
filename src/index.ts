@@ -241,6 +241,12 @@ export type {
   ColorImageResult, ColorSkipped,
 } from './colorconvert.js';
 export type { TargetSpace, CmykTransform } from './colorrule.js';
+// XFA -> AcroForm. The option and report TYPES only: the packet, template and
+// data models stay internal until a caller asks for them, the posture
+// parseHtmlFragment takes. test/xfa-public-api.test.ts asserts those absences.
+export type {
+  XfaConvertOptions, XfaConvertReport, XfaFieldResult, XfaSkipped,
+} from './xfaconvert.js';
 export { iccCmykTransform } from './icctransform.js';
 export type { IccTransformOptions } from './icctransform.js';
 export { ascii85Encode, asciiHexEncode, runLengthEncode } from './ascii.js';

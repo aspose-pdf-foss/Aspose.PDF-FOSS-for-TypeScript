@@ -180,6 +180,7 @@ flowchart TD
 (five `/BS /S` styles) and text colour — at creation or afterwards with
 `field.SetStyle({ … })`.
 - **Form data (FDF / XFDF)** — `doc.ExportFdf()` / `doc.ExportXfdf()` write the current field values as a standalone data file, and `doc.ImportFdf(bytes)` / `doc.ImportXfdf(bytes)` read one back into a form, regenerating appearances and returning an `ImportReport` of what was `imported` and what was `skipped` (unknown field names, values the field rejects). Pass `{ annotations: true }` on both sides to carry annotations as well — the 18 XFDF types, with their appearance streams — reported separately as `importedAnnots` / `skippedAnnots`.
+- **XFA forms (read and convert)** — `doc.ConvertXfaToAcroForm()` decodes an `/AcroForm /XFA` packet (single-stream XDP or the alternating name/stream array), models the `template` packet's field set, binds values out of `datasets`, and emits a real `/AcroForm` field tree — so a form only Acrobat could fill becomes one every viewer can read, fill, flatten, redact and export. Geometry is not all-or-nothing: a `<subform layout="position">` states absolute `x`/`y`/`w`/`h`, so static and XFAF forms get **real widgets with appearance streams**, while a field under any flow layout gets a **geometry-less field dict** that `doc.Form` still fills and `ExportFdf` still exports. No rect is approximated — every geometry refusal is reported on an `XfaConvertReport` instead, and `report.dataOnly` says a document converted to data and renders nothing at all, which is what a *dynamic* XFA form does. A hybrid document reconciles by name (the synthesized name is the SOM expression, which is what LiveCycle wrote into the AcroForm half), `/XFA` and `/NeedsRendering` are removed once something converts, and the conversion is one-way. The dynamic layout engine is out of scope.
 - **Optional content (layers / OCG)** — `doc.OptionalContent` enumerates layers, reads/toggles their visibility in the default and named viewing configurations, edits configs (add/remove/rename, locked state), and deletes a layer together with its marked content (`/OC … BDC … EMC`, in page `/Contents` and recursively inside referenced Form XObject streams) and its bound annotations. Any Form/Image XObject used only by the layer — bound by its own `/OC`, or invoked (`Do`) only inside excised layer content — is removed along with its `Do` ops and resource entries (an XObject still drawn by surviving content is kept; one bound via an OCMD is un-layered). It also prunes the deleted layer out of any surviving OCMD's `/VE`/`/OCGs` membership and drops OCMDs left with no members, along with the page `/Properties` entries (direct-OCG or now-empty-OCMD) they orphan. It also **creates** new layers (`AddLayer`, with `/Order` nesting and default visibility) and tags authored content into them — `PageGraphics.BeginLayer`/`EndLayer`, `AddImage({ layer })`, and `Annotation.Layer`. It also resolves the visibility of any `/OC` value — an OCG, or an OCMD via its `/VE` visibility expression (`/And`/`/Or`/`/Not`) or `/P` policy — with `doc.OptionalContent.Default.ResolveVisibility(oc)`. Edits round-trip through `Save()` (classic and compressed).
 - **Outlines (bookmarks)** — `GetOutlines` reads the nested bookmark tree (titles, expanded state, `/C` colour and `/F` bold/italic flags, and destinations from explicit `/Dest` or `/A` GoTo actions — page targets resolved, named targets reported by name); `SetOutlines` writes or replaces the whole tree, taking either destination form and wiring up the sibling/child links and `/Count` for you.
 - **Page labels** — `GetPageLabels` reads the `/PageLabels` number tree into ascending ranges; `SetPageLabels` writes or replaces it; `PageLabelFor` resolves a 0-based page index to its rendered label (`prefix + numeral`) across `decimal` / `roman` / `Roman` / `alpha` / `Alpha` / `none` styles.
@@ -1766,15 +1767,17 @@ same for a tagged annotation. Without it the `/OBJR` reference, which hangs off
 annotation in the saved bytes with no `/Annots` entry pointing at it.
 
 Creation, removal, filling and `ImportFdf`/`ImportXfdf` all edit the **AcroForm**
-half of a form and nothing else. An `/AcroForm /XFA` packet is never parsed or
-rewritten, so in a **hybrid XFA** document it keeps describing the field set it
-was authored with: an XFA-aware viewer (Acrobat prefers the packet whenever one
-is present) still shows the old fields and values, while every other viewer
-reads the AcroForm and sees the edit. Such a document is edited rather than
-rejected, because its AcroForm half is usually perfectly editable. To make the
-AcroForm authoritative, delete `/XFA` from the `/AcroForm` dictionary and clear
-the catalog's `/NeedsRendering` (both reachable through `doc.catalog()`) before
-editing.
+half of a form and nothing else. Editing never writes back into an
+`/AcroForm /XFA` packet, so in a **hybrid XFA** document that packet keeps
+describing the field set it was authored with: an XFA-aware viewer (Acrobat
+prefers the packet whenever one is present) still shows the old fields and
+values, while every other viewer reads the AcroForm and sees the edit. Such a
+document is edited rather than rejected, because its AcroForm half is usually
+perfectly editable. To make the AcroForm authoritative, call
+`doc.ConvertXfaToAcroForm()` — see
+[Convert an XFA Form to an AcroForm](#convert-an-xfa-form-to-an-acroform) —
+which removes `/XFA` and the catalog's `/NeedsRendering` for you, and reconciles
+the packet's values into the existing fields on the way.
 
 #### Field styling
 
@@ -1814,6 +1817,64 @@ drawn in the `/DA` colour.
 the field's contents inside its unchanged `/Rect`. The appearance is composed in
 the turned box, so a 200×50 field rotated 90° wraps and aligns its text against
 the 50×200 edges a reader actually sees. It applies to every field type.
+
+### Convert an XFA Form to an AcroForm
+
+`doc.ConvertXfaToAcroForm()` turns an XFA form's `template` and `datasets`
+packets into a real `/AcroForm` field tree, so a form only Acrobat could fill
+becomes one this library — and every other viewer — can read, fill, flatten,
+redact and export.
+
+```ts
+import { Document } from '@asposefoss/pdf';
+import { readFileSync, writeFileSync } from 'node:fs';
+
+const doc = Document.Open(new Uint8Array(readFileSync('xfa-form.pdf')));
+const report = doc.ConvertXfaToAcroForm();
+
+console.log('packets:', report.packets.join(', '));
+for (const f of report.fields)
+  console.log(f.route, f.name, f.type, f.page ?? '(no geometry)');
+for (const s of report.skipped)
+  console.log('skipped', s.what, s.name ?? '', '-', s.reason);
+
+if (report.dataOnly)
+  console.log('converted to data; this document renders nothing');
+
+writeFileSync('acroform.pdf', doc.Save());
+```
+
+Three things decide what you get.
+
+**Geometry is not all-or-nothing.** A `<subform layout="position">` states
+absolute `x`/`y`/`w`/`h` on its children, so static and XFAF forms — the
+LiveCycle output that dominates archived corpora — carry their field rects in
+the template. Those fields convert to **real widgets** with appearance streams,
+reported as `route: 'positioned'`. A field under any flow layout (`tb`,
+`lr-tb`, `row`, `table`) would need the dynamic layout engine, which is out of
+scope, so it becomes a **geometry-less field** (`route: 'bare'`): `doc.Form`
+finds it, fills it and `ExportFdf` exports it, and nothing draws it. No rect is
+ever approximated, and every refusal names itself in `report.skipped`.
+
+**`report.dataOnly` means the document renders nothing.** A *dynamic* XFA form
+has no field geometry anywhere, so all of its fields convert bare. Its data
+becomes addressable; the pages its layout engine would have built do not
+appear.
+
+**A hybrid form reconciles instead of duplicating.** The synthesized name is the
+SOM expression, occurrence indices included — exactly what LiveCycle writes into
+the AcroForm half — so an existing field has its `/V` updated from `datasets`
+and its geometry left alone (`route: 'reconciled'`), and nothing is created
+twice.
+
+`/XFA` and the catalog's `/NeedsRendering` are removed once something has
+converted; pass `{ removeXfa: false }` to keep them. Removal is one-way and
+discards the only description of everything refused, so read the report first.
+With PDF/A the useful order is **`ConvertXfaToAcroForm` then `ConvertToPdfA`** —
+the fields survive as a real AcroForm and PDF/A's prohibition on `/XFA` is
+satisfied for free, where the other order simply deletes them. The call throws
+`UnsupportedFeatureError` on a signed document, which adding fields would
+invalidate.
 
 ### Import and Export Form Data (FDF / XFDF)
 
@@ -2892,6 +2953,10 @@ of these tables.
 | `encodeFilter` | Encode bytes into one of the PDF byte filters. |
 | `quantize` | Reduce an RGBA image to a 256-colour palette, exactly when it already has 256 or fewer. |
 | `STANDARD_STRUCTURE_TYPES` | The PDF 1.7 standard structure types (grouping, block-level, inline-level, and illustration). |
+| `XfaConvertOptions` | Options for `doc.ConvertXfaToAcroForm`: `removeXfa` (default true). |
+| `XfaConvertReport` | What an XFA conversion produced and what it refused. |
+| `XfaFieldResult` | One converted field: its SOM name, type, route and page. |
+| `XfaSkipped` | One thing the XFA conversion did not do, and why. |
 
 ### Annotations
 
@@ -3176,6 +3241,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.Optimize(opts?)` | Shrink in place: fonts/dedup/compress (lossless, each opt-out) plus opt-in lossy `images` → `OptimizeReport` |
 | `doc.ConvertToGrayscale(opts?)` | The named shorthand for `{ to: 'gray' }` → `ColorConvertReport` |
 | `doc.ConvertColors({ to, quality? })` | Convert content, images, shadings and annotations to `'gray'`/`'rgb'`/`'cmyk'` in place → `ColorConvertReport` |
+| `doc.ConvertXfaToAcroForm(opts?)` | Convert an XFA form to a real `/AcroForm`: widgets with rects where the template's layout chain is positioned throughout, geometry-less field dicts otherwise; removes `/XFA` + `/NeedsRendering` unless `{ removeXfa: false }` → `XfaConvertReport` (`fields`, `skipped`, `dataOnly`). Throws `UnsupportedFeatureError` on a signed document |
 | `doc.AutoTag(opts?)` | Infer a `/StructTreeRoot` (headings/paragraphs/figures/tables) from layout; marks Tagged; returns per-type counts |
 | `element.MarkContent(page, region)` | Tag existing page content under a structure element (returns the MCID) |
 | `page.ToSvg(options?)` | Render the page to a standalone `<svg>` string (paths, `<text>`, images, clipping, gradients, annotation `/AP` appearances; honors `/Rotate` + `CropBox`; `{ box: 'media' }` for the MediaBox, `{ annotations: false }` for content only) |
@@ -3446,7 +3512,7 @@ See [the docs](https://example.com).
 - **PDF/UA conversion is mechanical only** — `doc.ConvertToPdfUa` fixes the deterministic catalog/metadata defects (`/Lang`, `DisplayDocTitle`, `/Marked`, document title, `/RoleMap`, `/Suspects`, `pdfuaid`) and reports the rest. It never synthesizes accessibility content: alt text, reading order, heading/table/list structure, and the tagging of untagged content require human authoring and surface in `ConversionReport.unresolved`. It does not fabricate a structure tree for an untagged document. Because conversion re-validates, `passed` is true only when the validator agrees — necessary but not sufficient for full PDF/UA conformance.
 - **Optimize subsets embedded TrueType and CFF fonts** — `doc.Optimize({ fonts: true })` shrinks Type0 programs (CIDFontType2 via `FontFile2`, CIDFontType0 via `CIDFontType0C`), simple TrueType (`FontFile2`), and simple CFF (`FontFile3` `/Subtype /Type1C`, including `Type1`/`MMType1` dicts pointing at one). Type1 `/FontFile` (PFB), Type3, and OpenType-CFF whole-embeds are skipped and listed in `report.skipped`, along with any font whose usage the scan cannot prove complete (an unparseable content stream in scope, a font no scan reached, a CFF with a predefined charset). Where a simple font admits several defensible code→GID chains — a symbolic cmap alongside `/Differences`, or a CFF with both a PDF `/Encoding` and a built-in one — the scan keeps the **union** of what every chain resolves rather than picking one: a wrong guess silently blanks a glyph that is actually shown, so Optimize never guesses. The same rule governs a font program shared by several font dicts (a `FontFile2`/`FontFile3` two dicts both point at): the program is shrunk **once**, against the union of the glyphs every dict reaching it shows, and an incomplete scan on any one of those dicts vetoes the whole program — so `report.fonts` carries one entry per *program*, not per font dict. Shrinking preserves GID numbering, `cmap`, `/Widths`/`/W`, and `CIDToGIDMap` — nothing is renumbered — so a font program is left alone when the rewrite would not be strictly smaller. A `post` v2.0 glyph-name table is rewritten to v3.0 (names dropped) only for programs reachable exclusively from Type0 dicts, which resolve code→CID→GID and never consult a name; a program any simple font dict can reach keeps its names, since a nonsymbolic simple TrueType resolves `/Differences` names outside the Adobe Glyph List through `post`. `Optimize` throws `UnsupportedFeatureError` on a signed document, which optimizing would invalidate. `/AcroForm /DR` pruning (`dr`, default on) removes only entries no `/DA` names and no appearance stream leaves unresolved against its own `/Resources`; it does not read `/XFA` (a document carrying one is skipped outright), does not prune the `/AcroForm /DA` default itself, and leaves `/ProcSet` alone. A `/DR` entry the AcroForm-level `/DA` names therefore survives the removal of every field — that `/DA` is the live default for the next field created.
 - **Optimize's image pass recompresses photographic XObjects only** — `doc.Optimize({ images })` re-encodes 8-bit Gray/RGB/CMYK images (already-JPEG, or Flate/LZW-coded) as JPEG. It skips image masks, indexed palettes, bilevel (JBIG2/CCITT), anything carrying a `/Mask` or `/Decode`, colorspaces with no JPEG equivalent, and any image the content scan never saw drawn — including `/SMask` soft masks, which are referenced rather than drawn and so are left at full resolution. Inline images (`BI`) are not recompressed: replacing one means rewriting its content stream. Images drawn from a Type3 glyph procedure are skipped, since their effective DPI depends on text state the scan does not model.
-- **XFA is never read or written** — an `/AcroForm /XFA` packet is not parsed, rewritten, or removed. Field creation, `Form.RemoveField`, `Field.Value` / `SetStyle`, and `ImportFdf`/`ImportXfdf` edit the AcroForm half of a form only, so in a hybrid XFA document the packet goes on describing the field set and values it was authored with — an XFA-aware viewer (Acrobat prefers the packet whenever one is present) shows those, every other viewer shows the edited AcroForm. Hybrid documents are edited rather than rejected, since their AcroForm half is usually perfectly editable; deleting `/XFA` from the `/AcroForm` dict and clearing the catalog's `/NeedsRendering` (both reachable via `doc.catalog()`) makes the AcroForm authoritative. Dynamic XFA layout is out of scope entirely, and `ConvertToPdfA` drops `/XFA` because PDF/A prohibits it.
+- **XFA converts to AcroForm, but there is no dynamic layout engine** — `doc.ConvertXfaToAcroForm()` reads an `/AcroForm /XFA` packet (single-stream XDP or the alternating name/stream array), models the `template` packet's field set, binds values out of `datasets`, and emits a real `/AcroForm` field tree; `/XFA` and the catalog's `/NeedsRendering` are then removed by default. What it does **not** do is compute layout: there is no text measurement, no box growth, no repeating subforms and no flow stacking. A field earns a widget with a rect and an appearance stream only when **every** container between it and its page origin is `layout="position"` — which is how the static and XFAF forms that dominate the archived corpus are authored, since `layout="position"` states absolute `x`/`y`/`w`/`h` in the template. A field under any flow layout (`tb`, `lr-tb`, `row`, `table`) or under a repeating `<occur>` subform gets a **geometry-less field dict** instead: `doc.Form` finds it, fills it and exports it, and nothing draws it. No rect is ever approximated — a field drawn in the wrong place looks right and is wrong — so every geometry refusal is reported rather than guessed at, including `px`/`pc`/`em` measurements (whose readings are not transcribed from the XFA specification here), a field carrying `rotate`, a `<pageArea>` whose declared `<medium>` disagrees with its page's CropBox by more than 1pt, and a `pageArea` count that disagrees with the document's page count. `report.dataOnly` says the document converted to data and renders nothing at all, which is what a **dynamic** XFA form does: its fields become addressable, exportable and fillable, and the pages its layout engine would have built do not appear. Conversion is **one-way** — nothing is written back into the XFA packets, so `Field.Value` edits still do not reach a hybrid's XFA half — and `<signature>`, `<imageEdit>` and `<barcode>` fields are refused and reported rather than synthesized. It throws `UnsupportedFeatureError` on a signed document, which adding fields would invalidate. `ConvertToPdfA` still drops `/XFA` because PDF/A prohibits it, so the useful order is `ConvertXfaToAcroForm` **then** `ConvertToPdfA`: the fields survive as a real AcroForm and the prohibition is satisfied for free, where the other order deletes them. Conversion is validated against **hybrid LiveCycle forms** (IRS f1040 and fw9): a static XFA document carries two independent descriptions of one field set, so the suite converts from the template alone and compares against the `/AcroForm` Adobe wrote — all 199 of f1040's field names reproduce exactly, and so do **all 151 of its placed rects** — worst 0.0006pt, which is floating-point residue from the mm-to-pt conversions and nothing else. That comparison found three rules the design had missed: the `<caption>` reserve, the field's own `<margin>` insets, and a `<checkButton size>` stating the button's own box rather than the field's. **One producer is evidence for the forms it covers, not conformance** — no second XFA implementation arbitrates this output.
 - **Annotation appearances across XFDF** — FDF carries `/AP` as a real stream, so it is exact. XFDF has no normative encoding for its `<appearance>` element, so producers disagree. Two are **read**: this library's own (base64 of the `/AP` `/N` form XObject as a one-object PDF fragment), which is also the only one **written**; and Acrobat's, which is base64 of an XML serialization of the COS objects rooted at `<DICT KEY="AP">` (`STREAM`/`DICT`/`ARRAY`/`INT`/`FIXED`/`NAME`/`BOOL` elements keyed by `KEY`, stream bytes in a `DATA` child with `ENCODING="HEX"` or `"ASCII"`). An `<appearance>` this library cannot read — a third producer's encoding, or a corrupt payload — is treated as absent and the appearance is **regenerated from the annotation's properties** instead, which is lower fidelity but never fails the import. Subtypes with no generator (`Sound`, `Text`, `Stamp`, `Link`, `FileAttachment`, `Popup`) import without an appearance in that case.
 - **Annotation coordinates are untransformed** — `rect`, `coords`, `vertices`, `inklist`, `start`/`end` are exchanged in unrotated PDF user space, exactly as the annotation dictionary holds them. `/Rotate` and `/UserUnit` are not applied in either direction. Rich text (`/RV`) is transported verbatim but is **not rendered** into the generated appearance, which is built from the plain `/V`. The FDF writer emits no cross-reference table (permitted for FDF); the reader scans objects sequentially and ignores an xref if one is present. Imported values are validated exactly as `Field.Value` validates them, so a value the field rejects is reported in `skipped`, not applied.
 - **Optional content is manipulation-only** (no rendering). `RemoveLayer` excises marked-content (`/OC … BDC … EMC`) blocks from page content streams, drops annotations bound to the layer, and removes `/OC` from bound XObjects, but does not delete an XObject (or its `Do`) that was used only by the layer, or recurse into Form XObject streams. OCMD membership is honored via both `/OCGs` and `/VE`, and `ResolveVisibility` interprets `/VE`/`/P`. Layer authoring covers new OCGs, `/Order` nesting (via a parent layer, not label-only headings), and `/OC` tagging of graphics/images/annotations; it does not author OCMD `/VE` expressions or auto-balance `BDC`/`EMC`.

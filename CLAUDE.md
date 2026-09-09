@@ -5834,6 +5834,239 @@ Source (`src/`):
   tree is a B-tree and a producer is entitled to rely on that — ignoring the
   limits still finds the key by brute force on a small file and silently misses
   it on a large one, which is the worst possible failure shape.
+- **xfapacket.ts**, **xfatemplate.ts**, **xfadata.ts**, **xfageom.ts**,
+  **xfaconvert.ts** — XFA read and flatten to AcroForm (`6t2v.3`),
+  `doc.ConvertXfaToAcroForm()`. Four pure modules and one that touches a
+  `Document`, the `svgdraw.ts`/`svgembed.ts` split: `xfapacket.ts` decodes
+  `/AcroForm /XFA`, `xfatemplate.ts` models the `template` packet's field set,
+  `xfadata.ts` binds values out of `datasets`, `xfageom.ts` is the arithmetic,
+  and `xfaconvert.ts` alone allocates.
+  **The finding the whole feature rests on, because the issue was filed without
+  it:** XFA geometry is not all-or-nothing. `6t2v.3` proposed "read plus
+  flatten, minus the dynamic layout engine", which is close to an empty set —
+  a static or hybrid form ALREADY carries a complete AcroForm this library
+  reads today, so there is nothing to flatten, while a dynamic form carries no
+  field geometry anywhere, so there is nothing to flatten TO. What rescues it
+  is that a `<subform>` carries a `layout` attribute and `layout="position"`
+  STATES absolute `x`/`y`/`w`/`h` on its children. So static and XFAF forms
+  have their rects in the template, and only the flow layouts need the engine.
+  **Invariant:** `xfageom.ts` imports NOTHING — the `floatstack.ts` /
+  `booklet.ts` / `tablespan.ts` split, for their reason: geometry that is
+  silently wrong when reversed must be testable from numbers with no PDF built.
+  `xfatemplate.ts` and `xfadata.ts` import `xml.js` alone; `xfapacket.ts` takes
+  `resolve`/`inflate` as ARGUMENTS, the `colorimage.ts` seam. None of the four
+  throws.
+  **Invariant: `px`, `pc` and `em` are REFUSED, not converted.** Their readings
+  are not transcribed from the XFA specification here, and this repo's own rule
+  is that a number nobody has checked against the standard does not ship —
+  `ccitt-tables.ts` and the JBIG2 SLTP constants set that. A wrong `px` moves an
+  A4 edge by tens of points while still rendering a plausible page, which is the
+  failure shape the whole design guards against. `pc` is very probably 12pt, and
+  that is exactly why it must not ship on recall. A refused unit degrades the
+  field and is reported. **Do not "fix" this from memory**; only a transcription
+  with the clause cited beside the constant may add one.
+  **Invariant: the medium must agree with the page.** Before any field on a page
+  is given a rect, the `<pageArea>`'s declared `<medium>` is compared against
+  that page's CropBox — `orientation="landscape"` swapping short and long — and
+  a mismatch over **1pt on either axis** degrades EVERY field on the page. This
+  is the check that makes the rest trustworthy: it asserts against a number we
+  did not compute, so one comparison catches a unit error, an orientation swap
+  and a wrong page mapping alike. An ABSENT medium is a refusal, not a pass —
+  there is nothing to check against. 1pt is tight enough that the smallest unit
+  error cannot pass and loose enough to absorb `8.5in` rounded to three
+  decimals. **Measured:** neutering it reddens 3.
+  **Invariant: never an approximate rect.** Every geometry failure — an unknown
+  unit, a flowed ancestor, a medium mismatch, a `rotate`, an unresolvable page —
+  yields a geometry-less field PLUS a report entry. Nothing estimates a position
+  from a sibling, a caption or a flow order.
+  **Invariant, and it is the one interpretation this work adds beyond the
+  design — do not read it as arbitrary:** a field earns geometry only when EVERY
+  container in its chain is `layout="position"`, and **the chain starts BELOW
+  the subform carrying the `<pageSet>`**. LiveCycle's root `<subform>` is
+  routinely `layout="tb"`, because that flow breaks PAGES rather than placing
+  FIELDS — so read from the document root, the rule degrades every field of
+  every LiveCycle form and the feature converts nothing. The rule is then
+  applied to that chain verbatim, including to unknown layouts, which are
+  refused as an allowlist the way `content.ts`'s `NON_MARKING` is.
+  **Note this is now MEASURED, not merely reasoned:** IRS f1040's root subform
+  is `layout="tb"`, and the oracle places 151 fields from it. Read from the
+  document root it would place zero.
+  **Invariant:** the synthesized name IS the SOM expression, occurrence indices
+  included (`form1[0].Page1[0].f1_01[0]`). Not cosmetic: that is exactly what
+  LiveCycle writes into a hybrid's `/AcroForm`, so reconciling the two halves is
+  name EQUALITY rather than a heuristic, and an FDF exported from a converted
+  document stays interchangeable with Acrobat's. An anonymous container is
+  transparent to the path, as SOM defines it.
+  **Invariant:** the `save="1"` `<items>` list is the EXPORT half and `/Opt` is
+  written through `choiceopt.ts`, the one owner of that grammar. **Note the
+  fixture for it must put the DISPLAY list first**: with `save="1"` on the first
+  list, "the save list" and "the first list" are the same list and hard-coding
+  the halves by position reddens NOTHING. Measured — it passed that way.
+  **Invariant:** values come from `datasets` and the template `<value>` is
+  `/DV`. Conflating them destroys the difference between what a form was
+  authored with and what someone entered, which for the filled archived forms
+  this feature exists to open is the entire content. A fixture whose default and
+  datum AGREE cannot see the swap.
+  **Note, and the first implementation had this bug:** a `<value>`'s content is
+  in its TYPED CHILD (`<text>`, `<integer>`, `<decimal>`, `<exData>`), and
+  `XmlNode.text` is the DIRECT text content — so the obvious `valueEl.text` is
+  empty for every real form and silently loses every default in the document.
+  **Invariant:** `xfapacket.ts` owns the `parseXml` throw boundary. `parseXml`
+  throws `PdfParseError` and four other callers depend on that strictness, so
+  damage becomes a value HERE rather than by loosening `xml.ts` —
+  `markdown.ts`'s and `htmltoken.ts`'s "damage is a value, never control flow",
+  applied at the boundary. A per-packet failure is MANDATORY rather than tidy:
+  the XDP wrapper's `preamble` and `postamble` are text fragments, so they never
+  parse, and refusing the whole `/XFA` for them would refuse every array-form
+  document in existence.
+  **Invariant: plan fully, then apply.** `buildXfaPlan` classifies every field
+  ALLOCATING NOTHING — `formcreate.ts`'s own rule scaled from one field to a
+  document — so a form we cannot convert leaves the file byte-identical, which
+  is asserted by saving before and after.
+  **Invariant:** a positioned field goes through `createField` and an
+  `<exclGroup>` through `addRadioGroup`, so the widget dict, the `/AP`
+  generation and the `/Annots` wiring are reused rather than rewritten. A bare
+  field is appended through `resolvePath(...).container.push` and **NOT**
+  `appendField`, which appends to `/AcroForm /Fields` directly and would flatten
+  every hierarchical SOM path onto the root.
+  **Invariant:** an `<exclGroup>` is ALL-OR-NOTHING. If any member lacks
+  geometry the whole group goes bare — a radio group with some widgets placed
+  and some not is not a degraded control but a broken one.
+  **Invariant:** `dataOnly` distinguishes "converted to data and renders
+  nothing" from "converted NOTHING at all", which are different answers. It is
+  recomputed AFTER the apply loop, or a field that fell back to bare there
+  leaves the flag saying the document renders when it does not.
+  **Invariant:** `/XFA` and `/NeedsRendering` go only when something actually
+  converted, because removal is one-way and discards the only description of
+  everything refused. It destroys nothing immediately — it orphans the packet
+  streams and `Save()`'s mark-sweep drops them, so a caller who dislikes the
+  report can simply not save. **Note the guard needs a fixture that PLANS
+  entries which then all FAIL**: the obvious "converted nothing" document
+  returns early, before the removal is reached, and leaves the mutation green.
+  **Invariant:** exactly ONE throw, `UnsupportedFeatureError` on a signed
+  document, and it runs BEFORE the plan is built so a rejected call does no work.
+  `docmdp.ts` permits `/AcroForm /Fields` to change for FILLING
+  (`ACROFORM_ALLOWED`), and adding two hundred fields is not filling — a
+  certification would read as violated, so refusing is honest where producing a
+  document whose signature silently fails is not.
+  **Note, measured, and it covers NOTHING:** the positioned-to-bare fallback in
+  the apply loop reddens nothing, structurally rather than for want of a
+  fixture. Of everything `createField` throws on, the plan phase has already
+  excluded all but a path conflict, and a conflict fails `applyBare` for the
+  same reason. Retained as defence — the plan phase's guarantees are the only
+  thing making it dead.
+  **Note on scope, each deliberate:** no dynamic layout engine, no approximate
+  geometry, no XFA scripting (`<validate nullTest>` is read as a FLAG, never
+  run), no writing XFA back, and `<signature>`/`<imageEdit>`/`<barcode>` are
+  refused and reported rather than synthesized — the signature refusal matching
+  `formfield.ts`'s existing rule that a signature field is not creatable.
+  **Note:** `pdfaconvert.ts` is untouched. It deletes `/XFA` outright today
+  (`pdfaconvert.ts:452`), so the useful order is `ConvertXfaToAcroForm` THEN
+  `ConvertToPdfA` — the fields survive as a real AcroForm and the PDF/A rule is
+  satisfied for free. That is documentation; touching the converter would move
+  existing bytes and tests for no gain.
+  **Note, a consequence rather than a change:** `drprune.ts` skips any document
+  carrying `/XFA` (`drprune.ts:219`), because an XFA packet can name `/DR` faces
+  no scan reads. A converted document has no `/XFA`, so it becomes prunable.
+  **Invariant, and the ORACLE FOUND IT — the design missed it entirely:** a
+  field's widget covers the field box MINUS its `<caption>` reserve, on the side
+  `placement` names (default left; `presence="hidden"` reserves nothing). A
+  caption is the LABEL drawn beside the input, and LiveCycle's own `/AcroForm`
+  places the widget over the edit region alone. Measured on IRS f1040:
+  `f1_01` is 280.8pt wide with `reserve="68.0156mm"` (192.8pt), and Adobe's
+  rect is exactly 88pt. Ignore it and every captioned field is drawn across its
+  own label — worst error 229pt before the fix, 12pt after. A reserve that
+  swallows the field, or a `placement` outside the four, DEGRADES rather than
+  emitting a rect nobody can justify.
+  **Invariant (`mw1m`), the SECOND thing the oracle found, and it REVERSES the
+  bug it was filed as:** the remaining point-or-two is the field's own
+  `<margin>` insets, and the `<border>` contributes NOTHING. That bug supposed
+  the half-point was "a 1pt border the widget is inset by half of"; it is
+  `topInset="0.1764mm"` read literally. What settles it is a SWEEP rather than
+  one field — over all 54 distinct `textEdit` declaration shapes in f1040 the
+  width error was exactly `leftInset + rightInset` and the height error exactly
+  `topInset + bottomInset`, with NO exception, while border edge thickness
+  varied independently across those same rows and moved nothing (`f2_01` carries
+  a visible `0.3528mm` edge and matches Adobe exactly). Worst error 12pt → 6.4pt
+  and EXACT matches 53 → 105 of 151. Do not add a border inset back without a
+  corpus that shows one.
+  **Note the margin is the field's DIRECT `<margin>` child.** A real LiveCycle
+  field carries a SECOND one inside `<ui><textEdit>` — f1_03 carries both, the
+  nested one empty — so a search of the subtree drops every inset in the form.
+  Measured: reading the nested one reddens 5.
+  **Note what the corpus provably CANNOT say:** the ORDER of the caption and
+  margin subtractions. Both take fixed amounts off named edges, so the rect is
+  identical either way, and f1040 never pairs a caption with an inset on the
+  SAME edge; only the two refusal guards differ, each testing the room left at
+  its own step. Do not write an ordering invariant here.
+  **Note, measured, and it is why the oracle gained an EXACT count beside its
+  1pt bound:** a 1pt bound is BLIND to an inset rule that is merely close.
+  Applying the insets 0.1pt short leaves `within1` passing and collapses the
+  exact count from 105 to 7 — so the bound alone would have accepted a wrong
+  rule that looked right.
+  **Invariant (`17vo`), the THIRD thing the oracle found:** a `<checkButton
+  size>` states the BUTTON's own box, which is smaller than the field's, and
+  the widget is that button rather than the edit region it sits in. Every one
+  of Adobe's 54 button rects across BOTH vendored forms is exactly 8x8 for
+  `size="2.8222mm"`, where the reduced field box is commonly 12x12 — so a
+  converted checkbox was drawn half again too large. An ABSENT size leaves the
+  edit region standing rather than inventing a default, which is the same
+  refusal `px`/`pc`/`em` get; a size larger than its region CLAMPS to it,
+  because a button that grew past the field would overlap whatever sits beside
+  it.
+  **Invariant (`17vo`), and the HORIZONTAL half is MEASURED rather than
+  derived — it is not one default but TWO:** no field in either form states
+  `hAlign`, so every observed case is the default, and a caption on the RIGHT
+  puts the button flush LEFT while a caption on the left — or none at all —
+  puts it flush RIGHT. What settles it is fw9, a form we do not even PLACE
+  (its `pageArea` count cannot be matched) but whose Adobe rects are still in
+  its `/AcroForm`: three of its buttons share `x="14.4"` and all three rects
+  begin at exactly 73.0, and of the four pairings only this one makes a
+  caption-right field and a caption-less one land on the same edge. It then
+  reproduces all 8 of that form's buttons on BOTH axes from a single page
+  origin of 57.6. Vertical placement is the field `<para vAlign>`, whose two
+  non-default values are both in the corpus (f1040's `c1_1` is `bottom`, the
+  rest `middle`).
+  **Note the `<para>` is the FIELD's direct child**, never the one inside
+  `<caption>` — `c1_1` carries both and they are free to disagree. Same
+  direct-child rule the margin follows; measured, reading the caption's
+  reddens 2.
+  **Note what the corpus does NOT contain, so these are unmeasured:** a stated
+  `hAlign` (honoured, and it outranks the default), a caption placed `top` or
+  `bottom`, and a LEFT caption with a non-zero reserve. The last two fall under
+  the `right` default by the same rule.
+  **Note, measured, and it was a redundant defence until the test was fixed:**
+  `buttonSize` is read only for a `checkButton` ui, AND `xfaconvert.ts` calls
+  `buttonBox` only for that kind — so breaking either alone proves nothing.
+  The template test has to put a `size` on a `<textEdit>` for the parse-side
+  guard to be measurable at all; with a bare `<textEdit/>` the read returns
+  undefined either way and the mutation stayed green.
+  **Note on the oracle, and it is REAL:** `test/fixtures/xfa/` holds two hybrid
+  LiveCycle Designer 6.5 forms (IRS f1040 and fw9, US federal works). A static
+  XFA form carries TWO INDEPENDENT descriptions of one field set — the template,
+  and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts`
+  strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and
+  compares names, types and RECTS against numbers we did not compute. It
+  reproduces all 199 of f1040's names exactly, and since `17vo` ALL 151 placed
+  rects EXACTLY — worst 0.0006pt, which is floating-point residue from the
+  mm-to-pt conversions and nothing else. It is what CONFIRMED the layout-chain
+  reading above: f1040's root subform is `layout="tb"`, so read from the
+  document root the positioned route would place ZERO fields, and it places 151.
+  **Note the assertion is an EQUALITY now**, and it fences three rules at once:
+  break the caption rule and the count collapses to about 1, the margin rule
+  and it falls to 53 (worst 12pt), the check-button rule and it falls to 105
+  (worst 6.4pt).
+  **Note fw9 is an ORACLE TOO, for the geometry it refuses to place.** We
+  decline that form (its `pageArea` count cannot be matched), so no test
+  compares our rects there — but its `/AcroForm` still holds Adobe's, and they
+  are what settled `17vo`'s horizontal rule and independently confirmed the 8x8
+  size. A form in the `dataOnly` path is still evidence about the arithmetic.
+  **Its ceiling, and PROVENANCE states it:** ONE producer, so this is evidence
+  for the forms it covers and NOT conformance — no second XFA implementation
+  arbitrates our output. Positioned layout only. NO residual geometry rule
+  remains.
+  `px`/`pc`, non-`topLeft` anchors and `<occur>` appear in neither fixture and
+  stay builder-covered only.
 - **viewerprefs.ts** — the catalog `/ViewerPreferences` dictionary, 32000-1
   Table 150 in full (`72nc.3`): how a producer says a document should OPEN and
   PRINT. A leaf importing `Document` as a TYPE only, `docaction.ts`'s
@@ -6543,6 +6776,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/pdfx/` | `PROVENANCE.md` | Ghostscript-produced PDF/X-1a/X-3/X-4 for `pdfxvalidate.ts` — four conformant, one deliberately not, and the only fixtures reaching `outputIntentRule`'s registered-name branch (`test/pdfx-real.test.ts`) |
 | `fixtures/corrupt/` | `PROVENANCE.md` | Damaged files for the recovery suite (`test/corrupt-real.test.ts`). The one directory where the *source* is what is third-party — a corrupt file has no producer — so Ghostscript and qpdf lay out the bytes and the damage is recorded byte for byte, alongside what each fixture salvages and loses |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
+| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |
 | `fixtures/commonmark/` | `PROVENANCE.md` | The official CommonMark 0.31.2 suite — 652 examples, run with no allowlist through the test-only oracle in `test/helpers/md-html.ts` |
