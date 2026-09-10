@@ -1,12 +1,15 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { Matrix, mul, translate, invert, apply } from './text.js';
-import { PdfDict, PdfObject, PdfStream } from './types.js';
+import { PdfDict, PdfObject, PdfStream, isStream } from './types.js';
 import { inflateStream } from './flate.js';
 import { resolveColorSpace, deviceGray, rgbHex, Rgb, ColorConverter } from './colorspace.js';
 import { parseFunction } from './pdffunction.js';
 import { imageHref } from './imagehref.js';
-import { interpret, baseMatrix, arrNums, RenderSink, Path, StrokeStyle, TextRunInfo, OffscreenUse } from './pagerender.js';
+import {
+  interpret, baseMatrix, arrNums, RenderSink, Path, StrokeStyle, TextRunInfo, OffscreenUse,
+  fillsText, strokesText,
+} from './pagerender.js';
 import { BlendMode } from './blend.js';
 import { strokeOutlinePolys } from './strokegeom.js';
 import { glyphDisplacement, glyphOrigin } from './font.js';
@@ -362,14 +365,34 @@ export class SvgSink implements RenderSink {
     const content = this.textContent(info);
     if (content.length === 0) return;
     const attrs = this.textAttrs(info);
-    attrs.push(`fill="${rgbHex(info.color)}"`);
+    // SVG expresses the text rendering mode natively: `fill` and `stroke` are
+    // ordinary presentation attributes on <text>, so mode 1 needs `fill="none"`
+    // rather than a second element. A non-painting mode never arrives — the
+    // interpreter gates it — so the two flags are never both false here.
+    attrs.push(`fill="${fillsText(info.mode) ? rgbHex(info.color) : 'none'}"`);
     attrs.push(...this.paintAttrs('fill'));
+    if (strokesText(info.mode)) {
+      attrs.push(`stroke="${rgbHex(info.strokeColor)}"`);
+      // The width is user-space: <text> carries the run's own transform, so the
+      // value goes in unscaled and the transform applies it, exactly as it does
+      // for a stroked path.
+      attrs.push(`stroke-width="${fmt(info.strokeStyle.width)}"`);
+    }
     this.emitClipped(`<text ${attrs.join(' ')}>${content}</text>`);
   }
 
-  clipToGlyphs(info: TextRunInfo): boolean {
-    const content = this.textContent(info);
-    if (content.length === 0) return false;
+  clipToGlyphs(infos: readonly TextRunInfo[]): boolean {
+    // Several <text> children of one <clipPath> ARE a union, so the shape this
+    // backend needs for a text clipping mode costs it nothing extra.
+    const els = infos
+      .map((info) => {
+        const content = this.textContent(info);
+        return content.length === 0
+          ? ''
+          : `<text ${this.textAttrs(info).join(' ')}>${content}</text>`;
+      })
+      .filter((e) => e.length > 0);
+    if (els.length === 0) return false;
     // SVG 1.1 §14.3.5 admits <text> as clipPath content, so the clip is the same
     // element glyphRun would have drawn. It keeps its own transform: clipPath
     // content resolves in the referencing element's user space, and what
@@ -380,11 +403,21 @@ export class SvgSink implements RenderSink {
     // draws substitute faces (see glyphRun), so a gradient shows through
     // approximately-shaped glyphs. Closer than one flat colour, which is all
     // the alternative offers.
-    this.pushClip(`<text ${this.textAttrs(info).join(' ')}>${content}</text>`, 'tclip');
+    this.pushClip(els.join(''), 'tclip');
     return true;
   }
 
-  shading(dict: PdfDict, ctm: Matrix): void {
+  shading(shading: PdfDict | PdfStream, ctm: Matrix, _pattern: boolean): void {
+    // This backend draws no mesh type, so the stream half is of no use to
+    // it and the dict is all it reads. The union exists for raster.ts,
+    // which needs the vertex data (4gtd.4).
+    //
+    // It draws no FUNCTION-BASED shading (type 1) either, and `_pattern` is
+    // unread for the same reason: `/Background` fills what a shading does not
+    // cover, which needs a per-pixel answer. No SVG gradient element can
+    // express a 2-D function field, so both would mean rasterizing here —
+    // its own decision, and 4gtd.3 deliberately left it (README says so).
+    const dict = isStream(shading) ? shading.dict : shading;
     const doc = this.doc;
     const r = (o: PdfObject | undefined) => doc.resolve(o);
     const infl = (s: { dict: PdfDict; raw: Uint8Array }) => inflateStream(s as Parameters<typeof inflateStream>[0]);

@@ -2142,6 +2142,103 @@ Source (`src/`):
   alone. A fixture for `clamp()` needs its bounds INVERTED
   (`clamp(40px, 2px, 10px)`): with them the right way round both readings of
   the argument order agree, and the mutation survives.
+- **meshtri.ts** — Gouraud triangle geometry (`4gtd.4`): the topology of a type
+  4 or 5 mesh, and the barycentric walk that paints one triangle. A LEAF
+  importing NOTHING — no PDF object, no canvas, no colour space — so every rule
+  is testable from plain numbers with no file built, the split `floatstack.ts`,
+  `tablespan.ts`, `linebox.ts` and `booklet.ts` each already make.
+  **Invariant:** a type 4 flag of 0 takes the NEXT THREE vertices outright and
+  does not consult their own flags, which is what the spec means by "must be 0".
+  Flags 1 and 2 differ only in WHICH two vertices they keep — 1 keeps the last
+  two, 2 keeps the first and last — so a mesh where both readings produce a
+  triangle renders plausibly under either, and the two need separate fixtures.
+  **Invariant:** the two triangles of a lattice cell SHARE the diagonal, so the
+  interpolation is continuous across it. **Note, measured, and the first fixture
+  saw NOTHING:** a lattice whose colours ramp only VERTICALLY has a colour field
+  depending on y alone, so every triangulation of the quad paints the same
+  picture and a broken diagonal is invisible; the colours must vary along BOTH
+  axes, and the probe must sit MID-CELL, since at a vertex column every
+  triangulation agrees anyway.
+  **Invariant:** `eachTrianglePixel` walks the triangle's OWN bounding box, not
+  the clip region. That is a cost rule with teeth — a mesh is many small
+  triangles, so evaluating the region per triangle is O(pixels x triangles)
+  where this is O(total triangle area). **Note the fixture trap:** a probe for
+  the containment test must sit INSIDE that bounding box, or a build with no
+  containment test still leaves it unpainted and the case measures nothing.
+  **Note:** the barycentric test carries a small negative tolerance, so the
+  shared edge of two triangles does not drop a row of pixels to rounding — a
+  hairline seam that reads as a mesh fault rather than as arithmetic.
+- **meshpatch.ts** — Coons (type 6) and tensor (type 7) patch geometry
+  (`4gtd.5`): the shared-edge topology, the Coons-to-tensor conversion, and the
+  tessellation into the triangles `meshtri.ts` already paints. A LEAF over
+  `meshtri.js`'s TYPES alone, the split `meshtri.ts` itself makes and for its
+  reason.
+  **Invariant:** the two mesh families differ ONLY in how they produce
+  triangles. Everything downstream — the colour space, the `/Function` LUT, the
+  barycentric walk — is shared in `rasterizeMesh`, so a patch mesh and a
+  Gouraud mesh provably cannot disagree about a function or a colour space.
+  **Invariant:** `NET_BOUNDARY`'s twelve entries WALK THE 4x4 NET'S BORDER
+  EXACTLY ONCE — j rising along `i = 0`, then i rising along `j = 3`, then j
+  falling along `i = 3`, then i falling along `j = 0`. That closure is what
+  makes the four edges `[1..4]`, `[4..7]`, `[7..10]` and `[10..12, 1]`, which is
+  in turn what makes the shared-edge table cyclically consistent — and it is
+  asserted STRUCTURALLY (twelve distinct indices, all on the border, corners at
+  stream points 1, 4, 7 and 10) rather than transcribed and hoped for. A
+  mapping that does not close still renders, as a different surface.
+  **Invariant:** the shared edge always becomes the NEW patch's FIRST edge, and
+  the flag selects which of the previous patch's edges 2, 3 or 4 it was — so
+  the table is one rotation of the boundary loop and nothing else. The three
+  differ ONLY in which four points they keep, so a mesh where two readings both
+  produce a patch renders plausibly under either; the hazard `meshtri.ts`
+  already records for a type 4 mesh's flags 1 and 2, and each is asserted alone
+  for the same reason.
+  **Invariant:** a Coons patch's four INTERIOR control points are computed from
+  its boundary (8.7.4.5.7) so that ONE surface evaluator serves both types. A
+  tensor patch states its own four WHATEVER THE FLAG SAYS — the edge flag
+  shares BOUNDARY geometry and nothing else.
+  **Invariant:** a continuation with no predecessor is DROPPED. It names four
+  points and two colours that do not exist, and inventing them paints a patch
+  the document does not describe.
+  **Invariant (`patchGridSize`):** how finely a patch subdivides is decided from
+  the control net IN DEVICE SPACE and NEVER by evaluating the surface — the
+  standard cubic-Bezier chord bound `N >= sqrt(3D/4*tol)` over the largest
+  second difference of every row and column, taken against the corner-colour
+  spread. A quadtree is adaptive per region and was rejected: cells at different
+  depths leave T-junctions INSIDE one patch, a visible hairline crack, where one
+  resolution per patch cannot. Between NEIGHBOURING patches a differing N is
+  harmless, because the shared edge lies on the SAME curve — so the gap is
+  bounded by the coarser side's own tolerance, which is why `FLATNESS` is well
+  below one device pixel rather than near it.
+  **Invariant:** the cell count is capped by the patch's own DEVICE SIZE, so a
+  mesh of many small patches costs its pixels rather than its patch count.
+  **Note, measured, and it is thin:** the cap binds only for a patch about three
+  device units across (N of 3 against 4 uncapped), because `want` grows as the
+  square root of a second difference that is itself bounded by the span. The
+  case pinning it asserts BOTH sides — the same shape three times larger wants
+  more than three cells — so the small one is provably being held rather than
+  simply not asking.
+  **Invariant:** the CTM is applied to the control net BEFORE tessellation, in
+  `raster.ts`. It is affine, so it commutes with Bezier evaluation and with the
+  Coons interior-point formula (whose coefficients sum to 1), which is what
+  makes that legal — and it is what makes the tolerance a genuine count of
+  device pixels rather than of the shading's own units.
+  **Note on the anchor, and it is WEAKER than this repo prefers:** there is no
+  second implementation to check against — no PDF rasterizer is installed here,
+  so unlike `test/fixtures/tiff/` or `test/fixtures/xfa/` these rules are a
+  TRANSCRIPTION of 8.7.4.5.7 and 8.7.4.5.8 verified against itself. Two things
+  push back. The point mapping is checked STRUCTURALLY, as above. And the
+  interior-point formula is checked against a property it MUST HAVE rather than
+  against the page it came from: on a regular affine lattice `p[i][j] = A + iU +
+  jV` a Coons patch IS that plane, so the formula must return the lattice's own
+  interior points — measured, swapping its 6 and 3 coefficients yields `2U+2V`
+  where `U+V` is right, so the check discriminates. Do not read the green suite
+  as conformance evidence.
+  **Note, measured:** all 17 mutations aimed at this issue redden, the cap only
+  after the two-sided case above was added. **The one rule the RENDER fixtures
+  cannot see is `NET_INTERIOR`'s ORDER:** the type 7 fixture sets its four
+  interior points to the SAME value, which makes the bulge predictable and the
+  order invisible — permuting them reddens exactly one case, the unit test. Do
+  not read the render tests as covering it.
 - **linebox.ts** — where a line's baseline sits and how tall its band is
   (`zch2.11`): `lineBox(items, leading, blockFontSize)` over `LineItem`s
   carrying an ascent, a height and an alignment.
@@ -3945,6 +4042,22 @@ Source (`src/`):
 - **ocg.ts** — optional content / layers (`OptionalContent`, `Layer`,
   `LayerConfig`): enumerate/toggle, author, and delete OCGs + their marked
   content.
+  **Invariant (`q1g2.1`):** `defaultConfigIfPresent()` is the READ-ONLY twin of
+  `Default`, and the difference is not a nicety — `Default` goes through
+  `ensureOcProps`, which WRITES `/OCProperties` into the catalog and calls
+  `markModified()`. Any read-only consumer reaching for `Default` therefore
+  modifies every document it touches, and `choosePath()` takes the incremental
+  append only for an UNMODIFIED base — so a `ToImage()` before a `Sign()` would
+  silently turn the signature into a full rewrite of bytes an earlier signature
+  covered. `pagemode.ts` records the same hazard for a no-op delete. A document
+  with no `/OCProperties` answers `undefined`, and its caller treats everything
+  as visible.
+  **Invariant:** `ResolveVisibility` decides an OCG's state by REF IDENTITY —
+  `isRefVisible` compares against `/ON` and `/OFF` with `sameRef` — so every
+  caller must hand it the RAW operand. Resolve it first and every layer falls
+  through to `BaseState`, so a switched-off layer reads as visible and the whole
+  feature silently does nothing. Measured: resolving before the call reddens 5
+  cases in `test/optional-content-render.test.ts`.
 - **imagepages.ts** — `doc.AddImagePages()`: an image file expanded into PAGES,
   one per frame. Note the direction against `imageembed.ts`, which draws an
   image INTO a page.
@@ -4848,6 +4961,260 @@ Source (`src/`):
 - **svgrender.ts**, **raster.ts**, **pagerender.ts** — rendering (`ToSvg` /
   `ToImage`): a shared content-stream interpreter, a pure-TS scanline rasterizer,
   and glyph-outline drawing.
+  **Invariant (`4gtd.4`):** `RenderSink.shading` takes `PdfDict | PdfStream`,
+  because a MESH keeps its vertex data in the stream and `.dict` alone loses it.
+  **Note the trap, and the typecheck gave FALSE ASSURANCE:** widening the
+  interface method did NOT force implementors to widen — TypeScript method
+  parameters are BIVARIANT, so `RasterSink.shading(dict: PdfDict)` still
+  compiled, received a stream at runtime and rendered a BLANK PAGE. `tsc` was
+  green throughout. Any future widening of a sink method must be checked at each
+  implementor by eye rather than by the compiler.
+  **Note (`4gtd.3`) the trap has a SECOND form, and it bit the same method:**
+  ARITY is unenforced too — an implementation may declare FEWER parameters and
+  still satisfy the interface — so adding `pattern` forced nothing either, and
+  all three implementors were updated by hand. `htmlfixed.ts`'s forwarder was
+  still sitting at the narrow `PdfDict` from `4gtd.4` when `4gtd.3` arrived,
+  which is what that note predicted and nothing had caught.
+  **Invariant (`4gtd.3`):** a type 1 shading maps each device pixel back through
+  the CTM and then the INVERSE of `/Matrix`, which maps the domain INTO the
+  target space and so must be inverted to come back out. A singular one
+  describes no field and is refused — malformed rather than unimplemented, and
+  it takes the mid-grey degrade beside a type 1 missing the `/Function` its type
+  requires. **Note what the refusal is really worth:** `invert` THROWS, and
+  `renderCanvas` catches around the whole of `interpret`, so letting that throw
+  out costs every operator drawn AFTER the shading — which is why the fixture
+  draws a square past the `sh` and asserts it survives. One whose shading is the
+  last thing drawn measures only half the rule; that was the first version.
+  **Invariant (`4gtd.3`):** there is deliberately NO LUT for type 1. Types 2 and
+  3 index a 257-entry table because they have ONE parameter; a 2-D domain has
+  none. **Measured:** ~1.5 us per pixel against a type 4 program, roughly 15x
+  the LUT-indexed axial path (528 ms against 31 for 360,000 pixels), so a
+  full-page type 1 at 150 dpi costs a few seconds. Recorded rather than bought
+  off with a 2-D table, which would blur the field the shading exists to state.
+  **Invariant (`4gtd.3`):** `/BBox` and `/Background` are COMMON shading entries
+  (Table 78) and are applied ONCE in the shared per-pixel walk, for every type
+  rather than as a rule belonging to type 1 — two rules for one entry is how a
+  document comes to be clipped as a gradient and not as a mesh. Neither was
+  honoured by ANY type before, so this closed a latent gap in the axial and
+  radial paths at the same time; types 2 and 3 stay byte-identical for a
+  document declaring neither, which is every fixture that predates the issue.
+  **Invariant:** outside the `/BBox` NOTHING paints — not the shading and not
+  the `/Background`, which fills only within the region the box admits.
+  **Invariant:** `/Background` is applied only where the shading is a PATTERN
+  fill, 8.7.4.3 ignoring it under `sh`. Only `pagerender.ts` knows which it is
+  serving, which is the whole reason `RenderSink.shading` grew `pattern`.
+  **Note, measured, and it is the redundant-defence trap exactly:** `/BBox` is
+  held by a CONJUNCTION of two defences and breaking either alone proves
+  NOTHING. The device-AABB narrowing is exact for an axis-aligned CTM, so
+  deleting the per-pixel test reddens nothing; the per-pixel test is exact for
+  types 1-3, so widening the AABB reddens nothing either. Only removing BOTH
+  reddens, at one case. Both are kept because they answer different questions —
+  the AABB is also a cost bound and is all a MESH gets, since it paints from its
+  triangles and leaves before that walk, while only the per-pixel test tightens
+  a rotated CTM. Do not "simplify" either away.
+  **Note, measured:** every other mutation aimed at these rules reddens — 9 of
+  11 across the sweep, the two green ones being the `/BBox` pair above.
+  **Invariant (`4gtd.4`):** a Gouraud mesh leaves `rasterizeShading` BEFORE the
+  per-pixel evaluator, because it paints its triangles rather than the clip
+  region. Returning false there falls through to the mid-grey degrade, so a mesh
+  that cannot be read costs its own appearance and never the page.
+  **Invariant:** with a `/Function`, a vertex carries ONE parametric value, so
+  the value is interpolated across the triangle and the function evaluated
+  AFTER, through the same LUT the axial and radial paths use. Evaluating at the
+  vertices and interpolating the results is a different answer for any
+  non-linear function — and a plausible one, since it still produces a smooth
+  gradient. **Note the fixture needs a NON-LINEAR function AND a BAND rather
+  than an upper bound:** `< 60` also admits 0, so it passed under a mutation
+  that collapsed the LUT lookup to its endpoints.
+  **Invariant (`lqcs.1`):** a NON-EMBEDDED font gets the bundled Standard-14
+  substitute whether it is simple or COMPOSITE — the `!isType0` guard is gone —
+  and `GlyphSource.substituted` says which case a consumer is holding, because
+  the two select a glyph by different keys. A substitute's glyph ids are the
+  substitute's, unrelated to the document's CIDs, so a substituted composite
+  font goes by UNICODE where an embedded one goes by CID.
+  **Invariant, and it is the one that draws a CONFIDENT WRONG GLYPH when
+  broken:** the substituted-composite branch must NOT reuse `gidForProgram`.
+  That function tries the text and then falls back to `cmapLookup(code)` and
+  `cmapLookup(0xF000 + code)`, which is right for a simple font — the code IS a
+  character code — and wrong for a composite one, where it is a CID. **Note the
+  fixture, measured the hard way and rebuilt once:** the fallback only fires
+  when the TEXT LOOKUP FAILS, so a CID whose Unicode the substitute HAS (0x41 ->
+  U+0058) never reaches it and measures nothing. What reaches it is a CID whose
+  Unicode the substitute LACKS while the CID is itself a Latin codepoint — 0x41
+  -> U+4E00 — where a fallthrough draws `A` for a Japanese character.
+  **Note the premise this issue was filed on is WRONG, and the correction is
+  what makes it testable:** it says a non-embedded composite font "paints
+  nothing at all". It paints PLACEHOLDER BOXES — `rasterizeGlyphRun` already
+  falls back to `drawGlyphPlaceholder` when no gid resolves. Measured at 1120
+  ink pixels for a four-CID run at 48pt against 1902 filled. So a fixture
+  asserting that INK APPEARS passes on the unfixed build; the acceptance case
+  compares against the SIMPLE-font render of the same string instead.
+  **Note what already existed:** the CID -> Unicode route the issue predicted
+  would have to be built is `TextFont.textOf`'s, which tries `/ToUnicode` then
+  `cidunicode.ts`'s bundled table, and it already reached here as `Glyph.text`.
+  **Note the consumer that is structurally unaffected:** `htmlfontembed.ts`
+  shares `buildGlyphSource`, but its `probe` tests the descriptor's
+  `/FontFile*` BEFORE it consults `src.sfnt`, so a substituted face can never
+  become embeddable and the HTML output cannot move. Checked rather than
+  assumed — `test/html-identity.test.ts` is green, but it is the reasoning that
+  makes that green mean something.
+  **Invariant (`q1g2.1`):** optional content is suppressed at ONE gate,
+  `walk`'s `element()` — which is the only place that needs one, because every
+  painting operator already goes through it: the five path painters, the four
+  text showers, the inline image, `Do` and `sh`. A `Do` of a FORM is gated
+  there too, which SKIPS the form rather than walking it with a flag; the two
+  are equivalent because `drawFormBody` brackets the child in
+  `sink.save()`/`restore()` over a CLONED state, so nothing inside a form can
+  escape it — and skipping is cheaper. The design for this issue proposed
+  threading a flag through `RenderCtx` into the child walk; `element` made that
+  unnecessary.
+  **Invariant:** the CLIP IS FLUSHED even when hidden. `W f` sets a pending
+  clip that its PAINT operator flushes, so returning before `flushClip` drops
+  it — and "a clip set inside a hidden section still applies to what follows"
+  is the acceptance criterion. **Note the fixture, measured the hard way:** a
+  `W n` case cannot reach this at all, since `n` is not a painting operator and
+  flushes outside `element`; and even a `W f` case passes either way unless a
+  `cm` sits between the section and the next paint, because the NEXT painting
+  operator flushes the pending clip regardless — what the missing flush loses
+  is the CTM, not the clip.
+  **Invariant:** the marked-content stack records WHICH section hid
+  (`mcStack: boolean[]`), never a bare depth. A visible `BDC` nested inside a
+  hidden one must not decrement on its `EMC`. **Note the fixture:** with the
+  two `EMC`s adjacent nothing is painted in the gap and a decrement-always
+  build passes, so the case paints BETWEEN them.
+  **Invariant:** visibility is memoized per render, keyed on the ref's
+  `num gen`. `isRefVisible` LINEARLY SCANS `/ON` and `/OFF` per call, so an
+  unmemoized walk is O(sections x layers) on exactly the CAD-style documents
+  that have many of both.
+  **Note, measured, and it covers NOTHING:** the `prop !== undefined` test
+  before `ocVisible` is redundant and PROVABLY cannot be otherwise —
+  `doc.resolve` answers `null` for an absent operand and `ResolveVisibility`
+  returns true for any non-dict, so an unresolved name already reads as
+  visible. Retained as the honest spelling of "we hide only what we resolved";
+  do not cite the inline-dict fixture as covering it.
+  **Invariant (`q1g2.2`):** an `/OC` on the XObject DICTIONARY is checked at
+  `Do`, ONE site covering images and forms alike since both subtypes arrive
+  there — and it is the half this library WRITES, from four places
+  (`Annotation.Layer`, `AddImage({ layer })`, `AddBarcode({ layer })`,
+  `ImageInfo.Replace`), so before it we produced documents our own renderer
+  ignored. `test/optional-content-objects.test.ts`'s `AddImage({ layer })` case
+  is the end-to-end one; a synthetic fixture cannot show that the bug was ours.
+  **Invariant (`q1g2.2`):** the ANNOTATION check lives in
+  `annotappearance.ts`'s `isAnnotVisible`, NOT in `drawAnnots` — because that
+  function's stated contract is that render and flatten AGREE about what is
+  painted. A render-only check would let `FlattenAnnotations` bake hidden ink
+  into permanent page content that the rendered page does not show. It follows
+  that `SearchAnnotations` (the DRAWN-text search) also stops finding it, while
+  `searchAnnotationText` (the CARRIED text) still reads every annotation, which
+  its own invariant demands and redaction depends on. The asymmetry is asserted
+  directly so it reads as a decision.
+  **Note the cost asymmetry, which is deliberate:** `isAnnotVisible` asks
+  `defaultConfigIfPresent()` PER ANNOTATION with no memo, where the
+  marked-content path memoizes. A page's `/Annots` is a short list; sections are
+  unbounded. **Measured:** using the mutating `Default` there reddens only the
+  case with an annotation carrying `/OC` in a document with NO `/OCProperties`
+  — `q1g2.1`'s no-modify case has no annotations at all, so it provably cannot
+  reach this branch.
+  **Note the scope:** extraction (`q1g2.3`) is NOT here — `text.ts` still
+  reports hidden content, which is why `GetText` and a render disagree until
+  that lands.
+  **Invariant (`4gtd.1`):** the text rendering mode is decided ONCE, in
+  `showText`, above BOTH the outline branch and the Type 3 branch — never inside
+  a sink. Three sinks implement `glyphRun`, so a per-sink gate is three chances
+  to disagree; and a Type 3 glyph is a content stream that never reaches
+  `glyphRun` at all, so a gate inside `paintGlyphRun` lets every Type 3 run paint
+  under mode 3. It also means a mode-3 run whose fill paint is a PATTERN paints
+  nothing, where a lower gate would still clip to the glyphs and paint through
+  them. Measured: moving the gate down reddens exactly the Type 3 case.
+  **Invariant:** `fillsText`/`strokesText`/`clipsText` are the one owner of
+  Table 106. `mode & 3` IS the paint half rather than a trick — 4-7 repeat 0-3
+  and ADD the clip — and bit 2 is the clip half, which `clipsText` reads.
+  **Invariant (`4gtd.2`):** the glyphs of a clipping mode accumulate across
+  EVERY show operator in the text object and their UNION commits at `ET`, which
+  is why `clipToGlyphs` takes an ARRAY. It INTERSECTS into the active clip — the
+  shape its original caller wants, since `paintGlyphRun` brackets one run in
+  `save()`/`restore()` — so calling it per run would give the INTERSECTION of
+  the runs, empty for any two that do not overlap, silently erasing everything
+  after `ET`. **Measured:** committing per run reddens exactly the two-`Tj`
+  case, which a single-run fixture provably cannot make.
+  **Note the contrast with `4gtd.4`'s widening, and it is worth remembering:**
+  this signature change IS caught by the compiler at every implementor, because
+  `TextRunInfo` and `TextRunInfo[]` are unrelated types. Bivariance hides a
+  stale signature only where the old parameter is a SUBTYPE of the new one, as
+  `PdfDict` is of `PdfDict | PdfStream`.
+  **Invariant:** the clip FAILS OPEN. A sink that cannot outline the glyphs
+  leaves the clip UNCHANGED rather than emptying it — more shows than the
+  document asked for, where the alternative makes the following content vanish.
+  A deliberate divergence from a literal reading of 32000-1, which would
+  intersect an empty outline set and clip everything away. For modes 4-6 the
+  glyphs painted anyway, so only mode 7 is affected.
+  **Note:** a Type 3 run contributes NO outline and is left out of the
+  accumulation, so a text object showing only Type 3 glyphs fails open by the
+  same rule — its glyphs are content streams, and there is nothing to clip to.
+  **Invariant:** the mode is GRAPHICS STATE (9.3.1) and both halves of that hold
+  structurally rather than by a comment — `clone` is a shallow spread, so `q`/`Q`
+  carry it; `BT` assigns only `tm`/`tlm` (9.4.1), so it survives a text object.
+  Both are mutation-checked and each reddens exactly one case. A non-painting
+  run still ADVANCES the pen: it occupies its width.
+  **Invariant:** a stroked glyph's half-width is `lineWidth / 2 × ctmScale(ctm)`.
+  A line width is USER space and scales with the CTM alone — never with the font
+  size or `Tm` — which is what keeps a stroked glyph the same weight as a stroked
+  path beside it. **Note, measured, and it needed a fixture built for it:** every
+  other case in `test/text-render-mode.test.ts` renders at scale 1, where
+  `ctmScale` is 1 and dropping it reddens NOTHING; only the `2 0 0 2 0 0 cm`
+  case sees it. The font-size error reddens 2 cases on its own.
+  **Invariant:** `strokegeom.ts` stays the one owner of joins, caps and dashes.
+  `strokePolysOutline` outlines already-flattened DEVICE-space polygons (the
+  glyph case) and `strokeOutlinePolys` flattens in user space and transforms at
+  the end (the path case); both go through `strokePolyline`, because two copies
+  is how a glyph's stroke comes to differ from a path's at the same width.
+  **Note the deliberate asymmetry:** `htmlfixed.ts` inherits the non-painting
+  gate like any sink, but paints a STROKING run filled — CSS has no portable
+  glyph stroke, and visible ink beats a vanished run. Extraction is untouched by
+  all of this: `text.ts` has its own walker and an invisible run is exactly what
+  an OCR layer is for.
+  **Invariant (`4gtd.6`):** `ImageOptions.mode` states the PIXELS — `'rgb'`,
+  `'gray'` (Rec. 601 luminance) or `'bilevel'` (a plain cut at `threshold`,
+  never a dither) — and HOW COMPACTLY a container encodes them is per-format.
+  PNG and TIFF carry both natively, JPEG carries gray natively and REFUSES
+  bilevel, GIF reaches both exactly through its palette, and BMP has no gray
+  form here so it writes 24-bit with equal channels. One rule about pixels
+  beats five rules about containers; the fatter BMP is documented on the option
+  rather than left to be discovered.
+  **Invariant:** the weights are `colorrule.ts`'s `luma`, the ONE owner — a
+  second copy is how a rendered page and a `ConvertColors` document come to
+  disagree about one colour. It reduces from the FLOAT canvas, not from
+  `toRgb()`'s 8-bit output: rounding twice puts it a level off for nothing.
+  **Measured:** the fixture must paint SATURATED colour, because a page that is
+  already black on white cannot tell `'gray'` from `'rgb'` at all; pure red is
+  76 under Rec. 601 and 54 under 709, which is what discriminates the weights.
+  **Invariant, and the two are OPPOSITE on purpose:** PNG greyscale means 0 is
+  BLACK, while a bilevel TIFF declares PhotometricInterpretation 0 (WhiteIsZero)
+  and carries 1 = BLACK — which is what `decodeCcitt` returns and `encodeG4`
+  expects. Identical packing, inverted meaning, so `Canvas.toBilevel` takes the
+  polarity as an ARGUMENT and there is one packer. Two packers is how one of
+  them comes out a perfect negative, which reads as a deliberate effect rather
+  than a fault; each format's case asserts the BITS for that reason.
+  **Invariant:** `tiffFrameOf` is shared by `encodeCanvas` and
+  `renderPageToTiffFrame`, so the single-page and MULTI-PAGE TIFF paths cannot
+  disagree about what a mode means. That matters more than it looks: multi-page
+  G4 is the archival and fax interchange this mode exists for and it goes only
+  through the second, which the issue did not mention. Measured: pinning the
+  mode there to `'rgb'` reddens exactly the multi-page case.
+  **Note what this UNSTRANDED:** `ccittencode.ts` refuses a non-bilevel frame
+  rather than thresholding — deliberately, since picking a threshold is a
+  decision about the image — so `ToImage({ format: 'tiff', compression: 'g4' })`
+  could never succeed for a rendered page before there was a mode to ask for.
+  **Invariant:** every refusal is in `resolveFormat`, before rendering, so a
+  rejected call costs nothing — an unknown mode, `'jpeg'` + `'bilevel'`, any
+  non-rgb mode beside `background: 'transparent'`, and a `threshold` outside
+  0..255. **Note `threshold` is VALIDATED even where it is not read**, unlike
+  `quality`: an out-of-range one makes the whole page one colour, a
+  plausible-looking wrong file rather than an obviously broken one.
+  **Note, measured:** all 16 mutations aimed at this issue redden. A threshold
+  fixture needs the SAME page under a threshold either side of the value —
+  0.6 grey is 153, white under the default 128 and black under 200 — since a
+  one-sided case passes on the default alone.
   **Invariant:** image transparency in `raster.ts` is a three-step fallback in
   `decodeImageRgba`, in this order: `/SMask`, then a stencil `/Mask` stream,
   then a colour-key `/Mask` array. The two `/Mask` forms are one entry so only
@@ -4892,6 +5259,61 @@ Source (`src/`):
   **blend.ts** — the separable and non-separable blend functions (PDF 32000-1
   §11.3.5) as pure 0..1 arithmetic (no PDF/canvas knowledge), applied by the
   raster compositor.
+  **Invariant (`4gtd.7`):** OVERPRINT (`/OP`, `/op`, `/OPM`) is a PREVIEW, not a
+  separation model, and it is spelled as the DARKEN blend. A plate-accurate
+  answer needs per-colorant buffers; the canvas is RGB, so an overprinting paint
+  composites with per-channel MINIMUM. A colorant the paint does not lay down
+  has no ink, so its RGB channel is 1 and the minimum preserves the backdrop BY
+  ITSELF — which is what lets DeviceCMYK, Separation and DeviceN share one rule
+  rather than each carrying a plate map. **Measured against the exact CMYK
+  answer** it is right wherever Multiply is and strictly better where they
+  differ: 50% cyan overprinted by 50% cyan gives C=0.5, the correct plate
+  replacement, where Multiply compounds to 0.75. Both are wrong only where a
+  paint would LIGHTEN a plate already inked, which RGB provably cannot
+  represent; README says so.
+  **Invariant:** an explicit `/BM` WINS. The approximation IS a blend mode, so
+  the two collide, and a document that asked for Multiply gets Multiply rather
+  than having it silently replaced. **Note the fixture for it cannot be
+  Multiply:** 50% cyan times magenta is `(128,0,255)`, which is exactly the
+  preserved answer, so that case passes either way — `/BM /Screen` is what
+  discriminates, its result being one neither Darken nor a plain replace can
+  produce.
+  **Invariant:** `/OPM` is why DeviceCMYK and DeviceGray are gated on mode 1 and
+  Separation/DeviceN are not. A Separation names a SUBSET of the device's
+  colorants, so the rest preserve whatever the mode says; DeviceCMYK names every
+  colorant and under mode 0 writes all of them INCLUDING the zeros, which is
+  exactly normal painting. That asymmetry is the whole of what makes `/OPM`
+  observable rather than decorative, and it reads as though the CMYK rule should
+  apply to a Separation too — so "needs no /OPM, unlike DeviceCMYK" is asserted
+  directly.
+  **Invariant:** `/OP` is read BEFORE `/op`. `/OP` is the stroking flag and, for
+  backward compatibility, sets the non-stroking one too; `/op` then overrides
+  that half (Table 58). Reversed, a dict carrying both loses `/op`, which is the
+  half a fill reads — measured, that reddens four cases.
+  **Invariant:** overprint is decided PER PAINT, not per state, which is why
+  `syncPaintState` takes `which`: `/OP` and `/op` are separate flags over
+  separate colour spaces, so one `setBlend` cannot answer for both. `doFill` and
+  `doStroke` each already call it, which gets `B` — fill then stroke — the right
+  answer for each half with no second mechanism. A stroke-ONLY text run (Tr 1
+  and its clipping twin) syncs as a stroke for the same reason.
+  **Note the fixture shape, and it is the only one that measures anything:**
+  the backdrop must sit on ONE plate and the overprint on a DIFFERENT one.
+  50% cyan is `(128,255,255)`; 100% magenta over it reads `(128,0,255)` when the
+  cyan plate is preserved and `(255,0,255)` when the paint replaces it. Same
+  page, opposite answers. `/OP` and `/op` also need SEPARATE fixtures with the
+  other flag explicitly false — setting both lets either implementation pass.
+  **Note the scope, deliberate:** fills, strokes, text and image masks (which
+  paint the fill colour, so they come free). A COLOUR image in a subtractive
+  space is out — its samples would need per-plate treatment the RGB canvas
+  cannot carry — and so are patterns, which fall out for free because the
+  Pattern space's family is `'other'`.
+  **Note, and it is what `4gtd.7`'s own issue got wrong:** KNOCKOUT groups were
+  already implemented and covered before this issue — `/K` is read at
+  `pagerender.ts`, the sink has `beginKnockoutElement`/`endKnockoutElement`, and
+  `test/raster-transparency.test.ts` carries a discriminating "differs from the
+  same group drawn without knockout" case. Measured: forcing `knockout = false`
+  reddens 3. The issue said neither was honoured; only overprint was missing.
+  **Note, measured:** all 15 mutations aimed at these rules redden.
   **Invariant:** an isolated transparency group whose *contents* use a blend mode
   needs an offscreen buffer even at alpha 1. The buffering predicate reads the
   graphics state at `Do` time, which cannot see an inner blend; miss this and the
@@ -4959,7 +5381,20 @@ Source (`src/`):
   which a pre-pass over page content would miss.
   Backed by **pngencode.ts**, **pdffunction.ts**
   (shading-function evaluator) with **psfunc.ts** behind its type 4 branch,
-  **colorspace.ts**, **jpeg.ts** (baseline +
+  **colorspace.ts** — whose `ColorConverter` carries a `ColorFamily`
+  discriminator (`4gtd.7`) for the one rule that needs to know what KIND of
+  space a paint is in: overprint is meaningful only in a device SUBTRACTIVE one
+  (11.7.4.2). **It is REQUIRED rather than optional on purpose** — an optional
+  discriminator is silently missable at a construction site, and a converter
+  that forgot it would quietly stop overprinting, which is the bivariance trap
+  `4gtd.4` records wearing different clothes. Required made `tsc` name all four
+  sites that had not been updated. `'device-sub'` is DeviceGray, DeviceCMYK and
+  any ICCBased space resolving to one; `'separation'` is Separation and DeviceN;
+  `'other'` is DeviceRGB, the CIE-based spaces, Pattern and Indexed — the last
+  two on the reading that neither is one of 11.7.4.2's overprint spaces
+  whatever its base is, which is also what keeps a pattern fill out of the
+  overprint path for free rather than by a check.
+  **jpeg.ts** (baseline +
   progressive DCT decode, extended by **jpegarith.ts** arithmetic,
   **jpeglossless.ts** lossless, and **jpeghier.ts** hierarchical JPEG modes),
   **jpx.ts** (`JPXDecode` / JPEG 2000, ISO 15444-1: JP2 box + codestream over the
@@ -6409,6 +6844,35 @@ Source (`src/`):
   **Invariant:** `colormesh.ts` is pure BIT arithmetic and takes the colour rule
   as a callback, so it never learns what a colour space is and `colorshading.ts`
   stays the one owner of "what is the luma of this colour".
+  **Invariant (`4gtd.5`):** the type 6/7 PATCH record walk has ONE owner too,
+  `walkPatches` — the rule `walkGouraudVertices` already sets for types 4 and 5,
+  extracted out of `respliceMesh` when `readMeshPatches` arrived. It hands the
+  records back AS STATED, a continuation still missing the four points its flag
+  shares: resolving those is `meshpatch.ts`'s topology rule, and this module
+  holds the bit layout and nothing else. `grayscale-identity` is the fence for
+  the extraction and did not move.
+  **Note the per-patch byte ALIGNMENT is INHERITED rather than newly decided:**
+  each patch is taken to end on a byte boundary, which is what `respliceMesh`
+  has always done and what keeps the reader and the writer agreeing about where
+  the next record starts. It is a no-op for every byte-multiple layout — 8, 16
+  or 32-bit coordinates with 8-bit components and flags, which is what producers
+  emit — so no fixture here can separate the two readings.
+  **Invariant (`4gtd.4`):** the type 4/5 record walk has ONE owner,
+  `walkGouraudVertices`, over which BOTH consumers run — `respliceMesh`, which
+  writes, and `readMeshVertices`, which the rasterizer reads. It yields RAW
+  coordinates, and that is what makes one walk serve both: the re-splicer must
+  write them back bit-identically (its whole geometry guarantee), while the
+  reader applies `/Decode`'s COORDINATE half — the half the re-splicer
+  deliberately never reads. Handing over decoded floats would make the
+  re-spliced output depend on float round-tripping; handing over only bits would
+  make the reader re-derive the record layout. `test/grayscale-identity.test.ts`
+  hashes a mesh fixture and is the fence for that refactor.
+  **Note the issue's premise was WRONG, and the correction is what sized the
+  work:** `4gtd.4` says this module "already decodes the bit-packed vertex
+  stream … including the ISO coordinate/component/flag widths and the optional
+  /Function". It decodes the RECORD LAYOUT, but coordinates were copied as raw
+  bits and never converted, `/Decode`'s coordinate half was never read, and
+  `/Function` is not handled here at all.
   **Invariant:** a mesh's coordinates are copied as raw BIT PATTERNS and never
   pass through a float, so the geometry of the output is bit-identical and a
   re-spliced mesh cannot drift. Its `/Decode` keeps the coordinate half and its

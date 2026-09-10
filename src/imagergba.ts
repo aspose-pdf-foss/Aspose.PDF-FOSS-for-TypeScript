@@ -33,7 +33,7 @@ export function resolveNum(doc: Document, o: PdfObject | undefined, dflt: number
   return typeof v === 'number' ? v : dflt;
 }
 export function localDeviceGray(): ColorConverter {
-  return { components: 1, toRgb: (c) => { const v = Math.round((c[0] ?? 0) * 255); return [v, v, v]; }, initial: () => [0, 0, 0] };
+  return { components: 1, family: 'device-sub', toRgb: (c) => { const v = Math.round((c[0] ?? 0) * 255); return [v, v, v]; }, initial: () => [0, 0, 0] };
 }
 export function isIndexedCs(doc: Document, csObj: PdfObject | undefined): boolean {
   const r0 = doc.resolve(csObj);

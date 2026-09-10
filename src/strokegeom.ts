@@ -233,6 +233,34 @@ function cap(out: number[][], ex: number, ey: number, dir: [number, number], hw:
   // butt (0): nothing
 }
 
+/**
+ * Outline already-flattened DEVICE-space polygons — the glyph case (`Tr` modes
+ * 1, 2, 5 and 6).
+ *
+ * `strokeOutlinePolys` below is the path case: it flattens in user space and
+ * transforms at the end, because a path's curves must be flattened to a
+ * tolerance measured in device pixels. A glyph run arrives from the outliner
+ * already flattened and already in device space, so there is nothing left to
+ * transform — but the joins, caps and dashes are the same geometry, and
+ * `strokePolyline` is the one owner of them. Two copies of that is how a glyph's
+ * stroke comes to differ from a path's at the same width.
+ *
+ * `hw` is a DEVICE half-width: the line width is user-space and scales with the
+ * CTM alone (32000-1 9.3.1) — never with the font size or `Tm`, which is what
+ * makes a stroked glyph's outline the same weight as a stroked path's beside it.
+ *
+ * Each polygon is treated as CLOSED, which a glyph contour always is.
+ */
+export function strokePolysOutline(polys: Poly[], hw: number, style: StrokeStyle): Poly[] {
+  if (!(hw > 0.5)) hw = 0.5;                       // hairlines render ~1 device pixel wide
+  const segs = Math.max(8, Math.min(64, Math.ceil(hw)));
+  const contours: number[][] = [];
+  for (const p of polys) {
+    if (p.length >= 4) strokePolyline(contours, p, true, hw, style, segs);
+  }
+  return contours;
+}
+
 /** Build the stroke outline as device-space polygons (the geometry half of
  *  stroking), so it can be either filled or turned into a clip mask. */
 export function strokeOutlinePolys(path: Path, ctm: Matrix, style: StrokeStyle): Poly[] {

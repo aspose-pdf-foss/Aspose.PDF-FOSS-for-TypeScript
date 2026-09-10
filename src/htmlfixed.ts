@@ -29,7 +29,12 @@ class HtmlSink implements RenderSink {
   fill(path: Path, ctm: Matrix, color: Rgb, evenOdd: boolean): void { this.svg.fill(path, ctm, color, evenOdd); }
   stroke(path: Path, ctm: Matrix, color: Rgb, style: StrokeStyle): void { this.svg.stroke(path, ctm, color, style); }
   image(stream: PdfStream, ctm: Matrix, fillColor: Rgb): void { this.svg.image(stream, ctm, fillColor); }
-  shading(dict: PdfDict, ctm: Matrix): void { this.svg.shading(dict, ctm); }
+  // The union and the third parameter both arrive from RenderSink; this was
+  // left at the narrow `PdfDict` from 4gtd.4 until 4gtd.3, since TypeScript
+  // enforces neither on an implementor.
+  shading(shading: PdfDict | PdfStream, ctm: Matrix, pattern: boolean): void {
+    this.svg.shading(shading, ctm, pattern);
+  }
   setAlpha(fill: number, stroke: number): void { this.svg.setAlpha(fill, stroke); }
   setBlend(mode: BlendMode): void { this.svg.setBlend(mode); }
   beginOffscreen(
@@ -41,8 +46,18 @@ class HtmlSink implements RenderSink {
   endKnockoutElement(): void { this.svg.endKnockoutElement(); }
   clearSoftMask(): void { this.svg.clearSoftMask(); }
   clipToStroke(path: Path, ctm: Matrix, style: StrokeStyle): void { this.svg.clipToStroke(path, ctm, style); }
-  clipToGlyphs(info: TextRunInfo): boolean { return this.svg.clipToGlyphs(info); }
+  clipToGlyphs(infos: readonly TextRunInfo[]): boolean { return this.svg.clipToGlyphs(infos); }
 
+  /**
+   * **Text rendering mode degrades here, deliberately.** A non-painting mode (3
+   * and 7) never arrives — `showText` gates it above every sink, which is what
+   * makes an OCR layer invisible in this backend too — but a STROKING mode (1
+   * and 5) paints filled, where raster.ts and svgrender.ts stroke for real.
+   * CSS has no portable glyph stroke: `-webkit-text-stroke` is unprefixed
+   * nowhere and would need the run's colour class re-keyed on the stroke paint.
+   * Visible ink beats a vanished run, the rule `paintGlyphRun` already states
+   * for a sink that cannot build a glyph clip. Recorded in README's limitations.
+   */
   glyphRun(info: TextRunInfo): void {
     if (info.bytes.length === 0) return;
     // L: text space -> device space (ctm already folds in baseMatrix).

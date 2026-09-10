@@ -21,6 +21,180 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Overprint preview: `/OP`, `/op` and `/OPM` are honoured when rendering.**
+  A print-oriented document — the same kind PDF/X exists for, which this
+  library already validates and converts — previewed wrongly: an overprinted
+  spot or a magenta plate laid over cyan *replaced* what was under it instead
+  of darkening, so a proof looked nothing like the press sheet.
+
+  This is a **preview, not a separation model**, and it says so. A
+  plate-accurate answer needs per-colorant buffers; the canvas is RGB, so an
+  overprinting paint composites with per-channel minimum. A colorant the paint
+  does not lay down has no ink, so its channel is 1 and the minimum preserves
+  the backdrop by itself — which is what lets DeviceCMYK, Separation and
+  DeviceN share one rule rather than each carrying a plate map. Measured
+  against the exact CMYK answer it is right wherever the classic multiply
+  approximation is and strictly better where they differ: 50% cyan overprinted
+  by 50% cyan gives C=0.5, the correct plate replacement, where multiply
+  compounds it to 0.75. Both are wrong only where a paint would *lighten* a
+  plate already inked, which RGB cannot represent.
+
+  `/OPM` matters only for DeviceCMYK and DeviceGray, and that asymmetry is the
+  point: a Separation or DeviceN space names a subset of the device's
+  colorants, so the rest are preserved whatever the mode says, while
+  DeviceCMYK names every colorant and under mode 0 writes all of them —
+  including the zeros — which is exactly normal painting. Only mode 1 leaves a
+  zero-valued component's plate alone. `/OP` is the stroking flag and, for
+  backward compatibility, sets the non-stroking one too unless `/op` overrides
+  it. DeviceRGB and the CIE-based spaces are unaffected, per §11.7.4.2, and an
+  explicit `/BM` wins over overprint rather than being silently replaced —
+  a document that asked for Multiply gets Multiply.
+
+  Fills, strokes, text and image masks overprint. A colour image in a
+  subtractive space does not: its samples would need per-plate treatment the
+  RGB canvas cannot carry.
+
+  Note that **knockout groups already worked** — `/K true` has been honoured
+  since transparency groups landed, and the issue behind this entry was wrong
+  to pair the two. (4gtd.7)
+
+- **Rendered pages can come out greyscale or bilevel: `ToImage({ mode })` and
+  `ToTiff({ mode })`, with `threshold`.** A rendered page was always RGB, which
+  also **stranded a feature already shipped** — `ccittencode.ts` refuses a
+  non-bilevel frame rather than thresholding, so
+  `ToImage({ format: 'tiff', compression: 'g4' })` could never succeed for a
+  rendered page at all. It can now, single-page and multi-page alike, which is
+  the CCITT Group 4 interchange archival and fax pipelines actually read.
+
+  `'gray'` is Rec. 601 luminance through `colorrule.ts`'s `luma` — the one
+  owner of that rule, already read by `ConvertColors` and by the JPEG
+  coefficient-domain greying, so a rendered page and a converted document
+  cannot disagree about a colour — and it is reduced from the float canvas
+  rather than from its 8-bit form, which is the accurate answer. `'bilevel'` is
+  a plain cut at `threshold` (an integer 0..255, default 128), never a dither.
+
+  **What the mode states is the pixels**; how compactly a container encodes them
+  is per-format and documented. PNG carries both natively and gained bit depth 1
+  for the second; TIFF carries both natively, and only its bilevel form is what
+  Group 4 accepts; JPEG carries grey natively as one component and **refuses**
+  bilevel, since thresholded pixels through a DCT come back ringing round every
+  edge — a plausible-looking file that is not what was asked for. GIF reaches
+  both exactly through its palette, a page of flat fills being well under 256
+  colours. BMP has no grey form here, so it writes 24-bit with equal channels:
+  the right picture in a fatter file.
+
+  Note the two bilevel polarities are **opposite** and that is not a bug: PNG
+  greyscale means 0 is black, while a bilevel TIFF declares
+  PhotometricInterpretation 0 and carries 1 = black, which is what `decodeCcitt`
+  returns and `encodeG4` expects. Identical packing, inverted meaning, so one
+  packer takes the polarity as an argument rather than each format keeping its
+  own — get it backwards and the file is a perfect negative, which reads as a
+  deliberate effect. A non-rgb mode with `background: 'transparent'` is refused
+  rather than silently composited, the posture the opaque formats already take.
+  An unset mode is `'rgb'` and takes exactly the path it always has. (4gtd.6)
+
+- **Coons and tensor patch meshes render (`ShadingType` 6 and 7), the last
+  shading types that painted a flat grey rectangle.** With 4gtd.3 and 4gtd.4
+  before it, every shading type ISO 32000-1 defines now draws, and the opaque
+  mid-grey degrade is left for a mesh that cannot be read rather than for one
+  nobody implemented.
+
+  A patch states its boundary as twelve control points walking a 4×4 tensor
+  net's border once, and a flag of 1, 2 or 3 says the patch shares an edge with
+  its predecessor — so four of those points and two of its four corner colours
+  are absent from the record and come from the neighbour. New `src/meshpatch.ts`
+  owns that topology, the conversion of a Coons patch's boundary into the four
+  interior control points a tensor patch states outright (so **one** surface
+  evaluator serves both types), and the tessellation into the triangles
+  `meshtri.ts` already paints — which is what makes a patch mesh and a Gouraud
+  mesh share the colour space, the `/Function` rule and the barycentric walk
+  rather than each keeping its own.
+
+  How finely a patch subdivides is decided from its control net **in device
+  space**, by the standard cubic-Bézier chord bound and by the corner-colour
+  spread, and never by evaluating the surface. A quadtree would be adaptive per
+  region but leaves T-junctions between cells of different depth — a visible
+  hairline crack — where one resolution per patch cannot; between neighbouring
+  patches the shared edge lies on the same curve, so the gap is bounded by the
+  coarser side's own tolerance and stays sub-pixel. The cell count is bounded by
+  the patch's own device size, so a mesh of many small patches costs its pixels
+  rather than its patch count.
+
+  A continuation patch with nothing to continue is dropped rather than guessed
+  at, and a record that ends early degrades the mesh alone. Note the anchor is
+  weaker than this repo prefers and says so: no PDF rasterizer is available to
+  check against, so these are a transcription — pushed back on by checking the
+  point mapping structurally (the twelve must close the net's border) and the
+  interior-point formula against a property it must have (on a regular affine
+  lattice a Coons patch is that plane, so the formula must return the lattice's
+  own interior points). `ToSvg` is unchanged and still degrades every mesh
+  type. (4gtd.5)
+
+- **Function-based shadings render (`ShadingType` 1), and `/BBox` and
+  `/Background` are honoured for every shading type.** A type 1 shading
+  degraded to a flat mid-grey fill of the clip region — worse than drawing
+  nothing, since it is opaque and covers whatever sits behind it. Each device
+  pixel now travels back through the CTM and the inverse of the shading's
+  `/Matrix` into the function's own domain, and the function is evaluated
+  there. Nothing new was needed to evaluate it: `parseFunction` already took
+  two inputs, for both sampled (type 0) and PostScript calculator (type 4)
+  functions, and already handled an array of *n* one-output functions.
+
+  There is deliberately **no lookup table**. Types 2 and 3 index a 257-entry
+  LUT because an axial or radial shading has one parameter; a two-dimensional
+  domain has none, so the function runs per pixel. Measured at ~1.5 µs per
+  pixel against a type 4 program — roughly 15× the LUT-indexed axial path — so
+  a full-page type 1 at 150 dpi costs a few seconds. That is recorded rather
+  than bought off with a 2-D table, which would blur exactly the field the
+  shading exists to state.
+
+  `/BBox` and `/Background` are **common** shading entries (ISO 32000-1
+  Table 78) that no type honoured before, so both landed once in the shared
+  per-pixel walk rather than as a rule belonging to type 1 — one owner, and
+  a latent gap in the axial and radial paths closed with it. Outside the
+  `/BBox` nothing paints at all; inside it, a point the shading does not cover
+  takes the `/Background`, but **only** where the shading is a pattern fill,
+  since §8.7.4.3 ignores that entry under the `sh` operator. A mesh gets the
+  `/BBox` as a conservative device-space bound, being painted from its
+  triangles rather than through that walk.
+
+  A malformed type 1 — no `/Function`, which the type requires, or a singular
+  `/Matrix` — still degrades to mid-grey. That matters beyond its own
+  appearance: a singular matrix cannot be inverted, and letting the throw out
+  would cost every operator drawn after it on the page. `ToSvg` is unchanged
+  and still degrades a type 1, since no SVG gradient element can express a
+  two-dimensional function field. (4gtd.3)
+
+- **Text clipping modes 4-7 are honoured, so artwork clipped to display type
+  no longer paints unclipped.** `4gtd.1` landed the text rendering mode's
+  painting half and deliberately left the clipping half undone, so a `4 Tr`
+  heading with an image or gradient drawn through it came out as a solid
+  rectangle where the word should have been. The glyphs shown in a clipping
+  mode now accumulate across **every** show operator in the text object, and
+  their union becomes a clip at `ET`, restored by `Q` like any other. Mode 7
+  clips without painting; 4-6 paint and clip. Where a sink cannot outline the
+  glyphs — a font that will not parse, or one drawn as placeholder boxes — the
+  clip is left **unchanged** rather than emptied: more shows than the document
+  asked for, where the alternative makes the content that follows vanish. That
+  is a deliberate divergence from a literal reading of ISO 32000-1, which would
+  intersect an empty outline set and clip everything away. (4gtd.2)
+
+- **Gouraud mesh shadings render (`ShadingType` 4 and 5).** Both degraded to a
+  flat mid-grey fill of the clip region, which is worse than most rendering
+  faults because it is opaque and covers what is behind it — a chart or a map
+  export came out as a grey rectangle. `page.ToImage` now paints them: free-form
+  triangles from the per-vertex edge flag, lattice-form from `/VerticesPerRow`,
+  with the vertex colours interpolated barycentrically. A mesh carrying a
+  `/Function` interpolates the parametric value across each triangle and
+  evaluates **after**, through the same 257-entry LUT the axial and radial paths
+  use — evaluating at the vertices and interpolating the resulting colours is a
+  different answer for any non-linear function, and a plausible-looking one.
+  Triangles are walked over their own bounding boxes rather than the whole clip
+  region, so cost follows the mesh's area rather than the page's. A mesh that
+  cannot be read still degrades to mid-grey, so damage costs its own appearance
+  and never the page. `ToSvg` is unchanged and still degrades every mesh type;
+  Coons and tensor patches (types 6 and 7) are unchanged in both. (4gtd.4)
+
 - **XFA forms convert to real AcroForm fields.** `doc.ConvertXfaToAcroForm()`
   decodes `/AcroForm /XFA` — a single-stream XDP or the alternating name/stream
   array — models the `template` packet's field set, binds values out of
@@ -443,6 +617,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (85l8.3)
 
 ### Fixed
+
+- **A non-embedded composite font draws real glyphs instead of empty boxes.**
+  The substitute-face path was guarded by `!isType0`, so a Type0 font with no
+  embedded program reached the outline stage with nothing to draw from and every
+  glyph fell back to the placeholder box — a page of hairline rectangles where
+  its text belonged, which is the everyday shape for Latin text a producer set
+  in a composite font. Such a font now gets the same bundled Standard-14
+  substitute a simple font gets, selected by the character the CID stands for:
+  `/ToUnicode` first, then the bundled Adobe collection table, then the
+  substitute's own cmap. **Advances are untouched** — they stay the document's
+  `/W` and `/DW` — so this changes which glyph is drawn and never where it sits.
+  A substituted composite font selects strictly by Unicode: falling back to the
+  CID would draw a confident wrong glyph, since a CID is not a character code.
+  With only the Standard-14 faces bundled the substitute covers Latin, so a
+  non-embedded CJK font still shows boxes until real face substitution lands.
+  (lqcs.1)
+
+- **An `/OC` on an XObject or an annotation is honoured too — including the
+  ones this library writes itself.** A layer marks content a page's own stream
+  shows; an `/OC` on an image or form XObject, or on an annotation dictionary,
+  is the other half of the vocabulary, and it is the half four public APIs
+  already wrote: `Annotation.Layer`, `AddImage({ layer })`,
+  `AddBarcode({ layer })` and `ImageInfo.Replace`'s `/OC` carry-over. So
+  `page.AddImage({ layer })` followed by hiding that layer produced a document
+  whose own renderer painted the image anyway. Both halves now resolve through
+  the same configuration, and membership through an `/OCMD` counts as
+  membership. **Two consequences worth knowing:** the annotation check lives in
+  the predicate that decides what a static render draws, so
+  `FlattenAnnotations` no longer bakes a hidden-layer annotation's ink into
+  permanent page content, and `SearchAnnotations` no longer finds its drawn
+  text — both were ways for hidden content to escape. `SearchAnnotationText`,
+  which reports what the file *carries* rather than what it draws, still reads
+  every annotation, as redaction depends on. (q1g2.2)
+
+- **A hidden layer no longer renders.** The visibility resolver behind
+  `doc.OptionalContent` was already written and already correct — OCMD
+  policies, `/VE` expressions and all — and nothing consumed it: the
+  content-stream interpreter had no `BDC`/`BMC`/`EMC` case whatever, so a
+  switched-off watermark, a "do not print" overlay and a disabled CAD layer
+  were all painted by `ToImage`, `ToSvg` and both fixed-layout backdrops. A
+  marked-content stack now tracks optional content and suppresses the marks of
+  a section the default configuration hides, so a rendered page shows what a
+  viewer shows — pixel for pixel what the same page renders as after
+  `RemoveLayer` excises the layer outright. **Content inside a hidden section
+  still runs**: graphics state, transforms and clips apply exactly as in a
+  viewer, and only the painting is suppressed, so a clip set inside a hidden
+  section still clips what follows it. An `/OC` operand that is an inline
+  dictionary rather than a name in `/Properties` is left visible rather than
+  guessed at. Text and path EXTRACTION are unchanged and still report hidden
+  content; that is tracked separately. (q1g2.1)
+
+- **The text rendering mode (`Tr`) is honoured, so an OCR layer no longer
+  prints over the scan it describes.** The content-stream interpreter had no
+  `Tr` case at all and filled every run, and mode 3 — invisible — is what every
+  OCR tool writes over a scanned page: `ToImage`, `ToSvg`, fixed-mode
+  `ToHtml` and the DOCX textbox backdrop all painted a black transcription on
+  top of the image, and the same defect hid any producer's deliberately
+  invisible text. All of ISO 32000-1 Table 106's painting behaviour now
+  applies: 0 fills, 1 strokes, 2 fills then strokes, 3 paints nothing, and
+  4–6 paint as 0–2 do. Stroking is real geometry in `ToImage` (the glyph
+  outlines are outlined through the same join and cap code a stroked path
+  uses, at a half-width scaled by the CTM alone — a line width is user-space
+  and must not scale with the font size) and native `fill`/`stroke` attributes
+  in `ToSvg`; fixed-mode `ToHtml` suppresses a non-painting run like the
+  others but still fills a stroking one, CSS having no portable glyph stroke.
+  The mode is graphics state (9.3.1), so it follows `q`/`Q` and survives `BT`,
+  which initialises the text matrices and nothing else. **Extraction is
+  deliberately unchanged** — an invisible run is exactly what an OCR layer is
+  for, and `GetText` still returns it. The clipping half of modes 4–7 remains
+  unimplemented and is tracked separately. (4gtd.1)
 
 - **Nine structural checks now report at PDF/A parts 1–3, not only part 4.**
   `72nc.1` landed them gated at part 4, so a document violating ExtGState

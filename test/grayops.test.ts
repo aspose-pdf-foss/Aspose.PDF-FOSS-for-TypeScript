@@ -55,7 +55,7 @@ describe('grayscaleOps — named colour spaces', () => {
     // read this as CMYK and get a different answer.
     const dn: SpaceLookup = (n) => n === 'DN' ? ({
       kind: 'other',
-      converter: { components: 4, toRgb: () => [0, 0, 255], initial: () => [0, 0, 0] },
+      converter: { components: 4, family: 'separation', toRgb: () => [0, 0, 255], initial: () => [0, 0, 0] },
     } as GraySpace) : undefined;
     const r = grayscaleOps([op('cs', name('DN')), op('scn', 0.1, 0.2, 0.3, 0.4)], dn);
     expect(r.ops[1]).toEqual(op('g', 0.114));

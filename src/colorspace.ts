@@ -5,8 +5,27 @@ export type Rgb = [number, number, number];
 type Resolve = (o: PdfObject | undefined) => PdfObject;
 type Inflate = (s: { dict: PdfDict; raw: Uint8Array }) => Uint8Array;
 
+/**
+ * Which family a colour space belongs to, for the one rule that needs to know:
+ * OVERPRINT is meaningful only in a device SUBTRACTIVE space (32000-1
+ * 11.7.4.2), where a colorant the paint does not name is left on the plate.
+ *
+ * `'device-sub'` is DeviceGray, DeviceCMYK and any ICCBased space that
+ * resolves to one; `'separation'` is Separation and DeviceN, which name a
+ * SUBSET of the device's colorants and so preserve the rest whatever the
+ * overprint mode says; `'other'` is DeviceRGB and the CIE-based spaces, where
+ * the spec says overprint does not apply.
+ */
+export type ColorFamily = 'device-sub' | 'separation' | 'other';
+
 export interface ColorConverter {
   components: number;
+  /** **Required rather than optional on purpose.** An optional discriminator is
+   *  silently missable at a construction site, and a converter that forgot it
+   *  would quietly stop overprinting — the same class of trap as the bivariant
+   *  sink method 4gtd.4 records, in another shape. Required makes `tsc` name
+   *  every site instead. */
+  family: ColorFamily;
   toRgb(c: number[]): Rgb;
   initial(): Rgb;
 }
@@ -15,7 +34,7 @@ const b = (x: number): number => Math.max(0, Math.min(255, Math.round(x * 255)))
 
 /** The DeviceGray converter: one component, replicated to R=G=B. */
 export function deviceGray(): ColorConverter {
-  return { components: 1, toRgb: (c) => { const v = Math.round((c[0] ?? 0) * 255); return [v, v, v]; }, initial: () => [0, 0, 0] };
+  return { components: 1, family: 'device-sub', toRgb: (c) => { const v = Math.round((c[0] ?? 0) * 255); return [v, v, v]; }, initial: () => [0, 0, 0] };
 }
 
 export function cmykToRgb(c: number, m: number, y: number, k: number): Rgb {
@@ -28,16 +47,19 @@ export function rgbHex(rgb: Rgb): string {
 
 const gray: ColorConverter = {
   components: 1,
+  family: 'device-sub',
   toRgb: (c) => [b(c[0] ?? 0), b(c[0] ?? 0), b(c[0] ?? 0)],
   initial: () => [0, 0, 0],
 };
 const rgb: ColorConverter = {
   components: 3,
+  family: 'other',
   toRgb: (c) => [b(c[0] ?? 0), b(c[1] ?? 0), b(c[2] ?? 0)],
   initial: () => [0, 0, 0],
 };
 const cmyk: ColorConverter = {
   components: 4,
+  family: 'device-sub',
   toRgb: (c) => cmykToRgb(c[0] ?? 0, c[1] ?? 0, c[2] ?? 0, c[3] ?? 0),
   initial: () => [0, 0, 0],
 };
@@ -51,7 +73,7 @@ export function resolveColorSpace(cs: PdfObject, resolve: Resolve, inflate: Infl
       case 'DeviceGray': case 'G': case 'CalGray': return gray;
       case 'DeviceRGB': case 'RGB': case 'CalRGB': return rgb;
       case 'DeviceCMYK': case 'CMYK': return cmyk;
-      case 'Pattern': return { ...gray, components: 1 };
+      case 'Pattern': return { ...gray, components: 1, family: 'other' };
       default: return gray;
     }
   }
@@ -93,6 +115,8 @@ function indexedConverter(arr: PdfObject[], resolve: Resolve, inflate: Inflate):
   const nc = base.components;
   return {
     components: 1,
+    // Indexed is not one of 11.7.4.2's overprint spaces whatever its base is.
+    family: 'other',
     toRgb: (c) => {
       const i = Math.max(0, Math.round(c[0] ?? 0));
       const comps: number[] = [];
@@ -112,6 +136,7 @@ function separationConverter(arr: PdfObject[], n: number, resolve: Resolve, infl
   if (fnObj !== undefined) tint = parseFunction(fnObj, resolve, inflate);
   return {
     components: n,
+    family: 'separation',
     toRgb: (c) => alt.toRgb(tint(c.length ? c : [1])),
     initial: () => alt.toRgb(tint(new Array(n).fill(1))),
   };
@@ -121,6 +146,7 @@ function separationConverter(arr: PdfObject[], n: number, resolve: Resolve, infl
 function labConverter(): ColorConverter {
   return {
     components: 3,
+    family: 'other',
     toRgb: (c) => {
       const L = c[0] ?? 0, A = c[1] ?? 0, B = c[2] ?? 0;
       const fy = (L + 16) / 116, fx = fy + A / 500, fz = fy - B / 200;

@@ -1,7 +1,7 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { Matrix, mul, translate, IDENTITY } from './text.js';
-import { PdfDict, PdfObject, isName, isArray, isStream, isDict, isString, PdfStream } from './types.js';
+import { PdfDict, PdfObject, isName, isArray, isStream, isDict, isString, isRef, PdfStream } from './types.js';
 import { parseContentStream } from './content.js';
 import { inlineImageToStream } from './inlinedict.js';
 import { inflateStream } from './flate.js';
@@ -9,6 +9,7 @@ import { resolveColorSpace, deviceGray, Rgb, ColorConverter } from './colorspace
 import { TextFont, glyphDisplacement, runDisplacement, tjShift } from './font.js';
 import { isAnnotVisible, resolveAppearance } from './annotappearance.js';
 import { BlendMode, blendModeFromName } from './blend.js';
+import type { LayerConfig } from './ocg.js';
 
 export type { Matrix } from './text.js';
 export type { Rgb } from './colorspace.js';
@@ -34,6 +35,11 @@ export interface TextRunInfo {
   fontSize: number; fontFamily: string; bold: boolean; italic: boolean; color: Rgb;
   /** Per-glyph layout inputs (for backends that place each glyph, e.g. raster). */
   charSp: number; wordSp: number; hscale: number;
+  /** Text rendering mode (`Tr`, Table 106) and the stroke paint it may need.
+   *  A non-painting mode never reaches a sink — `showText` gates it — so a sink
+   *  sees only 0, 1, 2 and their clipping twins 4, 5, 6, and asks `fillsText` /
+   *  `strokesText` rather than switching on the number. */
+  mode: number; strokeColor: Rgb; strokeStyle: StrokeStyle;
   /** Raw show-string bytes and the resolved font dict, for glyph-outline rendering. */
   bytes: Uint8Array; fontDict?: PdfDict;
 }
@@ -45,15 +51,32 @@ export interface RenderSink {
   addClip(path: Path, ctm: Matrix, evenOdd: boolean): void;        // W/W* consumed at next paint
   /** Narrow the clip to a stroke's outline (for SCN stroke patterns). */
   clipToStroke(path: Path, ctm: Matrix, style: StrokeStyle): void;
-  /** Narrow the clip to a glyph run's outlines (for scn fill patterns on text).
-   *  Returns false when this sink cannot build the clip — the caller then draws
-   *  the run solid rather than dropping it. */
-  clipToGlyphs(info: TextRunInfo): boolean;
+  /** Narrow the clip to the UNION of these runs' glyph outlines — one run for
+   *  an `scn` fill pattern on text, every run of a text object for a clipping
+   *  text rendering mode (4gtd.2). A union rather than a per-run call because
+   *  this INTERSECTS into the active clip: called once per run it would yield
+   *  the intersection of the runs, which is empty for any two that do not
+   *  overlap. Returns false when this sink cannot build the clip — the caller
+   *  then draws the run solid, or leaves the clip alone, rather than dropping
+   *  content. */
+  clipToGlyphs(infos: readonly TextRunInfo[]): boolean;
   fill(path: Path, ctm: Matrix, color: Rgb, evenOdd: boolean): void;
   stroke(path: Path, ctm: Matrix, color: Rgb, style: StrokeStyle): void;
   image(stream: PdfStream, ctm: Matrix, fillColor: Rgb): void;
   glyphRun(info: TextRunInfo): void;
-  shading(dict: PdfDict, ctm: Matrix): void;
+  /** A mesh shading carries its vertex data in the STREAM, so this takes the
+   *  stream where there is one. Every other type needs only the dict, and a
+   *  sink that draws none of the mesh types may read `.dict` and ignore the
+   *  difference.
+   *
+   *  `pattern` is true for a PatternType 2 fill and false for the `sh`
+   *  operator. Only this module knows which, and `/Background` turns on it
+   *  (32000-1 8.7.4.3). NOTE that TypeScript enforces neither half of this
+   *  signature on an implementor: parameters are BIVARIANT, and an
+   *  implementation may declare FEWER of them — so a sink left at the old
+   *  two-parameter shape still typechecks and then silently reads `pattern`
+   *  as undefined. All three were updated by hand. */
+  shading(shading: PdfDict | PdfStream, ctm: Matrix, pattern: boolean): void;
   /** ExtGState constant alpha (ca/CA) and blend mode (BM), scoped by save/restore. */
   setAlpha(fill: number, stroke: number): void;
   setBlend(mode: BlendMode): void;
@@ -118,6 +141,10 @@ interface GState {
   fillCs: ColorConverter; strokeCs: ColorConverter;
   lineWidth: number; dash: number[]; dashPhase: number; cap: number; join: number; miter: number;
   charSp: number; wordSp: number; hscale: number; leading: number; rise: number;
+  /** Text rendering mode (Tr). Text state IS graphics state (9.3.1), so this
+   *  follows q/Q through `clone` and is NOT reset by BT, which initialises the
+   *  text and text-line matrices and nothing else (9.4.1). */
+  textRender: number;
   fontSize: number; fontFamily: string; fontBold: boolean; fontItalic: boolean;
   fontRef?: PdfDict; font?: TextFont;
   tm: Matrix; tlm: Matrix;
@@ -126,6 +153,8 @@ interface GState {
   strokePattern?: ShadingPattern | TilingPattern;
   /** ExtGState constant alpha (ca / CA) and blend mode (BM). */
   fillAlpha: number; strokeAlpha: number; blend: BlendMode;
+  /** ExtGState overprint: /OP (stroking), /op (non-stroking) and /OPM. */
+  overprintFill: boolean; overprintStroke: boolean; overprintMode: number;
   /** Active ExtGState /SMask: the mask dict plus the CTM in force when `gs` ran. */
   softMask?: SoftMaskRef;
   /** Which mask the sink currently holds, so a mask is realized once per `gs`
@@ -139,7 +168,7 @@ interface GState {
 export interface SoftMaskRef { dict: PdfDict; ctm: Matrix; }
 
 /** A resolved PatternType 2 (shading) pattern: its /Shading dict and pattern /Matrix. */
-interface ShadingPattern { kind: 'shading'; shading: PdfDict; matrix: Matrix; }
+interface ShadingPattern { kind: 'shading'; shading: PdfDict | PdfStream; matrix: Matrix; }
 
 /** A resolved PatternType 1 (tiling) pattern. */
 interface TilingPattern {
@@ -160,10 +189,11 @@ function initialState(base: Matrix): GState {
     ctm: base, fill: [0, 0, 0], stroke: [0, 0, 0],
     fillCs: deviceGray(), strokeCs: deviceGray(),
     lineWidth: 1, dash: [], dashPhase: 0, cap: 0, join: 0, miter: 10,
-    charSp: 0, wordSp: 0, hscale: 1, leading: 0, rise: 0,
+    charSp: 0, wordSp: 0, hscale: 1, leading: 0, rise: 0, textRender: 0,
     fontSize: 0, fontFamily: 'sans-serif', fontBold: false, fontItalic: false,
     tm: IDENTITY, tlm: IDENTITY,
     fillAlpha: 1, strokeAlpha: 1, blend: 'Normal',
+    overprintFill: false, overprintStroke: false, overprintMode: 0,
   };
 }
 function clone(s: GState): GState { return { ...s }; }
@@ -180,6 +210,38 @@ interface RenderCtx {
   doc: Document; sink: RenderSink;
   resources: PdfDict | undefined;
   depth: number; seen: Set<PdfDict>;
+  /** Optional-content visibility for this render, absent when the document
+   *  declares no `/OCProperties` — in which case every section is visible and
+   *  no lookup is made at all. */
+  oc?: OcVisibility;
+}
+
+/** The default configuration plus a per-render memo. The memo is not an
+ *  optimization to shrug at: `LayerConfig.isRefVisible` LINEARLY SCANS `/ON`
+ *  and `/OFF` per call, so an unmemoized walk is O(sections x layers) on
+ *  exactly the CAD-style documents that have many of both. */
+interface OcVisibility { config: LayerConfig; cache: Map<string, boolean>; }
+
+/**
+ * Is the `/OC` operand of a `BDC` visible under this render's configuration?
+ *
+ * **The raw operand is passed through UNRESOLVED**, because
+ * `ResolveVisibility` decides an OCG's state by REF IDENTITY (`isRefVisible`
+ * compares against `/ON` and `/OFF`); hand it a resolved dict and every layer
+ * falls through to `BaseState`, so a switched-off layer reads as visible and
+ * the whole feature silently does nothing.
+ */
+function ocVisible(ctx: RenderCtx, raw: PdfObject | undefined): boolean {
+  const oc = ctx.oc;
+  if (!oc) return true;
+  const key = isRef(raw) ? `${raw.num} ${raw.gen}` : undefined;
+  if (key !== undefined) {
+    const hit = oc.cache.get(key);
+    if (hit !== undefined) return hit;
+  }
+  const v = oc.config.ResolveVisibility(raw);
+  if (key !== undefined) oc.cache.set(key, v);
+  return v;
 }
 
 function resDict(ctx: RenderCtx, category: string): PdfDict | undefined {
@@ -215,7 +277,7 @@ function resolvePattern(ctx: RenderCtx, name: string): ShadingPattern | TilingPa
 
   if (type === 2) {
     const sh = ctx.doc.resolve(pd.get('Shading'));
-    const shading = isStream(sh) ? sh.dict : isDict(sh) ? sh : undefined;
+    const shading = isStream(sh) ? sh : isDict(sh) ? sh : undefined;
     return shading ? { kind: 'shading', shading, matrix } : undefined;
   }
   if (type === 1 && isStream(p)) {
@@ -310,16 +372,63 @@ function applyExtGState(ctx: RenderCtx, gs: GState, name: string): void {
     // /None (or anything not a dict) clears; a dict sets, captured at this CTM.
     gs.softMask = isDict(v) ? { dict: v, ctm: gs.ctm } : undefined;
   }
+  // /OP is the STROKING flag and, for backward compatibility, sets the
+  // non-stroking one too; /op then overrides that half. So /OP is read FIRST
+  // and /op second — reversed, a dict carrying both would lose /op, which is
+  // the half a fill reads (32000-1 Table 58).
+  if (d.has('OP')) {
+    const v = R('OP');
+    if (typeof v === 'boolean') { gs.overprintStroke = v; gs.overprintFill = v; }
+  }
+  if (d.has('op')) { const v = R('op'); if (typeof v === 'boolean') gs.overprintFill = v; }
+  if (d.has('OPM')) { const v = R('OPM'); if (typeof v === 'number') gs.overprintMode = v === 1 ? 1 : 0; }
+}
+
+/**
+ * Whether OVERPRINT applies to the paint about to happen — and so whether the
+ * preview substitutes Darken for the blend.
+ *
+ * **This is a PREVIEW, not a separation model.** A plate-accurate answer needs
+ * per-colorant buffers; the canvas is RGB, so an overprinting paint composites
+ * with per-channel minimum instead. A colorant the paint does not lay down has
+ * no ink, so its RGB channel is 1 and the minimum preserves the backdrop by
+ * itself — which is what lets DeviceCMYK, Separation and DeviceN share one rule
+ * rather than each keeping a plate map. It is exact wherever the paint darkens
+ * a plate and wrong only where a paint would LIGHTEN one already inked, which
+ * RGB provably cannot represent.
+ *
+ * **Invariant:** an explicit `/BM` WINS. The approximation *is* a blend mode,
+ * so the two collide, and a document that asked for Multiply gets Multiply
+ * rather than having it silently replaced.
+ */
+function overprints(gs: GState, which: 'fill' | 'stroke'): boolean {
+  if (gs.blend !== 'Normal') return false;
+  if (!(which === 'fill' ? gs.overprintFill : gs.overprintStroke)) return false;
+  const cs = which === 'fill' ? gs.fillCs : gs.strokeCs;
+  // A Separation or DeviceN paint names a SUBSET of the device's colorants, so
+  // the rest are preserved whatever the mode says. DeviceCMYK and DeviceGray
+  // name every colorant and under mode 0 write all of them — INCLUDING the
+  // zeros — which is exactly normal painting; only mode 1 leaves a
+  // zero-valued component's plate alone, and that is what makes /OPM
+  // observable rather than decorative.
+  if (cs.family === 'separation') return true;
+  return cs.family === 'device-sub' && gs.overprintMode === 1;
 }
 
 function clamp01(v: number): number { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
 /** Push the gstate's alpha and blend mode to the sink. Called after `gs` and
  *  before each paint, since fill and stroke draw different alphas from ca/CA.
- *  Also realizes a newly-set /SMask, once per `gs` rather than once per paint. */
-function syncPaintState(ctx: RenderCtx, gs: GState): void {
+ *  Also realizes a newly-set /SMask, once per `gs` rather than once per paint.
+ *
+ *  `which` says which paint is about to happen, because OVERPRINT is decided
+ *  per paint rather than per state: `/OP` and `/op` are separate flags over
+ *  separate colour spaces, so one `setBlend` cannot answer for both. `doFill`
+ *  and `doStroke` each already call this, which is what gets `B` — fill then
+ *  stroke — the right answer for each half with no second mechanism. */
+function syncPaintState(ctx: RenderCtx, gs: GState, which: 'fill' | 'stroke' = 'fill'): void {
   ctx.sink.setAlpha(gs.fillAlpha, gs.strokeAlpha);
-  ctx.sink.setBlend(gs.blend);
+  ctx.sink.setBlend(overprints(gs, which) ? 'Darken' : gs.blend);
   if (gs.softMask !== gs.appliedMask) {
     if (gs.softMask) realizeSoftMask(ctx, gs.softMask);
     else ctx.sink.clearSoftMask();
@@ -384,7 +493,14 @@ export interface InterpretOptions {
 export function interpret(
   doc: Document, page: Page, base: Matrix, sink: RenderSink, opts: InterpretOptions = {},
 ): void {
-  const ctx: RenderCtx = { doc, sink, resources: page.Resources, depth: 0, seen: new Set() };
+  // Read-only: `OptionalContent.Default` CREATES /OCProperties and marks the
+  // document modified, which would turn a ToImage() before a Sign() into a full
+  // rewrite. See defaultConfigIfPresent's own note.
+  const config = doc.OptionalContent.defaultConfigIfPresent();
+  const ctx: RenderCtx = {
+    doc, sink, resources: page.Resources, depth: 0, seen: new Set(),
+    oc: config ? { config, cache: new Map() } : undefined,
+  };
   walk(ctx, page.Contents, initialState(base));
   if (opts.annotations !== false) drawAnnots(ctx, page, base, opts.hideWidgets);
 }
@@ -449,7 +565,7 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
       sink.save();
       sink.addClip(path, gs.ctm, evenOdd);
       if (gs.fillPattern.kind === 'shading') {
-        sink.shading(gs.fillPattern.shading, mul(gs.fillPattern.matrix, baseCtm));
+        sink.shading(gs.fillPattern.shading, mul(gs.fillPattern.matrix, baseCtm), true);
       } else {
         paintTiling(ctx, gs, gs.fillPattern, baseCtm);
       }
@@ -461,14 +577,14 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
   const doStroke = () => {
     flushClip();
     if (!path.length) return;
-    syncPaintState(ctx, gs);
+    syncPaintState(ctx, gs, 'stroke');
     if (gs.strokePattern) {
       // Clip to the stroke's outline, then paint the pattern through it — the
       // rasterizer already outlines strokes in user space, so this reuses that.
       sink.save();
       sink.clipToStroke(path, gs.ctm, strokeStyle(gs));
       if (gs.strokePattern.kind === 'shading') {
-        sink.shading(gs.strokePattern.shading, mul(gs.strokePattern.matrix, baseCtm));
+        sink.shading(gs.strokePattern.shading, mul(gs.strokePattern.matrix, baseCtm), true);
       } else {
         paintTiling(ctx, gs, gs.strokePattern, baseCtm);
       }
@@ -478,9 +594,37 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
     }
   };
 
+  // Optional content: one entry per open BMC/BDC recording whether IT hid, so
+  // nesting pops exactly. `hiddenDepth > 0` means the marks below are
+  // suppressed; an unbalanced EMC is tolerated, as text.ts already tolerates it.
+  let hiddenDepth = 0;
+  const mcStack: boolean[] = [];
+
+  // Text clipping (4gtd.2): the glyphs of EVERY show operator in the text
+  // object accumulate, and their UNION becomes a clip at ET. Accumulating is
+  // the whole point — `clipToGlyphs` INTERSECTS, so committing per run would
+  // give the intersection of the runs, empty for any two that do not overlap,
+  // and silently erase everything after ET.
+  let pendingTextClip: TextRunInfo[] = [];
+  const collectClip = (info: TextRunInfo) => { pendingTextClip.push(info); };
+
   // Bracket one top-level element of a knockout group so it composites against
   // the group's initial backdrop (§11.4.8). No-op outside a knockout group.
+  //
+  // **This is also the ONE gate for hidden optional content**, which is why it
+  // is the only place that needs one: every painting operator goes through it —
+  // the five path painters, the four text showers, the inline image, `Do` and
+  // `sh`. A `Do` of a FORM is gated here too, which skips the form outright
+  // rather than walking it with a flag; the two are equivalent because
+  // `drawFormBody` brackets the child in `sink.save()`/`restore()` over a CLONED
+  // state, so nothing inside a form can escape it — and skipping is cheaper.
+  //
+  // **The clip is flushed even when hidden.** `W f` sets a pending clip that its
+  // PAINT operator flushes, so returning before `flushClip` would drop the clip
+  // of every hidden `W f` — and "a clip set inside a hidden section still
+  // applies to what follows" is precisely what this feature must not break.
   const element = (paint: () => void) => {
+    if (hiddenDepth > 0) { flushClip(); return; }
     if (!knockout) { paint(); return; }
     sink.beginKnockoutElement();
     try { paint(); } finally { sink.endKnockoutElement(); }
@@ -554,12 +698,23 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
 
       // text state
       case 'BT': gs.tm = IDENTITY; gs.tlm = IDENTITY; break;
-      case 'ET': break;
+      case 'ET':
+        if (pendingTextClip.length) {
+          // Fail OPEN: a sink that cannot outline these glyphs leaves the clip
+          // UNCHANGED rather than clipping to nothing. More shows than the
+          // document asked for, where the alternative makes the content that
+          // follows vanish — visible ink beats vanished content, the rule
+          // paintGlyphRun already follows for the same call.
+          sink.clipToGlyphs(pendingTextClip);
+          pendingTextClip = [];
+        }
+        break;
       case 'Tc': gs.charSp = num(o[0]); break;
       case 'Tw': gs.wordSp = num(o[0]); break;
       case 'Tz': gs.hscale = (num(o[0]) / 100) || 1; break;
       case 'TL': gs.leading = num(o[0]); break;
       case 'Ts': gs.rise = num(o[0]); break;
+      case 'Tr': gs.textRender = num(o[0]) | 0; break;
       case 'Td': { const [tx, ty] = numbers(o); textMove(gs, tx, ty); break; }
       case 'TD': { const [tx, ty] = numbers(o); gs.leading = -ty; textMove(gs, tx, ty); break; }
       case 'Tm': { const m = numbers(o); if (m.length === 6) { gs.tlm = m as Matrix; gs.tm = m as Matrix; } break; }
@@ -579,10 +734,10 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
         }
         break;
       }
-      case 'Tj': element(() => showText(ctx, gs, o[0], baseCtm)); break;
-      case 'TJ': element(() => showArray(ctx, gs, o[0], baseCtm)); break;
-      case "'": textMove(gs, 0, -gs.leading); element(() => showText(ctx, gs, o[0], baseCtm)); break;
-      case '"': gs.wordSp = num(o[0]); gs.charSp = num(o[1]); textMove(gs, 0, -gs.leading); element(() => showText(ctx, gs, o[2], baseCtm)); break;
+      case 'Tj': element(() => showText(ctx, gs, o[0], baseCtm, collectClip)); break;
+      case 'TJ': element(() => showArray(ctx, gs, o[0], baseCtm, collectClip)); break;
+      case "'": textMove(gs, 0, -gs.leading); element(() => showText(ctx, gs, o[0], baseCtm, collectClip)); break;
+      case '"': gs.wordSp = num(o[0]); gs.charSp = num(o[1]); textMove(gs, 0, -gs.leading); element(() => showText(ctx, gs, o[2], baseCtm, collectClip)); break;
 
       // images
       case 'BI':
@@ -606,6 +761,12 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
         if (!isName(xn) || !xobjs) break;
         const xo = ctx.doc.resolve(xobjs.get(xn.name));
         if (!isStream(xo)) break;
+        // An /OC on the XObject DICTIONARY is the other half of the optional-
+        // content vocabulary, and the half this library itself writes — through
+        // AddImage({ layer }), AddBarcode({ layer }) and ImageInfo.Replace — so
+        // without this we produced documents our own renderer ignored. One site
+        // covers images and forms alike, because both subtypes arrive here.
+        if (!ocVisible(ctx, xo.dict.get('OC'))) break;
         const sub = ctx.doc.resolve(xo.dict.get('Subtype'));
         element(() => {
           if (isName(sub) && sub.name === 'Image') { syncPaintState(ctx, gs); sink.image(xo, gs.ctm, gs.fill); }
@@ -614,14 +775,44 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
         break;
       }
 
+      // marked content (32000-1 14.6). Only /OC sections matter here; every
+      // other tag still pushes, so an EMC pops the section it belongs to.
+      case 'BMC': mcStack.push(false); break;
+      case 'BDC': {
+        const tag = o[0];
+        // An /OC operand that is an INLINE DICTIONARY rather than a name in
+        // /Properties is left VISIBLE rather than guessed at: hiding content on
+        // a shape we did not resolve is the one error that loses ink.
+        //
+        // **Note, measured, and it covers NOTHING — the `prop !== undefined`
+        // test is redundant and PROVABLY cannot be otherwise.** `doc.resolve`
+        // answers `null` for an absent operand and `ResolveVisibility` returns
+        // true for anything that is not a dict, so an unresolved name already
+        // reads as visible by that route; dropping the test reddens not one
+        // case. It stays as the honest spelling of "we hide only what we
+        // resolved". Same class as `pagemode.ts`'s `isName` note — do not cite
+        // the inline-dict fixture as covering it.
+        const prop = isName(o[1]) ? resDict(ctx, 'Properties')?.get(o[1].name) : undefined;
+        const hides = isName(tag) && tag.name === 'OC' && prop !== undefined
+          && !ocVisible(ctx, prop);
+        mcStack.push(hides);
+        if (hides) hiddenDepth++;
+        break;
+      }
+      case 'EMC':
+        if (mcStack.length && mcStack.pop()) hiddenDepth--;
+        break;
+
       // shading
       case 'sh': {
         const shDict = resDict(ctx, 'Shading');
         const sn = o[0];
         if (isName(sn) && shDict) {
           const sh = ctx.doc.resolve(shDict.get(sn.name));
-          const dict = isStream(sh) ? sh.dict : isDict(sh) ? sh : undefined;
-          if (dict) { flushClip(); element(() => sink.shading(dict, gs.ctm)); }
+          // The STREAM is passed on where there is one: a mesh shading keeps
+          // its vertex data there, and taking `.dict` here would lose it.
+          const shv = isStream(sh) ? sh : isDict(sh) ? sh : undefined;
+          if (shv) { flushClip(); element(() => sink.shading(shv, gs.ctm, false)); }
         }
         break;
       }
@@ -769,6 +960,23 @@ function drawFormBody(ctx: RenderCtx, gs: GState, stream: PdfStream, knockout = 
   ctx.sink.restore();
 }
 
+/* ---------- Text rendering mode (32000-1 Table 106) ----------
+ *
+ *   0 fill   1 stroke   2 fill+stroke   3 invisible
+ *   4 fill+clip   5 stroke+clip   6 fill+stroke+clip   7 clip
+ *
+ * Read off the table: 4-7 repeat 0-3 and ADD the clip, so the low two bits are
+ * the PAINT half and `& 3` is the table rather than a trick. The clip half is
+ * deliberately not implemented here — it is its own issue (4gtd.2) — so 7
+ * paints nothing and 4-6 paint exactly as 0-2 do.
+ */
+export const fillsText = (mode: number): boolean => (mode & 3) === 0 || (mode & 3) === 2;
+export const strokesText = (mode: number): boolean => (mode & 3) === 1 || (mode & 3) === 2;
+const paintsText = (mode: number): boolean => fillsText(mode) || strokesText(mode);
+/** Modes 4-7 ADD their glyphs to the clipping path (4gtd.2). Bit 2 IS the
+ *  clip half of Table 106, the way the low two bits are the paint half. */
+export const clipsText = (mode: number): boolean => (mode & 4) !== 0;
+
 function textMove(gs: GState, tx: number, ty: number): void {
   gs.tlm = mul(translate(tx, ty), gs.tlm);
   gs.tm = gs.tlm;
@@ -784,23 +992,42 @@ function applyFontStyle(gs: GState, baseFont?: string): void {
 
 /** Emit one glyph run and advance the text matrix (advance stays here — it is
  *  graphics state, not backend output). */
-function showText(ctx: RenderCtx, gs: GState, strObj: PdfObject | undefined, baseCtm: Matrix): void {
+function showText(
+  ctx: RenderCtx, gs: GState, strObj: PdfObject | undefined, baseCtm: Matrix,
+  collectClip?: (info: TextRunInfo) => void,
+): void {
   if (!isString(strObj) || !gs.font) return;
-  syncPaintState(ctx, gs);
+  // A stroke-ONLY run (Tr 1 and its clipping twin) reads /OP over the stroke
+  // colour space; everything else reads /op over the fill one, which is also
+  // what a mode that does both paints first.
+  syncPaintState(ctx, gs,
+    strokesText(gs.textRender) && !fillsText(gs.textRender) ? 'stroke' : 'fill');
   const decoded = gs.font.decodeRun(strObj.bytes);
+  // A non-painting mode (3 and 7) is gated HERE rather than in each sink, so
+  // all three sinks get it from one decision and none can disagree — and so a
+  // run whose fill paint is a pattern paints nothing at all, where a gate
+  // inside paintGlyphRun would still clip to the glyphs and paint through them.
+  // The pen still advances: an invisible run occupies its width (9.4.4).
+  const info: TextRunInfo = {
+    font: gs.font, decoded,
+    tm: gs.tm, ctm: gs.ctm, rise: gs.rise,
+    fontSize: gs.fontSize, fontFamily: gs.fontFamily, bold: gs.fontBold, italic: gs.fontItalic, color: gs.fill,
+    charSp: gs.charSp, wordSp: gs.wordSp, hscale: gs.hscale,
+    mode: gs.textRender, strokeColor: gs.stroke, strokeStyle: strokeStyle(gs),
+    bytes: strObj.bytes, fontDict: gs.fontRef,
+  };
+  // A clipping mode (4-7) ADDS this run's glyphs to the text object's clip,
+  // which the walk commits at ET. A Type 3 glyph is a content stream with no
+  // outline to contribute, so it is left out and the clip fails open — the
+  // rule below for a sink that cannot build one.
+  if (clipsText(gs.textRender) && !gs.font.type3) collectClip?.(info);
+
+  if (!paintsText(gs.textRender)) { /* advance only */ }
   // A Type 3 glyph is a content stream, not an outline, so it never reaches a
   // sink's glyphRun — it is interpreted here and both backends see only the
   // primitives it draws.
-  if (gs.font.type3) drawType3Run(ctx, gs, gs.font, strObj.bytes);
-  else {
-    paintGlyphRun(ctx, gs, {
-      font: gs.font, decoded,
-      tm: gs.tm, ctm: gs.ctm, rise: gs.rise,
-      fontSize: gs.fontSize, fontFamily: gs.fontFamily, bold: gs.fontBold, italic: gs.fontItalic, color: gs.fill,
-      charSp: gs.charSp, wordSp: gs.wordSp, hscale: gs.hscale,
-      bytes: strObj.bytes, fontDict: gs.fontRef,
-    }, baseCtm);
-  }
+  else if (gs.font.type3) drawType3Run(ctx, gs, gs.font, strObj.bytes);
+  else paintGlyphRun(ctx, gs, info, baseCtm);
   const [dx, dy] = runDisplacement(
     decoded, gs.fontSize, gs.charSp, gs.wordSp, gs.hscale, gs.font.wmode === 1);
   gs.tm = mul(translate(dx, dy), gs.tm);
@@ -863,8 +1090,14 @@ function drawGlyphProc(
 
 /** Draw one glyph run: solid through the sink's glyphRun, or — when a pattern is
  *  the fill paint — by clipping to the glyph outlines and painting the pattern
- *  through them, exactly as doFill does for a path. Text is always filled, since
- *  the interpreter has no Tr handling, so there is no stroke-pattern twin here.
+ *  through them, exactly as doFill does for a path.
+ *
+ *  Only the FILL paint can be a pattern here. A stroking text rendering mode (1
+ *  or 2) under an `SCN` pattern strokes solid in the stroke colour instead — no
+ *  caller has asked for the twin, and it would need a second clip path over the
+ *  stroke outline rather than the glyph outline. A NON-painting mode (3 and 7)
+ *  never reaches this function at all: `showText` gates it, so a mode-3 run with
+ *  a pattern fill paints nothing rather than clipping and painting through.
  *
  *  **Invariant:** a sink that cannot build the glyph clip falls back to the solid
  *  run. `info.color` is then the [128,128,128] placeholder `scn` stores, which is
@@ -874,16 +1107,19 @@ function paintGlyphRun(ctx: RenderCtx, gs: GState, info: TextRunInfo, baseCtm: M
   const pat = gs.fillPattern;
   if (!pat) { ctx.sink.glyphRun(info); return; }
   ctx.sink.save();
-  if (!ctx.sink.clipToGlyphs(info)) ctx.sink.glyphRun(info);
-  else if (pat.kind === 'shading') ctx.sink.shading(pat.shading, mul(pat.matrix, baseCtm));
+  if (!ctx.sink.clipToGlyphs([info])) ctx.sink.glyphRun(info);
+  else if (pat.kind === 'shading') ctx.sink.shading(pat.shading, mul(pat.matrix, baseCtm), true);
   else paintTiling(ctx, gs, pat, baseCtm);
   ctx.sink.restore();
 }
 
-function showArray(ctx: RenderCtx, gs: GState, arrObj: PdfObject | undefined, baseCtm: Matrix): void {
+function showArray(
+  ctx: RenderCtx, gs: GState, arrObj: PdfObject | undefined, baseCtm: Matrix,
+  collectClip?: (info: TextRunInfo) => void,
+): void {
   if (!isArray(arrObj) || !gs.font) return;
   for (const el of arrObj) {
-    if (isString(el)) showText(ctx, gs, el, baseCtm);
+    if (isString(el)) showText(ctx, gs, el, baseCtm, collectClip);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, gs.fontSize, gs.hscale, gs.font.wmode === 1);
       gs.tm = mul(translate(dx, dy), gs.tm);

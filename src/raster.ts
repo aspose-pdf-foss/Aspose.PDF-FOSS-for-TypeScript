@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import { Page } from './page.js';
 import { enc } from './serialize.js';
 import { name } from './types.js';
-import { Matrix, mul, apply, translate } from './text.js';
+import { Matrix, mul, apply, translate, invert } from './text.js';
 import { PdfDict, PdfStream, PdfObject, isStream, isDict, isArray, isName } from './types.js';
 import { Rgb, ColorConverter, resolveColorSpace } from './colorspace.js';
 import { parseFunction } from './pdffunction.js';
@@ -10,7 +10,7 @@ import { normalizeFont } from './metrics.js';
 import { getStd14Sfnt } from './std14fonts.js';
 import {
   interpret, baseMatrix, arrNums, RenderSink, Path, StrokeStyle, TextRunInfo,
-  OffscreenUse, MAX_OFFSCREEN_DEPTH, MAX_TILE_BLITS,
+  OffscreenUse, MAX_OFFSCREEN_DEPTH, MAX_TILE_BLITS, fillsText, strokesText,
 } from './pagerender.js';
 import { ImageInfo } from './image.js';
 import {
@@ -33,7 +33,11 @@ import { inflateStream } from './flate.js';
 import { decodeJpeg, JpegImage } from './jpeg.js';
 import { encodePng } from './pngencode.js';
 import { BlendMode, blendPixel } from './blend.js';
-import { Poly, flattenPath, ctmScale, strokeOutlinePolys } from './strokegeom.js';
+import { Poly, flattenPath, ctmScale, strokeOutlinePolys, strokePolysOutline } from './strokegeom.js';
+import { MeshLayout, readMeshVertices, readMeshPatches } from './colormesh.js';
+import { luma } from './colorrule.js';
+import { TriVertex, Triangle, freeFormTriangles, latticeTriangles, eachTrianglePixel } from './meshtri.js';
+import { completePatches, patchTriangles } from './meshpatch.js';
 import { glyphPolys } from './glyphoutline.js';
 import {
   glyphDisplacement, glyphNameResolver, glyphOrigin, resolveSimpleEncoding, type Glyph,
@@ -50,6 +54,14 @@ export const IMAGE_FORMATS = ['png', 'jpeg', 'tiff', 'bmp', 'gif'] as const;
  *  wide `string`: a caller cannot name an encoding that does not exist yet, and
  *  widening a union is not a breaking change. */
 export type ImageFormat = (typeof IMAGE_FORMATS)[number];
+
+export const IMAGE_MODES = ['rgb', 'gray', 'bilevel'] as const;
+
+/** What `ImageOptions.mode` accepts — a CLOSED union for `ImageFormat`'s
+ *  reason, and validated at runtime for its reason too: this ships as
+ *  JavaScript, where an unrecognised mode silently returning RGB is a file that
+ *  is not what was asked for. */
+export type ImageMode = (typeof IMAGE_MODES)[number];
 
 export interface ImageOptions {
   /** Output encoding. Default 'png'.
@@ -81,6 +93,26 @@ export interface ImageOptions {
   background?: 'white' | 'transparent';
   /** Composite annotation and form-field /AP appearances. Default true. */
   annotations?: boolean;
+  /** Output colour mode. Default 'rgb', so an unset mode takes exactly the path
+   *  it always has.
+   *
+   *  'gray' is Rec. 601 luminance — `colorrule.ts`'s `luma`, the one owner of
+   *  that rule, computed off the FLOAT canvas rather than its 8-bit reduction.
+   *  'bilevel' is a plain cut at `threshold`, never a dither.
+   *
+   *  **What the mode states is the PIXELS.** How compactly a container encodes
+   *  them is per-format: PNG and TIFF carry both natively (1-bit for bilevel),
+   *  JPEG carries gray natively and REFUSES bilevel, GIF reaches both exactly
+   *  through its palette, and BMP has no gray form here so it writes 24-bit
+   *  with equal channels — the right picture in a fatter file. */
+  mode?: ImageMode;
+  /** Gray value below which a pixel goes black under `mode: 'bilevel'`; an
+   *  integer 0..255, default 128.
+   *
+   *  Read only by 'bilevel'. Documented rather than rejected elsewhere, exactly
+   *  as `quality` is for a lossless format: a caller holding one options bag
+   *  across several combinations should not have to strip the key. */
+  threshold?: number;
 }
 
 
@@ -186,6 +218,49 @@ class Canvas {
     const rgba = new Uint8Array(w * h * 4);
     for (let p = 0; p < w * h * 4; p++) rgba[p] = to8(data[p]);
     return rgba;
+  }
+
+  /** One 8-bit sample per pixel, Rec. 601 luminance.
+   *
+   *  **Reduced from the FLOAT canvas, not from `toRgb()`'s 8-bit output**: this
+   *  is the accurate answer, and rounding twice would put it a level off for no
+   *  benefit. The weights come from `colorrule.ts`'s `luma`, which is the one
+   *  owner of that rule — `ConvertColors` and the JPEG coefficient-domain
+   *  greying already read it, and a second copy here is how a rendered page and
+   *  a converted document would come to disagree about one colour. */
+  toGray(): Uint8Array {
+    const { w, h, data } = this;
+    const g = new Uint8Array(w * h);
+    for (let p = 0; p < w * h; p++) {
+      g[p] = to8(luma(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]));
+    }
+    return g;
+  }
+
+  /**
+   * One BIT per pixel, MSB-first with rows padded to a byte — a plain cut at
+   * `threshold`, never a dither.
+   *
+   * `onesAreBlack` is the polarity, and it is stated by the caller rather than
+   * assumed because the two consumers disagree: a bilevel TIFF here declares
+   * PhotometricInterpretation 0 (WhiteIsZero) and carries 1 = black, which is
+   * what `decodeCcitt` returns and `encodeG4` expects, while PNG colour type 0
+   * means 0 = black. Identical packing, inverted meaning — two packers is how
+   * one of them comes out a perfect negative, which reads as a deliberate
+   * effect rather than as a fault.
+   */
+  toBilevel(threshold: number, onesAreBlack: boolean): Uint8Array {
+    const { w, h } = this;
+    const gray = this.toGray();
+    const stride = (w + 7) >> 3;
+    const out = new Uint8Array(stride * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const black = gray[y * w + x] < threshold;
+        if (black === onesAreBlack) out[y * stride + (x >> 3)] |= 0x80 >> (x & 7);
+      }
+    }
+    return out;
   }
 
   toPng(opaqueWhite: boolean): Uint8Array {
@@ -511,6 +586,12 @@ export interface GlyphSource {
   cff?: CffFont;               // CFF outlines (FontFile3 / OpenType-CFF)
   type1?: Type1Font;           // Type 1 outlines (/FontFile)
   isType0: boolean;            // composite font: code = CID
+  /** True when `sfnt` is a BUNDLED SUBSTITUTE rather than the document's own
+   *  program. It changes how a glyph is selected, which is why it is a field
+   *  rather than something a consumer infers: a substitute's glyph ids have
+   *  nothing to do with the document's CIDs, so a composite font resolved this
+   *  way goes by UNICODE where an embedded one goes by CID. */
+  substituted: boolean;
   cidToGid?: Uint8Array;       // /CIDToGIDMap stream (2 bytes/CID); undefined → identity
   /** code -> glyph name, for the name-keyed programs. Undefined for a composite
    *  font and for a face resolved through a cmap. */
@@ -544,12 +625,27 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
   const cff = prog.cff;
   const type1 = prog.type1;
 
-  // Non-embedded simple font: substitute the bundled Standard-14 outline face.
-  // The resulting sfnt's Unicode cmap + glyf outlines flow through the existing
-  // gidForCode/glyphOutline path; PDF /Widths still drive advances.
-  if (!sfnt && !cff && !type1 && !isType0) {
+  // Non-embedded font: substitute the bundled Standard-14 outline face. The
+  // resulting sfnt's Unicode cmap + glyf outlines flow through the existing
+  // gidForCode/glyphOutline path; PDF /Widths and /W still drive advances, so
+  // substitution changes WHICH glyph is drawn and never WHERE it sits.
+  //
+  // **This covers a COMPOSITE font too (lqcs.1).** Before, the `!isType0` guard
+  // left a non-embedded Type0 with no program at all, so every glyph fell to
+  // `drawGlyphPlaceholder` — the issue described that as painting "nothing at
+  // all", but it is a page of hairline BOXES, which is why a fixture asserting
+  // that ink appears cannot see this fix. The descriptor is already read from
+  // the DESCENDANT for a composite font, so the "is it embedded" test above
+  // needed no change.
+  //
+  // With only the Standard-14 faces bundled the substitute covers LATIN; a
+  // non-embedded CJK font still has no glyph for its characters and keeps its
+  // boxes until real face substitution lands (lqcs.2).
+  let substituted = false;
+  if (!sfnt && !cff && !type1) {
     const bf = doc.resolve(fontDict.get('BaseFont'));
     sfnt = getStd14Sfnt(normalizeFont(isName(bf) ? bf.name : 'Helvetica'));
+    substituted = true;
   }
 
   // The name route, for the two name-keyed program kinds. A face with a usable
@@ -561,11 +657,28 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
       type1?.builtinEncodingNames(),
     );
   }
-  return { sfnt, cff, type1, isType0, cidToGid, nameForCode };
+  return { sfnt, cff, type1, isType0, substituted, cidToGid, nameForCode };
 }
 
 /** Resolve a character/CID code to a glyph id in the embedded program. */
 export function gidForCode(src: GlyphSource, code: number, text: string): number | undefined {
+  // A SUBSTITUTED composite font selects by UNICODE, and by nothing else
+  // (lqcs.1). Its glyph ids are the substitute's, unrelated to the document's
+  // CIDs, so `gidForCid` below is meaningless here — and `gidForProgram` is
+  // WRONG rather than merely useless: after trying the text it falls back to
+  // `cmapLookup(code)` and `cmapLookup(0xF000 + code)`, which is right for a
+  // simple font, where the code IS a character code, and a confident wrong
+  // glyph for a composite one, where it is a CID. CID 0x41 would draw `A`.
+  //
+  // The Unicode itself is `Glyph.text`, which `TextFont.textOf` already resolves
+  // through /ToUnicode and then cidunicode.ts's bundled collection table — the
+  // route this issue predicted would have to be built. A CID neither can answer
+  // for contributes no text, so no glyph resolves and the caller's placeholder
+  // box stands.
+  if (src.isType0 && src.substituted) {
+    if (!text || !src.sfnt?.cmap.size) return undefined;
+    return src.sfnt.cmapLookup(text.codePointAt(0)!) || undefined;
+  }
   // The CID route is glyphprogram.ts's, shared with font.ts's width lookup —
   // a second copy is how the drawn glyph and the measured glyph come to
   // disagree about one document.
@@ -612,10 +725,33 @@ function eachGlyph(
   }
 }
 
-function rasterizeGlyphRun(canvas: Canvas, info: TextRunInfo, src: GlyphSource | undefined, paint: Paint): void {
+/**
+ * Draw one glyph run, filled and/or stroked per the text rendering mode.
+ *
+ * **The stroke half degrades to a fill rather than to nothing.** A glyph that
+ * resolved to no outline (`polys` undefined — a substitute face, an unresolvable
+ * gid) has no geometry to outline, so it falls back to the placeholder box in
+ * the fill colour: visible ink beats a run that vanishes, the rule
+ * `paintGlyphRun` already states for a sink that cannot build a glyph clip.
+ */
+function rasterizeGlyphRun(
+  canvas: Canvas, info: TextRunInfo, src: GlyphSource | undefined,
+  paint: Paint, strokePaint: Paint,
+): void {
+  const doFill = fillsText(info.mode);
+  const doStroke = strokesText(info.mode);
+  // The line width is USER space and scales with the CTM alone (9.3.1) — never
+  // with the font size or Tm, which is what keeps a stroked glyph the same
+  // weight as a stroked path beside it.
+  const hw = doStroke ? (info.strokeStyle.width / 2) * ctmScale(info.ctm) : 0;
   eachGlyph(info, src, (g, emMatrix, polys) => {
     if (polys) {                                    // gid resolved (empty glyph → no box)
-      if (polys.length) rasterizeFill(canvas, polys, info.color, false, paint);
+      if (!polys.length) return;
+      if (doFill) rasterizeFill(canvas, polys, info.color, false, paint);
+      if (doStroke) {
+        const outline = strokePolysOutline(polys, hw, info.strokeStyle);
+        if (outline.length) rasterizeFill(canvas, outline, info.strokeColor, false, strokePaint);
+      }
       return;
     }
     if (!g.isWordSpace && g.width > 0.005) drawGlyphPlaceholder(canvas, emMatrix, g.width, info.color, paint);
@@ -697,40 +833,247 @@ function radialEval(coords: number[], lut: Rgb[], ext0: boolean, ext1: boolean):
   };
 }
 
-/** Rasterize an axial/radial shading (the `sh` operator) over the active clip.
- *  Unsupported shading types degrade to a mid-gray fill of the same region. */
-function rasterizeShading(canvas: Canvas, doc: Document, dict: PdfDict, ctm: Matrix, paint: Paint): void {
+/**
+ * Function-based (type 1): the point arrives in the shading's TARGET space, so
+ * `inv` — the inverse of `/Matrix` — carries it back to the function's own
+ * domain, which is what that matrix maps FROM.
+ *
+ * There is deliberately no LUT here. Types 2 and 3 index a 257-entry table
+ * because they have ONE parameter; a 2-D domain has none, so the function is
+ * evaluated per pixel. A type 4 program memoizes on its input tuple, but over
+ * two continuous inputs that cache mostly misses. **Measured** at ~1.5 us per
+ * pixel against a type 4 program, roughly 15x the LUT-indexed axial path (528
+ * ms against 31 for 360,000 pixels) — so a full-page type 1 at 150 dpi costs a
+ * few seconds. That cost is recorded rather than bought off with a 2-D table,
+ * which would blur exactly the field the shading exists to state.
+ *
+ * A point outside `/Domain` paints NOTHING here. Whether that shows as the
+ * `/Background` or as bare page is the caller's rule, not this one's, because
+ * it turns on how the shading is being used rather than on where the point is.
+ */
+function functionEval(
+  fn: (x: number[]) => number[], cs: ColorConverter, inv: Matrix, domain: number[],
+): ShadingEval {
+  const [x0, x1, y0, y1] = domain;
+  const [a, b, c, d, e, f] = inv;
+  return (px, py) => {
+    const dx = a * px + c * py + e;
+    const dy = b * px + d * py + f;
+    if (dx < x0 || dx > x1 || dy < y0 || dy > y1) return undefined;
+    return cs.toRgb(fn([dx, dy]));
+  };
+}
+
+/**
+ * Paint a mesh shading — Gouraud (ShadingType 4 or 5) or patch (6 or 7) —
+ * returning false when it could not be read, so the caller falls through to the
+ * mid-gray degrade and a damaged mesh costs its own appearance, never the page.
+ *
+ * **Invariant:** the two families differ ONLY in how they produce triangles.
+ * Everything downstream — the colour space, the `/Function` LUT, the barycentric
+ * walk — is shared, so a patch mesh and a Gouraud mesh provably cannot disagree
+ * about a function or a colour space.
+ *
+ * **Invariant:** with a `/Function`, a vertex or a patch CORNER carries ONE
+ * parametric value, so the value is interpolated across the triangle and the
+ * function evaluated AFTER. Evaluating at the corners and interpolating the
+ * resulting colours is a different answer for any non-linear function — and it
+ * is the plausible wrong one, since it still produces a smooth gradient.
+ */
+function rasterizeMesh(
+  canvas: Canvas, doc: Document, shading: PdfDict | PdfStream, ctm: Matrix, paint: Paint,
+  clip: { x0: number; y0: number; x1: number; y1: number },
+): boolean {
+  if (!isStream(shading)) return false;              // the vertex data IS the stream
+  const dict = shading.dict;
+  const r = (o: PdfObject | undefined) => doc.resolve(o);
+  const infl = (s: { dict: PdfDict; raw: Uint8Array }) => inflateStream(s as Parameters<typeof inflateStream>[0]);
+
+  const type = resolveNum(doc, dict.get('ShadingType'), 0);
+  const csObj = dict.get('ColorSpace');
+  const cs = csObj !== undefined ? resolveColorSpace(csObj, r, infl) : localDeviceGray();
+  const fnObj = dict.get('Function');
+  const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl) : undefined;
+  // With a /Function the stream carries ONE component per vertex whatever the
+  // colour space says; without one it carries the space's own count.
+  const components = fn ? 1 : cs.components;
+  const decode = arrNums(doc, dict.get('Decode'));
+
+  const layout: MeshLayout = {
+    type,
+    bitsPerCoordinate: resolveNum(doc, dict.get('BitsPerCoordinate'), 0),
+    bitsPerComponent: resolveNum(doc, dict.get('BitsPerComponent'), 0),
+    bitsPerFlag: resolveNum(doc, dict.get('BitsPerFlag'), 0),
+    components,
+    colorDecode: decode.slice(4),
+  };
+  if (!layout.bitsPerCoordinate || !layout.bitsPerComponent) return false;
+  // Types 4, 6 and 7 carry a per-record flag; only type 5 does not.
+  if (type !== 5 && !layout.bitsPerFlag) return false;
+
+  let data: Uint8Array;
+  try { data = infl(shading); } catch { return false; }
+
+  // Everything arrives in shading space and every walk below is in DEVICE
+  // space, so the mapping happens ONCE here rather than per pixel. It is
+  // affine, so it commutes with Bezier evaluation and with the Coons
+  // interior-point formula — which is what lets a patch's control net be
+  // mapped before it is tessellated rather than after, and is also what makes
+  // `patchGridSize`'s tolerance a genuine count of device pixels.
+  const [a, b, c, d, e, f] = ctm;
+  const toDev = (x: number, y: number) => ({ x: a * x + c * y + e, y: b * x + d * y + f });
+
+  let tris: Triangle[];
+  if (type === 4 || type === 5) {
+    const read = readMeshVertices(data, layout, decode.slice(0, 4));
+    if (read.kind !== 'ok' || read.vertices.length < 3) return false;
+    const dev: TriVertex[] = read.vertices.map((v) => ({ ...toDev(v.x, v.y), comps: v.comps }));
+    tris = type === 4
+      ? freeFormTriangles(dev, read.vertices.map((v) => v.flag))
+      : latticeTriangles(dev, resolveNum(doc, dict.get('VerticesPerRow'), 0));
+  } else {
+    const read = readMeshPatches(data, layout, decode.slice(0, 4));
+    if (read.kind !== 'ok' || !read.patches.length) return false;
+    tris = completePatches(
+      read.patches.map((p) => ({
+        flag: p.flag,
+        points: p.points.map((q) => toDev(q.x, q.y)),
+        colors: p.colors,
+      })),
+      type,
+    ).flatMap(patchTriangles);
+  }
+  if (!tris.length) return false;
+
+  // A /Function is sampled through the same 257-entry LUT the axial and radial
+  // paths use, so a mesh and a gradient over one function cannot disagree.
+  const dom = arrNums(doc, dict.get('Domain'));
+  const t0 = dom.length >= 2 ? dom[0] : 0;
+  const t1 = dom.length >= 2 ? dom[1] : 1;
+  const lut = fn ? shadingLut(fn, cs, t0, t1) : undefined;
+
+  const color: Rgb = [0, 0, 0];
+  for (const t of tris) {
+    eachTrianglePixel(t, clip, (x, y, comps) => {
+      const cov = paint.at(x, y);
+      if (cov <= 1e-4) return;
+      const rgb = lut
+        ? lutAt(lut, t1 === t0 ? 0 : (comps[0] - t0) / (t1 - t0))
+        : cs.toRgb(comps);
+      color[0] = rgb[0]; color[1] = rgb[1]; color[2] = rgb[2];
+      canvas.blend(x, y, color, cov, paint.blend);
+    });
+  }
+  return true;
+}
+
+/** Rasterize a function-based, axial or radial shading over the active clip.
+ *  Unsupported shading types degrade to a mid-gray fill of the same region.
+ *
+ *  `pattern` says whether this shading is a PatternType 2 fill rather than the
+ *  `sh` operator, which only `/Background` turns on — 32000-1 8.7.4.3 ignores
+ *  that entry under `sh`. Only `pagerender.ts` knows which it is serving. */
+// NOTE the parameter is the STREAM where there is one: a mesh keeps its vertex
+// data there. Widening `RenderSink.shading` did NOT force this signature —
+// TypeScript method parameters are BIVARIANT, so an implementor left at the
+// narrow `PdfDict` still typechecks and then receives a stream at runtime. The
+// same is true of ARITY: an implementor that never grew `pattern` still
+// satisfies the interface, so the three of them were updated by hand.
+function rasterizeShading(
+  canvas: Canvas, doc: Document, shading: PdfDict | PdfStream, ctm: Matrix, paint: Paint,
+  pattern: boolean,
+): void {
+  const dict = isStream(shading) ? shading.dict : shading;
   const [a, b, c, d, e, f] = ctm;
   const det = a * d - b * c;
   if (Math.abs(det) < 1e-12) return;                 // singular CTM → nothing maps
 
-  // Paint region: the clip bbox, else the whole canvas (an unclipped `sh` fills it).
-  const { x0: ix0, y0: iy0, x1: ix1, y1: iy1 } = paint.bounds(canvas.bounds());
-  if (ix1 <= ix0 || iy1 <= iy0) return;
-
   const r = (o: PdfObject | undefined) => doc.resolve(o);
   const infl = (s: { dict: PdfDict; raw: Uint8Array }) => inflateStream(s as Parameters<typeof inflateStream>[0]);
   const type = resolveNum(doc, dict.get('ShadingType'), 0);
+  const csObj = dict.get('ColorSpace');
+  const cs = csObj !== undefined ? resolveColorSpace(csObj, r, infl) : localDeviceGray();
+
+  // Paint region: the clip bbox, else the whole canvas (an unclipped `sh` fills it).
+  let { x0: ix0, y0: iy0, x1: ix1, y1: iy1 } = paint.bounds(canvas.bounds());
+  if (ix1 <= ix0 || iy1 <= iy0) return;
+
+  // /BBox is a COMMON shading entry (32000-1 Table 78) stated in the shading's
+  // TARGET space, so it is read once here for EVERY type rather than by any one
+  // evaluator — two rules for one entry is how a document comes to be clipped
+  // as a gradient and not as a mesh.
+  const bb = arrNums(doc, dict.get('BBox'));
+  const hasBBox = bb.length >= 4;
+  const bx0 = Math.min(bb[0], bb[2]), bx1 = Math.max(bb[0], bb[2]);
+  const by0 = Math.min(bb[1], bb[3]), by1 = Math.max(bb[1], bb[3]);
+  if (hasBBox) {
+    // Narrowing the device region by the transformed corners is EXACT for an
+    // axis-aligned CTM and conservative under rotation. That approximation is
+    // all a mesh gets, since it paints its triangles and leaves before the
+    // per-pixel loop; types 1-3 tighten it exactly there.
+    let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+    for (const [cx, cy] of [[bx0, by0], [bx1, by0], [bx0, by1], [bx1, by1]]) {
+      const px = a * cx + c * cy + e, py = b * cx + d * cy + f;
+      if (px < mnx) mnx = px;
+      if (px > mxx) mxx = px;
+      if (py < mny) mny = py;
+      if (py > mxy) mxy = py;
+    }
+    ix0 = Math.max(ix0, Math.floor(mnx));
+    iy0 = Math.max(iy0, Math.floor(mny));
+    ix1 = Math.min(ix1, Math.ceil(mxx));
+    iy1 = Math.min(iy1, Math.ceil(mxy));
+    if (ix1 <= ix0 || iy1 <= iy0) return;
+  }
+
+  // A mesh paints its TRIANGLES rather than the clip region, so it leaves
+  // before the per-pixel evaluator below. That is a cost rule as much as a
+  // correctness one: the evaluator visits every pixel of the region, which
+  // against a mesh of many small triangles would be O(pixels x triangles).
+  if (type >= 4 && type <= 7) {
+    if (rasterizeMesh(canvas, doc, shading, ctm, paint, { x0: ix0, y0: iy0, x1: ix1, y1: iy1 })) return;
+    // Fall through to the mid-gray degrade when the mesh could not be read.
+  }
   const coords = arrNums(doc, dict.get('Coords'));
-  const supported = (type === 2 && coords.length >= 4) || (type === 3 && coords.length >= 6);
+  const fnObj = dict.get('Function');
+  // /Matrix maps the DOMAIN into the shading's target space (type 1 only), so a
+  // singular one collapses the whole domain onto a line or a point and
+  // describes no field — malformed rather than unimplemented, and it takes the
+  // same degrade as a type 1 missing the /Function that type requires. It also
+  // cannot be inverted: `invert` throws, and `renderCanvas` catches around the
+  // whole of `interpret`, so letting that out would cost every operator drawn
+  // after the shading rather than the shading alone.
+  const mtx = arrNums(doc, dict.get('Matrix'));
+  const matrix: Matrix = mtx.length >= 6 ? (mtx.slice(0, 6) as Matrix) : [1, 0, 0, 1, 0, 0];
+  const matrixOk = Math.abs(matrix[0] * matrix[3] - matrix[1] * matrix[2]) > 1e-12;
+  const supported = (type === 1 && fnObj !== undefined && matrixOk)
+    || (type === 2 && coords.length >= 4)
+    || (type === 3 && coords.length >= 6);
 
   let evalShade: ShadingEval;
   if (supported) {
-    const csObj = dict.get('ColorSpace');
-    const cs = csObj !== undefined ? resolveColorSpace(csObj, r, infl) : localDeviceGray();
     const dom = arrNums(doc, dict.get('Domain'));
-    const t0 = dom.length >= 2 ? dom[0] : 0;
-    const t1 = dom.length >= 2 ? dom[1] : 1;
-    const ext = r(dict.get('Extend'));
-    const ext0 = isArray(ext) && r(ext[0]) === true;
-    const ext1 = isArray(ext) && r(ext[1]) === true;
-    const fnObj = dict.get('Function');
     const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl) : (x: number[]) => x;
-    const lut = shadingLut(fn, cs, t0, t1);
-    evalShade = type === 2 ? axialEval(coords, lut, ext0, ext1) : radialEval(coords, lut, ext0, ext1);
+    if (type === 1) {
+      evalShade = functionEval(fn, cs, invert(matrix), dom.length >= 4 ? dom : [0, 1, 0, 1]);
+    } else {
+      const t0 = dom.length >= 2 ? dom[0] : 0;
+      const t1 = dom.length >= 2 ? dom[1] : 1;
+      const ext = r(dict.get('Extend'));
+      const ext0 = isArray(ext) && r(ext[0]) === true;
+      const ext1 = isArray(ext) && r(ext[1]) === true;
+      const lut = shadingLut(fn, cs, t0, t1);
+      evalShade = type === 2 ? axialEval(coords, lut, ext0, ext1) : radialEval(coords, lut, ext0, ext1);
+    }
   } else {
     evalShade = () => MID_GRAY;                       // degrade: flat mid-gray
   }
+
+  // /Background fills what the shading itself does not cover, and 8.7.4.3
+  // IGNORES it under `sh` — it belongs to a shading used as a pattern. Like
+  // /BBox it is a common entry, so it is applied once here rather than per type.
+  const bgArr = arrNums(doc, dict.get('Background'));
+  const bg = pattern && bgArr.length ? cs.toRgb(bgArr) : undefined;
 
   const color: Rgb = [0, 0, 0];
   for (let y = iy0; y < iy1; y++) {
@@ -741,7 +1084,11 @@ function rasterizeShading(canvas: Canvas, doc: Document, dict: PdfDict, ctm: Mat
       const sx = x + 0.5 - e, sy = y + 0.5 - f;
       const ux = (d * sx - c * sy) / det;
       const uy = (a * sy - b * sx) / det;
-      const col = evalShade(ux, uy);
+      // Outside the /BBox nothing is painted at all — not the shading, and not
+      // the /Background either, which fills only within the region the box
+      // admits.
+      if (hasBBox && (ux < bx0 || ux > bx1 || uy < by0 || uy > by1)) continue;
+      const col = evalShade(ux, uy) ?? bg;
       if (!col) continue;
       color[0] = col[0]; color[1] = col[1]; color[2] = col[2];
       canvas.blend(x, y, color, cov, paint.blend);
@@ -807,11 +1154,14 @@ class RasterSink implements RenderSink {
     this.narrowClip(strokeClipMask(path, ctm, style, this.canvas.bounds()));
   }
 
-  clipToGlyphs(info: TextRunInfo): boolean {
-    // No outline for any glyph in the run — a font we could not parse, or one
-    // drawn as placeholder boxes. Clipping to nothing would erase the text, so
-    // decline and let the caller paint it solid.
-    const polys = glyphRunPolys(info, this.glyphSourceFor(info));
+  clipToGlyphs(infos: readonly TextRunInfo[]): boolean {
+    // The UNION of every run's outlines, built as ONE mask. Narrowing per run
+    // would INTERSECT them, which for glyphs that do not overlap is empty.
+    const polys: Poly[] = [];
+    for (const info of infos) polys.push(...glyphRunPolys(info, this.glyphSourceFor(info)));
+    // No outline for any glyph in any run — a font we could not parse, or one
+    // drawn as placeholder boxes. Clipping to nothing would erase the content,
+    // so decline and let the caller paint solid or leave the clip alone.
     if (!polys.length) return false;
     this.narrowClip(polysClipMask(polys, this.canvas.bounds()));
     return true;
@@ -1127,10 +1477,10 @@ class RasterSink implements RenderSink {
 
   glyphRun(info: TextRunInfo): void {
     if (this.skipGlyphs) return;
-    rasterizeGlyphRun(this.canvas, info, this.glyphSourceFor(info), this.paintFor('fill'));
+    rasterizeGlyphRun(this.canvas, info, this.glyphSourceFor(info), this.paintFor('fill'), this.paintFor('stroke'));
   }
-  shading(dict: PdfDict, ctm: Matrix): void {
-    rasterizeShading(this.canvas, this.doc, dict, ctm, this.paintFor('fill'));
+  shading(shading: PdfDict | PdfStream, ctm: Matrix, pattern: boolean): void {
+    rasterizeShading(this.canvas, this.doc, shading, ctm, this.paintFor('fill'), pattern);
   }
 }
 
@@ -1151,32 +1501,90 @@ export interface BackdropOptions {
 function encodeCanvas(
   canvas: Canvas, opts: ImageOptions, format: ImageFormat, opaqueWhite: boolean,
 ): Uint8Array {
+  const mode = opts.mode ?? 'rgb';
+  const threshold = opts.threshold ?? DEFAULT_THRESHOLD;
+  // A non-rgb mode is opaque by construction — `resolveOutput` has refused it
+  // beside a transparent background — so every branch below reads the mode
+  // without also having to consider alpha.
+  //
+  // GIF and BMP take the mode through their EXISTING RGB paths rather than
+  // gaining a colour mode of their own: GIF is palettised, so a grey or
+  // two-entry palette is exact and free (<= 256 colours pass `quantize`
+  // untouched), and BMP has no grey form implemented here, so it writes 24-bit
+  // with equal channels — the right picture in a fatter file, which is
+  // documented on `ImageOptions.mode` rather than left to be discovered.
+  const rgbOfMode = (): Uint8Array =>
+    mode === 'rgb' ? canvas.toRgb() : grayToRgb(canvas, mode, threshold);
+
   switch (format) {
     case 'png':
+      if (mode === 'gray') return encodePng(canvas.w, canvas.h, canvas.toGray(), 'gray');
+      // PNG greyscale means 0 = BLACK, the opposite of TIFF bilevel below.
+      if (mode === 'bilevel') {
+        return encodePng(canvas.w, canvas.h, canvas.toBilevel(threshold, false), 'bilevel');
+      }
       return canvas.toPng(opaqueWhite);
     case 'jpeg':
-      // Always 'rgb': `resolveFormat` has already refused a transparent
-      // background, so the canvas is opaque and its alpha carries nothing.
-      return encodeJpeg(canvas.w, canvas.h, canvas.toRgb(), 'rgb',
+      // 'bilevel' is refused by `resolveOutput`, so only 'gray' reaches here —
+      // and JPEG carries that natively, one component rather than three.
+      return encodeJpeg(canvas.w, canvas.h,
+        mode === 'gray' ? canvas.toGray() : canvas.toRgb(), mode === 'gray' ? 'gray' : 'rgb',
         opts.quality != null ? { quality: opts.quality } : {});
     case 'bmp':
       // 24-bit BI_RGB has no alpha, so this takes JPEG's answer rather than
-      // TIFF's — `resolveFormat` has already refused a transparent background.
-      return encodeBmp(canvas.w, canvas.h, canvas.toRgb());
+      // TIFF's — `resolveOutput` has already refused a transparent background.
+      return encodeBmp(canvas.w, canvas.h, rgbOfMode());
     case 'gif':
       // 256 colours, so LOSSY for a photograph — but exact for the flat fills
       // and text a rendered document is mostly made of. Also opaque-only: GIF
       // has index transparency, not an alpha channel, and choosing an index to
       // sacrifice is a decision about the image nobody asked us to make.
-      return encodeGif(canvas.w, canvas.h, canvas.toRgb());
+      return encodeGif(canvas.w, canvas.h, rgbOfMode());
     case 'tiff':
       // TIFF, unlike JPEG and BMP, CAN carry alpha, so a transparent
       // background is honoured through an unassociated ExtraSample.
-      return encodeTiff([opaqueWhite
-        ? { width: canvas.w, height: canvas.h, kind: 'rgb', samples: canvas.toRgb() }
-        : { width: canvas.w, height: canvas.h, kind: 'rgba', samples: canvas.toRgba() }],
-      opts.compression != null ? { compression: opts.compression } : {});
+      return encodeTiff([tiffFrameOf(canvas, mode, threshold, opaqueWhite)],
+        opts.compression != null ? { compression: opts.compression } : {});
   }
+}
+
+/** Gray value below which a pixel goes black under `mode: 'bilevel'`. */
+const DEFAULT_THRESHOLD = 128;
+
+/** A non-rgb mode splayed back across three equal channels, for the two formats
+ *  that have no narrower form here. */
+function grayToRgb(canvas: Canvas, mode: ImageMode, threshold: number): Uint8Array {
+  const g = canvas.toGray();
+  const rgb = new Uint8Array(g.length * 3);
+  for (let p = 0; p < g.length; p++) {
+    const v = mode === 'bilevel' ? (g[p] < threshold ? 0 : 255) : g[p];
+    rgb[p * 3] = v; rgb[p * 3 + 1] = v; rgb[p * 3 + 2] = v;
+  }
+  return rgb;
+}
+
+/**
+ * One canvas as the frame shape `tiffencode.ts` consumes.
+ *
+ * Shared by `encodeCanvas` and `renderPageToTiffFrame` so the single-page and
+ * multi-page TIFF paths cannot disagree about what a mode means — which
+ * matters here more than usual, because multi-page G4 is the archival and fax
+ * interchange this mode exists for and it goes only through the second one.
+ *
+ * **`onesAreBlack` is true:** a bilevel TIFF declares PhotometricInterpretation
+ * 0 (WhiteIsZero), which is what `decodeCcitt` returns and `encodeG4` expects.
+ */
+function tiffFrameOf(
+  canvas: Canvas, mode: ImageMode, threshold: number, opaqueWhite: boolean,
+): TiffFrame {
+  const { w: width, h: height } = canvas;
+  if (mode === 'gray') return { width, height, kind: 'gray', samples: canvas.toGray() };
+  if (mode === 'bilevel') {
+    return { width, height, kind: 'bilevel', samples: canvas.toBilevel(threshold, true) };
+  }
+  return opaqueWhite
+    ? { width, height, kind: 'rgb', samples: canvas.toRgb() }
+    : { width, height, kind: 'rgba', samples: canvas.toRgba() };
 }
 
 /** Which formats cannot carry an alpha channel, and so contradict
@@ -1202,6 +1610,40 @@ function resolveFormat(opts: ImageOptions): ImageFormat {
     throw new UnsupportedFeatureError(
       `image format ${JSON.stringify(format)} has no alpha channel and cannot ` +
       `honour background: 'transparent' — use 'png', or drop the background option`);
+  }
+
+  const mode = opts.mode ?? 'rgb';
+  if (!(IMAGE_MODES as readonly string[]).includes(mode)) {
+    throw new UnsupportedFeatureError(
+      `unsupported image mode ${JSON.stringify(mode)}; ` +
+      `supported: ${IMAGE_MODES.join(', ')}`);
+  }
+  // JPEG has no bilevel form. Emitting a grey JPEG of thresholded pixels
+  // instead returns a plausible-looking file with DCT ringing around every
+  // edge — which is the shape this refusal exists to prevent, and the same
+  // posture `format` and the transparency rule above already take.
+  if (mode === 'bilevel' && format === 'jpeg') {
+    throw new UnsupportedFeatureError(
+      `image format 'jpeg' has no bilevel form and cannot honour mode: 'bilevel' — ` +
+      `use 'tiff' (with compression: 'g4' for CCITT Group 4) or 'png'`);
+  }
+  // A gray or bilevel raster has no alpha channel in any encoder here — a
+  // TiffFrame has no gray+alpha kind and PNG would need colour type 4 — so the
+  // combination is refused rather than silently composited, exactly as the
+  // opaque formats are above. The reversible direction: relaxing later is
+  // additive.
+  if (mode !== 'rgb' && opts.background === 'transparent') {
+    throw new UnsupportedFeatureError(
+      `mode ${JSON.stringify(mode)} carries no alpha channel and cannot honour ` +
+      `background: 'transparent' — use mode: 'rgb', or drop the background option`);
+  }
+  // Validated even where it is not read, unlike `quality`: an out-of-range
+  // threshold makes the whole page one colour, which is a plausible-looking
+  // wrong file rather than an obviously broken one.
+  const t = opts.threshold;
+  if (t !== undefined && (!Number.isInteger(t) || t < 0 || t > 255)) {
+    throw new TypeError(
+      `ToImage: threshold must be an integer 0..255, got ${JSON.stringify(t)}`);
   }
   return format;
 }
@@ -1270,9 +1712,11 @@ function renderPageToTiffFrame(
 ): TiffFrame {
   const canvas = renderCanvas(doc, page, opts, { skipGlyphs: false });
   const opaque = (opts.background ?? 'white') !== 'transparent';
-  return opaque
-    ? { width: canvas.w, height: canvas.h, kind: 'rgb', samples: canvas.toRgb() }
-    : { width: canvas.w, height: canvas.h, kind: 'rgba', samples: canvas.toRgba() };
+  // Through the SAME frame builder `encodeCanvas` uses, so the single-page and
+  // multi-page TIFF paths cannot disagree about what a mode means. This is the
+  // path multi-page G4 goes through, which is the archival and fax interchange
+  // the mode exists for.
+  return tiffFrameOf(canvas, opts.mode ?? 'rgb', opts.threshold ?? DEFAULT_THRESHOLD, opaque);
 }
 
 /** Render a page selection to ONE multi-page TIFF — the entry that makes this

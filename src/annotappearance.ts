@@ -45,7 +45,24 @@ export function annotFlags(doc: Document, annot: PdfDict): number {
 export function isAnnotVisible(doc: Document, annot: PdfDict): boolean {
   if ((annotFlags(doc, annot) & (FLAG_HIDDEN | FLAG_NOVIEW)) !== 0) return false;
   const s = doc.resolve(annot.get('Subtype'));
-  return !(isName(s) && s.name === 'Popup');
+  if (isName(s) && s.name === 'Popup') return false;
+  // An /OC naming a layer the default configuration hides (q1g2.2). This lives
+  // HERE rather than in the render pass precisely because of the contract above:
+  // render, flatten and the drawn-text search must agree about what is painted,
+  // and a check in drawAnnots alone would let FlattenAnnotations bake ink into
+  // permanent page content that the rendered page does not show.
+  //
+  // `defaultConfigIfPresent` is the READ-ONLY accessor: `Default` creates
+  // /OCProperties and marks the document modified, which a predicate must never
+  // do. It is asked per annotation rather than memoized — unlike the marked-
+  // content path, whose memo exists because sections are unbounded — since this
+  // loop is over a page's /Annots and the raw operand must reach
+  // `ResolveVisibility` unresolved either way (it decides by ref identity).
+  const oc = annot.get('OC');
+  if (oc !== undefined && !(doc.OptionalContent.defaultConfigIfPresent()?.ResolveVisibility(oc) ?? true)) {
+    return false;
+  }
+  return true;
 }
 
 export interface AnnotAppearance {

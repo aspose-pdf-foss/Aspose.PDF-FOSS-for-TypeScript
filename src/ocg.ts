@@ -528,6 +528,27 @@ export class OptionalContent {
     return this.Layers.find((l) => sameRef(r, l.Ref));
   }
 
+  /**
+   * The default configuration if the document HAS one, without creating
+   * anything — the read-only twin of `Default`.
+   *
+   * **This exists because `Default` MUTATES.** It goes through
+   * `ensureOcProps`, which writes `/OCProperties` into the catalog and calls
+   * `markModified()`, so a renderer asking "is this layer visible" through it
+   * would modify every document it draws. That is not cosmetic: `choosePath()`
+   * takes the incremental append only for an UNMODIFIED base, so a `ToImage()`
+   * before a `Sign()` would silently turn the signature into a full rewrite of
+   * bytes an earlier signature covered — `pagemode.ts` records the same hazard
+   * for a no-op delete. A document with no `/OCProperties` answers `undefined`
+   * and its caller then treats every section as visible.
+   */
+  defaultConfigIfPresent(): LayerConfig | undefined {
+    const p = this.ocProps();
+    if (!p) return undefined;
+    const d = resolveDict(this.doc, p.get('D'));
+    return d ? new LayerConfig(this.doc, d, this) : undefined;
+  }
+
   get Default(): LayerConfig {
     const p = this.ensureOcProps();
     let d = resolveDict(this.doc, p.get('D'));

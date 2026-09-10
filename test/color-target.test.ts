@@ -89,6 +89,7 @@ describe('convertComps — non-device sources', () => {
   it('routes a non-device space through its ColorConverter for every target', () => {
     const converter: ColorConverter = {
       components: 1,
+      family: 'separation',
       toRgb: () => [255, 0, 0],       // 0..255, as colorspace.ts emits
       initial: () => [0, 0, 0],
     };
