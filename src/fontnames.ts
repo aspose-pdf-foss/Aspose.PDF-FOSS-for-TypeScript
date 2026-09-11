@@ -25,6 +25,17 @@ export interface FontNames {
   italic: boolean;
   /** OS/2.usWeightClass; 400 when the table is absent or says 0. */
   weight: number;
+  /** `OS/2.ulUnicodeRange1..4`. Undefined when the table is absent or too
+   *  short to state them.
+   *
+   *  A PRE-FILTER and never a decision: it is the producer's claim about its
+   *  own font and is routinely optimistic, so `fontsubst.ts` uses it to select
+   *  candidates and confirms every one against the real `cmap`. */
+  unicodeRange?: readonly [number, number, number, number];
+  /** `OS/2.sFamilyClass`'s HIGH BYTE -- the class, without its subclass: 1..7
+   *  are the serif families, 8 sans serif, 0 unclassified. Undefined when the
+   *  table is absent or too short. */
+  familyClass?: number;
 }
 
 export interface TableRange { offset: number; length: number }
@@ -115,6 +126,15 @@ export function namesFromTables(
 
   const macStyle = t.head && t.head.length >= 46 ? u16(t.head, 44) : 0;
   const weight = t.os2 && t.os2.length >= 6 ? u16(t.os2, 4) || 400 : 400;
+  // Each field needs its OWN length guard: a truncated OS/2 that still states
+  // usWeightClass must not be read past its end. sFamilyClass is an int16 at
+  // byte 30 whose HIGH BYTE is the class; ulUnicodeRange1..4 are uint32 at 42,
+  // 46, 50 and 54. A version-0 OS/2 is 78 bytes and covers both.
+  const familyClass = t.os2 && t.os2.length >= 32 ? t.os2[30] : undefined;
+  const unicodeRange: readonly [number, number, number, number] | undefined =
+    t.os2 && t.os2.length >= 58
+      ? [u32(t.os2, 42), u32(t.os2, 46), u32(t.os2, 50), u32(t.os2, 54)]
+      : undefined;
 
   return {
     family,
@@ -125,6 +145,8 @@ export function namesFromTables(
     bold: (macStyle & 1) !== 0,
     italic: (macStyle & 2) !== 0,
     weight,
+    unicodeRange,
+    familyClass,
   };
 }
 

@@ -86,3 +86,43 @@ describe('parseTableDirectory', () => {
     expect(parseTableDirectory(new Uint8Array(8))).toBeUndefined();
   });
 });
+
+describe('FontNames OS/2 coverage fields', () => {
+  const nameTable = () => buildNameRecords([
+    { plat: 3, nameID: 1, text: 'Probe Sans' },
+    { plat: 3, nameID: 2, text: 'Regular' },
+  ]);
+
+  it('reads sFamilyClass and ulUnicodeRange1..4 from OS/2', () => {
+    const os2 = new Uint8Array(78);
+    const v = new DataView(os2.buffer);
+    v.setUint16(4, 400);          // usWeightClass, the field already read
+    v.setInt16(30, 0x0805);       // sFamilyClass: class 8 (sans serif), subclass 5
+    v.setUint32(42, 0x00000001);  // ulUnicodeRange1: bit 0, Basic Latin
+    v.setUint32(46, 0x08000000);  // ulUnicodeRange2: bit 59 (32+27), CJK Unified Ideographs
+    v.setUint32(50, 0x00020000);  // ulUnicodeRange3
+    v.setUint32(54, 0x00000004);  // ulUnicodeRange4
+
+    const n = namesFromTables({ name: nameTable(), os2 })!;
+    expect(n.familyClass).toBe(8);
+    expect(n.unicodeRange).toEqual([0x00000001, 0x08000000, 0x00020000, 0x00000004]);
+  });
+
+  // The guard, and it needs its OWN case: a 96-byte buildOS2() covers both
+  // fields, so every other fixture in the suite passes with the guards deleted.
+  it('leaves both undefined when OS/2 is too short to state them', () => {
+    const os2 = new Uint8Array(31);            // usWeightClass yes, sFamilyClass no
+    new DataView(os2.buffer).setUint16(4, 700);
+
+    const n = namesFromTables({ name: nameTable(), os2 })!;
+    expect(n.weight).toBe(700);                // the existing field still reads
+    expect(n.familyClass).toBeUndefined();
+    expect(n.unicodeRange).toBeUndefined();
+  });
+
+  it('leaves both undefined when OS/2 is absent entirely', () => {
+    const n = namesFromTables({ name: nameTable() })!;
+    expect(n.familyClass).toBeUndefined();
+    expect(n.unicodeRange).toBeUndefined();
+  });
+});

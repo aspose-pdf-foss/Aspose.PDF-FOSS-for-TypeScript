@@ -11,6 +11,7 @@ import { openSync, readSync, closeSync, readdirSync, fstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { parseTableDirectory, namesFromTables, type FontNames } from './fontnames.js';
+import { readCmap } from './sfnt.js';
 import { ttcFaceOffsets } from './ttc.js';
 import { isType1, readType1Header } from './type1header.js';
 import { dfontSfntRanges } from './dfont.js';
@@ -122,68 +123,76 @@ function peekNames(path: string): { faceIndex: number; names: FontNames }[] {
       }];
     }
 
-    /**
-     * The naming fields of the face whose directory begins at `dirOffset`.
-     *
-     * `base` is added to each table offset. It is 0 for a bare sfnt and for a
-     * collection, whose table offsets are absolute into the FILE — and it is
-     * the resource's own start for a `.dfont`, whose are relative to it.
-     */
-    const faceAt = (dirOffset: number, base = 0): FontNames | undefined => {
-      const head12 = readAt(fd!, dirOffset, 12);
-      if (head12.length < 12) return undefined;
-      const numTables = (head12[4] << 8) | head12[5];
-      if (numTables === 0 || numTables > 512) return undefined;
-      const dir = parseTableDirectory(readAt(fd!, dirOffset, 12 + numTables * 16));
-      if (!dir) return undefined;
-      const table = (tag: string): Uint8Array | undefined => {
-        const r = dir.get(tag);
-        if (!r || r.length === 0 || r.length > 4 * 1024 * 1024) return undefined;
-        // A collection's table offsets are absolute into the FILE, so with
-        // `base` 0 this is the same read whether the face stands alone or
-        // shares a container. A `.dfont`'s are relative to its resource, which
-        // is the one caller that passes a non-zero base.
-        const b = readAt(fd!, base + r.offset, r.length);
-        return b.length === r.length ? b : undefined;
-      };
-      return namesFromTables({ name: table('name'), head: table('head'), os2: table('OS/2') });
-    };
-
-    // A collection is indexed face by face, IN PLACE: reading names needs no
-    // extraction, so the partial-read cost model survives one level deeper.
-    // `extractTtcFace` runs only when a face is actually loaded.
-    const offsets = ttcFaceOffsets(readAt(fd, 0, 4096));
-    if (offsets) {
-      const out: { faceIndex: number; names: FontNames }[] = [];
-      for (let i = 0; i < offsets.length; i++) {
-        const names = faceAt(offsets[i]);
-        if (names) out.push({ faceIndex: i, names });
-      }
-      return out;
-    }
-
-    // A .dfont carries no signature, so the walk that finds its faces IS the
-    // test that this is one -- it therefore runs after the ttcf test, which is
-    // a u32 compare. The cost model survives one more format: the 16-byte
-    // header, then the map, then only each face's name/head/OS2 ranges.
-    const dfont = dfontSfntRanges((o, l) => readAt(fd!, o, l), fstatSync(fd).size);
-    if (dfont) {
-      const out: { faceIndex: number; names: FontNames }[] = [];
-      for (let i = 0; i < dfont.length; i++) {
-        // A resource's table offsets are relative to the resource, not the file.
-        const names = faceAt(dfont[i].offset, dfont[i].offset);
-        if (names) out.push({ faceIndex: i, names });
-      }
-      return out;
-    }
-
-    const names = faceAt(0);
-    return names ? [{ faceIndex: 0, names }] : [];
+    return eachFace(fd, (table) =>
+      namesFromTables({ name: table('name'), head: table('head'), os2: table('OS/2') }))
+      .map(({ faceIndex, value }) => ({ faceIndex, names: value }));
   } catch {
     return [];
   } finally {
     if (fd !== undefined) { try { closeSync(fd); } catch { /* already gone */ } }
   }
+}
+
+/**
+ * Walk one open file's faces, handing each a `table(tag)` reader over ITS OWN
+ * directory, and keep whatever `pick` returns.
+ *
+ * **Invariant: ONE owner for "where does face N begin".** `peekNames` and
+ * `peekCmap` must not disagree about it -- a second walk is how an index and a
+ * coverage confirm come to describe different faces of one `.ttc`.
+ *
+ * Note the Type 1 case is NOT here: it is `peekNames`'s alone, because a Type 1
+ * has no table directory at all and no `cmap` for `peekCmap` to want.
+ */
+function eachFace<T>(
+  fd: number,
+  pick: (table: (tag: string) => Uint8Array | undefined, faceIndex: number) => T | undefined,
+): { faceIndex: number; value: T }[] {
+  const faceAt = (dirOffset: number, base: number, faceIndex: number): T | undefined => {
+    const head12 = readAt(fd, dirOffset, 12);
+    if (head12.length < 12) return undefined;
+    const numTables = (head12[4] << 8) | head12[5];
+    if (numTables === 0 || numTables > 512) return undefined;
+    const dir = parseTableDirectory(readAt(fd, dirOffset, 12 + numTables * 16));
+    if (!dir) return undefined;
+    const table = (tag: string): Uint8Array | undefined => {
+      const r = dir.get(tag);
+      if (!r || r.length === 0 || r.length > 4 * 1024 * 1024) return undefined;
+      // A collection's table offsets are absolute into the FILE, so with
+      // `base` 0 this is the same read whether the face stands alone or
+      // shares a container. A `.dfont`'s are relative to its resource, which
+      // is the one caller that passes a non-zero base.
+      const b = readAt(fd, base + r.offset, r.length);
+      return b.length === r.length ? b : undefined;
+    };
+    return pick(table, faceIndex);
+  };
+
+  const out: { faceIndex: number; value: T }[] = [];
+  const push = (i: number, v: T | undefined): void => { if (v !== undefined) out.push({ faceIndex: i, value: v }); };
+
+  // A collection is indexed face by face, IN PLACE: reading names needs no
+  // extraction, so the partial-read cost model survives one level deeper.
+  // `extractTtcFace` runs only when a face is actually loaded.
+  const offsets = ttcFaceOffsets(readAt(fd, 0, 4096));
+  if (offsets) {
+    for (let i = 0; i < offsets.length; i++) push(i, faceAt(offsets[i], 0, i));
+    return out;
+  }
+
+  // A .dfont carries no signature, so the walk that finds its faces IS the
+  // test that this is one -- it therefore runs after the ttcf test, which is
+  // a u32 compare. The cost model survives one more format: the 16-byte
+  // header, then the map, then only each face's own table ranges.
+  const dfont = dfontSfntRanges((o, l) => readAt(fd, o, l), fstatSync(fd).size);
+  if (dfont) {
+    // A resource's table offsets are relative to the resource, not the file.
+    for (let i = 0; i < dfont.length; i++) push(i, faceAt(dfont[i].offset, dfont[i].offset, i));
+    return out;
+  }
+
+  push(0, faceAt(0, 0, 0));
+  return out;
 }
 
 /**
@@ -247,4 +256,39 @@ export function indexFolder(dir: string, sniff = false): FaceRecord[] {
   }
   cache.set(key, out);
   return out;
+}
+
+/**
+ * The Unicode code points one face's `cmap` covers.
+ *
+ * A SECOND partial read: the table directory, then the `cmap` range, and
+ * nothing else -- so confirming a candidate costs roughly what indexing it did
+ * rather than reading a 20 MB CJK font. `undefined` for a file that will not
+ * open, a face index the file does not have, or a face carrying no `cmap`.
+ *
+ * It exists because `OS/2.ulUnicodeRange` is the PRODUCER'S CLAIM about its
+ * own font and is routinely optimistic: that field selects candidates, and
+ * this decides between them. Never throws.
+ *
+ * **Note a Type 1 face has no `cmap` and so answers `undefined`.** That is
+ * correct rather than a gap: such a face can still win on NAME, and a coverage
+ * score for a format that states no Unicode mapping would be invented. The
+ * consequence is real and deliberate -- a `.pfb` in a render folder is
+ * reachable by name and never by coverage.
+ */
+export function peekCmap(path: string, faceIndex = 0): Set<number> | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const hit = eachFace(fd, (table, i) => (i === faceIndex ? table('cmap') : undefined))[0];
+    if (!hit) return undefined;
+    // The gids are the FACE's and mean nothing to the caller, which resolves a
+    // code point through its own parsed SfntFont at draw time. Coverage alone
+    // is the honest contract.
+    return new Set(readCmap(hit.value).keys());
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* already gone */ } }
+  }
 }

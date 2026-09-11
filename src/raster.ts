@@ -6,7 +6,7 @@ import { Matrix, mul, apply, translate, invert } from './text.js';
 import { PdfDict, PdfStream, PdfObject, isStream, isDict, isArray, isName } from './types.js';
 import { Rgb, ColorConverter, resolveColorSpace } from './colorspace.js';
 import { parseFunction } from './pdffunction.js';
-import { normalizeFont } from './metrics.js';
+import { normalizeFont, matchStd14 } from './metrics.js';
 import { getStd14Sfnt } from './std14fonts.js';
 import {
   interpret, baseMatrix, arrNums, RenderSink, Path, StrokeStyle, TextRunInfo,
@@ -29,6 +29,8 @@ import { resolvePages } from './pagerange.js';
 import { SfntFont } from './sfnt.js';
 import { CffFont } from './cff.js';
 import { gidForProgram, gidForCid, loadEmbeddedProgram } from './glyphprogram.js';
+import { peekCmap } from './fontsource.js';
+import { resolveSubstitute, wantedCodepoints, type SubstRequest } from './fontsubst.js';
 import { inflateStream } from './flate.js';
 import { decodeJpeg, JpegImage } from './jpeg.js';
 import { encodePng } from './pngencode.js';
@@ -40,7 +42,7 @@ import { TriVertex, Triangle, freeFormTriangles, latticeTriangles, eachTriangleP
 import { completePatches, patchTriangles } from './meshpatch.js';
 import { glyphPolys } from './glyphoutline.js';
 import {
-  glyphDisplacement, glyphNameResolver, glyphOrigin, resolveSimpleEncoding, type Glyph,
+  glyphDisplacement, glyphNameResolver, glyphOrigin, resolveSimpleEncoding, fontStyleOf, type Glyph,
 } from './font.js';
 import { Type1Font } from './type1.js';
 
@@ -592,6 +594,12 @@ export interface GlyphSource {
    *  nothing to do with the document's CIDs, so a composite font resolved this
    *  way goes by UNICODE where an embedded one goes by CID. */
   substituted: boolean;
+  /** The family of the INSTALLED face chosen for a substituted font, when one
+   *  was — undefined when the bundled Standard-14 face answered instead.
+   *
+   *  The render-side counterpart of `FontMatch.exact`: the only way a caller or
+   *  a test can learn that a real face was resolved and which one it was. */
+  substituteFamily?: string;
   cidToGid?: Uint8Array;       // /CIDToGIDMap stream (2 bytes/CID); undefined → identity
   /** code -> glyph name, for the name-keyed programs. Undefined for a composite
    *  font and for a face resolved through a cmap. */
@@ -602,6 +610,75 @@ export interface GlyphSource {
 const HAIRLINE_STYLE: StrokeStyle = { width: 0, cap: 0, join: 0, miter: 10, dash: [], dashPhase: 0 };
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** The installed face for a non-embedded font, or undefined to fall back to the
+ *  bundled Standard-14 substitute.
+ *
+ *  Every rule lives in `fontsubst.ts`, which takes its faces and its `cmap`
+ *  reader as arguments; this function is only the wiring that supplies them. */
+function installedSubstitute(
+  doc: Document, fontDict: PdfDict, fd: PdfObject | undefined,
+): { sfnt: SfntFont; family: string } | undefined {
+  const faces = doc.renderFontFaces();
+  if (faces.length === 0) return undefined;      // opt-in, structurally
+
+  const bf = doc.resolve(fontDict.get('BaseFont'));
+  const flags = isDict(fd) ? doc.resolve(fd.get('Flags')) : undefined;
+  const req: SubstRequest = {
+    baseFont: isName(bf) ? bf.name.replace(/^[A-Z]{6}\+/, '') : '',
+    style: fontStyleOf(fontDict, (o) => doc.resolve(o)),
+    wanted: wantedCodepoints(fontDict, (o) => doc.resolve(o),
+      (s) => inflateStream(s as Parameters<typeof inflateStream>[0])),
+    serif: typeof flags === 'number' ? (flags & 2) !== 0 : false,
+  };
+
+  const hit = resolveSubstitute(faces, req, (f) => doc.renderFaceCoverage(f));
+  if (!hit) return undefined;
+  const sfnt = doc.loadRenderFace(hit.face);
+  if (!sfnt) return undefined;                   // indexable, not parseable
+  return { sfnt, family: hit.face.names.typographicFamily ?? hit.face.names.family };
+}
+
+/**
+ * Whether a non-embedded font is one we cannot identify AT ALL, so that drawing
+ * placeholder boxes says less than a Latin substitute would say wrongly
+ * (`lqcs.4`).
+ *
+ * `normalizeFont` maps every unrecognised `/BaseFont` onto one of the
+ * Standard 14, so a non-embedded Wingdings drew letters. The mechanism is not
+ * obvious: `resolveSimpleEncoding` defaults a font with no `/Encoding` to
+ * WinAnsi, so code 0x6C yields the text `l` and the Helvetica substitute has an
+ * `l`. A box says "this glyph is missing"; a letter says something the document
+ * does not.
+ *
+ * **It is a CONJUNCTION, and the encoding clause is what makes it safe.**
+ * `glyphusage.ts` records that the `/Flags` symbolic bit is "widely wrong in
+ * the wild" — which is why this module's own TrueType mapper unions every
+ * sanctioned chain rather than selecting on it — so boxing on the flag alone
+ * would turn a mis-flagged TEXT font into a page of boxes, strictly worse than
+ * the defect being fixed. A producer that mis-sets the flag on a text font
+ * still states WinAnsi or a `/Differences` array, so requiring that the font
+ * names NEITHER is what separates the two populations.
+ *
+ * Composite fonts are excluded and need no equivalent: a substituted Type0
+ * selects strictly by Unicode (`lqcs.1`) and never through the
+ * `cmapLookup(code)` fallback that produces the wrong glyph here.
+ */
+function symbolicUnknown(doc: Document, fontDict: PdfDict, fd: PdfObject | undefined): boolean {
+  if (!isDict(fd)) return false;                  // no descriptor: nothing claims to be symbolic
+  const flags = doc.resolve(fd.get('Flags'));
+  // Both bits set is a producer hedging, and 32000-1 makes them exclusive.
+  // Same reading pdfaconvert.ts:311 already takes for symbolic TrueType.
+  if (typeof flags !== 'number' || (flags & 4) === 0 || (flags & 32) !== 0) return false;
+
+  const bf = doc.resolve(fontDict.get('BaseFont'));
+  if (!isName(bf) || matchStd14(bf.name) !== undefined) return false;
+
+  // Presence is tested on the RAW dict: `doc.resolve(undefined)` answers `null`,
+  // so comparing a resolved value against undefined is true for every ABSENT
+  // key -- the trap pdfxvalidate.ts already records.
+  return !fontDict.has('Encoding');
+}
 
 export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource {
   const sub = doc.resolve(fontDict.get('Subtype'));
@@ -641,11 +718,28 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
   // With only the Standard-14 faces bundled the substitute covers LATIN; a
   // non-embedded CJK font still has no glyph for its characters and keeps its
   // boxes until real face substitution lands (lqcs.2).
+  // An INSTALLED face wins where the caller registered a render folder
+  // (`lqcs.2`); otherwise the bundled Standard-14 line below is the only one
+  // that runs, and output is byte-identical to before that existed.
   let substituted = false;
+  let substituteFamily: string | undefined;
   if (!sfnt && !cff && !type1) {
-    const bf = doc.resolve(fontDict.get('BaseFont'));
-    sfnt = getStd14Sfnt(normalizeFont(isName(bf) ? bf.name : 'Helvetica'));
-    substituted = true;
+    const installed = installedSubstitute(doc, fontDict, fd);
+    if (installed) {
+      sfnt = installed.sfnt;
+      substituteFamily = installed.family;
+      substituted = true;
+    } else if (!isType0 && symbolicUnknown(doc, fontDict, fd)) {
+      // Substitute NOTHING (`lqcs.4`). `sfnt` stays undefined, so no gid
+      // resolves, `eachGlyph` hands the caller no polygons, and
+      // `drawGlyphPlaceholder` draws the box it already draws for any
+      // unresolvable glyph — no new drawing code. `substituted` stays FALSE
+      // because nothing was substituted.
+    } else {
+      const bf = doc.resolve(fontDict.get('BaseFont'));
+      sfnt = getStd14Sfnt(normalizeFont(isName(bf) ? bf.name : 'Helvetica'));
+      substituted = true;
+    }
   }
 
   // The name route, for the two name-keyed program kinds. A face with a usable
@@ -657,7 +751,7 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
       type1?.builtinEncodingNames(),
     );
   }
-  return { sfnt, cff, type1, isType0, substituted, cidToGid, nameForCode };
+  return { sfnt, cff, type1, isType0, substituted, substituteFamily, cidToGid, nameForCode };
 }
 
 /** Resolve a character/CID code to a glyph id in the embedded program. */

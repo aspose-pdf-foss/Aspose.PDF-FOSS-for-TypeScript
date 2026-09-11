@@ -19,7 +19,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A non-embedded symbol font drew Latin letters; it draws boxes now.**
+  `normalizeFont` maps every unrecognised `/BaseFont` onto one of the
+  Standard 14, defaulting to Helvetica, so a page whose font was
+  `/Wingdings-Regular` rendered as ordinary text. The mechanism is worth
+  stating because it is not obvious: a font with no `/Encoding` defaults to
+  WinAnsi, so code 0x6C resolves to the text `l`, and the Helvetica substitute
+  has an `l` to draw. The page looked fine and said something the document did
+  not.
+
+  Such a font now gets no substitute at all, so each glyph falls to the
+  placeholder box the renderer already draws for anything unresolvable — a box
+  says "this glyph is missing", which is the honest answer. The trigger is a
+  conjunction, and deliberately narrow: the descriptor must set Symbolic and
+  not Nonsymbolic, the name must not be a recognised Standard-14 one, no
+  installed face may have matched, and the font must state neither `/Encoding`
+  nor `/Differences`. That last clause is the load-bearing one — this library
+  already records that the `/Flags` symbolic bit is widely wrong in the wild,
+  so boxing on the flag alone would turn a mis-flagged *text* font into a page
+  of boxes, which is worse than the defect. A producer that mis-sets the flag
+  still says what its codes mean.
+
+  `Symbol` and `ZapfDingbats` are untouched, being recognised names; so is a
+  non-embedded `/Arial`. Registering a render folder that holds the real face
+  (`RegisterRenderFontFolder`) resolves it properly and no box is drawn.
+  (`lqcs.4`)
+
 ### Added
+
+- **`AddRenderFont(bytes)` — a render substitution face supplied as bytes.**
+  The companion to `RegisterRenderFontFolder` for a face that has no path to
+  point at: one shipped as a bundled asset, unpacked from an archive, or
+  fetched. WOFF, WOFF2, `.ttc`/`.otc`, `.dfont` and Type 1 are all accepted,
+  and `{ faceIndex }` picks a face of a collection. It **throws** on bytes it
+  cannot read, unlike `LoadFontByName`, which answers `undefined` — that one is
+  a search, where a machine lacking a face is an ordinary outcome, while a
+  caller handing explicit bytes named this font and wants to be told. Rendering
+  only, on the same terms as the folder API: never reachable from
+  `LoadFontByName`, never embedded in the document, and nothing about
+  extraction or editing changes. (`lqcs.5`)
+
+- **Render-time font substitution sources.** `RegisterRenderFontFolder(dir)`
+  and `RegisterRenderSystemFonts()` hand the *renderer* font folders, so a font
+  the document did not embed draws from an installed face instead of the
+  bundled Standard-14 substitute — which for a non-embedded CJK font was a page
+  of placeholder boxes, the commonest way an East Asian document reaches this
+  library. `RegisterFontFolder` and `LoadFontByName` existed for *authoring*
+  and stopped there; nothing reached the rasterizer.
+
+  A face is chosen by `/BaseFont` first — the PostScript name (32000-1 9.6.2.1)
+  ahead of the family, since MS Mincho states `MS-Mincho` — and then by how much
+  of what the font can emit the face's `cmap` actually covers. `ulUnicodeRange`
+  narrows the candidates for free, because `fontnames.ts` already read that
+  `OS/2` slice for `usWeightClass`, and the real `cmap` decides: that field is
+  the producer's claim about its own font and is routinely optimistic. No
+  family-name table ships, so nothing unanchored does — for a composite font the
+  wanted set is its own character collection's, already vendored and pinned, so
+  a PDF naming SimSun finds PingFang SC without either name being written down.
+
+  Opt-in: with no folder registered the face list is empty, the resolver returns
+  on its first line and the bundled path runs as before, so a page looks the
+  same on every machine. Rendering only — extraction, editing and PDF/A
+  embedding are unchanged, and no substituted program is written into the
+  document. `ToSvg` is unaffected by construction, since it emits text with a
+  CSS family stack and resolves no glyph program at all. Font programs supplied
+  as bytes are not a source yet, and a Type 1 face is reachable by name but
+  never by coverage, having no `cmap`. (`lqcs.2`, `lqcs.3`)
 
 - **Overprint preview: `/OP`, `/op` and `/OPM` are honoured when rendering.**
   A print-oriented document — the same kind PDF/X exists for, which this

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { systemFontFolders, indexFolder } from '../src/fontsource.js';
+import { systemFontFolders, indexFolder, peekCmap } from '../src/fontsource.js';
 import { buildNamedFont, buildTtc } from './helpers/build-sfnt.js';
 
 describe('systemFontFolders', () => {
@@ -126,5 +126,39 @@ describe('indexFolder — collections', () => {
       'broken.ttc': new Uint8Array([0x74, 0x74, 0x63, 0x66, 0, 1, 0, 0, 0, 0, 0, 9]),
     });
     expect(indexFolder(dir).map((f) => f.names.family)).toEqual(['Delta Sans']);
+  });
+});
+
+describe('peekCmap', () => {
+  it('reports the code points a face actually covers', () => {
+    const dir = folderWith({ 'cjk.ttf': buildNamedFont({
+      family: 'Probe CJK', cmap: [[0x41, 1], [0x4e00, 1], [0x4e8c, 1]],
+    }) });
+    const cov = peekCmap(join(dir, 'cjk.ttf'))!;
+    expect(cov.has(0x4e00)).toBe(true);
+    expect(cov.has(0x4e8c)).toBe(true);
+    expect(cov.has(0x3042)).toBe(false);   // hiragana A, not in this face
+  });
+
+  // The reason the walk is extracted rather than copied: a path-only or
+  // index-blind read hands back face 0 for every face of a collection.
+  it('reads the named face of a collection, not face 0', () => {
+    const a = buildNamedFont({ family: 'Coll A', cmap: [[0x41, 1]] });
+    const b = buildNamedFont({ family: 'Coll B', cmap: [[0x4e00, 1]] });
+    const dir = folderWith({ 'c.ttc': buildTtc([a, b]) });
+    expect(peekCmap(join(dir, 'c.ttc'), 0)!.has(0x41)).toBe(true);
+    expect(peekCmap(join(dir, 'c.ttc'), 0)!.has(0x4e00)).toBe(false);
+    expect(peekCmap(join(dir, 'c.ttc'), 1)!.has(0x4e00)).toBe(true);
+  });
+
+  it('returns undefined rather than throwing for a missing or junk file', () => {
+    const dir = folderWith({ 'junk.ttf': new Uint8Array([1, 2, 3, 4]) });
+    expect(peekCmap(join(dir, 'junk.ttf'))).toBeUndefined();
+    expect(peekCmap(join(dir, 'absent.ttf'))).toBeUndefined();
+  });
+
+  it('returns undefined for a face index the file does not have', () => {
+    const dir = folderWith({ 'a.ttf': buildNamedFont({ family: 'Alpha' }) });
+    expect(peekCmap(join(dir, 'a.ttf'), 3)).toBeUndefined();
   });
 });

@@ -391,18 +391,42 @@ Source (`src/`):
   while `imagehref.ts` and `imagergba.ts` each used to construct a throwaway
   `ImageInfo` purely to reach `.Width`/`.Filter`/`.Decode()` — so that method
   would have closed the codebase's FIRST import cycle, through two modules.
-  **Measured, and it is why this was worth doing rather than shrugging at:** a
-  sweep over every module in `src/` finds ZERO value-import 2-cycles, so one
-  here would have been a genuine first rather than a style quibble, and
-  `imageedit.ts`'s own invariant already records avoiding exactly this shape.
-  The sweep is worth re-running before adding any edge back toward a facade:
-
-  ```bash
-  node -e 'const fs=require("fs");const f=fs.readdirSync("src").filter(x=>x.endsWith(".ts"));
-  const m={};for(const a of f){const s=fs.readFileSync("src/"+a,"utf8");const t=new Set();
-  for(const x of s.matchAll(/^import\s+(?!type\s)[\s\S]*?from\s+"\.\/([a-z0-9]+)\.js"/gm))t.add(x[1]+".ts");m[a]=t;}
-  for(const a of f)for(const b of m[a])if(m[b]?.has(a)&&a<b)console.log("CYCLE",a,b);'
-  ```
+  **Before adding any edge back toward a facade, run
+  `npx vitest run test/import-cycles.test.ts`** — it asserts the exact set of
+  value-import 2-cycles in `src/`, so a new one is a red build naming the pair
+  you closed.
+  **Note this entry CLAIMED THE OPPOSITE until `k738`, and the correction is
+  the sharpest instance in this repo of a check that could not fail:** it said
+  a sweep "finds ZERO value-import 2-cycles, so one here would have been a
+  genuine first". It carried a shell one-liner to prove it, and that one-liner
+  matched `from "./x.js"` with DOUBLE quotes while every import in `src/` uses
+  single ones — so it parsed ZERO EDGES and printed nothing on any tree
+  whatever. A permanent false NEGATIVE, and the inverse of `2qkk`/`67mt`'s
+  module-doc sweep, whose permanent false POSITIVES merely trained its reader
+  to ignore it: this one trained its reader to trust it, and a session running
+  it reported "no cycles" and was believed. Two further defects rode along —
+  `[a-z0-9]+` dropped `ccitt-tables.ts`, `object-parser.ts` and
+  `unicode-data.ts` as targets, so it was not "every module in `src/`"; and
+  `[\s\S]*?` crossed STATEMENT boundaries, letting a `node:` import anchor
+  `^import` and reach the NEXT statement's `from`, which counted type-only
+  imports as value edges. That third one is why `k738` itself reported 18
+  cycles where there are 15.
+  **Measured 2026-09-10:** 353 modules, ~1,266 value edges, **15**
+  value-import 2-cycles, confirmed against the TypeScript compiler API rather
+  than a fourth regex. Every one is the same shape — a facade owning the
+  primitive the modules it delegates to build back: `jbig2.ts`'s
+  `newBitmap`/`combine` (5 pairs), `jpeg.ts`'s `ZIGZAG`/`forEachBlockInScan`
+  (3), `jpx.ts`'s `Codestream`, `svgfilterfx.ts`'s `makeSurface`, `cms.ts` and
+  `rfc3161.ts`, `html.ts`'s `escapeHtml` (2), `flow.ts`'s element builders,
+  `page.ts`'s `Page`.
+  **So the premise here was wrong TWICE:** there was no zero to be first past,
+  and `imagedecode.ts` ↔ `image.ts` would have been EXACTLY the `jbig2.ts`
+  shape — a facade and the decoder it extracted — so not even novel in kind.
+  What the extraction still rests on is the leaf rule itself and
+  `imageedit.ts`'s own invariant recording the same avoidance; the 15 are
+  recorded rather than endorsed, and the extraction rule `colornames.ts`,
+  `preformat.ts`, `bordersides.ts`, `datauri.ts` and `resprune.ts` each
+  followed still governs every edge added from here on.
 
   **Note:** it is the same extraction `colornames.ts`, `preformat.ts`,
   `bordersides.ts`, `resprune.ts` and `datauri.ts` each already made — two
@@ -4314,6 +4338,135 @@ Source (`src/`):
   fixed: decomposing a family name would be exactly the string-parsing the
   derivation rule refuses to do on subfamilies, and it would make
   `LoadFontByName('Arial')` start matching files it does not match today.
+- **fontsubst.ts** — which INSTALLED face substitutes for a font the document
+  did NOT embed (`lqcs.2`, folding in `lqcs.3`), behind
+  `doc.RegisterRenderFontFolder` / `RegisterRenderSystemFonts`. Note the
+  direction against `fontmatch.ts`: that one answers a caller who NAMED a
+  family for authoring, this one answers a PDF that named a font it did not
+  ship, for rendering.
+  **Invariant: a pure leaf that takes its faces as an ARGUMENT.**
+  `resolveSubstitute(faces, req, cmapOf)` receives a `FaceRecord[]` and a
+  `cmap` reader, never a `Document` and never a path, so every rule is drivable
+  from hand-built records with no PDF built and no filesystem touched — the
+  seam `colorimage.ts` takes `resolve`/`inflate` through. It never throws, and
+  `undefined` means "use the bundled Standard-14 face", which is an ordinary
+  outcome rather than a failure.
+  **Invariant: opt-in is STRUCTURAL, not tested for.** With no render folder
+  registered `doc.renderFontFaces()` is empty and `resolveSubstitute` returns
+  on its first line, so every existing render golden is untouched BY
+  CONSTRUCTION. The render folder list is SEPARATE from `fontFolders`:
+  sharing it would change what an existing caller's pages look like merely
+  because they registered a folder for `AddText`.
+  **Invariant:** `/BaseFont` is the POSTSCRIPT name (32000-1 9.6.2.1), not the
+  family, so `name` ID 6 is matched FIRST and an exact hit needs no style
+  matching at all — a PostScript name addresses one face where a family
+  addresses several. MS Mincho states `MS-Mincho` and Arial Bold
+  `Arial-BoldMT`, so a family-only match misses the everyday non-embedded CJK
+  document this module exists for. The `matchChain` family match stays behind
+  it, for the plain `/Arial` shape and for CSS Fonts 4 slant-then-weight.
+  **Note this rule was ABSENT from the design and the plan**, and was found
+  only by the end-to-end case failing; measured, removing it reddens 3.
+  **Invariant, and it is how `lqcs.3` got folded in: NO family-name table
+  ships.** That issue proposed a middle step mapping a composite font's
+  `/CIDSystemInfo` ordering to well-known families, so a PDF naming SimSun
+  renders through PingFang SC. Coverage scoring takes that step already, by a
+  different route — for a composite font with a known ordering the wanted set
+  IS `cidunidata.ts`'s table for that collection — and a name list is a
+  judgement rather than a standard, whose wrong entries would be invisible
+  because a wrong-but-plausible CJK face still renders readable text. The three
+  candidate sources to port from (poppler's `GlobalParams`, fontconfig's
+  `65-nonlatin.conf`, pdf.js's standard-font map) disagree with each other, so
+  choosing one is itself the judgement it was meant to avoid. What ships
+  instead rests on a table already vendored and already pinned.
+  **Invariant:** `ulUnicodeRange` SELECTS candidates and the real `cmap`
+  DECIDES. That field is the producer's claim about its own font and is
+  routinely optimistic. The pre-filter is free — `fontnames.ts` already reads
+  the whole `OS/2` slice for `usWeightClass`, so `unicodeRange` and
+  `familyClass` are additive fields off a buffer in hand — while the confirm is
+  a SECOND partial read (`peekCmap`, fontsource.ts), for a handful of faces,
+  once per font dict rather than per file indexed.
+  **Invariant:** `RANGE_BITS` is DELIBERATELY PARTIAL, and that is what makes
+  it safe rather than a gap. A code point no row covers contributes no bit, and
+  a face is excluded only when every wanted point maps to a known bit and the
+  face sets none — so an omission costs a confirm, never an answer. Rows may be
+  added; none may be guessed. **Note the safety branch needed its own fixture:**
+  with a wanted set of only known points `sawKnown` is always true, so
+  `return !sawKnown` and `return false` are indistinguishable and that mutation
+  survived every other case in the file. U+2E80 (CJK Radicals Supplement, no
+  row) is what separates them.
+  **Invariant:** `CidToUnicode` exposes `lookup(cid)` and NOTHING else — there
+  is no enumeration — so a collection's wanted set is PROBED rather than
+  iterated, which is sufficient for a fraction rather than a census and leaves
+  `cidunicode.ts` untouched instead of widening a public interface for one
+  consumer. `/ToUnicode` does enumerate, through `CMap.entries()`.
+  **Note the probe step is large and prime, and the obvious test cannot see
+  it:** Adobe-Japan1's CIDs are grouped by kind and its early ones are
+  proportional Latin, so a small step samples one region and would report that
+  a Latin-only face covers a Japanese font. The band that discriminates is HAN
+  IDEOGRAPHS (0x4E00..0x9FFF), NOT `>= 0x3000` — Japan1's early CIDs already
+  carry halfwidth forms and CJK punctuation, so a step of 1 clears 0x3000 while
+  reaching ZERO ideographs. Measured: step 1 gives 0 Han, step 7 gives 102,
+  step 61 gives 152. The first version of that test used 0x3000 and left the
+  mutation green.
+  **Note `CONFIRM_CAP` is a cost bound with a STATED consequence:** a folder
+  offering more than 64 admitted faces confirms the first 64 in index order,
+  which is registration then directory order. `MIN_COVERAGE` is 0.5, below
+  which a face is refused outright — drawing a tenth of a page's characters is
+  worse than boxes throughout, because it looks like a font that works.
+  **Note the serif tie-break is the one SOFT rule here**, and it is recorded as
+  such: `OS/2.sFamilyClass` against the descriptor's `/Flags` serif bit is a
+  real field, cited, but no oracle in this repo can say it chose well. It is
+  kept because the alternative is "whichever face sorts first", which is worse
+  for a reader and no more defensible.
+  **Note, measured, and `raster.ts`'s guard is a COST bound rather than a
+  correctness one:** deleting `installedSubstitute`'s `faces.length === 0`
+  early return leaves all 618 files and 18,889 tests green, because
+  `resolveSubstitute` guards the empty list on its own first line. What it
+  saves is computing `wantedCodepoints` for every non-embedded font in every
+  document that registered no folder. Do not read the green suite as evidence
+  the line is unnecessary.
+  **Note the residual limit:** a TYPE 1 face is reachable by name and never by
+  coverage, having no `cmap` for `peekCmap` to read.
+  **Invariant (`lqcs.5`):** a face may also be supplied as BYTES,
+  `doc.AddRenderFont(bytes, { faceIndex })`, for one with no path to point at.
+  **`FaceRecord` did NOT become a discriminated union, and this entry claimed
+  it would have to** — that claim was measured wrong, and the correction is
+  worth keeping because it is what made the work small. Only FOUR sites read
+  `.path`: three in `document.ts`'s authoring methods, one in `raster.ts`. The
+  authoring three are reachable from `fontFolders` ALONE, and `lqcs.2` had
+  already made that list separate — so a render-only bytes source provably
+  cannot reach them, and nothing in the authoring path moved.
+  **Invariant:** a byte face's `path` is a COSMETIC LABEL (`<bytes:N>`) that
+  nothing ever opens, and the parsed face is keyed on the RECORD'S IDENTITY
+  rather than on that string. Identity works because the records are STORED at
+  registration rather than rebuilt, so `renderFontFaces()` hands back the same
+  objects every call — and it removes the collision question outright, where a
+  synthetic-path key could in principle be shadowed by a real file of that
+  name.
+  **Invariant:** names are read from `sfnt.raw`, the EXTRACTED face, never from
+  the buffer handed in. A collection's own bytes open with a `ttcf` header that
+  states no names at all, so reading the input would answer nothing for every
+  `.ttc`; measured, that mutation reddens the collection case.
+  **Invariant:** it THROWS on unreadable bytes where `LoadFontByName` answers
+  `undefined`. That one is a SEARCH, where a machine lacking a face is an
+  ordinary outcome; a caller handing explicit bytes named this font.
+  **Invariant:** `renderFaceCoverage` (document.ts) is what `cmapOf` now calls,
+  and a byte face must never reach `peekCmap` — its `path` names no file, so
+  the open fails, the face scores nothing and is silently skipped. Three
+  sources in cost order: a byte face's already-parsed `cmap`, a file face this
+  document has already loaded whole, then `peekCmap`'s partial read.
+  **Note what the `cmapOf` seam bought:** `fontsubst.ts`, `fontmatch.ts` and
+  `fontsource.ts` are UNTOUCHED by this issue — not one signature moved —
+  because `resolveSubstitute` already took its `cmap` reader as an argument.
+  Unlike a face stating no family, which `indexFolder` SKIPS, a byte face with
+  no family is KEPT: the caller supplied it deliberately, and it stays
+  reachable by coverage even when it can never be reached by name.
+  **Note `ToSvg` is unaffected and structurally CANNOT be:** `SvgSink.glyphRun`
+  emits `<text>`/`<tspan>` carrying Unicode plus a CSS family stack from
+  `htmlfont.ts` and resolves no glyph program at all, so no font directory can
+  change one byte of it. The issue's own acceptance criterion named `ToSvg` and
+  was wrong to; `test/render-fonts.test.ts` asserts the identity directly so it
+  reads as a decision rather than a gap.
 - **ttc.ts** — TrueType/OpenType Collections. `ttcFaceOffsets` reads the `ttcf`
   header (versions 1.0 and 2.0 differ only after the offset array, so one
   reader serves both, and `.otc` is the same container with CFF faces);
@@ -5026,6 +5179,45 @@ Source (`src/`):
   gradient. **Note the fixture needs a NON-LINEAR function AND a BAND rather
   than an upper bound:** `< 60` also admits 0, so it passed under a mutation
   that collapsed the LUT lookup to its endpoints.
+  **Invariant (`lqcs.4`):** a non-embedded font we cannot IDENTIFY gets NO
+  substitute, so every glyph falls to `drawGlyphPlaceholder` — no new drawing
+  code, and `substituted` stays FALSE because nothing was. `normalizeFont`
+  maps every unrecognised `/BaseFont` onto one of the Standard 14, so a
+  `/Wingdings-Regular` page drew ordinary text. **Note the mechanism, which is
+  not obvious:** `resolveSimpleEncoding` defaults a font with no `/Encoding` to
+  WinAnsi, so code 0x6C yields the TEXT `l` and the Helvetica substitute has an
+  `l` to draw — the page looks fine and says something the document does not.
+  **Invariant:** it is a CONJUNCTION of four, and the ENCODING clause is what
+  makes it safe rather than a regression. `glyphusage.ts` records that the
+  `/Flags` symbolic bit is "widely wrong in the wild" — which is why that
+  module's TrueType mapper unions every sanctioned chain instead of selecting
+  on it — so boxing on the flag alone turns a mis-flagged TEXT font into a page
+  of boxes, strictly worse than the defect. A producer that mis-sets the flag
+  still states WinAnsi or a `/Differences` array, so requiring NEITHER is what
+  separates the two populations. The other three: a descriptor exists and sets
+  Symbolic without Nonsymbolic (`pdfaconvert.ts:311`'s exact test, reused); the
+  name is no recognised Standard-14 one; and it runs only AFTER `lqcs.2`'s
+  installed-face rungs have failed, so a real Wingdings in a registered render
+  folder resolves and no box is drawn. All four are mutation-checked.
+  **Invariant:** `matchStd14` (metrics.ts) is what makes clause 2 expressible —
+  `normalizeFont` answers Helvetica for `/Symbol` and `/Wingdings` alike and
+  cannot say which MATCHED. `normalizeFont` is now `matchStd14(n) ?? 'Helvetica'`
+  and its behaviour is UNCHANGED, which is load-bearing: `font.ts` keys the AFM
+  width tables off it and `da.ts` resolves `/DA` fonts with it, so a name that
+  stopped resolving to Helvetica would move glyph advances and form-field
+  appearances rather than a substitute face.
+  **Note COMPOSITE fonts are excluded and need no equivalent:** a substituted
+  Type0 selects strictly by Unicode (`lqcs.1`) and never through the
+  `cmapLookup(code)` fallback that produces the wrong glyph here.
+  **Note the presence test is on the RAW dict** (`fontDict.has('Encoding')`):
+  `doc.resolve(undefined)` answers `null`, so comparing a resolved value
+  against `undefined` is true for every ABSENT key — the trap
+  `pdfxvalidate.ts` already records.
+  **Note, and a fixture for this must not assert loosely:** the BUG produces a
+  render EXACTLY equal to the Helvetica one, because it IS that render, so
+  inequality is the precise statement of it. Measured at 775 ink pixels for
+  four boxes at 48pt against 1341 filled; "ink appears" and "they differ" both
+  pass on the unfixed build.
   **Invariant (`lqcs.1`):** a NON-EMBEDDED font gets the bundled Standard-14
   substitute whether it is simple or COMPOSITE — the `!isType0` guard is gone —
   and `GlyphSource.substituted` says which case a consumer is holding, because

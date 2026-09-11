@@ -312,7 +312,12 @@ function parseCmapSubtable(data: Uint8Array, base: number): Map<number, number> 
   return out;
 }
 
-function readCmap(data: Uint8Array): Map<number, number> {
+/** A `cmap` table's best Unicode subtable as code point -> gid.
+ *
+ *  Exported so `fontsource.ts`'s `peekCmap` reads a candidate face's coverage
+ *  through THIS parser rather than a second one written beside it -- the rule
+ *  `cidcmap.ts` already follows for the bundled CMaps and a document's own. */
+export function readCmap(data: Uint8Array): Map<number, number> {
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const numTables = v.getUint16(2);
   const candidates: { score: number; offset: number }[] = [];

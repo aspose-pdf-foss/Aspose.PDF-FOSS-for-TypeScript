@@ -141,11 +141,12 @@ import { buildPubSecDecryptor } from './pubsec.js';
 import { parsePkcs12 } from './pkcs12.js';
 import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys } from './encrypt.js';
 import { X509Certificate, KeyObject } from 'node:crypto';
-import { parseSfnt } from './sfnt.js';
+import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { buildEmbeddedFont } from './fontembed.js';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { systemFontFolders, indexFolder, type FaceRecord } from './fontsource.js';
+import { systemFontFolders, indexFolder, peekCmap, type FaceRecord } from './fontsource.js';
+import { readFontNames } from './fontnames.js';
 import {
   matchChain, deriveStyle, clampWeight,
   type LoadFontOptions, type FontMatch, type FontFamily,
@@ -340,6 +341,22 @@ export class Document {
   private readonly embeddedFonts: EmbeddedFont[] = [];
   /** Folders to search for LoadFontByName, in registration order. */
   private readonly fontFolders: { dir: string; sniff: boolean }[] = [];
+  /** Folders to search when RENDERING a non-embedded font, in registration
+   *  order. Separate from {@link fontFolders} on purpose: reusing that list
+   *  would change what an existing caller's pages look like merely because
+   *  they registered a folder for `AddText`. */
+  private readonly renderFontFolders: { dir: string; sniff: boolean }[] = [];
+  /** Parsed render substitute faces, keyed `path#faceIndex`. `null` marks one
+   *  that would not parse, so it is not retried. */
+  private readonly renderFaces = new Map<string, SfntFont | null>();
+  /** Faces supplied as BYTES, in registration order. Their records are stored
+   *  rather than rebuilt, so {@link renderFontFaces} hands back the SAME
+   *  objects every call and {@link byteFaces} can key on their identity. */
+  private readonly renderByteFaces: FaceRecord[] = [];
+  /** The parsed face behind each byte-supplied record, keyed by the record
+   *  ITSELF. Identity rather than `path`, because a byte face's `path` is a
+   *  cosmetic label and a real file could in principle bear the same name. */
+  private readonly byteFaces = new Map<FaceRecord, SfntFont>();
   /** Fonts already loaded by name, keyed by `path#faceIndex` so that one family
    *  drawn twice is embedded once -- and so that two faces of one collection,
    *  which share a path, do not collide. */
@@ -1819,6 +1836,158 @@ export class Document {
    */
   RegisterSystemFonts(): void {
     for (const dir of systemFontFolders()) this.RegisterFontFolder(dir);
+  }
+
+  /**
+   * Search `dir`, recursively, when RENDERING a font the document did not
+   * embed.
+   *
+   * Opt-in, and that is the whole design: with no folder registered the
+   * renderer uses only the bundled substitute faces and a page looks the same
+   * on every machine, which is what keeps the render goldens meaningful. A
+   * document that registers one renders a non-embedded CJK font in a real face
+   * instead of placeholder boxes.
+   *
+   * A SEPARATE list from {@link RegisterFontFolder}, which goes on feeding
+   * {@link LoadFontByName} alone — sharing them would change what an existing
+   * caller's pages look like merely because they registered a folder for
+   * authoring.
+   *
+   * The scanning rules are {@link RegisterFontFolder}'s exactly: no I/O here,
+   * the folder is scanned on the first render that needs it; re-registering a
+   * held path neither moves it nor grows the list; `sniff` is sticky-on and
+   * upgrades a held path in place.
+   *
+   * Rendering only. Extraction, editing and PDF/A font embedding are unchanged,
+   * and no substituted program is ever written into the document.
+   */
+  RegisterRenderFontFolder(dir: string, opts: { sniff?: boolean } = {}): void {
+    const sniff = opts.sniff ?? false;
+    const already = this.renderFontFolders.find((f) => f.dir === dir);
+    if (already) { already.sniff ||= sniff; return; }
+    this.renderFontFolders.push({ dir, sniff });
+  }
+
+  /**
+   * Also search the platform's own font directories when rendering.
+   *
+   * Opt-in for {@link RegisterSystemFonts}'s reason, and one more: a render
+   * that silently depends on what is installed makes the same code produce
+   * different pixels on different machines.
+   */
+  RegisterRenderSystemFonts(): void {
+    for (const dir of systemFontFolders()) this.RegisterRenderFontFolder(dir);
+  }
+
+  /**
+   * Every face the registered render folders hold.
+   *
+   * @internal — `raster.ts` reaches this through the `Document` it is handed.
+   * Empty with nothing registered, which is the line that makes opt-in
+   * structural rather than tested for.
+   */
+  renderFontFaces(): FaceRecord[] {
+    // Byte faces FIRST: a caller who handed the bytes over stated a preference
+    // more specific than "search this folder", and ties in `resolveSubstitute`
+    // fall to index order.
+    const out: FaceRecord[] = [...this.renderByteFaces];
+    for (const f of this.renderFontFolders) out.push(...indexFolder(f.dir, f.sniff));
+    return out;
+  }
+
+  /**
+   * Supply one font program as BYTES for use when RENDERING a font the document
+   * did not embed — for a face that ships as a bundled asset, or comes out of an
+   * archive, with no path to point {@link RegisterRenderFontFolder} at.
+   *
+   * WOFF, WOFF2, `.ttc`/`.otc`, `.dfont` and Type 1 are all accepted, since
+   * `parseSfnt` already unwraps them; `faceIndex` picks a face of a collection.
+   *
+   * THROWS on bytes it cannot read, and the asymmetry with
+   * {@link LoadFontByName} — which answers `undefined` — is deliberate: that one
+   * is a SEARCH, where a machine lacking a face is an ordinary outcome, while a
+   * caller handing explicit bytes named this font and wants to be told.
+   *
+   * Rendering only, exactly as {@link RegisterRenderFontFolder} is: this face is
+   * never reachable from `LoadFontByName`, is never embedded in the document,
+   * and changes nothing about extraction or editing.
+   */
+  AddRenderFont(bytes: Uint8Array, opts: { faceIndex?: number } = {}): void {
+    const faceIndex = opts.faceIndex ?? 0;
+    // Parsed HERE rather than on first use, which is what makes the throw
+    // land at the call that supplied the bytes — and it populates the load
+    // memo, so the face is parsed exactly once however often it is drawn.
+    const sfnt = parseSfnt(bytes, faceIndex);
+    // Names come off the EXTRACTED face (`sfnt.raw`), not the buffer handed
+    // in: a collection's own bytes carry a `ttcf` header that states no names
+    // at all, so reading them from the input would answer nothing for every
+    // `.ttc`. Unlike `indexFolder`, a face stating no family is KEPT — the
+    // caller supplied it deliberately, and it stays reachable by coverage even
+    // when it can never be reached by name.
+    const names = readFontNames(sfnt.raw) ?? {
+      family: '', subfamily: 'Regular', bold: false, italic: false, weight: 400,
+    };
+    const record: FaceRecord = {
+      // A cosmetic LABEL, never opened: nothing resolves a byte face through
+      // the filesystem, which is why the maps below key on the record itself.
+      path: `<bytes:${this.renderByteFaces.length}>`,
+      faceIndex,
+      names,
+    };
+    this.renderByteFaces.push(record);
+    this.byteFaces.set(record, sfnt);
+  }
+
+  /**
+   * One render substitute face, parsed and memoized.
+   *
+   * Keyed by path AND face index: the faces of a collection share one path, so
+   * a path-only key hands back face 0's font for every face of the file and
+   * every glyph is drawn from the wrong one, silently — the bug
+   * {@link LoadFontByName}'s own key records.
+   *
+   * This is where the cost is: indexing is partial reads, but a chosen face is
+   * read whole, and a CJK font runs to tens of megabytes. Two font dicts
+   * resolving to one file share one parse. Never throws.
+   *
+   * @internal
+   */
+  loadRenderFace(face: FaceRecord): SfntFont | undefined {
+    // A byte face is already parsed, and is keyed by the RECORD rather than by
+    // its `path`, which is a label.
+    const bytes = this.byteFaces.get(face);
+    if (bytes) return bytes;
+
+    const key = `${face.path}#${face.faceIndex}`;
+    const hit = this.renderFaces.get(key);
+    if (hit !== undefined) return hit ?? undefined;
+    let font: SfntFont | null = null;
+    try {
+      font = parseSfnt(new Uint8Array(readFileSync(face.path)), face.faceIndex);
+    } catch {
+      font = null;   // indexable, not parseable
+    }
+    this.renderFaces.set(key, font);
+    return font ?? undefined;
+  }
+
+  /**
+   * The code points one render face covers, for `fontsubst.ts`'s coverage rung.
+   *
+   * Three sources in cost order: a byte face's already-parsed `cmap`; a file
+   * face this document has already loaded whole, whose `cmap` is then free; and
+   * otherwise `peekCmap`'s second PARTIAL read, which is what keeps confirming
+   * a candidate as cheap as indexing it was.
+   *
+   * A byte face must never reach `peekCmap` — its `path` names no file, so the
+   * open fails, the face scores nothing and it is silently skipped.
+   *
+   * @internal
+   */
+  renderFaceCoverage(face: FaceRecord): ReadonlySet<number> | undefined {
+    const known = this.byteFaces.get(face) ?? this.renderFaces.get(`${face.path}#${face.faceIndex}`);
+    if (known) return new Set(known.cmap.keys());
+    return peekCmap(face.path, face.faceIndex);
   }
 
   /**

@@ -1,3 +1,6 @@
+import type { Document } from '../../src/document.js';
+import { isDict, type PdfDict } from '../../src/types.js';
+
 const enc = (s: string) => new TextEncoder().encode(s);
 const byteLen = (s: string) => enc(s).length;
 
@@ -44,6 +47,34 @@ export function buildSimpleTextPdf(
   return serialize(objects, 5);
 }
 
+/**
+ * A non-embedded simple font carrying a `/FontDescriptor` with `/Flags`.
+ *
+ * The shape a real symbol font takes: `/Wingdings-Regular`, `/Flags 4`
+ * (Symbolic), NO `/Encoding` — its codes index the font's own symbol cmap and
+ * mean nothing outside it. `encoding` states one, which is what a mis-flagged
+ * TEXT font does and what must keep rendering as letters.
+ */
+export function buildDescriptorFontPdf(
+  stream: string,
+  opts: { baseFont: string; flags: number; encoding?: string; differences?: string },
+): Uint8Array {
+  const enc = opts.differences !== undefined
+    ? `/Encoding << /Type /Encoding ${opts.encoding ? `/BaseEncoding /${opts.encoding} ` : ''}/Differences [${opts.differences}] >> `
+    : opts.encoding ? `/Encoding /${opts.encoding} ` : '';
+  const objects: Obj = {
+    1: `<< /Type /Catalog /Pages 2 0 R >>`,
+    2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
+    3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
+    4: contentObj(stream),
+    5: `<< /Type /Font /Subtype /TrueType /BaseFont /${opts.baseFont} ${enc}/FontDescriptor 6 0 R >>`,
+    6: `<< /Type /FontDescriptor /FontName /${opts.baseFont} /Flags ${opts.flags} `
+       + `/ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 `
+       + `/FontBBox [0 -200 1000 800] >>`,
+  };
+  return serialize(objects, 6);
+}
+
 /** Page whose font carries a /ToUnicode CMap (uncompressed). */
 export function buildToUnicodePdf(stream: string, cmap: string): Uint8Array {
   const objects: Obj = {
@@ -58,17 +89,34 @@ export function buildToUnicodePdf(stream: string, cmap: string): Uint8Array {
 }
 
 /** Page with a Type0 Identity-H font + ToUnicode (2-byte codes). */
-export function buildType0Pdf(stream: string, cmap: string): Uint8Array {
+export function buildType0Pdf(
+  stream: string, cmap: string,
+  opts: { baseFont?: string; ordering?: string; toUnicode?: boolean } = {},
+): Uint8Array {
+  // Defaults reproduce the pre-lqcs.2 strings EXACTLY, so every existing caller
+  // is byte-identical.
+  const base = opts.baseFont ?? 'AAAAAA+Foo';
+  const ordering = opts.ordering ?? 'Identity';
+  const tu = opts.toUnicode === false ? '' : ' /ToUnicode 6 0 R';
   const objects: Obj = {
     1: `<< /Type /Catalog /Pages 2 0 R >>`,
     2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
     3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
     4: contentObj(stream),
-    5: `<< /Type /Font /Subtype /Type0 /BaseFont /AAAAAA+Foo /Encoding /Identity-H /DescendantFonts [7 0 R] /ToUnicode 6 0 R >>`,
+    5: `<< /Type /Font /Subtype /Type0 /BaseFont /${base} /Encoding /Identity-H /DescendantFonts [7 0 R]${tu} >>`,
     6: contentObj(cmap),
-    7: `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /AAAAAA+Foo /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>`,
+    7: `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${base} /CIDSystemInfo << /Registry (Adobe) /Ordering (${ordering}) /Supplement 0 >> >>`,
   };
   return serialize(objects, 7);
+}
+
+/** The /F1 font dict of a fixture built by this module, opened and resolved. */
+export function fontDictOf(doc: Document): PdfDict {
+  const fonts = doc.resolve(doc.Pages[0].Resources!.get('Font'));
+  if (!isDict(fonts)) throw new Error('fixture has no /Font');
+  const f1 = doc.resolve(fonts.get('F1'));
+  if (!isDict(f1)) throw new Error('fixture has no /F1');
+  return f1;
 }
 
 /** Simple Type1 font (F1) carrying /FirstChar + /Widths. */

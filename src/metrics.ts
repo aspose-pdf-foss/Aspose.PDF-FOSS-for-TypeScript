@@ -358,9 +358,17 @@ const ABBREV: Record<string, StdFont> = {
 
 const STD: readonly StdFont[] = Object.keys(WIDTHS) as StdFont[];
 
-/** Map a /BaseFont or /DA font name (incl. subset prefixes and Acrobat
- *  abbreviations) to a Standard-14 font, defaulting to Helvetica. */
-export function normalizeFont(baseFont: string): StdFont {
+/**
+ * The Standard-14 font a name RECOGNISABLY denotes, or undefined when it
+ * denotes none.
+ *
+ * The distinction {@link normalizeFont} cannot make, because it answers
+ * Helvetica either way: `/Symbol` matched, `/Wingdings-Regular` did not. A
+ * caller that must not treat a guess as an identification needs to know which
+ * happened -- `raster.ts` boxes an unidentifiable symbolic font rather than
+ * drawing Latin letters for it (`lqcs.4`).
+ */
+export function matchStd14(baseFont: string): StdFont | undefined {
   const raw = baseFont.includes('+') ? baseFont.slice(baseFont.indexOf('+') + 1) : baseFont;
   if (raw in ABBREV) return ABBREV[raw];
   for (const f of STD) if (f === raw) return f;
@@ -368,7 +376,18 @@ export function normalizeFont(baseFont: string): StdFont {
   if (raw === 'Arial-Bold' || raw === 'Arial,Bold' || raw === 'Arial-BoldMT') return 'Helvetica-Bold';
   if (raw === 'Times' || raw === 'TimesNewRoman' || raw === 'TimesNewRomanPSMT') return 'Times-Roman';
   if (raw === 'CourierNew' || raw === 'CourierNewPSMT') return 'Courier';
-  return 'Helvetica';
+  return undefined;
+}
+
+/** Map a /BaseFont or /DA font name (incl. subset prefixes and Acrobat
+ *  abbreviations) to a Standard-14 font, defaulting to Helvetica.
+ *
+ *  Unchanged in behaviour, and it must stay so: `font.ts` keys the AFM width
+ *  tables off this answer and `da.ts` resolves an appearance `/DA` font with
+ *  it, so a name that stops resolving to Helvetica moves glyph advances and
+ *  form-field appearances, not just a substitute face. */
+export function normalizeFont(baseFont: string): StdFont {
+  return matchStd14(baseFont) ?? 'Helvetica';
 }
 
 /** Advance width (1000-unit em) of a byte `code` in `font`; 0 if no glyph. */

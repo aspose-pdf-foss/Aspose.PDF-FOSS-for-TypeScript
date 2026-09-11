@@ -559,7 +559,16 @@ function parseType3(dict: PdfDict, resolve: Resolve): Type3Data {
  * that contains none. A missing `/Registry` is read as Adobe's, since that is
  * the only registry with published collections and producers omit it.
  */
-function cidSystemOrdering(dict: PdfDict, resolve: Resolve): string | undefined {
+/**
+ * The `/CIDSystemInfo /Ordering` of a composite font's DESCENDANT, or undefined
+ * when it states none or names a registry other than Adobe.
+ *
+ * Exported for `fontsubst.ts`, which needs the same answer to find the
+ * collection a non-embedded composite font belongs to. The registry test is
+ * load-bearing and must not be re-derived: a private collection may call its
+ * ordering `Japan1` and number its CIDs however it likes.
+ */
+export function cidSystemOrdering(dict: PdfDict, resolve: Resolve): string | undefined {
   const desc = resolve(dict.get('DescendantFonts'));
   const cidFont = isArray(desc) ? resolve(desc[0]) : undefined;
   if (!isDict(cidFont)) return undefined;

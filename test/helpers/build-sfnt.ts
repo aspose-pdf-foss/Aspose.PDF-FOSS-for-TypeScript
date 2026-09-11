@@ -851,11 +851,21 @@ export function buildNamedFont(opts: {
   typographicFamily?: string;
   bold?: boolean; italic?: boolean; weight?: number;
   padGlyf?: number;
+  /** Code point -> gid. Default: buildCmap()'s 0x41->1, 0x42->2. */
+  cmap?: [number, number][];
+  /** OS/2.ulUnicodeRange1..4. Default: all zero. */
+  unicodeRange?: [number, number, number, number];
+  /** OS/2.sFamilyClass high byte. Default: 0 (unclassified). */
+  familyClass?: number;
+  /** name ID 6. Default: the family with its spaces removed. A REAL font
+   *  states a PostScript name that is not derivable from the family that way --
+   *  MS Mincho states `MS-Mincho` -- which is exactly what /BaseFont carries. */
+  postScriptName?: string;
 }): Uint8Array {
   const recs = [
     { plat: 3, nameID: 1, text: opts.family },
     { plat: 3, nameID: 2, text: opts.subfamily ?? 'Regular' },
-    { plat: 3, nameID: 6, text: opts.family.replace(/\s+/g, '') },
+    { plat: 3, nameID: 6, text: opts.postScriptName ?? opts.family.replace(/\s+/g, '') },
   ];
   if (opts.typographicFamily) recs.push({ plat: 3, nameID: 16, text: opts.typographicFamily });
 
@@ -864,7 +874,13 @@ export function buildNamedFont(opts: {
     44, (opts.bold ? 1 : 0) | (opts.italic ? 2 : 0));
 
   const os2 = buildOS2();
-  new DataView(os2.buffer, os2.byteOffset).setUint16(4, opts.weight ?? 400);
+  const os2v = new DataView(os2.buffer, os2.byteOffset);
+  os2v.setUint16(4, opts.weight ?? 400);
+  if (opts.familyClass !== undefined) os2v.setUint16(30, opts.familyClass << 8);
+  if (opts.unicodeRange) {
+    os2v.setUint32(42, opts.unicodeRange[0]); os2v.setUint32(46, opts.unicodeRange[1]);
+    os2v.setUint32(50, opts.unicodeRange[2]); os2v.setUint32(54, opts.unicodeRange[3]);
+  }
 
   // TWO glyphs (.notdef + one box), then padding so `glyf` can be made
   // arbitrarily large. The maxp/hhea/hmtx below are built locally rather than
@@ -883,7 +899,10 @@ export function buildNamedFont(opts: {
   const hmtx = concat([u16(1000), i16(0), u16(1000), i16(0)]);
 
   const tables = [
-    { tag: 'OS/2', data: os2 }, { tag: 'cmap', data: buildCmap() },
+    { tag: 'OS/2', data: os2 },
+    { tag: 'cmap', data: opts.cmap
+      ? buildCmapTable([{ plat: 3, enc: 1, data: cmapFormat4(opts.cmap) }])
+      : buildCmap() },
     { tag: 'glyf', data: glyf }, { tag: 'head', data: head },
     { tag: 'hhea', data: hhea }, { tag: 'hmtx', data: hmtx },
     { tag: 'loca', data: loca }, { tag: 'maxp', data: maxp },

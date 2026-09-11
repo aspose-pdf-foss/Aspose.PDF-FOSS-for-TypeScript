@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
 import { decodePng } from './helpers/decode-png.js';
-import { buildType0Pdf, buildSimpleTextPdf } from './helpers/build-text-pdf.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildGlyphSource } from '../src/raster.js';
+import { buildNamedFont } from './helpers/build-sfnt.js';
+import { buildType0Pdf, buildSimpleTextPdf, fontDictOf } from './helpers/build-text-pdf.js';
 
 /**
  * A NON-EMBEDDED composite font draws real glyphs (lqcs.1).
@@ -100,5 +105,57 @@ describe('non-embedded composite font', () => {
     expect(frags.length).toBeGreaterThan(0);
     // The run starts where the text matrix put it; substitution must not move it.
     expect(frags[0].quad[0]).toBeCloseTo(20, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+function folderWith(files: Record<string, Uint8Array>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'pdf4ts-type0sub-'));
+  for (const [rel, bytes] of Object.entries(files)) writeFileSync(join(dir, rel), bytes);
+  return dir;
+}
+
+describe('installed-face substitution (lqcs.2)', () => {
+  /** A non-embedded Identity-H page whose four CIDs mean four kanji. */
+  const cjkPdf = (baseFont?: string) => buildType0Pdf(
+    show([0x41, 0x42, 0x43, 0x44]), bfrange(0x41, 0x44, 0x4e00), { baseFont });
+  const MINCHO_CMAP: [number, number][] =
+    [[0x4e00, 1], [0x4e01, 1], [0x4e02, 1], [0x4e03, 1]];
+
+  it('reports no substitute family with no render folder registered', () => {
+    const doc = Document.Open(cjkPdf());
+    const src = buildGlyphSource(doc, fontDictOf(doc));
+    expect(src.substituted).toBe(true);
+    expect(src.substituteFamily).toBeUndefined();    // the bundled face
+  });
+
+  it('resolves /BaseFont to an installed face when one is registered', () => {
+    const dir = folderWith({ 'm.ttf': buildNamedFont({
+      family: 'MS Mincho', postScriptName: 'MS-Mincho', cmap: MINCHO_CMAP,
+    }) });
+    const doc = Document.Open(cjkPdf('MS-Mincho'));
+    doc.RegisterRenderFontFolder(dir);
+    expect(buildGlyphSource(doc, fontDictOf(doc)).substituteFamily).toBe('MS Mincho');
+  });
+
+  it('falls back to the bundled face when the folder holds nothing usable', () => {
+    const dir = folderWith({ 'l.ttf': buildNamedFont({
+      family: 'Latin Only', cmap: [[0x41, 1]], unicodeRange: [1, 0, 0, 0],
+    }) });
+    const doc = Document.Open(cjkPdf('AbsentFamily'));
+    doc.RegisterRenderFontFolder(dir);
+    const src = buildGlyphSource(doc, fontDictOf(doc));
+    expect(src.substituted).toBe(true);
+    expect(src.substituteFamily).toBeUndefined();
+  });
+
+  it('strips a subset prefix before matching by name', () => {
+    const dir = folderWith({ 'm.ttf': buildNamedFont({
+      family: 'MS Mincho', postScriptName: 'MS-Mincho', cmap: MINCHO_CMAP,
+    }) });
+    const doc = Document.Open(cjkPdf('AAAAAB+MS-Mincho'));
+    doc.RegisterRenderFontFolder(dir);
+    expect(buildGlyphSource(doc, fontDictOf(doc)).substituteFamily).toBe('MS Mincho');
   });
 });
