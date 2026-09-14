@@ -4,7 +4,7 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { GlyphEvent, Rect, RefRun } from './text.js';
-import { visitContent, layoutLines, runFromGlyph } from './text.js';
+import { visitContent, layoutLines, runFromGlyph, walkOpts } from './text.js';
 import { EditableContent } from './editcontent.js';
 import type { ContentAddr } from './editcontent.js';
 import { ContentOp } from './content.js';
@@ -32,6 +32,16 @@ export interface SearchOptions {
    *  two features answering "is this inside the region" differently is how a
    *  search and a table extraction come to disagree about one page. */
   region?: Rect;
+  /** Report text the document's default optional-content configuration HIDES.
+   *
+   *  `Search` answers "what does this page show", so it defaults to false and
+   *  skips a switched-off layer exactly as `GetText` does. **The EDIT entry
+   *  points set it true**: `RedactText` and `MarkRedactText` must act on
+   *  everything the file holds — redacting only what a viewer happens to be
+   *  shown would silently leave the secret in the bytes — and `ReplaceText`
+   *  follows the same rule, so one call cannot rewrite half the occurrences.
+   *  The divergence from `Search` is deliberate and asserted from both sides. */
+  includeHidden?: boolean;
 }
 
 const centroidOf = (q: Rect): [number, number] => [(q[0] + q[2]) / 2, (q[1] + q[3]) / 2];
@@ -58,7 +68,7 @@ export function searchText(
       if (region && !inRect(region, ...centroidOf(e.quad))) return;
       runs.push(runFromGlyph(e, e));
     },
-  });
+  }, walkOpts(opts));
   const { text, refs } = layoutLines(runs);
   if (text.length === 0) return [];
 
@@ -146,7 +156,10 @@ export function replaceText(
   doc: Document, page: Page, find: string | RegExp, replacement: string,
   opts: SearchOptions = {},
 ): number {
-  const matches = searchText(doc, page, find, opts);
+  // An EDIT acts on what the file CONTAINS. Rewriting only the occurrences a
+  // viewer is currently shown would leave the rest behind, so a caller's own
+  // `includeHidden` cannot narrow this below true.
+  const matches = searchText(doc, page, find, { ...opts, includeHidden: true });
   if (matches.length === 0) return 0;
 
   // stream -> opIndex -> pending string edits, gathered against original bytes.

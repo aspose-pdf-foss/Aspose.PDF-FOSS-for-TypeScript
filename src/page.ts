@@ -3,7 +3,7 @@ import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream } from './type
 import { inflateStream } from './flate.js';
 import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
-import { extractText, extractFragments, extractStructured, TextFragment, TextBlock } from './text.js';
+import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions } from './text.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
 import { searchAnnotations, searchAnnotationText, type AnnotationMatch, type AnnotationTextMatch } from './annotsearch.js';
 import { measureText, stampText, stampTextBlock, StampOptions, TextBlockOptions, AuthoringFont } from './stamp.js';
@@ -469,25 +469,34 @@ export class Page {
 
   /** Extract visible text from the page with reasonable word/line ordering.
    *  Decodes through simple-font encodings, /ToUnicode CMaps, and Type0 fonts.
-   *  Returns "" for pages with no text-showing operators. */
-  GetText(): string {
-    return extractText(this.doc, this);
+   *  Returns "" for pages with no text-showing operators.   *
+   *  Content the document's default optional-content configuration HIDES is
+   *  absent; pass `{ includeHidden: true }` to read what the file contains
+   *  rather than what it shows. */
+  GetText(options?: ExtractOptions): string {
+    return extractText(this.doc, this, options);
   }
 
   /** Extract positioned text fragments: consecutive glyphs sharing a font, size,
    *  and baseline grouped into runs (in content order), each carrying its
    *  page-space `quad`, `fontSize`, and `fontName`. Returns [] for pages with no
-   *  text-showing operators. */
-  GetTextFragments(): TextFragment[] {
-    return extractFragments(this.doc, this);
+   *  text-showing operators.   *
+   *  Content the document's default optional-content configuration HIDES is
+   *  absent; pass `{ includeHidden: true }` to read what the file contains
+   *  rather than what it shows. */
+  GetTextFragments(options?: ExtractOptions): TextFragment[] {
+    return extractFragments(this.doc, this, options);
   }
 
   /** Extract structured text: positioned fragments grouped into lines (by
    *  baseline) and paragraph-like blocks (by vertical gap and left-edge
    *  alignment), ordered top-to-bottom. Each block/line carries its page-space
-   *  `quad`. Returns [] for pages with no text-showing operators. */
-  GetStructuredText(): TextBlock[] {
-    return extractStructured(this.doc, this);
+   *  `quad`. Returns [] for pages with no text-showing operators.   *
+   *  Content the document's default optional-content configuration HIDES is
+   *  absent; pass `{ includeHidden: true }` to read what the file contains
+   *  rather than what it shows. */
+  GetStructuredText(options?: ExtractOptions): TextBlock[] {
+    return extractStructured(this.doc, this, options);
   }
 
   /** Reconstruct tables on the page. When the page is tagged and exposes
@@ -506,9 +515,12 @@ export class Page {
    *  each carries its subpaths in user space, the CTM at paint time, a
    *  device-space bounding box, resolved fill/stroke color + colorspace family,
    *  fill rule, stroke line width, and clip usage. Descends into Form XObjects.
-   *  Returns [] for pages with no painted paths. */
-  GetPaths(): PagePath[] {
-    return extractPaths(this.doc, this);
+   *  Returns [] for pages with no painted paths.   *
+   *  Content the document's default optional-content configuration HIDES is
+   *  absent; pass `{ includeHidden: true }` to read what the file contains
+   *  rather than what it shows. */
+  GetPaths(options?: ExtractOptions): PagePath[] {
+    return extractPaths(this.doc, this, walkOpts(options));
   }
 
   /** Find every occurrence of `find` (a literal string or RegExp) in the page's

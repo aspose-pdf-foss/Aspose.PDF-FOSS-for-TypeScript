@@ -215,7 +215,8 @@ export function markRedactText(
   // `region` scopes the search only. Destructured out so it never reaches
   // addRedact, which would carry it nowhere but would accept the key.
   const { region, ...annotOpts } = opts;
-  const matches = searchText(doc, page, find, { region });
+  // As `redactText`: a mark must cover hidden occurrences too.
+  const matches = searchText(doc, page, find, { region, includeHidden: true });
   for (const m of matches) {
     // One annotation per match: a match wrapping a line break spans several line
     // boxes, and those become several quads on the same mark, not several marks.

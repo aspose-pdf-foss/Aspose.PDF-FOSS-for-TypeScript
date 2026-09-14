@@ -41,6 +41,7 @@ import {
   convertColors, convertToGrayscale,
   ColorConvertOptions, ColorConvertReport, ConvertColorsOptions,
 } from './colorconvert.js';
+import { flattenLayers, type FlattenLayersReport } from './ocflatten.js';
 import {
   convertXfaToAcroForm,
   type XfaConvertOptions, type XfaConvertReport,
@@ -1674,6 +1675,33 @@ export class Document {
    *  signed document, which converting would invalidate. */
   ConvertToGrayscale(opts: ColorConvertOptions = {}): ColorConvertReport {
     return convertToGrayscale(this, opts);
+  }
+
+  /** Flatten optional content in place: keep only what the default
+   *  configuration SHOWS, then take the vocabulary away.
+   *
+   *  Every marked-content span the configuration hides is DELETED from the
+   *  content stream it sits in — page content, form XObjects, tiling patterns,
+   *  Type 3 glyph procedures, soft-mask groups and annotation appearances alike
+   *  — hidden XObject draws and hidden annotations go with them, every
+   *  surviving `/OC` wrapper and `/OC` key is removed, and `/OCProperties` is
+   *  deleted. The result renders exactly as the configuration rendered and is
+   *  an ordinary PDF with no layers left to toggle.
+   *
+   *  One-way, and that is the point: the hidden content is gone rather than
+   *  merely unreferenced, so a reader cannot get it back. Call
+   *  {@link OptionalContent.ApplyConfiguration} first to choose which
+   *  configuration is flattened.
+   *
+   *  An `/OC` operand that is an inline dictionary — or a name no
+   *  `/Properties` entry claims — is left exactly as written rather than
+   *  guessed at, so its content survives; the returned report counts those as
+   *  `unresolved`.
+   *
+   *  Throws {@link UnsupportedFeatureError} for a signed document, which
+   *  deleting content would invalidate. */
+  FlattenLayers(): FlattenLayersReport {
+    return flattenLayers(this);
   }
 
   /** Convert this document's XFA form to a real `/AcroForm` field tree.

@@ -34,6 +34,26 @@ export interface PdfaOptions {
   omitOutputIntent?: boolean; // drop the /OutputIntents entry
   badIccN?: boolean;          // give /DestOutputProfile an /N of 2
   deviceColorContent?: boolean; // content uses `rg` device color (default true)
+  // Which device space the content selects (default 'RGB'): `rg`, `k` or `g`.
+  deviceColorSpace?: 'RGB' | 'CMYK' | 'Gray';
+  // Paint a solid rect in that colour, so a render has a patch to sample.
+  fillRect?: boolean;
+  // Give /DestOutputProfile a PARSEABLE ICC header declaring this data colour
+  // space. Omitted, the profile stays the 4-byte blob every pre-ixxw.1 fixture
+  // carries, which `parseIccProfile` rejects — so the space cannot be read and
+  // the rule falls back to "an intent exists". Also sets /N to match.
+  iccSpace?: 'RGB' | 'CMYK' | 'GRAY';
+  // Force the profile stream's /N, overriding the one `iccSpace` implies. Set
+  // it to DISAGREE with the header to pin which of the two the space check
+  // reads; 1/3/4 are all legal, so it adds no ICCBasedN noise of its own.
+  iccN?: number;
+  // Write the profile INLINE in the intent dict instead of referencing object
+  // 8. Malformed per 32000-1 7.3.8 (all streams shall be indirect) and our
+  // parser accepts it anyway, which is the population this shape comes from.
+  directOutputProfile?: boolean;
+  // Two GTS_PDFA1 intents carrying two DIFFERENT inline profiles (the second
+  // always GRAY), so the count rule has two distinct profiles to see.
+  twoDirectProfiles?: boolean;
   // fonts
   fontEmbedded?: boolean;     // default true: include /FontFile2 in the descriptor
   symbolicWithEncoding?: boolean; // symbolic TrueType that wrongly has /Encoding
@@ -98,22 +118,45 @@ export function buildPdfaPdf(opts: PdfaOptions = {}, part: 1 | 2 | 3 | 4 = 2): U
   const pdfaRev = opts.pdfaRev === undefined ? (part === 4 ? '2020' : null) : opts.pdfaRev;
 
   // --- content stream ---
-  const colorOp = (opts.deviceColorContent ?? true) ? '1 0 0 rg\n' : '';
+  const DEVICE_OPS = { RGB: '1 0 0 rg\n', CMYK: '0 1 1 0 k\n', Gray: '0.5 g\n' };
+  const colorOp = (opts.deviceColorContent ?? true)
+    ? DEVICE_OPS[opts.deviceColorSpace ?? 'RGB'] : '';
+  const fillOp = opts.fillRect ? '10 10 100 100 re f\n' : '';
   const riOp = opts.badRenderingIntent ? '/Bogus ri\n' : '';
   const inlineImg = opts.inlineLzwImage
     ? 'q 1 0 0 1 0 0 cm BI /W 1 /H 1 /CS /G /F /LZW ID \x00 EI Q\n' : '';
-  const content = `${colorOp}${riOp}${inlineImg}BT /F1 12 Tf 50 50 Td (Hi) Tj ET\n`;
+  const content = `${colorOp}${fillOp}${riOp}${inlineImg}BT /F1 12 Tf 50 50 Td (Hi) Tj ET\n`;
 
   // --- objects (raw PDF text, indices are object numbers) ---
   const objects: string[] = [];
 
+  // The ICC output profile. With no `iccSpace` this stays the 4-byte blob every
+  // pre-ixxw.1 fixture carried: `parseIccProfile` rejects it, so the intent's
+  // space is unreadable and the device-colour rule can only fall back.
+  // Computed HERE rather than beside object 8 because `directOutputProfile`
+  // needs the same bytes inline in the catalog entry built just below.
+  const N_FOR_SPACE = { GRAY: 1, RGB: 3, CMYK: 4 };
+  const iccBody = opts.iccSpace ? minimalIccProfile(opts.iccSpace) : 'ICC ';
+  const iccN = opts.badIccN ? 2
+    : opts.iccN ?? (opts.iccSpace ? N_FOR_SPACE[opts.iccSpace] : 3);
+  const inlineProfile = (body: string, n: number): string =>
+    `<< /N ${n} /Length ${body.length} >> stream\n${body}\nendstream`;
+
   const catParts = ['/Type /Catalog', '/Pages 2 0 R', '/Metadata 7 0 R'];
   if (!opts.omitOutputIntent) {
     const dopr = opts.destOutputProfileRef ? ' /DestOutputProfileRef << /DOS (x) >>' : '';
-    const oi = `<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB) /DestOutputProfile 8 0 R${dopr} >>`;
+    const direct = opts.directOutputProfile || opts.twoDirectProfiles;
+    const dop = direct ? inlineProfile(iccBody, iccN) : '8 0 R';
+    const oi = `<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB) /DestOutputProfile ${dop}${dopr} >>`;
+    // A SECOND inline profile is a second object once parsed, however its
+    // bytes read, so this one is GRAY to make the difference plain rather
+    // than resting on object identity alone.
+    const gray = `<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (gray) `
+      + `/DestOutputProfile ${inlineProfile(minimalIccProfile('GRAY'), 1)} >>`;
     // The two intents share ONE profile object, so pdfaOutputIntentProfile sees
     // a single distinct profile and only the count rule (6.2.3) can fire.
-    const entries = opts.twoPdfaOutputIntents ? `${oi} ${oi}` : oi;
+    const entries = opts.twoDirectProfiles ? `${oi} ${gray}`
+      : opts.twoPdfaOutputIntents ? `${oi} ${oi}` : oi;
     // A PDF/X intent beside the PDF/A one: legal at every part, and the place
     // /DestOutputProfileRef is EXEMPT at parts 2/3 but not at part 4.
     const px = ' << /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier (none) /DestOutputProfileRef << /DOS (x) >> >>';
@@ -236,9 +279,13 @@ export function buildPdfaPdf(opts: PdfaOptions = {}, part: 1 | 2 | 3 | 4 = 2): U
   const xmp = xmpPacket(pdfaPart, pdfaConf, pdfaRev, xmpTitle);
   objects[7] = `<< /Type /Metadata /Subtype /XML /Length ${byteLen(xmp)} >>\nstream\n${xmp}endstream`;
 
-  // ICC output profile
-  const iccN = opts.badIccN ? 2 : 3;
-  objects[8] = `<< /N ${iccN} /Length 4 >>\nstream\nICC \nendstream`;
+  // The ICC output profile as an indirect object. Omitted when the profile is
+  // written inline instead: an unreferenced copy would still reach the
+  // all-objects scan behind iccBasedNRule and answer for a stream the intent
+  // does not point at.
+  if (!opts.directOutputProfile && !opts.twoDirectProfiles) {
+    objects[8] = `<< /N ${iccN} /Length ${iccBody.length} >>\nstream\n${iccBody}\nendstream`;
+  }
 
   if (opts.xfa) objects[9] = '<< /Length 4 >>\nstream\nxfa\nendstream';
   if (opts.psXObject) objects[10] = '<< /Type /XObject /Subtype /PS /Length 0 >>\nstream\n\nendstream';
@@ -333,4 +380,30 @@ function xmpPacket(
     + `<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">`
     + `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">${title}</rdf:li></rdf:Alt></dc:title>`
     + `</rdf:Description></rdf:RDF></x:xmpmeta>\n<?xpacket end="w"?>`;
+}
+
+/**
+ * A 256-byte ICC profile carrying nothing but a valid header and an empty tag
+ * table — which is all `parseIccProfile` needs, and all the output-intent
+ * space check reads.
+ *
+ * Every byte is NUL or ASCII on purpose: this builder assembles the whole file
+ * as a JS string and encodes it once with TextEncoder, so a byte above 0x7F
+ * would come out as two and shift every offset after it. 256 is the smallest
+ * size whose own u32 size field is ASCII-safe (`00 00 01 00`) — 132, the true
+ * minimum, would need a 0x84.
+ */
+export function minimalIccProfile(space: 'RGB' | 'CMYK' | 'GRAY'): string {
+  const b = new Array<number>(256).fill(0);
+  const put = (o: number, s: string): void => {
+    for (let i = 0; i < s.length; i++) b[o + i] = s.charCodeAt(i);
+  };
+  b[3] = 1;                                    // size = 256
+  b[8] = 2;                                    // version 2.0.0
+  put(12, 'prtr');                             // device class
+  put(16, space === 'RGB' ? 'RGB ' : space);   // data colour space, space padded
+  put(20, 'Lab ');                             // PCS
+  put(36, 'acsp');                             // what makes it a profile at all
+  // Bytes 128..131 are the tag count, left at zero: no tags.
+  return String.fromCharCode(...b);
 }

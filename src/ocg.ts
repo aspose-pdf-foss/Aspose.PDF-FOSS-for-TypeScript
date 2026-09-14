@@ -8,6 +8,12 @@ import { parseContentStream, serializeContentStream, ContentOp } from './content
 import { decodeStream } from './filters.js';
 import { streamOf } from './pagecontent.js';
 import type { Page } from './page.js';
+import {
+  LayerUsage, UsageContext, UsageEvent,
+  readUsage, writeUsage, applyUsageEntry, combineUsageStates, usageCategoryEvent,
+} from './ocusage.js';
+
+export type { LayerUsage, UsageContext, UsageEvent } from './ocusage.js';
 
 /** Reference equality by object/generation number. */
 export function sameRef(a: PdfObject | undefined, b: PdfRef): boolean {
@@ -94,6 +100,77 @@ function deepCopyOrder(a: PdfObject[]): PdfObject[] {
   return a.map((e) => (isArray(e) ? deepCopyOrder(e) : e));
 }
 
+/** The Table 101 keys that describe a configuration's STATE, as against the
+ *  `/Name` and `/Creator` that identify it. These are what
+ *  {@link OptionalContent.ApplyConfiguration} moves, and what
+ *  {@link OptionalContent.SaveConfiguration} snapshots. */
+const CONFIG_STATE_KEYS = [
+  'BaseState', 'ON', 'OFF', 'Order', 'Locked', 'AS', 'RBGroups', 'Intent', 'ListMode',
+] as const;
+
+/**
+ * Copy one configuration value so a DIFFERENT configuration can own it.
+ *
+ * **Invariant: a ref that NAMES A LAYER is shared; a container the
+ * configuration OWNS is cloned.** `/ON`, `/OFF`, `/Order`, `/Locked` and
+ * `/RBGroups` hold refs to OCGs — clone those and the copy names layers that
+ * do not exist — while the arrays around them are the configuration's own.
+ * Sharing a container instead makes two configurations one state wearing two
+ * names: under this library's live-mutation model a later `SetVisible` on
+ * `/D` would rewrite the preset just applied, and a `SaveConfiguration`
+ * snapshot would go on changing after it was taken.
+ *
+ * `owned` says which side of that line the value sits on, and it is decided
+ * PER KEY rather than per value, because the two are indistinguishable from
+ * the value alone: an `/AS` entry may be an indirect dict and so may nothing
+ * else here. Inside such an entry it flips back to false, since that dict's
+ * own `/OCGs` names layers exactly as `/ON` does.
+ */
+function cloneConfigValue(doc: Document, v: PdfObject, owned: boolean): PdfObject {
+  if (isArray(v)) return v.map((e) => cloneConfigValue(doc, e, owned));
+  if (owned) {
+    const d = resolveDict(doc, v);
+    if (d) {
+      const out: PdfDict = new Map<string, PdfObject>();
+      for (const [k, e] of d) out.set(k, cloneConfigValue(doc, e, false));
+      return out;
+    }
+  }
+  return v;
+}
+
+/** Copy every state key of `src` onto `dst`, REPLACING what was there.
+ *
+ * **Invariant: it replaces rather than merges.** Every state key is deleted
+ * from `dst` first, so a source silent about `/OFF` leaves the destination
+ * silent too. Merged instead, applying a preset that says nothing about a key
+ * leaves the previous configuration's value standing and the document sits in
+ * a state that is NEITHER configuration — which renders plausibly and is
+ * exactly the bug nobody would look for. `/Name` and `/Creator` are not state:
+ * they identify a configuration rather than describe it, so `/D` keeps its
+ * own and does not come to claim it IS the preset.
+ *
+ * **Note, measured, and it covers NOTHING:** the `src.has(key)` test is
+ * redundant with the `v === null` line two below it and provably cannot be
+ * otherwise — `doc.resolve(undefined)` answers `null`, so an absent key
+ * reaches that line and is skipped there. Replacing it with a resolved-value
+ * comparison reddens not one case. It stays as the honest spelling of
+ * "presence is tested on the RAW dict", the trap `pdfxvalidate.ts` records,
+ * and as the guard that keeps working if the line below ever changes; do not
+ * read the green suite as covering it. */
+function copyConfigState(doc: Document, src: PdfDict, dst: PdfDict): void {
+  for (const key of CONFIG_STATE_KEYS) {
+    dst.delete(key);
+    // Presence is tested on the RAW dict: `doc.resolve(undefined)` is `null`,
+    // so comparing a resolved value against undefined is true for every
+    // absent key.
+    if (!src.has(key)) continue;
+    const v = doc.resolve(src.get(key));
+    if (v === null) continue;
+    dst.set(key, cloneConfigValue(doc, v, key === 'AS'));
+  }
+}
+
 /** Place `ref` under `parent` in an /Order tree (mutates `order`): if the entry
  *  right after `parent` is an array, push into it; else insert a fresh `[ref]`
  *  array right after `parent`. Recurses into nested arrays. Returns whether it
@@ -110,6 +187,12 @@ function placeUnder(order: PdfObject[], parent: PdfRef, ref: PdfRef): boolean {
     if (isArray(e) && placeUnder(e, parent, ref)) return true;
   }
   return false;
+}
+
+/** Is `o` the name `n`? */
+function sameName(doc: Document, o: PdfObject | undefined, n: string): boolean {
+  const v = doc.resolve(o);
+  return isName(v) && v.name === n;
 }
 
 function textOf(doc: Document, o: PdfObject | undefined): string | undefined {
@@ -353,6 +436,37 @@ export class Layer {
 
   get Visible(): boolean { return this.oc.Default.IsVisible(this); }
   set Visible(v: boolean) { this.oc.Default.SetVisible(this, v); }
+
+  /** What this group's `/Usage` says about viewing, printing and exporting
+   *  it, or undefined when it states nothing.
+   *
+   *  A statement, not a state: only a configuration's `/AS` turns one into a
+   *  visibility — see {@link LayerConfig.ResolveForEvent}. */
+  get Usage(): LayerUsage | undefined {
+    const u = this.doc.resolve(this.Dict.get('Usage'));
+    return isDict(u) ? readUsage((o) => this.doc.resolve(o), u) : undefined;
+  }
+
+  /** Write this group's `/Usage` **and** the default configuration's `/AS`
+   *  entry that applies it — writing one without the other says nothing.
+   *  Delegates to {@link LayerConfig.SetUsage}, as `Visible` delegates to
+   *  `SetVisible`; use that directly to write into a named configuration. */
+  SetUsage(usage: LayerUsage): void { this.oc.Default.SetUsage(this, usage); }
+}
+
+/** One layer's resolved state, as {@link LayerConfig.ResolveForEvent} reports it. */
+export interface LayerState {
+  layer: Layer;
+  visible: boolean;
+}
+
+/** One `/AS` usage application dictionary, as read from a configuration. */
+interface UsageApplication {
+  event: UsageEvent;
+  categories: string[];
+  /** The `/OCGs` refs, in the order the entry lists them — the scope
+   *  `/Language /Preferred` is decided over. */
+  ocgs: PdfRef[];
 }
 
 /** A viewing configuration (/D or a /Configs entry). */
@@ -435,6 +549,168 @@ export class LayerConfig {
     this.removeFrom('ON', layer.Ref);
     this.removeFrom('OFF', layer.Ref);
     this.addTo(v ? 'ON' : 'OFF', layer.Ref);
+    this.doc.markModified();
+  }
+
+  /** @internal This config's `/AS` entries, damaged ones dropped — an entry
+   *  that cannot be read applies to nothing, so it costs itself and never the
+   *  configuration.
+   *
+   *  Only the `/Event` test is load-bearing: without it a `null` event is
+   *  dereferenced, and a name outside the three would be compared against
+   *  `event` as though it were one.
+   *
+   *  **Note, measured, and the two emptiness guards cover NOTHING — the
+   *  obvious reading is wrong.** An entry left with no groups, or with no
+   *  categories, provably cannot change an answer: `ResolveForEvent` maps
+   *  over `ocgs` and accumulates per group, so an empty `ocgs` contributes to
+   *  nobody, and `combineUsageStates([])` is `undefined`, which is exactly
+   *  "this entry said nothing". Dropping both `continue`s reddens not one
+   *  case. They stay as the honest spelling of "an entry naming nothing
+   *  applies to nothing"; do not cite the damaged-`/AS` cases in
+   *  `test/optional-content-usage.test.ts` as covering them. */
+  private usageApplications(): UsageApplication[] {
+    const out: UsageApplication[] = [];
+    for (const e of arrayOf(this.doc, this.Dict.get('AS'))) {
+      const d = resolveDict(this.doc, e);
+      if (!d) continue;
+      const ev = this.doc.resolve(d.get('Event'));
+      if (!isName(ev) || (ev.name !== 'View' && ev.name !== 'Print' && ev.name !== 'Export')) continue;
+      const ocgs = arrayOf(this.doc, d.get('OCGs')).filter(isRef);
+      if (ocgs.length === 0) continue;
+      const categories = arrayOf(this.doc, d.get('Category'))
+        .map((c) => this.doc.resolve(c))
+        .filter(isName)
+        .map((c) => c.name);
+      if (categories.length === 0) continue;
+      out.push({ event: ev.name as UsageEvent, categories, ocgs });
+    }
+    return out;
+  }
+
+  /** @internal The typed `/Usage` of the group `r` names, or undefined. */
+  private usageOf(r: PdfRef): LayerUsage | undefined {
+    const g = this.doc.resolve(r);
+    if (!isDict(g)) return undefined;
+    const u = this.doc.resolve(g.get('Usage'));
+    return isDict(u) ? readUsage((o) => this.doc.resolve(o), u) : undefined;
+  }
+
+  /**
+   * Every layer's state for `event`, **changing nothing** — this config's
+   * `/ON`/`/OFF`/`BaseState` as the starting point, with each `/AS` usage
+   * application dictionary whose `/Event` matches allowed to move the groups
+   * it names (PDF 32000-1 8.11.4.4).
+   *
+   * A group no matching `/AS` entry names comes back at its configured state,
+   * whatever its `/Usage` says — `/Usage` alone is inert. Several categories,
+   * and several entries, combine so that **any one saying OFF wins**.
+   *
+   * `/Zoom` and `/Language` describe a viewer, so they stay silent unless
+   * `ctx` supplies a magnification or a BCP 47 language tag rather than being
+   * decided against an invented one. `/User` is never evaluated: it names a
+   * person or organisation, and this library has no viewer identity.
+   */
+  ResolveForEvent(event: UsageEvent, ctx: UsageContext = {}): LayerState[] {
+    const layers = this.oc.Layers;
+    const stated = layers.map<(boolean | undefined)[]>(() => []);
+
+    for (const app of this.usageApplications()) {
+      if (app.event !== event) continue;
+      // The whole entry at once: /Language /Preferred is scoped to it, so a
+      // group cannot be resolved on its own.
+      const states = applyUsageEntry(
+        app.ocgs.map((r) => this.usageOf(r)),
+        app.categories,
+        ctx,
+      );
+      app.ocgs.forEach((r, i) => {
+        const at = layers.findIndex((l) => sameRef(r, l.Ref));
+        if (at >= 0) stated[at].push(states[i]);
+      });
+    }
+
+    return layers.map((layer, i) => ({
+      layer,
+      visible: combineUsageStates(stated[i]) ?? this.isRefVisible(layer.Ref),
+    }));
+  }
+
+  /**
+   * Resolve `event` and make the result this configuration's own state,
+   * returning only the layers whose state actually moved.
+   *
+   * The `/AS` entries are left in place: they say what the document intends,
+   * and a second `ApplyUsage` for another event must still be able to reach
+   * them. Discarding what the configuration does not show is `FlattenLayers`.
+   */
+  ApplyUsage(event: UsageEvent, ctx: UsageContext = {}): Layer[] {
+    const moved: Layer[] = [];
+    for (const s of this.ResolveForEvent(event, ctx)) {
+      if (this.IsVisible(s.layer) === s.visible) continue;
+      this.SetVisible(s.layer, s.visible);
+      moved.push(s.layer);
+    }
+    return moved;
+  }
+
+  /**
+   * Write `layer`'s `/Usage` **and** the `/AS` entries of this configuration
+   * that apply it. Writing one without the other says nothing: a `/Usage`
+   * no `/AS` entry reaches is inert, and an `/AS` entry naming a category the
+   * group does not carry moves nothing.
+   *
+   * One entry per (event, category) pair, so a second group asking for the
+   * same thing joins the entry that already exists rather than appending a
+   * duplicate. `/Usage` is replaced wholesale, so `layer` is first dropped
+   * from every entry here — a category the new usage no longer states stops
+   * being applied, and an entry left naming no group is removed.
+   *
+   * Only the categories this library turns into a state get an entry:
+   * `/View`, `/Zoom` and `/Language` on the View event, `/Print` on Print and
+   * `/Export` on Export. `/CreatorInfo`, `/PageElement` and `/User` are
+   * written into `/Usage` and reach no `/AS`, the first two because they
+   * carry no state at all and `/User` because there is no viewer identity to
+   * match it against.
+   */
+  SetUsage(layer: Layer, usage: LayerUsage): void {
+    const dict = writeUsage(usage);
+    layer.Dict.set('Usage', dict);
+
+    // Drop this group from every entry first, so a rewrite that no longer
+    // states a category stops applying it.
+    const entries: PdfDict[] = [];
+    for (const e of arrayOf(this.doc, this.Dict.get('AS'))) {
+      const d = resolveDict(this.doc, e);
+      if (!d) continue;
+      const ocgs = arrayOf(this.doc, d.get('OCGs')).filter((r) => !sameRef(r, layer.Ref));
+      if (ocgs.length === 0) continue; // the entry named this group alone
+      d.set('OCGs', ocgs);
+      entries.push(d);
+    }
+
+    for (const category of dict.keys()) {
+      const event = usageCategoryEvent(category);
+      if (event === undefined) continue;
+      let entry = entries.find((d) => {
+        const ev = this.doc.resolve(d.get('Event'));
+        const cats = arrayOf(this.doc, d.get('Category'));
+        return isName(ev) && ev.name === event
+          && cats.length === 1 && sameName(this.doc, cats[0], category);
+      });
+      if (!entry) {
+        entry = new Map<string, PdfObject>([
+          ['Event', name(event)],
+          ['Category', [name(category)]],
+          ['OCGs', []],
+        ]);
+        entries.push(entry);
+      }
+      entry.set('OCGs', [...arrayOf(this.doc, entry.get('OCGs')), layer.Ref]);
+    }
+
+    if (entries.length === 0) this.Dict.delete('AS');
+    else this.Dict.set('AS', entries);
     this.doc.markModified();
   }
 
@@ -581,6 +857,51 @@ export class OptionalContent {
     p.set('Configs', arr);
     this.doc.markModified();
     return new LayerConfig(this.doc, dict, this);
+  }
+
+  /**
+   * Adopt `cfg` as the document's current state, copying its
+   * `/BaseState`, `/ON`, `/OFF`, `/Order`, `/Locked`, `/AS`, `/RBGroups`,
+   * `/Intent` and `/ListMode` into `/D`. The preset itself is untouched and
+   * stays in `/Configs` to be chosen again.
+   *
+   * **A WRITE into `/D`, deliberately, rather than an in-memory selection.**
+   * This library has one notion of "the current state" and `/D` is it — the
+   * one rendering, extraction, `ApplyUsage` and every export all read — so a
+   * configuration that were merely *selected* would be a second answer to the
+   * same question. It follows that `/D`'s previous state is overwritten:
+   * {@link SaveConfiguration} is how a caller keeps it.
+   *
+   * `/D`'s own `/Name` and `/Creator` survive, since they identify the
+   * default configuration rather than describe its state.
+   */
+  ApplyConfiguration(cfg: LayerConfig): void {
+    const dst = this.Default.Dict;
+    if (dst === cfg.Dict) return; // applying /D to itself changes nothing
+    copyConfigState(this.doc, cfg.Dict, dst);
+    this.doc.markModified();
+  }
+
+  /**
+   * Snapshot the current `/D` as a named preset in `/Configs` and return it.
+   *
+   * The counterpart to {@link ApplyConfiguration}, which overwrites `/D`. It
+   * is a SNAPSHOT: later edits to `/D` do not reach it, because every
+   * container is cloned rather than shared (see `cloneConfigValue`).
+   *
+   * Names are not unique, exactly as {@link AddConfig} leaves them — a caller
+   * wanting overwrite semantics removes the old preset first.
+   */
+  SaveConfiguration(name: string): LayerConfig {
+    // Reading /D first is only how it reads: `AddConfig` touches /Configs and
+    // never /D, and both it and `Default` reach the same dict through
+    // `ensureOcProps`, so the two orders are provably equivalent — measured,
+    // swapping them reddens nothing. Not a rule; do not write one.
+    const src = this.Default.Dict;      // creates /OCProperties and /D if absent
+    const cfg = this.AddConfig(name);
+    copyConfigState(this.doc, src, cfg.Dict);
+    this.doc.markModified();
+    return cfg;
   }
 
   RemoveConfig(cfg: LayerConfig): void {

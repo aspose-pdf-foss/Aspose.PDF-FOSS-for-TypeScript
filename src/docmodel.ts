@@ -1,6 +1,13 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { mapRegions, visitContent, type Rect, type TextBlock, type TextLine } from './text.js';
+
+/** Every walk in this module reads what the document SHOWS: a serializer is
+ *  producing a readable document, so content on a switched-off layer belongs in
+ *  it no more than it belongs in `GetText`. Spelled once here so the four
+ *  exports built on this model — HTML, Markdown, DOCX, EPUB — cannot disagree
+ *  about it page by page. */
+const SHOWN = { skipHidden: true } as const;
 import { isDict, type PdfStream } from './types.js';
 import { parseAction } from './actions.js';
 import type { Table } from './tablemodel.js';
@@ -206,7 +213,7 @@ function pageMcidImages(ctx: Ctx, page: Page): Map<number, PlacedImage[]> {
       if (list) list.push(placed);
       else map!.set(e.mcid, [placed]);
     },
-  });
+  }, SHOWN);
   ctx.images.set(page, map);
   return map;
 }
@@ -680,7 +687,7 @@ function untaggedModel(doc: Document, pages: Page[], ranks: Map<number, number>)
         if (!e.stream || drawn.has(e.stream)) return;
         drawn.set(e.stream, placedSize(e.quad));
       },
-    });
+    }, SHOWN);
     for (const img of page.Images) {
       out.push({
         kind: 'figure', alt: '', images: [img.Stream],

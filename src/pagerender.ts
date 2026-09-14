@@ -9,7 +9,7 @@ import { resolveColorSpace, deviceGray, Rgb, ColorConverter } from './colorspace
 import { TextFont, glyphDisplacement, runDisplacement, tjShift } from './font.js';
 import { isAnnotVisible, resolveAppearance } from './annotappearance.js';
 import { BlendMode, blendModeFromName } from './blend.js';
-import type { LayerConfig } from './ocg.js';
+import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 
 export type { Matrix } from './text.js';
 export type { Rgb } from './colorspace.js';
@@ -214,34 +214,6 @@ interface RenderCtx {
    *  declares no `/OCProperties` — in which case every section is visible and
    *  no lookup is made at all. */
   oc?: OcVisibility;
-}
-
-/** The default configuration plus a per-render memo. The memo is not an
- *  optimization to shrug at: `LayerConfig.isRefVisible` LINEARLY SCANS `/ON`
- *  and `/OFF` per call, so an unmemoized walk is O(sections x layers) on
- *  exactly the CAD-style documents that have many of both. */
-interface OcVisibility { config: LayerConfig; cache: Map<string, boolean>; }
-
-/**
- * Is the `/OC` operand of a `BDC` visible under this render's configuration?
- *
- * **The raw operand is passed through UNRESOLVED**, because
- * `ResolveVisibility` decides an OCG's state by REF IDENTITY (`isRefVisible`
- * compares against `/ON` and `/OFF`); hand it a resolved dict and every layer
- * falls through to `BaseState`, so a switched-off layer reads as visible and
- * the whole feature silently does nothing.
- */
-function ocVisible(ctx: RenderCtx, raw: PdfObject | undefined): boolean {
-  const oc = ctx.oc;
-  if (!oc) return true;
-  const key = isRef(raw) ? `${raw.num} ${raw.gen}` : undefined;
-  if (key !== undefined) {
-    const hit = oc.cache.get(key);
-    if (hit !== undefined) return hit;
-  }
-  const v = oc.config.ResolveVisibility(raw);
-  if (key !== undefined) oc.cache.set(key, v);
-  return v;
 }
 
 function resDict(ctx: RenderCtx, category: string): PdfDict | undefined {
@@ -493,13 +465,9 @@ export interface InterpretOptions {
 export function interpret(
   doc: Document, page: Page, base: Matrix, sink: RenderSink, opts: InterpretOptions = {},
 ): void {
-  // Read-only: `OptionalContent.Default` CREATES /OCProperties and marks the
-  // document modified, which would turn a ToImage() before a Sign() into a full
-  // rewrite. See defaultConfigIfPresent's own note.
-  const config = doc.OptionalContent.defaultConfigIfPresent();
   const ctx: RenderCtx = {
     doc, sink, resources: page.Resources, depth: 0, seen: new Set(),
-    oc: config ? { config, cache: new Map() } : undefined,
+    oc: ocVisibilityFor(doc),
   };
   walk(ctx, page.Contents, initialState(base));
   if (opts.annotations !== false) drawAnnots(ctx, page, base, opts.hideWidgets);
@@ -594,11 +562,9 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
     }
   };
 
-  // Optional content: one entry per open BMC/BDC recording whether IT hid, so
-  // nesting pops exactly. `hiddenDepth > 0` means the marks below are
-  // suppressed; an unbalanced EMC is tolerated, as text.ts already tolerates it.
-  let hiddenDepth = 0;
-  const mcStack: boolean[] = [];
+  // Optional content (32000-1 14.6): `ocvisible.ts` owns the nesting rule, so
+  // this walker and the two extraction walkers provably cannot disagree.
+  const oc = new OcStack(ctx.oc);
 
   // Text clipping (4gtd.2): the glyphs of EVERY show operator in the text
   // object accumulate, and their UNION becomes a clip at ET. Accumulating is
@@ -624,7 +590,7 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
   // of every hidden `W f` — and "a clip set inside a hidden section still
   // applies to what follows" is precisely what this feature must not break.
   const element = (paint: () => void) => {
-    if (hiddenDepth > 0) { flushClip(); return; }
+    if (oc.hidden) { flushClip(); return; }
     if (!knockout) { paint(); return; }
     sink.beginKnockoutElement();
     try { paint(); } finally { sink.endKnockoutElement(); }
@@ -734,10 +700,14 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
         }
         break;
       }
-      case 'Tj': element(() => showText(ctx, gs, o[0], baseCtm, collectClip)); break;
-      case 'TJ': element(() => showArray(ctx, gs, o[0], baseCtm, collectClip)); break;
-      case "'": textMove(gs, 0, -gs.leading); element(() => showText(ctx, gs, o[0], baseCtm, collectClip)); break;
-      case '"': gs.wordSp = num(o[0]); gs.charSp = num(o[1]); textMove(gs, 0, -gs.leading); element(() => showText(ctx, gs, o[2], baseCtm, collectClip)); break;
+      // The four show operators are NOT wrapped in `element` — they hand it in
+      // instead, so it brackets the ink while the pen advance happens either
+      // way (`q1g2.7`). Wrapped whole, a hidden run moved the pen not at all
+      // and the visible run after it overprinted where the hidden one began.
+      case 'Tj': showText(ctx, gs, o[0], baseCtm, element, collectClip); break;
+      case 'TJ': showArray(ctx, gs, o[0], baseCtm, element, collectClip); break;
+      case "'": textMove(gs, 0, -gs.leading); showText(ctx, gs, o[0], baseCtm, element, collectClip); break;
+      case '"': gs.wordSp = num(o[0]); gs.charSp = num(o[1]); textMove(gs, 0, -gs.leading); showText(ctx, gs, o[2], baseCtm, element, collectClip); break;
 
       // images
       case 'BI':
@@ -766,7 +736,7 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
         // AddImage({ layer }), AddBarcode({ layer }) and ImageInfo.Replace — so
         // without this we produced documents our own renderer ignored. One site
         // covers images and forms alike, because both subtypes arrive here.
-        if (!ocVisible(ctx, xo.dict.get('OC'))) break;
+        if (!ocVisible(ctx.oc, xo.dict.get('OC'))) break;
         const sub = ctx.doc.resolve(xo.dict.get('Subtype'));
         element(() => {
           if (isName(sub) && sub.name === 'Image') { syncPaintState(ctx, gs); sink.image(xo, gs.ctm, gs.fill); }
@@ -777,31 +747,9 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
 
       // marked content (32000-1 14.6). Only /OC sections matter here; every
       // other tag still pushes, so an EMC pops the section it belongs to.
-      case 'BMC': mcStack.push(false); break;
-      case 'BDC': {
-        const tag = o[0];
-        // An /OC operand that is an INLINE DICTIONARY rather than a name in
-        // /Properties is left VISIBLE rather than guessed at: hiding content on
-        // a shape we did not resolve is the one error that loses ink.
-        //
-        // **Note, measured, and it covers NOTHING — the `prop !== undefined`
-        // test is redundant and PROVABLY cannot be otherwise.** `doc.resolve`
-        // answers `null` for an absent operand and `ResolveVisibility` returns
-        // true for anything that is not a dict, so an unresolved name already
-        // reads as visible by that route; dropping the test reddens not one
-        // case. It stays as the honest spelling of "we hide only what we
-        // resolved". Same class as `pagemode.ts`'s `isName` note — do not cite
-        // the inline-dict fixture as covering it.
-        const prop = isName(o[1]) ? resDict(ctx, 'Properties')?.get(o[1].name) : undefined;
-        const hides = isName(tag) && tag.name === 'OC' && prop !== undefined
-          && !ocVisible(ctx, prop);
-        mcStack.push(hides);
-        if (hides) hiddenDepth++;
-        break;
-      }
-      case 'EMC':
-        if (mcStack.length && mcStack.pop()) hiddenDepth--;
-        break;
+      case 'BMC': oc.bmc(); break;
+      case 'BDC': oc.bdc(o[0], o[1], resDict(ctx, 'Properties')); break;
+      case 'EMC': oc.emc(); break;
 
       // shading
       case 'sh': {
@@ -990,46 +938,82 @@ function applyFontStyle(gs: GState, baseFont?: string): void {
     : /times|serif|georgia|roman|minion/.test(nfont) ? 'serif' : 'sans-serif';
 }
 
-/** Emit one glyph run and advance the text matrix (advance stays here — it is
- *  graphics state, not backend output). */
+/**
+ * Emit one glyph run and advance the text matrix.
+ *
+ * **Invariant (`q1g2.7`): the advance sits OUTSIDE the `element` bracket, and
+ * everything the run emits sits inside it.** `element` is both the knockout
+ * bracket and the gate for hidden optional content, and it returns without
+ * calling its argument for a hidden section — so a show operator wrapped
+ * whole never reached this function and never moved the pen. A text object
+ * mixing a hidden run with a visible one then drew the visible one where the
+ * hidden one BEGAN, overprinting it. A show operator occupies its width
+ * whether or not anybody sees it (9.4.4).
+ *
+ * That is the same rule `text.ts` holds on the extraction side, where the
+ * `hidden` flag suppresses the glyph EVENT and never the ADVANCE — and it is
+ * the shape this function already used for a non-painting render mode, which
+ * has always advanced without emitting. Hidden is simply one more reason to
+ * emit nothing.
+ *
+ * **Note what deliberately stays inside the bracket, and that NEITHER is
+ * covered — both are held by reasoning, not by the suite.** `syncPaintState`
+ * is inside because it can realize a soft mask by rendering a whole group
+ * offscreen, which is real work and real sink traffic for a run nobody sees;
+ * measured, hoisting it out reddens NOTHING across all 622 files, because no
+ * fixture gives a hidden run a soft mask. And a mode 4-7 run's clip is inside
+ * because a hidden run must not clip what follows to glyphs it never drew —
+ * that failing OPEN is this file's stated posture for TEXT clips (more shows
+ * than the document asked for, where the alternative makes the following
+ * content vanish) and is deliberately NOT the `W f` rule one line up, where
+ * `element` flushes a PATH clip precisely so a hidden one is not lost. No
+ * fixture anywhere puts a clipping `Tr` inside an `/OC` section, so that one
+ * is unfalsifiable by construction today. Do not read the green suite as
+ * covering either placement.
+ */
 function showText(
   ctx: RenderCtx, gs: GState, strObj: PdfObject | undefined, baseCtm: Matrix,
+  element: (paint: () => void) => void,
   collectClip?: (info: TextRunInfo) => void,
 ): void {
   if (!isString(strObj) || !gs.font) return;
-  // A stroke-ONLY run (Tr 1 and its clipping twin) reads /OP over the stroke
-  // colour space; everything else reads /op over the fill one, which is also
-  // what a mode that does both paints first.
-  syncPaintState(ctx, gs,
-    strokesText(gs.textRender) && !fillsText(gs.textRender) ? 'stroke' : 'fill');
-  const decoded = gs.font.decodeRun(strObj.bytes);
-  // A non-painting mode (3 and 7) is gated HERE rather than in each sink, so
-  // all three sinks get it from one decision and none can disagree — and so a
-  // run whose fill paint is a pattern paints nothing at all, where a gate
-  // inside paintGlyphRun would still clip to the glyphs and paint through them.
-  // The pen still advances: an invisible run occupies its width (9.4.4).
-  const info: TextRunInfo = {
-    font: gs.font, decoded,
-    tm: gs.tm, ctm: gs.ctm, rise: gs.rise,
-    fontSize: gs.fontSize, fontFamily: gs.fontFamily, bold: gs.fontBold, italic: gs.fontItalic, color: gs.fill,
-    charSp: gs.charSp, wordSp: gs.wordSp, hscale: gs.hscale,
-    mode: gs.textRender, strokeColor: gs.stroke, strokeStyle: strokeStyle(gs),
-    bytes: strObj.bytes, fontDict: gs.fontRef,
-  };
-  // A clipping mode (4-7) ADDS this run's glyphs to the text object's clip,
-  // which the walk commits at ET. A Type 3 glyph is a content stream with no
-  // outline to contribute, so it is left out and the clip fails open — the
-  // rule below for a sink that cannot build one.
-  if (clipsText(gs.textRender) && !gs.font.type3) collectClip?.(info);
+  const font = gs.font;
+  const decoded = font.decodeRun(strObj.bytes);
 
-  if (!paintsText(gs.textRender)) { /* advance only */ }
-  // A Type 3 glyph is a content stream, not an outline, so it never reaches a
-  // sink's glyphRun — it is interpreted here and both backends see only the
-  // primitives it draws.
-  else if (gs.font.type3) drawType3Run(ctx, gs, gs.font, strObj.bytes);
-  else paintGlyphRun(ctx, gs, info, baseCtm);
+  element(() => {
+    // A stroke-ONLY run (Tr 1 and its clipping twin) reads /OP over the stroke
+    // colour space; everything else reads /op over the fill one, which is also
+    // what a mode that does both paints first.
+    syncPaintState(ctx, gs,
+      strokesText(gs.textRender) && !fillsText(gs.textRender) ? 'stroke' : 'fill');
+    // A non-painting mode (3 and 7) is gated HERE rather than in each sink, so
+    // all three sinks get it from one decision and none can disagree — and so a
+    // run whose fill paint is a pattern paints nothing at all, where a gate
+    // inside paintGlyphRun would still clip to the glyphs and paint through them.
+    const info: TextRunInfo = {
+      font, decoded,
+      tm: gs.tm, ctm: gs.ctm, rise: gs.rise,
+      fontSize: gs.fontSize, fontFamily: gs.fontFamily, bold: gs.fontBold, italic: gs.fontItalic, color: gs.fill,
+      charSp: gs.charSp, wordSp: gs.wordSp, hscale: gs.hscale,
+      mode: gs.textRender, strokeColor: gs.stroke, strokeStyle: strokeStyle(gs),
+      bytes: strObj.bytes, fontDict: gs.fontRef,
+    };
+    // A clipping mode (4-7) ADDS this run's glyphs to the text object's clip,
+    // which the walk commits at ET. A Type 3 glyph is a content stream with no
+    // outline to contribute, so it is left out and the clip fails open — the
+    // rule below for a sink that cannot build one.
+    if (clipsText(gs.textRender) && !font.type3) collectClip?.(info);
+
+    if (!paintsText(gs.textRender)) { /* nothing to emit */ }
+    // A Type 3 glyph is a content stream, not an outline, so it never reaches a
+    // sink's glyphRun — it is interpreted here and both backends see only the
+    // primitives it draws.
+    else if (font.type3) drawType3Run(ctx, gs, font, strObj.bytes);
+    else paintGlyphRun(ctx, gs, info, baseCtm);
+  });
+
   const [dx, dy] = runDisplacement(
-    decoded, gs.fontSize, gs.charSp, gs.wordSp, gs.hscale, gs.font.wmode === 1);
+    decoded, gs.fontSize, gs.charSp, gs.wordSp, gs.hscale, font.wmode === 1);
   gs.tm = mul(translate(dx, dy), gs.tm);
 }
 
@@ -1115,11 +1099,15 @@ function paintGlyphRun(ctx: RenderCtx, gs: GState, info: TextRunInfo, baseCtm: M
 
 function showArray(
   ctx: RenderCtx, gs: GState, arrObj: PdfObject | undefined, baseCtm: Matrix,
+  element: (paint: () => void) => void,
   collectClip?: (info: TextRunInfo) => void,
 ): void {
   if (!isArray(arrObj) || !gs.font) return;
+  // The numeric kerns move the pen too, so this loop must run for a hidden
+  // section exactly as the advance in `showText` must — wrapping the whole
+  // `TJ` in `element` dropped them along with the ink.
   for (const el of arrObj) {
-    if (isString(el)) showText(ctx, gs, el, baseCtm, collectClip);
+    if (isString(el)) showText(ctx, gs, el, baseCtm, element, collectClip);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, gs.fontSize, gs.hscale, gs.font.wmode === 1);
       gs.tm = mul(translate(dx, dy), gs.tm);

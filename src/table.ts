@@ -1,4 +1,4 @@
-import { visitContent, extractFragments, fragmentsFromGlyphs, apply, type PathEvent, type TextFragment, type GlyphEvent } from './text.js';
+import { visitContent, extractFragments, fragmentsFromGlyphs, apply, walkOpts, type PathEvent, type TextFragment, type GlyphEvent, type ExtractOptions } from './text.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { Table } from './tablemodel.js';
@@ -75,9 +75,11 @@ function clusterRules(rules: Rule[]): Rule[] {
   return out;
 }
 
-export function collectRules(doc: Document, page: Page, region?: Rect): { horiz: Rule[]; vert: Rule[] } {
+export function collectRules(
+  doc: Document, page: Page, region?: Rect, opts?: ExtractOptions,
+): { horiz: Rule[]; vert: Rule[] } {
   const horiz: Rule[] = [], vert: Rule[] = [];
-  visitContent(doc, page, { path: (e) => rulesFromPath(e, horiz, vert, region) });
+  visitContent(doc, page, { path: (e) => rulesFromPath(e, horiz, vert, region) }, walkOpts(opts));
   return { horiz: clusterRules(horiz), vert: clusterRules(vert) };
 }
 
@@ -273,13 +275,15 @@ function pathCenterlines(e: PathEvent): [number, number, number, number][] {
 }
 
 /** One content walk collecting page-space centerline segments and text glyphs. */
-function collectOriented(doc: Document, page: Page): { segs: Seg[]; glyphs: GlyphEvent[] } {
+function collectOriented(
+  doc: Document, page: Page, opts?: ExtractOptions,
+): { segs: Seg[]; glyphs: GlyphEvent[] } {
   const segs: Seg[] = [];
   const glyphs: GlyphEvent[] = [];
   visitContent(doc, page, {
     path: (e) => { for (const c of pathCenterlines(e)) segs.push({ x0: c[0], y0: c[1], x1: c[2], y1: c[3] }); },
     glyph: (e) => { if (e.text) glyphs.push(e); },
-  });
+  }, walkOpts(opts));
   return { segs, glyphs };
 }
 
@@ -371,13 +375,13 @@ export function extractTables(doc: Document, page: Page, options: TableExtractOp
     const tagged = extractTaggedTables(doc, page, options);
     if (tagged.length) return tagged;
   }
-  const { segs, glyphs } = collectOriented(doc, page);
+  const { segs, glyphs } = collectOriented(doc, page, options);
   const theta = dominantAngle(segs, glyphs.map((g) => g.angle));
 
   // Axis-aligned: run the existing code path unchanged (byte-identical output).
   if (Math.abs(theta) < ANGLE_EPS) {
-    const { horiz, vert } = collectRules(doc, page, options.region);
-    const frags = extractFragments(doc, page).filter((f) =>
+    const { horiz, vert } = collectRules(doc, page, options.region, options);
+    const frags = extractFragments(doc, page, options).filter((f) =>
       !options.region || contains(options.region, ...centroid(f.quad)));
     const tables = buildTables(horiz, vert, frags);
     // Axis-aligned only. A rotated table's cell quads are in its own upright
@@ -389,7 +393,7 @@ export function extractTables(doc: Document, page: Page, options: TableExtractOp
     // decorateInk. Moving it into the cell loop walks the page's content per
     // cell — the shape that turned an N-figure page into N content walks in
     // no93.1, and a table has cells x 4 edges to resolve.
-    decorateInk(tables, collectPageInk(page.GetPaths(), MIN_RULE_LEN, MAX_RULE_THICK));
+    decorateInk(tables, collectPageInk(page.GetPaths(options), MIN_RULE_LEN, MAX_RULE_THICK));
     return tables;
   }
 

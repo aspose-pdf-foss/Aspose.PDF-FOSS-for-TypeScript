@@ -2743,6 +2743,103 @@ Source (`src/`):
   something, the border rule included — the plan predicted that one would be
   uncovered, and `test/csstable.test.ts`'s "paints the edges a cell border
   states and no others" closes it.
+- **pdfatransparency.ts** — can anything a page's resources reach use
+  transparency? (`ixxw.5`) The predicate behind `ConvertToPdfA`'s
+  `inertTransparencyGroupPass`.
+  **Why it exists:** ISO 19005-1 prohibits transparency and the converter
+  cannot FLATTEN it — correctly, since flattening means rasterizing the page
+  and losing its text — so a page carrying `/Group /S /Transparency` was
+  reported unresolved and left alone. Producers stamp that group on pages that
+  use no transparency at all, where it cannot change the rendered result.
+  **Invariant, and the DIRECTION is the safety property:** it is an
+  OVER-APPROXIMATION. `false` means "transparency is ruled out", so a wrong
+  false removes a group that was doing something while a wrong true merely
+  leaves a document reported. Every ExtGState in a resource dictionary counts,
+  selected by an operator or not, and anything unrecognised says nothing
+  rather than being taken as safe.
+  **Invariant:** it reads NO CONTENT STREAM. That is what the resource-level
+  over-approximation buys — no parsing, no `q`/`Q` state, and no chance of
+  missing an operator in a stream that would not parse.
+  **Invariant:** a pure LEAF over `types.js` with `resolve` as an argument, so
+  every rule is drivable from hand-built dicts with no document; it mutates
+  nothing and never throws.
+  **Invariant:** presence of `/SMask` is tested on the RAW dict —
+  `resolve(undefined)` is `null` and `null !== undefined`, so resolving first
+  reports a soft mask for every ExtGState that has none. The trap
+  `transparencyRule` and `pdfxvalidate.ts` both already record. Measured: it
+  reddens 3.
+  **Invariant (`pdfaconvert.ts`):** the walk starts from `page.Resources`, the
+  INHERITED value. `/Resources` is inheritable (7.7.3.4) and Ghostscript and
+  Word put it on the `/Pages` node, so the raw read finds nothing, concludes
+  "inert" and drops a group that was doing something — the wrong-FALSE
+  direction. `colorconvert.ts` shipped exactly this bug (`85l8.5`) and it
+  degraded a whole pass. **Note it covered NOTHING until a fixture existed:**
+  no `buildPdfaPdf` document inherits its resources, so the raw read reddened
+  nothing; `test/pdfa-inert-group.test.ts`'s hand-built inherited-resources
+  case is the only thing that sees it.
+  **Note the scope, deliberate:** PAGE groups only, and a Form XObject's own
+  `/Group` is a DISQUALIFIER rather than something to look inside — the
+  issue's own list. Ruling a nested group inert is a separate judgement, so a
+  page holding one keeps its own group and is still reported.
+  **Note:** part 1 only. Parts 2/3/4 permit transparency outright, so there is
+  no rule to satisfy and removing the group would be a change nobody asked
+  for; `preserve: ['transparency']` declines it.
+  **Note, measured:** all six mutations aimed at this redden, the
+  inherited-resources one only after the case above was added.
+- **colorsep.ts** — repointing a Separation or DeviceN over a device alternate
+  (`ixxw.4`): the resampled tint transform behind
+  `ConvertColorsOptions.preserveSpotColors`.
+  **Why it exists:** conversion is operator-level NEUTRALIZATION, so
+  `/Sep cs 1 scn` became `1 0 0 rg` — the page looked identical and the NAMED
+  COLORANT was gone, which for a print workflow means the plate it would have
+  been separated onto no longer exists. This rebuilds the SPACE instead.
+  **Invariant:** the space keeps its KIND, its colorant NAMES and its
+  component COUNT; only the alternate and the tint function move. That is what
+  makes it safe document-wide — every `cs`/`scn` selecting it is untouched and
+  a Separation image keeps its tint samples byte for byte.
+  **Invariant:** a pure LEAF. `resolve`/`inflate` arrive as arguments (the
+  `colorimage.ts` seam) and NOTHING is allocated — a type 0 function is a
+  STREAM and so must be indirect, which only a `Document` can mint, so the
+  stream comes back for `colorconvert.ts` to number. Every rule is drivable
+  from hand-built arrays with no document, and it never throws: a space it
+  cannot rebuild is `undefined`.
+  **Invariant:** the alternate is evaluated through `resolveColorSpace`'s own
+  `ColorConverter` — the one `raster.ts` renders with — so the resampled
+  function reproduces what the page already showed rather than being a second
+  answer to a question the renderer already answers.
+  **Invariant, and it is the FALSE FRIEND that bit during implementation:** a
+  type 0 sample stream varies its FIRST axis FASTEST (32000-1 7.10.2), which
+  `pdffunction.ts` reads as `flat = idx[0] + idx[1]*Size[0] + …`. That is the
+  OPPOSITE of an ICC CLUT, where `icclut.ts` records the first channel varying
+  SLOWEST. Two sampled-table conventions that look alike and run in opposite
+  directions; this shipped with the ICC one, and the result is a perfectly
+  smooth surface with the colorants TRANSPOSED.
+  **Note, measured, and the obvious cases cannot see it:** a Separation has ONE
+  axis, where order is meaningless, and the DeviceN cases that assert the grid
+  and the names never look at a sample VALUE. What pins it is a 2-colorant
+  DeviceN whose inputs do DIFFERENT things — a type 4 tint where `{ 0 0 }`
+  leaves `a b 0 0`, so C comes from the first colorant and M from the second.
+  Before that case existed the reversal reddened NOTHING.
+  **Invariant:** an alternate that ALREADY is the target is declined, since
+  rebuilding would trade an exact transform for a sampled one for no gain.
+  **Note the budget:** 256 samples for one colorant — a byte of tint
+  resolution, so a linear tint lands ON the sample points and round-trips
+  exactly — and one axis per colorant against a fixed 4096 total beyond that,
+  so a four-colorant DeviceN samples coarsely rather than reaching 256⁴. The
+  grid is REPORTED (`ColorConvertReport.spotSpaces`) rather than exactness
+  implied.
+  **Invariant (`colorconvert.ts`):** `preserveSpotColors` is OFF by default,
+  which is what keeps every existing caller byte-identical — measured, the
+  full suite did not move. `ConvertToGrayscale` means what it says: a document
+  asked to be grey must not still carry a spot colorant a RIP would ink. The
+  PDF/A pass sets it, where the point is conformance rather than colour
+  reduction.
+  **Invariant:** `colorOps` reports the resource KEYS it left alone
+  (`spotSpaces`) and `colorconvert.ts` repoints those arrays — `patternSpaces`'
+  shape and `patternSpaces`' reason. The two halves must agree: repointing the
+  space while still flattening the `scn` renders correctly but loses the
+  colorant anyway, and flattening the space while keeping the `scn` renders
+  WRONG. Both directions are mutation-checked.
 - **datauri.ts** — decoding a `data:` URI's payload (`zch2.6`). A pure leaf
   importing NOTHING.
   **Invariant:** it never throws — a payload it cannot decode is `undefined`,
@@ -3450,7 +3547,34 @@ Source (`src/`):
   would drift apart again — which is exactly how this bug existed.
 - **text.ts** — coordinate-based text extraction (`Page.GetText()`): walks
   content ops, emits positioned glyph runs, and assembles them into words/lines
-  (affine matrix helpers live here too). **font.ts** — `TextFont`, the per-font
+  (affine matrix helpers live here too).
+  **Invariant (`q1g2.3`), and the POLARITY is the safety property:**
+  `ContentWalkOptions.skipHidden` defaults to FALSE — today's behaviour — so
+  every consumer that must see what the file CONTAINS is safe BY CONSTRUCTION
+  rather than by anybody having remembered it: `redact.ts` removes content,
+  `inlineimage.ts` removes it, `textedit.ts`'s edit entries rewrite it,
+  `structwrite.ts` marks it, `structvalidate.ts` audits it, and `artifact.ts`
+  and `autotag.ts` report it. A walker that skipped by default would make
+  `RedactText` silently remove LESS than it was asked to and hand that same
+  trap to the next consumer added. READ APIs opt in instead, through the
+  PUBLIC `ExtractOptions.includeHidden`, whose default is the opposite —
+  `walkOpts` is THE one negation, at exactly the public boundary. Two names
+  rather than one, because each states its own layer's default honestly.
+  **Invariant (`q1g2.3`):** `hidden` suppresses the glyph EVENT and never the
+  ADVANCE. A show operator occupies its width whether or not anybody sees it,
+  so gating the CALL — which is what `pagerender.ts` does, tracked separately —
+  leaves the pen where the hidden run began and misplaces every visible glyph
+  after it in the same text object: a quad that is WRONG rather than absent,
+  which is worse than the defect being fixed. **Note the fixture cannot be a
+  fragment comparison:** `fragmentsFromGlyphs` MERGES the two adjacent
+  same-font runs, so under `includeHidden` they are one fragment starting at
+  the original pen and the comparison measures nothing. It reads glyph events.
+  **Invariant (`q1g2.3`):** `Do` is gated at ONE site covering both subtypes,
+  `pagerender.ts`'s arrangement, and it reads the `/OC` on the XObject DICT as
+  well as the enclosing section — that is the half this library itself WRITES,
+  so without it extraction reports an image our own renderer skips. A hidden
+  FORM is skipped outright rather than walked with a flag.
+  **font.ts** — `TextFont`, the per-font
   code→Unicode decoder (simple-font encodings, `/Differences`, `/ToUnicode`,
   Type0/Identity-H) plus glyph-advance widths. **encoding.ts** — base text
   encodings (WinAnsi/MacRoman/Standard/PDFDoc) and the Adobe-glyph-name→Unicode
@@ -3927,6 +4051,45 @@ Source (`src/`):
   (`page.GetPaths`): a focused content walker (cf. `imageusage.ts`, separate from
   `text.ts`'s `visitContent`) that tracks CTM/paint/clip and emits one positioned
   `PagePath` per paint op.
+  **Invariant (`q1g2.3`):** it hides optional content through `ocvisible.ts`
+  like the other two walkers, and a hidden paint still RESETS the accumulated
+  subpaths and pending clip — carrying them forward gives the next VISIBLE path
+  the hidden one's geometry, which is a wrong box rather than an absent one.
+  That is `pagerender.ts`'s "flush the clip even when hidden" wearing different
+  clothes. A CLIP-ONLY path is suppressed too, since `GetPaths` reports what a
+  page PAINTS and a hidden `W n` paints nothing; nothing in `src/` reads
+  `PagePath.clip`, so no consumer loses by it.
+- **ocvisible.ts** — is this content hidden by the document's optional-content
+  configuration (`q1g2.3`)? `OcVisibility` (the default config plus a per-walk
+  memo), `ocVisibilityFor`, `ocVisible`, and `OcStack`, the BMC/BDC/EMC
+  bookkeeping.
+  **Invariant:** ONE owner for THREE walkers — `pagerender.ts`,
+  `text.ts`'s `visitContent` and `paths.ts`'s own — because a second copy is
+  how a renderer and an extractor come to disagree about one page, which IS the
+  defect `q1g2.3` closed one layer down. It is a CLASS rather than three lines
+  copied into each walker because the NESTING rule differs silently: a walker
+  that pushed only for `/OC` still hides the right ops on every single-level
+  fixture. Measured: making `bmc()` push nothing reddens exactly one case.
+  **Invariant:** a pure LEAF — `Document` and `LayerConfig` arrive as TYPES and
+  as arguments, so the edges close no cycle and every rule is drivable from a
+  hand-built configuration.
+  **Invariant:** read-only. It goes through `defaultConfigIfPresent` rather
+  than `Default`, which CREATES `/OCProperties` and calls `markModified()` —
+  and `choosePath()` takes the incremental append only for an UNMODIFIED base,
+  so a walker reaching for `Default` would turn a `Sign()` after a `GetText()`
+  into a full rewrite of bytes an earlier signature covered. A save alone
+  CANNOT see that; the fixture asserts the catalog directly.
+  **Invariant:** the operand is passed to `ResolveVisibility` UNRESOLVED,
+  because that function decides by REF IDENTITY. Hand it a resolved dict and
+  every layer falls through to `BaseState`, so a switched-off layer reads as
+  visible and the whole feature silently does nothing.
+  **Note, measured, and it covers NOTHING:** the `raw !== undefined` guard in
+  `bdc` is redundant and PROVABLY cannot be otherwise —
+  `ResolveVisibility` returns true for any non-dict, so an unresolved name
+  already reads as visible by that route. Retained as the honest spelling of
+  "we hide only what we resolved"; the same finding `pagerender.ts` recorded
+  for its own copy before the extraction. Do not cite the inline-dict fixture
+  as covering it.
 - **artifact.ts** — `page.Artifacts`: the `/Artifact` marked-content scopes a
   page declares (32000-1 14.8.2.2). The READ side of a vocabulary this library
   previously only WROTE — `wrapArtifact`, `PageGraphics.BeginArtifact`, the
@@ -4082,6 +4245,190 @@ Source (`src/`):
   through to `BaseState`, so a switched-off layer reads as visible and the whole
   feature silently does nothing. Measured: resolving before the call reddens 5
   cases in `test/optional-content-render.test.ts`.
+  **Invariant (`q1g2.4`):** `/Usage` ALONE IS INERT, and the two halves are
+  therefore never written apart. `ResolveForEvent` starts from the config's own
+  `/ON`/`/OFF`/`BaseState` and lets only an `/AS` entry whose `/Event` matches
+  move the groups it names; a group with a `/Usage` no `/AS` reaches comes back
+  UNCHANGED — which is why `SetUsage` writes both, and why it lives on
+  `LayerConfig` (where `/AS` is) with `Layer.SetUsage` delegating to `Default`,
+  exactly as `Visible` delegates to `SetVisible`. Measured: making a missing
+  `/AS` mean "apply the usage anyway" reddens the unchanged case, and applying
+  an entry on every event reddens 3.
+  **Invariant:** `ResolveForEvent` CHANGES NOTHING and `ApplyUsage` is the only
+  writer — it returns the layers whose state actually MOVED, so it is
+  idempotent, and it leaves the `/AS` entries in place. They say what the
+  document intends and a second `ApplyUsage` for another event must still reach
+  them; discarding what a configuration does not show is `FlattenLayers`
+  (`q1g2.6`). Both halves are mutation-checked, the read-only one against saved
+  bytes rather than against the model.
+  **Invariant:** it resolves against the configuration it was ASKED, never
+  `Default`. **Note the fixture, measured the hard way:** a named config whose
+  own answer happens to agree with the default's measures NOTHING — the first
+  version set `BaseState OFF`, where the usage would have switched the group
+  off anyway, and the mutation stayed green. It asserts the two configs'
+  answers side by side and requires them to DIFFER.
+  **Invariant:** `SetUsage` writes ONE `/AS` entry per (event, category) pair,
+  so a second group asking for the same thing joins the entry that exists. It
+  replaces `/Usage` wholesale, so it first drops the group from every entry —
+  a category the rewrite no longer states stops being applied, and an entry
+  left naming no group is removed. Without that drop a rewritten group is
+  listed twice and its old categories go on applying.
+  **Note, measured, and the two emptiness guards in `usageApplications` cover
+  NOTHING:** an entry left with no groups, or with no categories, provably
+  cannot change an answer — the accumulation maps over `ocgs`, so an empty one
+  contributes to nobody, and `combineUsageStates([])` is already `undefined`.
+  Only the `/Event` guard is load-bearing (it stops a `null` being
+  dereferenced). Do not cite the damaged-`/AS` cases as covering the other two.
+  **Invariant (`q1g2.5`):** `ApplyConfiguration` is a WRITE into `/D`, never an
+  in-memory selection. `/D` is this library's ONE notion of "the current
+  state" — what rendering, extraction, `ApplyUsage` and every export read — so
+  a merely *selected* configuration would be a second answer to the same
+  question. It follows that `/D`'s previous state is overwritten, which is
+  what `SaveConfiguration` exists to snapshot first.
+  **Invariant:** it REPLACES, never merges — every key in `CONFIG_STATE_KEYS`
+  is deleted from `/D` before the copy, so a preset silent about `/OFF` leaves
+  `/D` silent too. Merged, applying a preset that says nothing about a key
+  leaves the previous value standing and the document sits in a state that is
+  NEITHER configuration: it renders plausibly and nobody looks for it.
+  `/Name` and `/Creator` are NOT state — they identify a configuration rather
+  than describe it — so `/D` keeps its own rather than coming to claim it IS
+  the preset. Measured at 1 and 5 cases.
+  **Invariant:** a ref that NAMES A LAYER is shared; a container the
+  configuration OWNS is cloned. `/ON`, `/OFF`, `/Order`, `/Locked` and
+  `/RBGroups` hold OCG refs — clone those and the copy names layers that do
+  not exist (7 cases) — while the arrays around them, and the `/AS` entry
+  dicts, are the configuration's own. `owned` is decided PER KEY because the
+  two are indistinguishable from the value alone, and flips back to false
+  inside an `/AS` entry, whose own `/OCGs` names layers exactly as `/ON` does.
+  **Note both clone rules needed a fixture built for them, and the obvious one
+  measures NOTHING.** Sharing an array is invisible to any test built on
+  `SetVisible`, because every writer in `src/` REPLACES a config array
+  (`addTo` spreads, `removeFrom` filters) rather than mutating one — what the
+  clone defends is a caller editing the public live `Dict` in place, which is
+  what the fixture does. And a shared `/AS` entry is invisible unless the
+  entry names TWO layers: `SetUsage` mutates an entry dict in place only when
+  something is LEFT in it, so a single-layer entry hits `ocgs.length === 0 →
+  continue` first. Both mutations were GREEN until those two cases existed.
+  **Invariant:** applying `/D` to itself is a no-op, guarded by identity.
+  Without it `copyConfigState` deletes each key from the destination and then
+  finds it absent in the source — the same dict — erasing the document's whole
+  optional-content state. Measured: no case reached it until one applied
+  `Default` to itself.
+  **Note the asymmetry that reads like a bug and is not:** `/AS` is a property
+  of the CONFIGURATION and is copied, while a group's `/Usage` is a property
+  of the GROUP and belongs to no configuration at all. So applying a preset
+  moves which statements are APPLIED, never what a group SAYS — a later
+  `SetUsage` on `/D` changes what every configuration resolves. Asserted
+  directly from both sides.
+- **ocusage.ts** — what a group's `/Usage` says, and what a configuration's
+  `/AS` usage application dictionaries make of it (32000-1 8.11.4.4). A pure
+  LEAF over `types.js` and `langmatch.js` taking `resolve` as an ARGUMENT (the
+  `colorimage.ts` seam), so every rule is drivable from hand-built dicts with
+  no file built — the split `floatstack.ts`, `tablespan.ts`, `linebox.ts` and
+  `meshtri.ts` each already make. It never throws.
+  **Invariant:** a category that cannot speak returns `undefined`, NEVER a
+  state, and that polarity is the safety property. `/Zoom` and `/Language`
+  describe a VIEWER, so with no magnification and no language tag supplied they
+  DECLINE rather than being decided against an invented one; `/User` declines
+  always, there being no viewer identity here; and `/PageElement` declines
+  because it carries no state at all — it says what the content IS (a header, a
+  logo), not whether to show it. A defaulted state is the failure that renders
+  plausibly: a watermark silently dropped, or a CAD drawing switched off, with
+  nothing anywhere saying why. Measured: evaluating either of those two reddens
+  2, and giving them an `/AS` event reddens 1.
+  **Invariant:** `combineUsageStates` is the ONE owner of "any category saying
+  OFF wins" — asked once per `/AS` entry here and again across entries by
+  `ocg.ts`, so two entries provably cannot combine by a different rule from two
+  categories. With nothing speaking it answers `undefined`, which is what makes
+  "a `/Usage` no `/AS` reaches leaves the configured state alone" true by
+  construction rather than by a check. Measured: it reddens 21.
+  **Invariant:** the `/Zoom` interval is HALF-OPEN, `min <= zoom < max`. Closed
+  at both ends, two adjacent zoom bands both draw at the boundary
+  magnification — one visibly wrong frame rather than an error. An absent `max`
+  is unbounded and an absent `min` is 0, so a `/Zoom` stating one end still
+  describes a real interval; defaulting `min` to 1 instead reddens 1.
+  **Invariant:** `/Language` matches on WHOLE SUBTAGS through `langmatch.ts`,
+  so `de` covers `de-AT` and not `den` — a `startsWith` gets that backwards and
+  reddens 4.
+  **Invariant, and it is the rule a per-group reading gets plausibly wrong:**
+  `/Preferred` is scoped to the `/AS` ENTRY, not to the group. It means "use me
+  when nothing matched the viewer's language EXACTLY", so `applyUsageEntry`
+  takes the entry's whole group list and makes one pre-pass before deciding
+  any of them. Read per group, a preferred German group stays on beside the
+  English one that matched and the page comes out in two languages at once;
+  measured, that reddens 2. Note a mere subtag match is NOT the exact one
+  `/Preferred` asks about — `en-GB` against an `en` group leaves the preferred
+  fallback on too, which is asserted directly.
+- **ocflatten.ts** — `doc.FlattenLayers()` (`q1g2.6`): keep only what the
+  configuration SHOWS, then take the vocabulary away. Hidden marked-content
+  spans are DELETED from the streams they sit in, hidden XObject draws and
+  hidden annotations go with them, every surviving `/OC` wrapper and `/OC` key
+  is removed, and `/OCProperties` is deleted.
+  **Note the direction against `ocg.ts`'s `RemoveLayer`**, whose excision looks
+  the same and is not: that one takes ONE layer's content out and leaves the
+  machinery standing, so the document keeps its other layers and their toggles.
+  This takes the MACHINERY out and leaves one rendering behind — which is also
+  what makes PDF/A-1 conversion honest, since `pdfaconvert.ts`'s
+  `optionalContentPass` deletes `/OCProperties` alone and so makes every hidden
+  group unconditionally VISIBLE.
+  **Invariant:** `flattenOcOps` is PURE — the two visibility questions arrive
+  as CALLBACKS (the `colorimage.ts` seam) — so every rewriting rule is drivable
+  from hand-built op lists with no PDF built.
+  **Invariant:** it rewrites a GROUP of streams sharing one marked-content
+  nesting state, and a page's `/Contents` ARRAY is one group. 32000-1 7.8.2
+  makes the division between a page's content streams arbitrary — the
+  concatenation is interpreted as a single stream, which is what `Page.Contents`
+  already does for the renderer — so a `BDC` in one member and its `EMC` in the
+  next is a legal page, and a per-stream walk deletes to the end of the first
+  member and leaves the rest of the span standing. Every other scope is a group
+  of one. **This is deliberately NOT `colorconvert.ts`'s per-stream walk and
+  the two must not be merged:** a colour operator is local to the op carrying
+  it, so conversion is per STREAM, while an `/OC` section is a SPAN.
+  **Invariant:** an `/OC` operand that is an inline DICTIONARY — or a name no
+  `/Properties` entry claims — is left EXACTLY AS WRITTEN, the wrapper as well
+  as its content, and counted as `unresolved`. Hiding a section on a shape we
+  did not resolve is the one error that loses ink, and removing the wrapper
+  would claim we had decided about it. `ocvisible.ts` takes the same direction
+  for rendering. An inline dict cannot hold an indirect reference — content
+  streams have none — so it names no group that can be resolved at all.
+  **Invariant:** only `/OC` wrappers go. A `/P << /MCID 0 >> BDC` is the
+  structure tree's, and removing marked content generally would destroy it.
+  **Invariant:** a hidden XObject loses its `/Resources` entry as well as its
+  `Do`, and so does one whose every invocation sat inside a deleted span and
+  which nothing else draws. Left in `/Resources` the object stays reachable
+  through the page, so `Save()`'s mark-sweep KEEPS the hidden content in the
+  file — which is exactly what this exists to prevent.
+  **Invariant:** a hidden annotation goes through `Page.RemoveAnnotation`,
+  never a raw `/Annots` splice, because that is what calls `untagObjects` — the
+  rule `redactannots.ts` already records.
+  **Note, measured, and it is the finding worth carrying:** the FIVE nested
+  content scopes each needed a fixture built for them, and until those existed
+  excluding ANY one of form XObjects, tiling patterns, Type 3 glyph procedures,
+  soft-mask groups or annotation appearances from the walk was GREEN. Every
+  fixture in this epic before `q1g2.6` marks content in the PAGE stream alone,
+  so a page-content walk satisfies all of them. `build-ocg-render-pdf.ts` gives
+  each scope its own `/Properties` under keys the PAGE does not carry
+  (`nestedProps`), so a walk that reached the stream but resolved its operands
+  against the page's resources cannot pass by accident — measured, that
+  mutation reddens 5.
+  **Note, measured, and it covers NOTHING:** deduping scopes by object number
+  is a COST rule rather than a correctness one and reddens not one case. A form
+  reached from two pages is simply walked twice, and the second pass finds no
+  `/OC` left, reports `changed: false` and writes nothing — the rewrite is
+  idempotent by construction. Do not cite the green suite as covering it.
+  **Note, measured:** every other mutation aimed at this module reddens —
+  27 of 29 across the sweep.
+- **langmatch.ts** — `langMatches`, RFC 4647 §3.3.2 extended filtering. A leaf
+  importing NOTHING, extracted from `htmllang.ts` because TWO unrelated stacks
+  ask the same question and neither may reach the other: `htmllang.ts` answers
+  CSS `:lang()` and `ocusage.ts` decides an optional-content group's
+  `/Usage /Language`. `htmllang.ts` value-imports `bidi.js` for
+  `nodeDirection`, so reaching it from the PDF side would drag the UAX #9
+  tables in behind a three-line predicate, and point an HTML module at a PDF
+  one. The extraction `colornames.ts`, `preformat.ts`, `bordersides.ts` and
+  `datauri.ts` each already made; `htmllang.ts` re-exports it, so
+  `cssselect.ts`'s import path did not move and `test/htmllang.test.ts` is the
+  fence that the move changed nothing.
 - **imagepages.ts** — `doc.AddImagePages()`: an image file expanded into PAGES,
   one per frame. Note the direction against `imageembed.ts`, which draws an
   image INTO a page.
@@ -5111,6 +5458,161 @@ Source (`src/`):
   backport reaching too far. Each was repointed at what genuinely stays
   part-4-only rather than deleted, so those files still record where the
   boundary sits.
+  **Invariant (`ixxw.1`):** `deviceColorRule` asks the question 6.2.3.3 asks —
+  is the output intent's profile a profile OF THE SPACE the content uses —
+  never merely whether an intent exists. DeviceCMYK is permitted only under a
+  CMYK profile, DeviceRGB only under an RGB one; DeviceGray is satisfied by
+  either, so it is deliberately ABSENT from `INTENT_SPACE_FOR` rather than
+  listed with a wildcard. Until this landed, a CMYK document carrying the sRGB
+  intent every producer emits validated clean and then wrote a false
+  conformance claim into its own XMP.
+  **Invariant (`ixxw.1`):** the space is read from the PROFILE HEADER through
+  `icc.ts`, never from the stream dict's `/N`. `/N` is the producer's claim
+  about the object it wrapped; the header is the profile's own statement, and
+  `iccBasedNRule` already exists to report the two disagreeing — so deriving
+  the space from `/N` would give one rule two answers to "what space is this
+  profile". **Note this needed a fixture built for it:** the two AGREE in every
+  real file and in every pre-existing fixture, so deriving from `/N` reddens
+  NOTHING; `iccN` exists on the builder solely to make them disagree, and the
+  two cases in `test/pdfavalidate.test.ts` that use it are the only things in
+  the suite that pin the decision, one per direction.
+  **Invariant (`ixxw.1`):** a profile that will not PARSE is not checked, and
+  the rule falls back to its previous answer. That is the lenient-read posture
+  this library takes for every embedded payload a producer wrote (`GetXmp`'s
+  rule) — and it is load-bearing as a FENCE: every fixture written before
+  `ixxw.1` carries a 4-byte blob where a profile should be, so treating an
+  unreadable profile as a mismatch reddens essentially the whole PDF/A suite.
+  **Note the fixture is a HAND-BUILT 256-byte header, and why that size:** the
+  builder assembles the file as one JS string and encodes it once, so a byte
+  above 0x7F would come out as two — 256 is the smallest profile size whose own
+  u32 size field is ASCII-safe (`00 00 01 00`), where 132, the true minimum,
+  needs a 0x84.
+  **Note, measured, and it is what the REAL profiles uniquely buy:** the
+  hand-built header pins the byte offsets perfectly well (it carries `prtr` at
+  12 and `Lab ` at 20, so reading either instead of 16 reddens), which makes
+  the four real-profile cases redundant for that mutation. What they alone
+  catch is the profile being read WHOLE: they swap in the vendored sRGB blob
+  and `test/fixtures/icc/synthetic-cmyk.icc` through `Document.replaceObject`,
+  and truncating the parse to a fixed 132-byte prefix reddens exactly those
+  two flagging cases and nothing else — a zero-tag header parses happily from
+  its own prefix where a real tag table does not.
+  **Note why `replaceObject` rather than setting the dict entry:** those cases
+  were written while `pdfaOutputIntentProfile` counted a `/DestOutputProfile`
+  only when it was a REF, so pointing the entry at an inline stream made the
+  document read as having no intent and the case measured the no-intent branch
+  instead. `xu3j` fixed that; the cases keep the `replaceObject` shape because
+  swapping the object is the narrower statement — it changes the profile and
+  nothing else about how the intent is written.
+  **Invariant (`xu3j`):** `pdfaOutputIntentProfile` counts profiles by
+  IDENTITY — a ref's object number, or the STREAM OBJECT itself for one
+  written inline — and answers `'present' | 'missing' | 'multiple'`. 32000-1
+  7.3.8 says every stream shall be indirect, so an inline
+  `/DestOutputProfile` is malformed; `parseDictOrStream` runs for nested dicts
+  too, so this parser produces one anyway, and that is the population
+  leniency is for.
+  **Note the bug it replaced was wrong in BOTH directions, and each half is
+  pinned by a different case.** Folding every inline profile onto one sentinel
+  and then returning `firstRef ?? 'missing'` meant a LONE inline profile set
+  no ref and fell through to 'missing' — three rules then reported against a
+  file whose intent is plainly there (`OutputIntent`,
+  `DeviceColorWithoutIntent`, and `TransparencyBlendingSpace`, whose clause
+  bites only when no intent is declared) — while TWO DIFFERENT inline profiles
+  shared the sentinel and read as one, so a document naming two output
+  conditions went unreported. **Measured:** restoring the sentinel alone
+  reddens ONLY the two-profile case, because with the rest of the fix in place
+  a single inline profile still counts 1; ignoring inline profiles outright
+  reddens all five.
+  **Invariant (`xu3j`):** the return is a MARKER, not the ref it used to be.
+  No caller ever read the ref — all three compare against `'missing'` or
+  `'multiple'` — and answering with a ref for one shape and nothing for the
+  other is precisely the asymmetry that produced the bug.
+  **Note, and it is a deliberate loose end:** with `'multiple'`,
+  `pdfaIntentColorSpace` still answers from the FIRST parseable profile, so
+  `deviceColorRule` checks device colour against one of several. The document
+  is already reported non-conformant on the count by `outputIntentRule`, which
+  names the real fault; reporting more here is the safe direction.
+  **Invariant (`ixxw.2`):** `deviceColorPass` runs IMMEDIATELY AFTER
+  `outputIntentPass`, which is what decides the space it aims at — for a
+  document that had no intent, the sRGB profile that pass just added. Measured
+  load-bearing: moving it earlier reddens four cases, because the intent is
+  then unreadable and the pass declines.
+  **Invariant (`ixxw.2`), and it is a DECISION rather than a limitation:** it
+  converts only toward an `'RGB '` intent. That rewrite is the same pivot
+  `raster.ts` applies, so the rendered page is unchanged — which is what makes
+  doing it automatically defensible at all. A CMYK intent would mean naive
+  maximum-black ink with no destination profile, which `ConvertToPdfX`
+  deliberately makes opt-in (`convertColor`) for exactly that reason, and a
+  GRAY intent would discard colour outright; under either the content is left
+  and `deviceColorRule` reports it.
+  **Note, measured, and the obvious fixture pins the WRONG guard:** a case
+  with RGB content under a CMYK intent is held by the DeviceCMYK TRIGGER, not
+  by the intent check — nothing would convert either way — so widening the
+  intent check reddens NOTHING against it. What discriminates is CMYK content
+  under a GRAY intent: the trigger fires and only the intent check can stop
+  it. The target is hardcoded `'rgb'`, so the guard and the target are two
+  statements of one decision and the guard needs its own case.
+  **Invariant (`ixxw.2`):** the trigger is DeviceCMYK in a page scan, which is
+  exactly what `deviceColorRule` reports on — DeviceGray is satisfied by any
+  intent and DeviceRGB already matches. That is what keeps a document needing
+  nothing byte-identical whether or not the category is preserved.
+  **Note:** the walk then converts the WHOLE document, so DeviceGray content
+  in a page that also uses CMYK is rewritten to DeviceRGB as well —
+  appearance-identical and still conformant, just more than the trigger asked
+  for. `convertColors` has no per-space filter and adding one is not this
+  issue's job.
+  **Invariant (`ixxw.2`):** a SIGNED document is skipped rather than converted.
+  `convertColors` throws `UnsupportedFeatureError` on one and `ConvertToPdfA`
+  has never refused a signed document, so without the guard this pass turns a
+  working call into a throw for every signed CMYK file. **Note it covered
+  NOTHING until a fixture was built for it** — no pdfaconvert fixture is
+  signed — and the fixture needs no real signature, since `hasSignatureField`
+  is a plain `/FT /Sig` field walk.
+  **Note, measured:** all six mutations aimed at this pass redden, two of them
+  only after the GRAY-intent and signed cases above were added. The render
+  comparison is load-bearing rather than decorative: converting to `'gray'`
+  instead of `'rgb'` reddens it, which is the acceptance criterion
+  ("rendered colours are unchanged") actually holding.
+  **Invariant (`ixxw.3`, `validatectx.ts`):** an image XObject's
+  `/ColorSpace` is DEVICE COLOUR exactly as a `k`/`rg`/`g` operator is —
+  6.2.3.3 constrains the colour SPACE, not the route by which content selects
+  it. `pageScans` read operators and inline images only, so a page whose only
+  colour is a picture reported none: a DeviceCMYK payload validated clean
+  under an sRGB intent, and such a document was never asked to carry an
+  output intent at all. `imageDeviceSpace` reads all three shapes — a direct
+  device name, a NAME into `/Resources /ColorSpace` (the route the `cs`
+  operator already takes), and an inline array where ONLY `/Indexed`
+  delegates to its base.
+  **Invariant:** every other array family is device-INDEPENDENT and permitted
+  under any intent, so reporting one would fail a CONFORMANT document. That
+  is why the array arm returns `DEVICE_CS[family.name]` rather than the family
+  name.
+  **Note, measured, and it is the redundant-defence trap:** letting the array
+  arm fall back to the family name reddens only the Indexed case and NOT the
+  ICCBased one — `usesDeviceColor` tests for the three device names alone, so
+  an `'ICCBased'` entry in `colorSpaces` is inert. The ICCBased rule IS pinned,
+  but only by a mutation that returns an actual device space for every array
+  (2 cases). Breaking either defence alone proves nothing.
+  **Note, measured, and NOT covered:** the `depth > 4` bound reddens nothing.
+  An Indexed base may not itself be Indexed, so only a malformed file reaches
+  it and none is vendored. Retained as defence against a file we did not write
+  — the rule `lexer.ts` sets — and recorded rather than left to be discovered.
+  **Note the blast radius was MEASURED at zero before the change:** widening
+  the scan reddened nothing across all 626 files, the real Ghostscript
+  `test/fixtures/pdfx/` documents included, even though `pdfxvalidate.ts`
+  consumes the same scan. That is a free hand rather than a licence — image
+  colour spaces were covered by NOTHING, so every rule here is pinned in
+  `test/image-colorspace-scan.test.ts` or nowhere.
+  **Note what `ixxw.3` did NOT need:** the re-encoding half was already
+  there. `convertColors` routed a CMYK DCT payload through decode-and-
+  re-encode for both APP14 transforms — plain CMYK and YCCK — emitting 8-bit
+  DeviceRGB with no stale `/Decode`, and it converts an `/ICCBased` `/N 4`
+  image too. Verified by probe before any code was written. The whole gap was
+  that nothing ASKED it to.
+  **Invariant (`ixxw.3`):** an `/ICCBased` image does not TRIGGER conversion.
+  It is device-independent and already conformant, so converting it would be
+  a lossy re-encode buying no conformance — the issue text asked for it and
+  ISO 19005 wins. Note it is still converted when something else in the
+  document triggers the pass, since the walk converts the whole document.
 - **svgrender.ts**, **raster.ts**, **pagerender.ts** — rendering (`ToSvg` /
   `ToImage`): a shared content-stream interpreter, a pure-TS scanline rasterizer,
   and glyph-outline drawing.
@@ -5252,8 +5754,10 @@ Source (`src/`):
   makes that green mean something.
   **Invariant (`q1g2.1`):** optional content is suppressed at ONE gate,
   `walk`'s `element()` — which is the only place that needs one, because every
-  painting operator already goes through it: the five path painters, the four
-  text showers, the inline image, `Do` and `sh`. A `Do` of a FORM is gated
+  painting operator's INK already goes through it: the five path painters, the
+  inline image, `Do`, `sh`, and (since `q1g2.7`, which is where the word
+  "ink" became load-bearing) the four text showers, which now HAND `element`
+  IN rather than being wrapped in it. A `Do` of a FORM is gated
   there too, which SKIPS the form rather than walking it with a flag; the two
   are equivalent because `drawFormBody` brackets the child in
   `sink.save()`/`restore()` over a CLONED state, so nothing inside a form can
@@ -5269,6 +5773,38 @@ Source (`src/`):
   `cm` sits between the section and the next paint, because the NEXT painting
   operator flushes the pending clip regardless — what the missing flush loses
   is the CTM, not the clip.
+  **Invariant (`q1g2.7`):** a hidden run's PEN ADVANCE sits OUTSIDE the
+  `element` bracket, and everything it emits sits inside it. `element` returns
+  without calling its argument when hidden, and `showText` advances `gs.tm` at
+  its END — so a show operator wrapped WHOLE never reached that line, and a
+  text object mixing a hidden run with a visible one drew the visible one
+  where the hidden one BEGAN, overprinting it. A show operator occupies its
+  width whether or not anybody sees it (9.4.4). Same rule `text.ts` holds on
+  the extraction side, where `hidden` suppresses the glyph EVENT and never the
+  ADVANCE — and the shape `showText` ALREADY used for a non-painting render
+  mode, which has always advanced without emitting: hidden is one more reason
+  to emit nothing. `showArray`'s numeric kerns move the pen too and were lost
+  the same way, so the `TJ` loop runs for a hidden section as well.
+  **Note the fixture, and the reference is the point:** it compares against
+  `3 Tr`, the invisible render mode, which has always advanced correctly — a
+  SECOND mechanism in the same file reaching the same pen position, rather
+  than a hard-coded number nobody can check. It needs a visible run AFTER a
+  hidden one in ONE text object with NO intervening `Td`/`Tm`: with a reset
+  between them both readings agree and the case measures nothing. A control
+  asserting the pen genuinely MOVED sits beside it, since two identical wrong
+  answers would satisfy the comparison on its own. Measured: putting the
+  advance back inside the bracket reddens 3, and re-wrapping `TJ` alone
+  reddens exactly the kerning case.
+  **Note, measured, and NEITHER is covered — both are held by reasoning:**
+  `syncPaintState` stays INSIDE the bracket because it can realize a soft mask
+  by rendering a whole group offscreen, which is real work and real sink
+  traffic for a run nobody sees — hoisting it out reddens NOTHING across all
+  622 files, no fixture giving a hidden run a soft mask. And a mode 4-7 run's
+  clip stays inside so a hidden run does not clip what follows to glyphs it
+  never drew — that failing OPEN is this file's stated posture for TEXT clips
+  and is deliberately NOT the `W f` rule above, where the PATH clip is flushed
+  precisely so a hidden one is not lost. No fixture anywhere puts a clipping
+  `Tr` inside an `/OC` section, so that one is unfalsifiable by construction.
   **Invariant:** the marked-content stack records WHICH section hid
   (`mcStack: boolean[]`), never a bare depth. A visible `BDC` nested inside a
   hidden one must not decrement on its `EMC`. **Note the fixture:** with the

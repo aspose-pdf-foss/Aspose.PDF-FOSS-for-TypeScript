@@ -160,6 +160,43 @@ function resolveSpaceFamily(ctx: Ctx, resDict: PdfDict | undefined, csName: stri
   return csName;
 }
 
+/**
+ * The DEVICE space an image XObject's `/ColorSpace` amounts to, or undefined.
+ *
+ * An image is device colour exactly as a `k`/`rg`/`g` operator is — ISO 19005-1
+ * 6.2.3.3 constrains the colour space, not the route by which content selects
+ * it — so a page whose only colour is a picture still needs a matching output
+ * intent. Until `ixxw.3` the scan looked at operators and inline images alone,
+ * and such a page reported no device colour at all.
+ *
+ * Three shapes reach here. A direct device name; a NAME into the page's
+ * `/Resources /ColorSpace`, which is the route the `cs` operator already
+ * takes; and an inline array, where only `/Indexed` delegates — its BASE is
+ * what is actually painted, while every other family (`/ICCBased`,
+ * `/Separation`, the CIE spaces) is device-INDEPENDENT and permitted under
+ * any intent, so reporting one would fail a conformant document.
+ *
+ * `depth` bounds the Indexed recursion. A base may not itself be Indexed, so
+ * a file that nests them is malformed and this must not follow it forever.
+ */
+function imageDeviceSpace(
+  ctx: Ctx, resDict: PdfDict | undefined, cs: PdfObject, depth = 0,
+): string | undefined {
+  if (depth > 4) return undefined;
+  if (isName(cs)) {
+    return DEVICE_CS[cs.name] ?? DEVICE_CS[resolveSpaceFamily(ctx, resDict, cs.name)];
+  }
+  if (isArray(cs) && cs.length > 0) {
+    const family = ctx.R(cs[0]);
+    if (!isName(family)) return undefined;
+    if (family.name === 'Indexed' && cs.length > 1) {
+      return imageDeviceSpace(ctx, resDict, ctx.R(cs[1]), depth + 1);
+    }
+    return DEVICE_CS[family.name];
+  }
+  return undefined;
+}
+
 /** Walk a page's content (recursing Form XObjects) once, recording the usage
  *  the conformance validators care about. */
 export function pageScans(ctx: Ctx): PageScan[] {
@@ -206,6 +243,12 @@ export function pageScans(ctx: Ctx): PageScan[] {
           if (isName(a)) {
             const xobjs = ctx.R(resDict.get('XObject'));
             const xo = isDict(xobjs) ? ctx.R(xobjs.get(a.name)) : undefined;
+            if (isStream(xo) && nameOf(ctx, xo.dict, 'Subtype') === 'Image') {
+              // An /ImageMask carries no /ColorSpace: it paints with the fill
+              // colour, whose own operator the scan has already recorded.
+              const dev = imageDeviceSpace(ctx, resDict, ctx.R(xo.dict.get('ColorSpace')));
+              if (dev !== undefined) scan.colorSpaces.add(dev);
+            }
             if (isStream(xo) && nameOf(ctx, xo.dict, 'Subtype') === 'Form' && !seen.has(xo.dict)) {
               seen.add(xo.dict);
               try { walk(xo.dict.get('Resources'), inflateStream(xo), depth + 1); } catch { /* skip */ }

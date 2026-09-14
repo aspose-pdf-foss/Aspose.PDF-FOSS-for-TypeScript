@@ -54,36 +54,7 @@ export function nodeLanguage(el: HtmlElement): string | undefined {
   return undefined;
 }
 
-/** Split a language tag or range into lowercased subtags. */
-const subtags = (s: string): string[] => s.toLowerCase().split('-');
-
-/** Does `tag` match `range` under RFC 4647 §3.3.2 extended filtering?
- *
- *  The rule Selectors 4 cites for `:lang()`. Two halves are easy to get
- *  wrong and each renders plausibly: the match must fall on a SUBTAG
- *  BOUNDARY, so `:lang(en)` matches `en-US` and not `english` — which a
- *  `startsWith` gets backwards — and a SINGLETON subtag may never be skipped,
- *  because a one-character subtag begins an extension and skipping past one
- *  matches across a boundary that means something. */
-export function langMatches(tag: string, range: string): boolean {
-  if (tag.trim() === '') return false;
-  const t = subtags(tag);
-  const r = subtags(range);
-
-  // Step 2: the first subtags must be equal, unless the range's is a wildcard.
-  if (r[0] !== '*' && r[0] !== t[0]) return false;
-
-  let ti = 1;
-  let ri = 1;
-  while (ri < r.length) {
-    if (r[ri] === '*') { ri += 1; continue; }        // 3.A
-    if (ti >= t.length) return false;                // 3.B
-    if (t[ti] === r[ri]) { ti += 1; ri += 1; continue; }  // 3.C.iii
-    if (t[ti].length === 1) return false;            // 3.C.ii — a singleton
-    ti += 1;                                         // 3.C.i — skip and retry
-  }
-  return true;
-}
+export { langMatches } from './langmatch.js';
 
 /** Every code point of the text that decides an `auto` element's direction:
  *  its descendants' text, skipping any subtree that states its own `dir` and

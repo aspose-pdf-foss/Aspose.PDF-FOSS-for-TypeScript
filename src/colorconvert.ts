@@ -13,6 +13,7 @@ import {
   type CmykTransform, type GraySpace, type TargetSpace,
 } from './colorrule.js';
 import { convertImageSpace } from './colorimage.js';
+import { repointSpotSpace, spotSpaceArray } from './colorsep.js';
 import { convertShadingSpace } from './colorshading.js';
 import { ImageInfo } from './image.js';
 
@@ -56,6 +57,24 @@ export interface ConvertColorsOptions extends ColorConvertOptions {
    * `/OutputIntent` is a standards claim this call is in no position to make.
    */
   transform?: CmykTransform;
+  /**
+   * Keep a Separation or DeviceN as a spot colour instead of flattening it
+   * (`ixxw.4`). Default false, which is what every caller got before it
+   * existed.
+   *
+   * Off, `/Sep cs 1 scn` becomes `1 0 0 rg`: the page looks the same and the
+   * NAMED COLORANT is gone, so a print workflow that would have separated it
+   * onto its own plate no longer can. On, the SPACE is rebuilt instead — its
+   * kind, colorant names and component count all survive and only the
+   * alternate and tint transform move, so every content stream selecting it is
+   * untouched (see `colorsep.ts`).
+   *
+   * Off by default because `ConvertToGrayscale` means it: a document asked to
+   * be grey should not still carry a spot colorant a RIP would ink. PDF/A
+   * conversion sets it, where the point is conformance rather than colour
+   * reduction.
+   */
+  preserveSpotColors?: boolean;
 }
 
 /**
@@ -161,6 +180,25 @@ export interface ColorConvertReport {
   /** Which RGB->CMYK leg ran (85l8.3). Absent for a target that has none —
    *  naming one would state something about work that never happened. */
   cmykTransform?: 'naive' | 'supplied';
+  /**
+   * Spot colour spaces rebuilt over the target (`ixxw.4`), empty unless
+   * `preserveSpotColors` was asked for.
+   *
+   * `grid` is the resampled function's samples per axis. It is reported rather
+   * than assumed exact on purpose: a LINEAR tint lands on the sample points
+   * and round-trips exactly, while a curved one is right to within a step or
+   * two per channel, and a caller comparing renders deserves to know which.
+   */
+  spotSpaces: SpotSpaceResult[];
+}
+
+/** One Separation or DeviceN rebuilt over the target. */
+export interface SpotSpaceResult {
+  /** The `/Resources /ColorSpace` key it was found under. */
+  colorant: string;
+  family: 'Separation' | 'DeviceN';
+  /** Samples per axis of the resampled tint transform. */
+  grid: number[];
 }
 
 const MAX_DEPTH = 32;
@@ -341,9 +379,41 @@ function retargetPatternSpaces(
   }
 }
 
+/**
+ * Rebuild each named Separation/DeviceN over the target (`ixxw.4`).
+ *
+ * The same shape as `retargetPatternSpaces` above and safe for the same
+ * reason: `colorOps` reports the resource keys whose operators it LEFT ALONE,
+ * and only those arrays are rewritten. The function stream is allocated HERE —
+ * `colorsep.ts` is a pure leaf that cannot mint an object number.
+ *
+ * A space it declines is left exactly as written. That keeps its CMYK
+ * alternate, which is what `preserveSpotColors` asked for: the colorant
+ * survives and the page renders unchanged either way.
+ */
+function repointSpotSpaces(
+  doc: Document, resources: PdfDict | undefined, keys: Set<string>,
+  to: TargetSpace, toCmyk: CmykTransform | undefined, report: ColorConvertReport,
+): void {
+  if (keys.size === 0) return;
+  const csDict = dictOf(doc, resources?.get('ColorSpace'));
+  if (!csDict) return;
+  for (const key of keys) {
+    const arr = doc.resolve(csDict.get(key));
+    if (!isArray(arr)) continue;
+    const rep = repointSpotSpace(
+      arr, (o) => doc.resolve(o), (s) => inflateStream(s as PdfStream), to, toCmyk);
+    if (!rep) continue;
+    const fnRef = doc.allocObject(rep.fn);
+    csDict.set(key, spotSpaceArray(rep, fnRef, to));
+    report.spotSpaces.push({ colorant: key, family: rep.family, grid: rep.grid });
+  }
+}
+
 /** Rewrite every content stream. */
 function convertContent(
-  doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk?: CmykTransform,
+  doc: Document, report: ColorConvertReport, to: TargetSpace,
+  toCmyk?: CmykTransform, preserveSpot = false,
 ): void {
   for (const scope of collectScopes(doc)) {
     let ops;
@@ -356,8 +426,9 @@ function convertContent(
       });
       continue;
     }
-    const r = colorOps(ops, spaceLookup(doc, scope.resources), to, toCmyk);
+    const r = colorOps(ops, spaceLookup(doc, scope.resources), to, toCmyk, preserveSpot);
     retargetPatternSpaces(doc, scope.resources, r.patternSpaces, to);
+    repointSpotSpaces(doc, scope.resources, r.spotSpaces, to, toCmyk, report);
     // BEFORE the no-change bail, not after: a stream whose only colour is an
     // inline image that declined changes nothing, and that is precisely the
     // stream whose skip the caller must hear about.
@@ -648,14 +719,14 @@ export function convertColors(
   }
   const report: ColorConvertReport = {
     streams: 0, operators: 0, images: [], shadings: 0, annotations: 0,
-    skipped: [], lossy: false, bytesDelta: 0,
+    skipped: [], lossy: false, bytesDelta: 0, spotSpaces: [],
     ...(to === 'cmyk'
       ? { cmykTransform: toCmyk ? ('supplied' as const) : ('naive' as const) }
       : {}),
   };
   convertImages(doc, report, to, { ...opts, toCmyk });
   convertShadings(doc, report, to, toCmyk);
-  convertContent(doc, report, to, toCmyk);
+  convertContent(doc, report, to, toCmyk, opts.preserveSpotColors === true);
   convertAnnotations(doc, report, to, toCmyk);
   return report;
 }

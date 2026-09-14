@@ -10,6 +10,8 @@ import { parseContentStream } from './content.js';
 import { Matrix, IDENTITY, mul, apply, vscale, contentStreamBytes } from './text.js';
 import { Rgb, cmykToRgb, resolveColorSpace, deviceGray, ColorConverter } from './colorspace.js';
 import { inflateStream } from './flate.js';
+import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
+import type { ContentWalkOptions } from './text.js';
 
 export type PathSegment =
   | { op: 'move'; pt: [number, number] }
@@ -121,7 +123,7 @@ function deviceBbox(subpaths: PathSubpath[], ctm: Matrix): [number, number, numb
   return x0 === Infinity ? [0, 0, 0, 0] : [x0, y0, x1, y1];
 }
 
-interface Ctx { doc: Document; out: PagePath[]; }
+interface Ctx { doc: Document; out: PagePath[]; oc?: OcVisibility; }
 interface Stream { bytes: Uint8Array; streamIndex: number; }
 
 function walk(
@@ -147,6 +149,9 @@ function walk(
   const artStack: boolean[] = [];
   let activeMcid: number | undefined;
   let inArtifact = false;
+  // Optional content, through the same `ocvisible.ts` rule `text.ts` and
+  // `pagerender.ts` use. Inert unless the caller asked to skip.
+  const oc = new OcStack(ctx.oc);
 
   const reset = () => { subpaths = []; cur = undefined; curPt = undefined; startPt = undefined; pendingClip = null; };
 
@@ -164,6 +169,14 @@ function walk(
   const emit = (addr: ContentAddr, f: boolean, s: boolean, rule: 'nonzero' | 'evenodd' | null) => {
     if (!f && !s && !pendingClip) { reset(); return; }
     if (subpaths.length === 0) { reset(); return; }
+    // Hidden: report nothing, but RESET as always — the accumulated subpaths and
+    // the pending clip belong to this paint op, and carrying them forward would
+    // give the next VISIBLE path the hidden one's geometry. That is the analogue
+    // of `pagerender.ts` flushing a hidden clip rather than returning early.
+    // A clip-only path is suppressed too: `GetPaths` reports what the page
+    // PAINTS, a hidden `W n` paints nothing, and no consumer in src/ reads
+    // `PagePath.clip`.
+    if (oc.hidden) { reset(); return; }
     ctx.out.push({
       subpaths: subpaths.map((sp) => ({ closed: sp.closed, segments: sp.segments.slice() })),
       ctm,
@@ -220,15 +233,16 @@ function walk(
         case 'sc': case 'scn': setColor(op.operands, false); break;
         case 'SC': case 'SCN': setColor(op.operands, true); break;
         // marked content
-        case 'BMC': mcidStack.push(activeMcid); artStack.push(inArtifact); if (isArtifactTag(op.operands[0])) inArtifact = true; break;
+        case 'BMC': mcidStack.push(activeMcid); artStack.push(inArtifact); oc.bmc(); if (isArtifactTag(op.operands[0])) inArtifact = true; break;
         case 'BDC': {
           mcidStack.push(activeMcid); artStack.push(inArtifact);
+          oc.bdc(op.operands[0], op.operands[1], properties);
           if (isArtifactTag(op.operands[0])) inArtifact = true;
           const m = mcidOf(ctx.doc, properties, op.operands[1]);
           if (m !== undefined) activeMcid = m;
           break;
         }
-        case 'EMC': if (mcidStack.length) activeMcid = mcidStack.pop(); if (artStack.length) inArtifact = artStack.pop()!; break;
+        case 'EMC': if (mcidStack.length) activeMcid = mcidStack.pop(); if (artStack.length) inArtifact = artStack.pop()!; oc.emc(); break;
         // clip
         case 'W': pendingClip = 'nonzero'; break;
         case 'W*': pendingClip = 'evenodd'; break;
@@ -250,6 +264,7 @@ function walk(
           if (!isStream(xo)) break;
           const sub = ctx.doc.resolve(xo.dict.get('Subtype'));
           if (!(isName(sub) && sub.name === 'Form')) break;   // images/others: no paths
+          if (oc.hidden || !ocVisible(ctx.oc, xo.dict.get('OC'))) break;
           if (depth >= MAX_XOBJECT_DEPTH || seen.has(xo.dict)) break;
           seen.add(xo.dict);
           const mo = ctx.doc.resolve(xo.dict.get('Matrix'));
@@ -271,8 +286,8 @@ function walk(
 
 /** Extract painted vector paths from a page (top-level content and nested Form
  *  XObjects). Never throws; returns [] on decode failure. */
-export function extractPaths(doc: Document, page: Page): PagePath[] {
-  const ctx: Ctx = { doc, out: [] };
+export function extractPaths(doc: Document, page: Page, opts: ContentWalkOptions = {}): PagePath[] {
+  const ctx: Ctx = { doc, out: [], oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined };
   let bytes: Uint8Array[];
   try { bytes = contentStreamBytes(doc, page); } catch { return []; }
   walk(ctx, bytes.map((b, i) => ({ bytes: b, streamIndex: i })), page.Resources, [], IDENTITY, 0, new Set());

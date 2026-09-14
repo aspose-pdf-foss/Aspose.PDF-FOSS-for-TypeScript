@@ -1,9 +1,10 @@
 import type { Document } from './document.js';
 import {
-  PdfObject, PdfDict, PdfRef, isDict, isName, isString, isArray, isStream, isRef,
+  PdfObject, PdfDict, PdfRef, PdfStream, isDict, isName, isString, isArray, isStream, isRef,
 } from './types.js';
 import { ValidationReport, type ValidationIssue, type Severity } from './validation.js';
 import { inflateStream } from './flate.js';
+import { parseIccProfile } from './icc.js';
 import { validatePdfUa } from './structvalidate.js';
 import { parseCMap } from './cmap.js';
 import type { Page } from './page.js';
@@ -338,24 +339,41 @@ const toUnicodeRule: Rule = (ctx) => {
   });
 };
 
-/** The PDF/A output-intent profile state: a ref, 'missing', or 'multiple' distinct. */
-export function pdfaOutputIntentProfile(ctx: Ctx): PdfRef | 'missing' | 'multiple' {
+/**
+ * The PDF/A output-intent profile state: exactly one distinct profile,
+ * 'missing', or 'multiple' distinct ones.
+ *
+ * Profiles are counted by IDENTITY — a ref's object number, or the stream
+ * object itself for one written INLINE. 32000-1 7.3.8 says every stream shall
+ * be indirect, so an inline `/DestOutputProfile` is malformed; this parser
+ * accepts it anyway (`parseDictOrStream` runs for nested dicts too), and a
+ * document we did not write is the population that leniency is for.
+ *
+ * It used to fold every inline profile onto one sentinel and report a ref,
+ * which was wrong in both directions (`xu3j`): a single inline profile never
+ * set that ref and fell through to 'missing', so two rules reported a legal
+ * intent absent — and two DIFFERENT inline profiles shared the sentinel, so a
+ * document naming two output conditions read as naming one.
+ *
+ * The return is a marker rather than the ref: no caller ever read it, and
+ * answering with a ref for one shape and nothing for the other is exactly the
+ * asymmetry that produced the bug.
+ */
+export function pdfaOutputIntentProfile(ctx: Ctx): 'present' | 'missing' | 'multiple' {
   return memo(ctx, 'oi', () => {
     const ois = ctx.R(ctx.catalog.get('OutputIntents'));
     if (!isArray(ois)) return 'missing';
-    const profiles = new Set<number>();
-    let firstRef: PdfRef | undefined;
+    const profiles = new Set<number | PdfStream>();
     for (const e of ois) {
       const oi = ctx.R(e);
       if (!isDict(oi)) continue;
       if (nameOf(ctx, oi, 'S') !== 'GTS_PDFA1') continue;
       const dop = oi.get('DestOutputProfile');
-      if (isRef(dop)) { profiles.add(dop.num); firstRef = firstRef ?? dop; }
-      else if (isStream(ctx.R(dop))) { profiles.add(-1); }
+      if (isRef(dop)) profiles.add(dop.num);
+      else { const s = ctx.R(dop); if (isStream(s)) profiles.add(s); }
     }
     if (profiles.size === 0) return 'missing';
-    if (profiles.size > 1) return 'multiple';
-    return firstRef ?? 'missing';
+    return profiles.size > 1 ? 'multiple' : 'present';
   });
 }
 
@@ -410,14 +428,66 @@ const iccBasedNRule: Rule = (ctx) => {
   return issues;
 };
 
+/**
+ * The ICC data colour space the PDF/A output intent's profile declares —
+ * `'RGB '`, `'CMYK'`, `'GRAY'`, space-padded as the header stores it — or
+ * undefined when there is no profile stream or its header will not parse.
+ *
+ * Read from the PROFILE rather than from the stream dict's `/N`, which is the
+ * producer's claim about the object it wrapped; the header is the profile's
+ * own statement, and `iccBasedNRule` already reports the two disagreeing about
+ * component count. Two answers to "what space is this profile" is how a rule
+ * comes to permit content its own error message says it refused.
+ */
+export function pdfaIntentColorSpace(ctx: BaseCtx): string | undefined {
+  return memo(ctx, 'oics', () => {
+    const ois = ctx.R(ctx.catalog.get('OutputIntents'));
+    if (!isArray(ois)) return undefined;
+    for (const e of ois) {
+      const oi = ctx.R(e);
+      if (!isDict(oi)) continue;
+      if (nameOf(ctx, oi, 'S') !== 'GTS_PDFA1') continue;
+      const dop = ctx.R(oi.get('DestOutputProfile'));
+      if (!isStream(dop)) continue;
+      // A profile we cannot read is one we cannot check against. Lenient
+      // reading is this library's posture for every embedded payload a
+      // producer wrote; refusing here would fail a document over damage the
+      // rule has no opinion about.
+      try { return parseIccProfile(inflateStream(dop)).header.dataColorSpace; }
+      catch { /* unreadable: fall through to the next intent */ }
+    }
+    return undefined;
+  });
+}
+
+/** The ICC data colour space each device space demands of the output intent
+ *  (ISO 19005-1 6.2.3.3). DeviceGray is deliberately absent: any intent
+ *  satisfies it, so listing it here would refuse grey under a CMYK profile. */
+const INTENT_SPACE_FOR: Record<string, string> = {
+  DeviceRGB: 'RGB ',
+  DeviceCMYK: 'CMYK',
+};
+
 const deviceColorRule: Rule = (ctx) => {
   const state = pdfaOutputIntentProfile(ctx);
-  if (state !== 'missing') return []; // an intent covers device color
+  // With no intent at all, every device space is unbacked and the page is
+  // reported once — the pre-ixxw.1 behaviour, unchanged.
+  if (state === 'missing') {
+    return pageScans(ctx).flatMap((s) =>
+      usesDeviceColor(s)
+        ? [{ rule: 'DeviceColorWithoutIntent', severity: 'error' as const, clause: 'ISO 19005-1 §6.2.3.3', page: s.page,
+            message: 'Page uses device-dependent color without a matching PDF/A OutputIntent.' }]
+        : []);
+  }
+  const intent = pdfaIntentColorSpace(ctx);
+  if (intent === undefined) return []; // unreadable profile ⇒ nothing to check against
   return pageScans(ctx).flatMap((s) =>
-    usesDeviceColor(s)
-      ? [{ rule: 'DeviceColorWithoutIntent', severity: 'error' as const, clause: 'ISO 19005-1 §6.2.3.3', page: s.page,
-          message: 'Page uses device-dependent color without a matching PDF/A OutputIntent.' }]
-      : []);
+    Object.entries(INTENT_SPACE_FOR).flatMap(([device, needed]) =>
+      s.colorSpaces.has(device) && intent !== needed
+        ? [{ rule: 'DeviceColorWithoutIntent', severity: 'error' as const, clause: 'ISO 19005-1 §6.2.3.3', page: s.page,
+            message: `Page uses ${device} but the PDF/A OutputIntent profile is a `
+              + `${intent.trim()} profile; ${device} requires a ${needed.trim()} one.` }]
+        : []));
 };
 
 const STANDARD_BLEND = new Set([

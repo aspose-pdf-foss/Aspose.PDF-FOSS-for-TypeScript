@@ -19,7 +19,174 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ConvertToPdfA('1b')` now drops a transparency group that provably does
+  nothing.** ISO 19005-1 prohibits transparency and conversion cannot flatten
+  it — correctly, since flattening means rasterizing the page and losing its
+  text — so a page carrying `/Group /S /Transparency` was reported unresolved
+  and left alone. But producers stamp that group on pages that use no
+  transparency at all, where it cannot change the rendered result, so removing
+  it costs nothing and is the difference between a document that converts and
+  one that does not. The test is deliberately conservative and reads no
+  content stream: every ExtGState in a resource dictionary counts whether or
+  not any operator selects it, and a soft mask, a non-Normal blend mode, a
+  constant alpha below 1, an image `/SMask` or `/Mask`, or a nested
+  transparency group anywhere the page's resources reach — through form
+  XObjects, patterns and Type 3 fonts alike — all keep the group. False means
+  "transparency is ruled out", so the over-approximation is the safety
+  property: a page that really uses transparency keeps its group and is still
+  reported. Page groups only; `preserve: ['transparency']` declines the pass
+  (`ixxw.5`).
+
+- **A spot colour can now survive colour conversion instead of being
+  flattened.** `ConvertColors` neutralises colour at the operator level, so
+  `/Sep cs 1 scn` became `1 0 0 rg`: the page looked identical and the NAMED
+  COLORANT was gone, which for a print workflow means the plate it would have
+  been separated onto no longer exists. The new
+  `preserveSpotColors` option rebuilds the SPACE instead — a Separation or
+  DeviceN keeps its kind, its colorant names and its component count, and only
+  the alternate space and tint transform move, so every content stream that
+  selects it is untouched and a Separation image keeps its tint samples byte
+  for byte. PDF has no way to compose a tint transform with an alternate-space
+  conversion, so the composition is resampled into a type 0 sampled function:
+  256 samples for one colorant, and one axis per colorant against a fixed
+  total budget beyond that, so a four-colorant DeviceN samples coarsely rather
+  than exploding. A linear tint lands on the sample points and round-trips
+  exactly; a curved one is right to within a step or two per channel, and the
+  report says which grid was used rather than implying exactness. The option
+  is **off by default**, so every existing caller is byte-identical —
+  `ConvertToGrayscale` means what it says, and a document asked to be grey
+  should not still carry a spot colorant a RIP would ink. `ConvertToPdfA` sets
+  it, where the point is conformance rather than colour reduction (`ixxw.4`).
+
 ### Fixed
+
+- **An image's colour space did not count as device colour, so a CMYK picture
+  passed PDF/A validation under an sRGB intent.** The page scan behind
+  `ValidatePdfA` looked at colour OPERATORS and inline images only, so a page
+  whose only colour is an image XObject reported no device colour at all —
+  and ISO 19005-1 6.2.3.3 constrains the colour space, not the route by which
+  content selects it. Two things followed, both silent: a DeviceCMYK payload
+  validated clean under an RGB output intent, and a document whose only colour
+  was a picture was never asked to carry an output intent in the first place.
+  The scan now reads an image's `/ColorSpace` in all three shapes a document
+  can write it — a direct device name, a name into the page's
+  `/Resources /ColorSpace`, and an inline array, where only `/Indexed`
+  delegates to its base since every other family is device-independent and
+  permitted under any intent. Because `ConvertToPdfA`'s colour pass triggers
+  on the same scan, a CMYK image is now converted as well as reported:
+  DCTDecode payloads take the decode-and-re-encode route (both APP14
+  transforms, plain CMYK and YCCK), coming out as 8-bit DeviceRGB with the
+  stale `/Decode` gone, and the route each picture took is named in the
+  conversion report. An `/ICCBased` image is deliberately left alone — it is
+  device-independent and already conformant, so converting it would be a lossy
+  re-encode buying nothing (`ixxw.3`).
+
+### Added
+
+- **`ConvertToPdfA` now normalises device colour to the output intent.** Since
+  the validator started checking device colour against the intent's profile
+  space, a combination the converter itself produces became non-conformant:
+  it bolts an sRGB intent onto a document that has none, so a DeviceCMYK
+  document came out of `ConvertToPdfA` failing its own post-conversion
+  validation. A new pass runs the existing colour walk — page content, form
+  XObjects, Type 3 glyph procedures, tiling patterns, inline images, image
+  XObjects, shadings and annotation colour arrays — so the document's colour
+  matches what its intent declares. It converts **only toward an RGB intent**,
+  and that is a decision rather than a limitation: the rewrite there is the
+  same pivot the renderer applies, so the rendered page is unchanged, which is
+  what makes doing it automatically defensible. Under a caller-supplied CMYK
+  or GRAY intent the content is left alone and reported unresolved, because
+  converting would mean naive maximum-black ink with no destination profile —
+  which `ConvertToPdfX` already refuses to do without an opt-in — or
+  discarding colour outright. The trigger is DeviceCMYK in a page scan,
+  matching exactly what the validator would report, so a document that needs
+  nothing is not touched; `preserve: ['deviceColor']` declines the pass and
+  takes the unresolved report instead, and a signed document is skipped rather
+  than made to throw (`ixxw.2`).
+
+### Fixed
+
+- **An output intent whose ICC profile was written inline read as no output
+  intent at all.** 32000-1 7.3.8 says every stream shall be indirect, so a
+  `/DestOutputProfile` written directly into the intent dictionary is
+  malformed — but this parser accepts it, as it accepts damage generally, and
+  a document we did not write is exactly the population that leniency is for.
+  The profile counter folded every inline profile onto a single sentinel and
+  then reported the first indirect one it had seen, which was wrong in both
+  directions: a lone inline profile set no such reference and fell through to
+  "missing", so `ValidatePdfA` reported `OutputIntent` and
+  `DeviceColorWithoutIntent` against a file whose intent is plainly there and
+  skipped the transparency blending-space rule's precondition; and two
+  DIFFERENT inline profiles shared the one sentinel, so a document naming two
+  output conditions — which ISO 19005 prohibits — read as naming one and went
+  unreported. Profiles are now counted by identity, an object number for a
+  reference and the stream itself for an inline one, and the function answers
+  with a marker rather than a reference, since no caller ever read it and
+  answering with one for a reference and nothing for a stream is the asymmetry
+  that produced the bug (`xu3j`).
+- **`ValidatePdfA` passed DeviceCMYK content under an sRGB output intent.**
+  ISO 19005-1 6.2.3.3 does not ask whether an output intent EXISTS, which is
+  all the rule tested; it asks whether the intent's profile is a profile of the
+  space the content uses. So a CMYK document carrying the sRGB intent almost
+  every producer emits validated clean, and the conformance claim it then wrote
+  into its own XMP was false — the single most likely way to ship a file a
+  certified validator rejects. The intent's ICC profile is now parsed through
+  `icc.ts` and its declared data colour space compared per device space:
+  DeviceCMYK is permitted only under a CMYK profile, DeviceRGB only under an
+  RGB one, and DeviceGray under either, which is what the standard says and
+  what veraPDF enforces. Device colour is found by OPERATOR (`k`, `rg`, `g`)
+  as well as by resource name, so a page that names no colour space at all is
+  still checked. The space is read from the profile HEADER rather than from the
+  stream dict's `/N`: both answer "how many components" and they agree in every
+  real file, but `/N` is the producer's claim about the wrapper where the
+  header is the profile's own statement, and `ICCBasedN` already reports the
+  two disagreeing. A profile that will not parse is not checked at all and the
+  rule falls back to its previous answer — the lenient-read posture this
+  library takes for every embedded payload — so no document starts failing over
+  damage the rule has no opinion about (`ixxw.1`).
+- **A hidden run did not advance the pen when rendering, so the text after it
+  overprinted.** Optional content is suppressed at one gate in the
+  interpreter, and that gate skipped the whole show operator — while the text
+  matrix is advanced *inside* the show. A text object mixing a hidden run with
+  a visible one therefore drew the visible one where the hidden one began,
+  piling the words on top of each other; a `TJ` array's kerning shifts were
+  lost the same way. A show operator occupies its width whether or not anybody
+  sees it (32000-1 9.4.4). The advance now sits outside the gate and only the
+  ink, the paint-state sync and any text clip sit inside it — which is the
+  shape the same function already used for the invisible render mode (`3 Tr`),
+  and the rule extraction has held since `q1g2.3`, where the hidden flag
+  suppresses the glyph event and never the advance. Bites any document that
+  puts a watermark, a redaction overlay or a translation layer in the same
+  text object as visible text (`q1g2.7`).
+- **Text and vector extraction reported content no viewer shows.** The
+  visibility resolver behind `doc.OptionalContent` was consumed only by the
+  renderer (`q1g2.1`, `q1g2.2`), so `GetText`, `GetTextFragments`,
+  `GetStructuredText`, `GetPaths`, `GetTables`, `Search` and every export
+  built on them returned the words of a switched-off watermark, a "do not
+  print" overlay or a disabled CAD layer — the same library's own `ToImage`
+  having correctly left them out. All of those now answer "what does this page
+  SHOW"; pass `{ includeHidden: true }` to ask what the file CONTAINS, which
+  is what a forensic read or a redaction audit wants.
+
+  The gate sits in the new `ocvisible.ts`, one owner for three walkers that
+  must not disagree — the renderer's, `visitContent`'s and `GetPaths`'s own —
+  because the nesting rule is exactly the sort that differs silently: a walker
+  pushing only for `/OC` still hides the right ops on every single-level
+  document. **The walker's default is to report EVERYTHING**, and that
+  direction is the safety property rather than a conservative default:
+  `RedactText`, `MarkRedactText`, `ReplaceText`, `page.InlineImages`,
+  `MarkContent`, `page.Artifacts`, `AutoTag` and the structure validator go
+  on acting on what the file holds, so redaction cannot quietly remove less
+  than it was asked to, and the next consumer somebody adds inherits the safe
+  default rather than the dangerous one. `Search` diverging from `RedactText`
+  on one page is deliberate and asserted from both sides.
+
+  Extraction also keeps the pen advancing across a hidden show operator, where
+  the renderer skips it — a hidden run occupies its width, so suppressing the
+  advance would misplace every visible glyph after it in the same text object,
+  which is a wrong quad rather than an absent one. (`q1g2.3`)
 
 - **A non-embedded symbol font drew Latin letters; it draws boxes now.**
   `normalizeFont` maps every unrecognised `/BaseFont` onto one of the
@@ -49,6 +216,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Flattening optional content down to one rendering.**
+  `doc.FlattenLayers()` keeps only what the default configuration *shows* and
+  then takes the vocabulary away: every marked-content span the configuration
+  hides is deleted from the content stream it sits in, hidden XObject draws and
+  hidden annotations go with them, every surviving `/OC` wrapper and `/OC` key
+  is removed, and `/OCProperties` is deleted. The result is an ordinary PDF
+  with no layers left to toggle that renders exactly as the configuration
+  rendered. The deletion is the point: until now the only way to lose a layer
+  was to *unreference* it, which leaves the ink in the file for anyone who
+  looks — and which is what `ConvertToPdfA('1b')` did on its own, since
+  ISO 19005-1 prohibits optional content and the converter simply dropped
+  `/OCProperties`, making every hidden group unconditionally **visible**.
+  Flattening first is what makes that conversion honest. It reaches all five
+  nested content scopes as well as page content — form XObjects, tiling
+  patterns, Type 3 glyph procedures, soft-mask groups and annotation appearance
+  streams — because a section left standing in any one of them becomes visible
+  the moment `/OCProperties` goes; each is pinned by its own fixture, and
+  excluding any one of them was measured green until those existed. A page's
+  `/Contents` array is treated as a single stream (32000-1 7.8.2), so a span
+  opened in one member and closed in the next is handled whole. An `/OC`
+  operand that is an inline dictionary — or a name no `/Properties` entry
+  claims — is left exactly as written rather than guessed at, so its content
+  survives and the returned report counts it as `unresolved`; the report also
+  gives the pages changed, the spans deleted, the wrappers unwrapped and the
+  XObjects and annotations removed. One-way, and refused for a signed document
+  (`q1g2.6`).
+- **Adopting a named optional-content configuration.**
+  `/OCProperties /Configs` has always been readable — `GetConfig`, `AddConfig`,
+  `RemoveConfig` — but nothing could *choose* one, so a document carrying a
+  "Print" or "Review" preset rendered and extracted as `/D` said regardless.
+  `oc.ApplyConfiguration(preset)` copies a preset's `/BaseState`, `/ON`,
+  `/OFF`, `/Order`, `/Locked`, `/AS`, `/RBGroups`, `/Intent` and `/ListMode`
+  into `/D` and leaves the preset in place to be chosen again;
+  `oc.SaveConfiguration(name)` snapshots the current `/D` as a preset, which is
+  how a caller keeps it, since applying overwrites `/D`. It is a write into
+  `/D` rather than an in-memory selection on purpose: `/D` is this library's
+  one notion of the current state — the one rendering, extraction, `ApplyUsage`
+  and every export read — so a merely selected configuration would be a second
+  answer to the same question. Applying **replaces** rather than merges, so a
+  preset silent about a key leaves `/D` silent too; merged, the document would
+  sit in a state that is neither configuration. A group's own `/Usage` is
+  untouched, since that belongs to the group rather than to any configuration —
+  applying a preset moves which statements are *applied*, never what a group
+  *says* (`q1g2.5`).
+- **Layer usage: what a group says about printing, and the `/AS` that makes it
+  so.** A layer's `/Usage` dictionary records that it is a watermark not for
+  print, or artwork for one zoom band, or a caption in German — and a
+  configuration's `/AS` usage application dictionaries are what turn such a
+  statement into a state. Neither was read, so "flatten a print copy and the
+  do-not-print overlay goes away" could not be expressed at all.
+  `config.ResolveForEvent('View' | 'Print' | 'Export', ctx?)` now reports every
+  layer's state for an event without touching the document, and
+  `config.ApplyUsage(...)` makes those states the configuration's own,
+  returning just the layers that moved. `layer.Usage` reads the dictionary and
+  `layer.SetUsage(...)` writes it **together with** the `/AS` entry that
+  applies it — one without the other says nothing, which is why they are a
+  single call. Several categories, and several entries, combine so that any one
+  saying OFF wins; a group no matching `/AS` entry names keeps its configured
+  state whatever its `/Usage` claims. `/Zoom` and `/Language` describe a viewer
+  rather than a document, so they stay silent unless the caller supplies a
+  magnification or a BCP 47 tag — being decided against an invented viewer is
+  how a whole drawing comes to be switched off — and language matching is RFC
+  4647, on whole subtags, so `de` covers `de-AT` and not `den`. `/User` is read
+  and written but never evaluated: it names a person or organisation, and this
+  library has no viewer identity to match one against. Since `ApplyUsage` moves
+  the configuration's own state, every renderer, extractor and export honours
+  the result with no further call (`q1g2.4`).
 - **`AddRenderFont(bytes)` — a render substitution face supplied as bytes.**
   The companion to `RegisterRenderFontFolder` for a face that has no path to
   point at: one shipped as a bundled asset, unpacked from an archive, or

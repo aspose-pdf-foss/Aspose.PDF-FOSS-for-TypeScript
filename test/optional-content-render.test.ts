@@ -155,3 +155,80 @@ describe('optional content at render time', () => {
     expect(doc.catalog().has('OCProperties')).toBe(false);
   });
 });
+
+/**
+ * A hidden run still occupies its width (q1g2.7).
+ *
+ * `element()` skipped the WHOLE show operator for a hidden section, and the
+ * text matrix is advanced INSIDE `showText` — so the visible run after a
+ * hidden one drew where the hidden one BEGAN and overprinted it. A show
+ * operator occupies its width whether or not anybody sees it (32000-1 9.4.4),
+ * which is the rule `text.ts` already holds on the extraction side: the
+ * `hidden` flag suppresses the EVENT and never the ADVANCE.
+ *
+ * The reference is `3 Tr`, the invisible render mode, which has always
+ * advanced correctly — a second mechanism in the same file reaching the same
+ * pen position, rather than a hard-coded number nobody can check.
+ */
+describe('a hidden run advances the pen', () => {
+  /** The leftmost device column carrying any non-white pixel, or -1. */
+  const leftmostInk = (bytes: Uint8Array): number => {
+    const png = decodePng(Document.Open(bytes).Pages[0].ToImage());
+    for (let x = 0; x < png.width; x++) {
+      for (let y = 0; y < png.height; y++) {
+        const [r, g, b] = png.at(x, y);
+        if (r !== 255 || g !== 255 || b !== 255) return x;
+      }
+    }
+    return -1;
+  };
+
+  // One text object, no Td/Tm between the runs — with a reset between them
+  // both readings agree and the case measures nothing.
+  const HIDDEN_FIRST =
+    'BT /F1 24 Tf 20 100 Td\n/OC /OCHid BDC (HIDDEN) Tj EMC\n(V) Tj\nET\n';
+  const INVISIBLE_FIRST =
+    'BT /F1 24 Tf 20 100 Td\n3 Tr (HIDDEN) Tj 0 Tr\n(V) Tj\nET\n';
+  const ALONE =
+    'BT /F1 24 Tf 20 100 Td\n(V) Tj\nET\n';
+
+  it('draws the visible run where an invisible run of the same width leaves it', () => {
+    expect(leftmostInk(buildOcgRenderPdf(HIDDEN_FIRST)))
+      .toBe(leftmostInk(buildOcgRenderPdf(INVISIBLE_FIRST)));
+  });
+
+  it('and that is further right than the un-advanced pen', () => {
+    // The control that stops the case above from passing on two identical
+    // wrong answers: the pen must actually have MOVED.
+    expect(leftmostInk(buildOcgRenderPdf(HIDDEN_FIRST)))
+      .toBeGreaterThan(leftmostInk(buildOcgRenderPdf(ALONE)));
+  });
+
+  it('paints none of the hidden run itself', () => {
+    // The hidden glyphs must not come back as ink while the advance is fixed.
+    const png = decodePng(Document.Open(buildOcgRenderPdf(HIDDEN_FIRST)).Pages[0].ToImage());
+    const visibleAt = leftmostInk(buildOcgRenderPdf(HIDDEN_FIRST));
+    let inkLeftOfVisible = 0;
+    for (let x = 0; x < visibleAt; x++) {
+      for (let y = 0; y < png.height; y++) {
+        const [r, g, b] = png.at(x, y);
+        if (r !== 255 || g !== 255 || b !== 255) inkLeftOfVisible++;
+      }
+    }
+    expect(inkLeftOfVisible).toBe(0);
+  });
+
+  it('applies a hidden TJ array’s kerning shifts, in the right direction', () => {
+    // showArray's numeric elements move the pen too, and they sat inside the
+    // same skipped bracket. A TJ number is SUBTRACTED from the displacement,
+    // so +2000 thousandths at 24pt pulls the next run 48pt LEFT and -2000
+    // pushes it 48pt right. Asserting both exact offsets pins the direction:
+    // a build that took the absolute value, or dropped the sign, moves the
+    // run by 48pt either way and satisfies any one-sided bound.
+    const tj = (kern: string) =>
+      `BT /F1 24 Tf 20 100 Td\n/OC /OCHid BDC [(HIDDEN)${kern}] TJ EMC\n(V) Tj\nET\n`;
+    const base = leftmostInk(buildOcgRenderPdf(tj('')));
+    expect(leftmostInk(buildOcgRenderPdf(tj(' 2000')))).toBe(base - 48);
+    expect(leftmostInk(buildOcgRenderPdf(tj(' -2000')))).toBe(base + 48);
+  });
+});

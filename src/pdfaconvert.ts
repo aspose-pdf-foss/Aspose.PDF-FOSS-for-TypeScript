@@ -8,13 +8,18 @@ import type { ConvertAction, ConversionReport } from './conversion.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
 import {
   validatePdfA, parseLevel, destProfileRefExempt, widgetActionKeys, type PdfALevel,
+  pdfaIntentColorSpace, pageScans,
 } from './pdfavalidate.js';
+import type { Ctx as ScanCtx } from './validatectx.js';
+import { convertColors } from './colorconvert.js';
+import { hasSignatureField } from './signature.js';
+import { usesTransparency } from './pdfatransparency.js';
 import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
 
 export type ConvertCategory =
   | 'javascript' | 'multimedia' | 'embeddedFiles' | 'xfa' | 'optionalContent'
-  | 'postScript' | 'info' | 'formActions';
+  | 'postScript' | 'info' | 'formActions' | 'deviceColor' | 'transparency';
 
 export interface ConvertOptions {
   /** Output-intent ICC profile. Defaults to a bundled sRGB profile. */
@@ -188,6 +193,99 @@ const outputIntentPass: Pass = (ctx) => {
   const arr = isArray(existing) ? [...existing, oi] : [oi];
   ctx.catalog.set('OutputIntents', arr);
   return [{ rule: 'OutputIntent', action: `Added ${ctx.icc.identifier} OutputIntent.`, object: profileRef }];
+};
+
+/**
+ * Normalise device colour to the output intent's own space (`ixxw.2`).
+ *
+ * MUST run after `outputIntentPass`, which is what decides the intent this
+ * aims at — for a document that had none, the sRGB profile that pass just
+ * added.
+ *
+ * **It converts only toward an RGB intent**, and that is a decision rather
+ * than a limitation. Converting to RGB uses the same pivot `raster.ts`
+ * applies, so the rendered page is unchanged, which is this issue's whole
+ * acceptance criterion. Converting to CMYK would mean naive maximum-black ink
+ * with no destination profile — which `ConvertToPdfX` deliberately refuses to
+ * do without an opt-in — and converting to GRAY destroys colour outright.
+ * Under either, the content is left alone and `deviceColorRule` reports it,
+ * which is the honest answer rather than a silent appearance change.
+ *
+ * The trigger is DeviceCMYK in a page scan, matching exactly what
+ * `deviceColorRule` would report: DeviceGray is satisfied by any intent and
+ * DeviceRGB already matches, so neither needs anything. Note the walk then
+ * converts the WHOLE document, so DeviceGray content in a page that also uses
+ * CMYK is rewritten to DeviceRGB too — appearance-identical and still
+ * conformant, just more than the trigger strictly asked for.
+ */
+const deviceColorPass: Pass = (ctx) => {
+  if (ctx.preserve.has('deviceColor')) return [];
+  // `convertColors` throws on a signed document. ConvertToPdfA has never
+  // refused one, and making it start throwing here would be a behaviour
+  // change well beyond this pass; the validator reports what is left.
+  if (hasSignatureField(ctx.doc)) return [];
+  const scan: ScanCtx = {
+    doc: ctx.doc, catalog: ctx.catalog, R: ctx.R, cache: new Map(),
+  };
+  if (pdfaIntentColorSpace(scan) !== 'RGB ') return [];
+  if (!pageScans(scan).some((s) => s.colorSpaces.has('DeviceCMYK'))) return [];
+  // `preserveSpotColors` because the point here is CONFORMANCE, not colour
+  // reduction: a Separation is rebuilt over DeviceRGB rather than flattened,
+  // so the named colorant a print workflow separates on survives (`ixxw.4`).
+  const r = convertColors(ctx.doc, 'rgb', { preserveSpotColors: true });
+  // The route names which of colorimage.ts's four paths each picture took —
+  // a CMYK payload always takes decode-and-re-encode, since `jpeg-exact` is
+  // gray-only by construction. `ixxw.3` asks for it in the report.
+  const routes = [...new Set(r.images.map((i) => i.route))].sort();
+  const via = routes.length > 0 ? ` via ${routes.join(', ')}` : '';
+  return [{
+    rule: 'DeviceColor',
+    action: `Converted device colour to DeviceRGB to match the output intent `
+      + `(${r.operators} operators, ${r.images.length} images${via}, ${r.shadings} shadings).`,
+  }];
+};
+
+/**
+ * Drop a page transparency group that provably does nothing (`ixxw.5`).
+ *
+ * Part 1 alone: parts 2/3/4 permit transparency outright, so there is no rule
+ * to satisfy and removing the group would be a change nobody asked for.
+ *
+ * ISO 19005-1 prohibits transparency and this converter cannot FLATTEN it —
+ * correctly, since flattening means rasterizing the page and losing its text.
+ * But producers stamp `/Group /S /Transparency` on pages that use no
+ * transparency at all, and such a group cannot change the rendered result, so
+ * removing it costs nothing and is the difference between a document that
+ * converts and one that does not.
+ *
+ * **Invariant:** the test is `usesTransparency`, which is deliberately
+ * conservative — every ExtGState in a resource dictionary counts, read or not
+ * — so a group survives whenever transparency cannot be ruled out. Real
+ * transparency keeps its group and `transparencyRule` still reports it.
+ *
+ * **Note the scope, and it is deliberate:** PAGE groups only. A Form XObject's
+ * own `/Group` is a disqualifier here rather than something to look inside,
+ * which is the issue's own list; ruling a nested group inert is a separate
+ * judgement, and a page holding one keeps its own group and is still reported.
+ */
+const inertTransparencyGroupPass: Pass = (ctx) => {
+  if (ctx.part !== 1) return [];
+  if (ctx.preserve.has('transparency')) return [];
+  const actions: ConvertAction[] = [];
+  for (const page of ctx.doc.Pages) {
+    const grp = ctx.R(page.Dict.get('Group'));
+    if (!isDict(grp) || nameOf(ctx, grp, 'S') !== 'Transparency') continue;
+    // `page.Resources` is the INHERITED value: a group's resources are
+    // routinely held on the /Pages node, and the raw read would rule a page
+    // inert by failing to look at what it actually draws with.
+    if (usesTransparency(page.Resources, ctx.R)) continue;
+    page.Dict.delete('Group');
+    actions.push({
+      rule: 'Transparency',
+      action: 'Removed an inert page transparency group (nothing it reaches uses transparency).',
+    });
+  }
+  return actions;
 };
 
 /** Every annotation dict across all pages. */
@@ -830,6 +928,9 @@ const ocConfigPass: Pass = (ctx) => {
 
 const PASSES: Pass[] = [
   identificationPass, versionPass, fileIdPass, outputIntentPass,
+  // Immediately after outputIntentPass, which decides the space it aims at.
+  deviceColorPass,
+  inertTransparencyGroupPass,
   annotationFlagsPass, formsPass, cosmeticPass,
   actionsPass, multimediaPass, xfaPass, optionalContentPass, embeddedFilesPass, postScriptPass,
   toUnicodePass,

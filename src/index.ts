@@ -40,7 +40,8 @@ export type {
 } from './actions.js';
 export type { AnnotData } from './annotdata.js';
 export { OptionalContent, Layer, LayerConfig } from './ocg.js';
-export type { AddLayerOptions } from './ocg.js';
+export type { AddLayerOptions, LayerState, LayerUsage, UsageContext, UsageEvent } from './ocg.js';
+export type { FlattenLayersReport } from './ocflatten.js';
 export { Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation, RedactAnnotation, CaretAnnotation } from './annotation.js';
 export type {
   TextNoteOptions, StampAnnotationOptions, MarkupOptions, MarkupType,
@@ -58,7 +59,7 @@ export type { ContentOp } from './content.js';
 export { EditableContent } from './editcontent.js';
 export type { ContentAddr } from './editcontent.js';
 export { visitContent, mapRegions } from './text.js';
-export type { GlyphEvent, ImageEvent, PathEvent, ArtifactEvent, ContentVisitor, Rect, RegionHits, TextFragment, TextLine, TextBlock } from './text.js';
+export type { GlyphEvent, ImageEvent, PathEvent, ArtifactEvent, ContentVisitor, ContentWalkOptions, ExtractOptions, Rect, RegionHits, TextFragment, TextLine, TextBlock } from './text.js';
 export { extractTables, Table } from './table.js';
 export { extractTaggedTables } from './tablestruct.js';
 export { stitchTables } from './tablestitch.js';

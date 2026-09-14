@@ -559,7 +559,10 @@ export function redactText(
   // it cannot reach redactPage — which takes explicit rects and would have
   // nothing to do with it, but would silently accept the key.
   const { region, ...pageOpts } = opts;
-  const matches = searchText(doc, page, find, { region });
+  // Redaction acts on what the file CONTAINS, never on what a configuration
+  // happens to show: redacting only the visible occurrences leaves the secret
+  // in the bytes while reporting success.
+  const matches = searchText(doc, page, find, { region, includeHidden: true });
   if (matches.length === 0) return 0;
   const rects: Rect[] = matches.flatMap((m) => m.quads);
   redactPage(doc, page, rects, pageOpts);

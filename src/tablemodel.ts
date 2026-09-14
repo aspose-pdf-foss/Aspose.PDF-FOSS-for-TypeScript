@@ -3,7 +3,14 @@ import type { Rgb } from './colorspace.js';
 import { escapeMarkdownInline, escapeTableCell } from './mdescape.js';
 
 export type Rect = TextRect;
-export interface TableExtractOptions { region?: Rect; structure?: 'auto' | 'off'; }
+export interface TableExtractOptions {
+  region?: Rect;
+  structure?: 'auto' | 'off';
+  /** Detect from content the default optional-content configuration HIDES.
+   *  Defaults to false, as every read API does — a table drawn on a switched-off
+   *  layer is not a table anybody sees. */
+  includeHidden?: boolean;
+}
 
 /** One drawn cell edge. `width` is in points; `color` absent means the ink
  *  carried none. */

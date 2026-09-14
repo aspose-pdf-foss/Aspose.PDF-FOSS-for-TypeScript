@@ -574,7 +574,17 @@ function mcidIndex(doc: Document, page: Page): McidIndex {
       byMcid.set(e.mcid, list);
       order.set(e.mcid, ords);
     },
-  });
+    // What the document SHOWS. `StructElement.Nodes` is the tagged half of
+    // every export — HTML, Markdown, DOCX, EPUB — so without this a tagged
+    // document keeps emitting text on a switched-off layer while an untagged one
+    // does not. There is no opt-out here because `Nodes` is a GETTER and cannot
+    // carry one; a caller wanting what the file CONTAINS reads `mapRegions` or
+    // `searchText`, which can.
+    //
+    // The `scriptByGlyph` line rule below stays honest under it: the untagged
+    // path now excludes the same glyphs, so a marker gets the same answer on
+    // both — which is what that rule's "a line is a visual fact" means.
+  }, { skipHidden: true });
   const idx: McidIndex = { byMcid, order, script: scriptByGlyph(all) };
   mcidCache.set(page, idx);
   return idx;

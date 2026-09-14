@@ -194,7 +194,10 @@ function collectPage(
         const img = images.add(e.stream);
         if (img) placed.push({ rid: img.rid, quad: e.quad });
       },
-    });
+      // Its own walk, so `docmodel.ts`'s SHOWN does not reach it: without this
+      // textbox mode would still position hidden text that flow mode omits, and
+      // one export would contradict itself across its two modes.
+    }, { skipHidden: true });
   } catch {
     // Degrade: whatever was collected before the failure still positions.
   }

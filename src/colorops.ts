@@ -38,6 +38,15 @@ export interface GrayOpsResult {
    * it FOUND and the caller decides what that means for a report it owns.
    */
   unresolvedSpaces: Set<string>;
+  /**
+   * `/ColorSpace` resource keys naming a Separation or DeviceN whose colour
+   * operators were LEFT ALONE because `preserveSpot` asked for it (`ixxw.4`).
+   *
+   * The caller repoints those arrays over the target. Same shape and same
+   * reason as `patternSpaces` above: this module hands back what it FOUND and
+   * allocates nothing.
+   */
+  spotSpaces: Set<string>;
 }
 
 /**
@@ -210,9 +219,14 @@ const operandsFor = (
  */
 export function colorOps(
   ops: readonly ContentOp[], lookup: SpaceLookup, to: TargetSpace,
-  toCmyk?: CmykTransform,
+  toCmyk?: CmykTransform, preserveSpot = false,
 ): GrayOpsResult {
   const patternSpaces = new Set<string>();
+  const spotSpaces = new Set<string>();
+  /** A Separation or DeviceN, which `preserveSpot` keeps rather than flattens. */
+  const isSpot = (sp: GraySpace | 'unknown' | undefined): boolean =>
+    preserveSpot && sp !== undefined && sp !== 'unknown'
+    && sp.kind === 'other' && sp.converter.family === 'separation';
   const skipped: InlineSkipAt[] = [];
   const unresolvedSpaces = new Set<string>();
   const [fillOp, strokeOp] = SET_OP[to];
@@ -274,6 +288,12 @@ export function colorOps(
           if (space.base && space.resourceName) patternSpaces.add(space.resourceName);
           return op;
         }
+        if (isSpot(space)) {
+          // Keep the name: the scn that follows must still resolve it, and the
+          // caller repoints the array it points at.
+          spotSpaces.add(a.name);
+          return op;
+        }
         if (a.name === target) return op;
         changed++;
         return { ...op, operands: [name(target)] };
@@ -296,7 +316,7 @@ export function colorOps(
           changed++;
           return { ...op, operands: [...operandsFor(n, base, to, toCmyk), last] };
         }
-        if (n.length === 0 || isTarget(space, to)) return op;
+        if (n.length === 0 || isTarget(space, to) || isSpot(space)) return op;
         changed++;
         return { operator: fill ? fillOp : strokeOp, operands: operandsFor(n, space, to, toCmyk) };
       }
@@ -317,7 +337,7 @@ export function colorOps(
     }
   });
 
-  return { ops: out, changed, patternSpaces, skipped, unresolvedSpaces };
+  return { ops: out, changed, patternSpaces, skipped, unresolvedSpaces, spotSpaces };
 }
 
 /** The DeviceGray specialization of `colorOps`, and the name every existing

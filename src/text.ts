@@ -13,6 +13,7 @@ import {
 } from './colorspace.js';
 // textrank.ts imports this module type-only, so this value edge closes no cycle.
 import { dominantFragmentSize, roundSize } from './textrank.js';
+import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 
 /** 2x3 affine matrix [a b c d e f] with row-vector convention:
  *  x' = a*x + c*y + e ; y' = b*x + d*y + f. */
@@ -374,12 +375,55 @@ interface Ctx {
   doc: Document;
   visitor: ContentVisitor;
   fontCache: Map<PdfDict, TextFont>;
+  /** Optional-content visibility, present only when the caller asked to skip
+   *  hidden content AND the document declares an `/OCProperties`. */
+  oc?: OcVisibility;
+}
+
+/**
+ * How a content walk treats optional content.
+ *
+ * **`skipHidden` defaults to FALSE — today's behaviour — and that direction is
+ * the safety property.** `visitContent` has consumers that must see everything
+ * the file holds whatever a configuration says: `redact.ts` removes it,
+ * `inlineimage.ts` removes it, `structwrite.ts` marks it and
+ * `structvalidate.ts` audits it. A walker that skipped by default would make
+ * `RedactText` silently remove LESS than it was asked to, and would hand the
+ * same trap to the next consumer somebody adds. Read APIs opt in instead, and
+ * flip the polarity at their own public boundary (`ExtractOptions.includeHidden`).
+ */
+export interface ContentWalkOptions { skipHidden?: boolean }
+
+/**
+ * What a read API should report about optional content.
+ *
+ * **The public default is the OPPOSITE of the walker's**, and the flip happens
+ * here and nowhere else. A read API answers "what does this page SHOW", so it
+ * skips content the document's default configuration hides; `includeHidden`
+ * asks the other question, "what does this file CONTAIN", which is what a
+ * forensic read or a redaction audit wants.
+ *
+ * Two names rather than one negated option because each states its own layer's
+ * default honestly: `ContentWalkOptions.skipHidden` defaults to false, this
+ * defaults to false, and neither reads as a double negative at its own call
+ * site.
+ */
+export interface ExtractOptions { includeHidden?: boolean }
+
+/** The walker option a read API's `ExtractOptions` means. THE one negation. */
+export function walkOpts(o: ExtractOptions | undefined): ContentWalkOptions {
+  return { skipHidden: !o?.includeHidden };
 }
 
 /** Walk a page's content (all /Contents streams, then into Form XObjects),
  *  emitting glyph/image events with provenance. */
-export function visitContent(doc: Document, page: Page, visitor: ContentVisitor): void {
-  const ctx: Ctx = { doc, visitor, fontCache: new Map() };
+export function visitContent(
+  doc: Document, page: Page, visitor: ContentVisitor, opts: ContentWalkOptions = {},
+): void {
+  const ctx: Ctx = {
+    doc, visitor, fontCache: new Map(),
+    oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined,
+  };
   const streams = contentStreamBytes(doc, page).map((bytes, i) => ({ bytes, streamIndex: i }));
   walkScope(ctx, streams, page.Resources, [], IDENTITY, 0, new Set());
 }
@@ -482,6 +526,10 @@ function walkScope(
   let activeMcid: number | undefined = inheritedMcid;
   const artifactStack: (ContentAddr | undefined)[] = [];
   let artScope: ContentAddr | undefined = inheritedArtifact;
+  // Optional content. `ocvisible.ts` owns the nesting rule, so this walker,
+  // `paths.ts`'s and `pagerender.ts`'s provably cannot disagree about which ops
+  // a hidden section covers. Inert unless the caller asked to skip.
+  const oc = new OcStack(ctx.oc);
 
   // Path construction state (page-space points).
   let lineWidth = 1;
@@ -494,7 +542,7 @@ function walkScope(
     for (const sp of subpaths)
       for (let i = 1; i < sp.length; i++)
         segs.push([sp[i - 1][0], sp[i - 1][1], sp[i][0], sp[i][1]]);
-    if (segs.length && ctx.visitor.path)
+    if (segs.length && ctx.visitor.path && !oc.hidden)
       ctx.visitor.path({
         addr, segments: segs, stroke, fill,
         lineWidth: stroke ? lineWidth * vscale(curCtm) : 0,
@@ -591,20 +639,21 @@ function walkScope(
         case 'TD': { const [tx, ty] = nums(op.operands); st.leading = -ty; lineMove(st, tx, ty); break; }
         case 'Tm': { const m = nums(op.operands); if (m.length === 6) { st.tlm = m as Matrix; st.tm = m as Matrix; } break; }
         case 'T*': lineMove(st, 0, -st.leading); break;
-        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill); break;
-        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill); break;
-        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill); break;
+        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden); break;
+        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden); break;
+        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden); break;
         case '"': {
           st.wordSp = num(op.operands[0]); st.charSp = num(op.operands[1]);
-          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill); break;
+          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden); break;
         }
         case 'BMC':
-          mcidStack.push(activeMcid); artifactStack.push(artScope);
+          mcidStack.push(activeMcid); artifactStack.push(artScope); oc.bmc();
           if (isArtifactTag(op.operands[0]))
             artScope = openArtifact(ctx, addr, undefined, properties, artScope);
           break;
         case 'BDC': {
           mcidStack.push(activeMcid); artifactStack.push(artScope);
+          oc.bdc(op.operands[0], op.operands[1], properties);
           if (isArtifactTag(op.operands[0]))
             artScope = openArtifact(ctx, addr, op.operands[1], properties, artScope);
           const m = mcidFromProps(ctx.doc, properties, op.operands[1]);
@@ -614,13 +663,21 @@ function walkScope(
         case 'EMC':
           if (mcidStack.length) activeMcid = mcidStack.pop();
           if (artifactStack.length) artScope = artifactStack.pop();
+          oc.emc();
           break;
-        case 'BI': if (op.inlineImage) emitImage(ctx, curCtm, addr, 'inline', activeMcid, artScope); break;
+        case 'BI': if (op.inlineImage && !oc.hidden) emitImage(ctx, curCtm, addr, 'inline', activeMcid, artScope); break;
         case 'Do': {
           const xn = op.operands[0];
           if (!isName(xn) || !xobjects) break;
           const xo = ctx.doc.resolve(xobjects.get(xn.name));
           if (!isStream(xo)) break;
+          // One gate for both subtypes, as `pagerender.ts`'s `Do` is: an /OC on
+          // the XObject DICTIONARY is the half this library itself WRITES
+          // (AddImage({ layer }), AddBarcode({ layer }), ImageInfo.Replace), so
+          // without it extraction reports an image our own renderer skips.
+          // A hidden FORM is skipped outright rather than walked with a flag —
+          // equivalent, since the child scope draws nothing that escapes it.
+          if (oc.hidden || !ocVisible(ctx.oc, xo.dict.get('OC'))) break;
           if (isImageXObject(ctx.doc, xo.dict)) { emitImage(ctx, curCtm, addr, 'xobject', activeMcid, artScope, xo); break; }
           if (isFormXObject(ctx.doc, xo.dict) && depth < MAX_XOBJECT_DEPTH && !seen.has(xo.dict)) {
             seen.add(xo.dict);
@@ -656,8 +713,15 @@ function lineMove(st: TextState, tx: number, ty: number): void {
   st.tm = st.tlm;
 }
 
-/** Emit one glyph event per code in a show string, advancing the text matrix. */
-function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb): void {
+/** Emit one glyph event per code in a show string, advancing the text matrix.
+ *
+ *  **`hidden` suppresses the EVENT and never the ADVANCE**, which is the whole
+ *  reason optional content is gated here rather than around the call. A show
+ *  operator occupies its width whether or not anybody sees it, so skipping the
+ *  call outright would leave the pen where the hidden run began and misplace
+ *  every visible glyph after it in the same text object — a quad that is wrong
+ *  rather than absent, which is worse than the defect being fixed. */
+function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean): void {
   if (!isString(strObj) || !st.font) return;
   for (const g of st.font.decodeGlyphs(strObj.bytes)) {
     const startTm = st.tm;
@@ -680,6 +744,7 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
     const quad: [number, number, number, number] = g.vertical
       ? [x - size / 2, Math.min(y, endY), x + size / 2, Math.max(y, endY)]
       : [x, y, endX, y + size];
+    if (hidden) continue;
     ctx.visitor.glyph?.({
       addr, font: st.font, quad, text: g.text,
       fontSize: size, angle, elementIndex, byteStart: g.byteStart, byteLen: g.byteLen, advance, mcid,
@@ -692,10 +757,10 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
 }
 
 /** Handle a TJ array: strings emit glyphs, numbers shift the text matrix. */
-function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb): void {
+function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean): void {
   if (!isArray(arrObj) || !st.font) return;
   arrObj.forEach((el, idx) => {
-    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill);
+    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, st.fontSize, st.hscale, st.font!.wmode === 1);
       st.tm = mul(translate(dx, dy), st.tm);
@@ -732,14 +797,16 @@ function intersects(a: Rect, b: Rect): boolean {
 }
 
 /** Collect the glyph/image events whose device-space box intersects any `rects`. */
-export function mapRegions(doc: Document, page: Page, rects: Rect[]): RegionHits {
+export function mapRegions(
+  doc: Document, page: Page, rects: Rect[], opts?: ContentWalkOptions,
+): RegionHits {
   const rs = rects.map(norm);
   const glyphs: GlyphEvent[] = [];
   const images: ImageEvent[] = [];
   visitContent(doc, page, {
     glyph: (e) => { if (rs.some((r) => intersects(e.quad, r))) glyphs.push(e); },
     image: (e) => { if (rs.some((r) => intersects(e.quad, r))) images.push(e); },
-  });
+  }, opts);
   return { glyphs, images };
 }
 
@@ -971,9 +1038,11 @@ export function scriptByGlyph(glyphs: GlyphEvent[]): Map<GlyphEvent, 'sub' | 'su
 
 /** Walk a page's content and group consecutive glyphs into positioned fragments,
  *  in content order. The thin positioned counterpart to `extractText`. */
-export function extractFragments(doc: Document, page: Page): TextFragment[] {
+export function extractFragments(
+  doc: Document, page: Page, opts?: ExtractOptions,
+): TextFragment[] {
   const glyphs: GlyphEvent[] = [];
-  visitContent(doc, page, { glyph: (e) => glyphs.push(e) });
+  visitContent(doc, page, { glyph: (e) => glyphs.push(e) }, walkOpts(opts));
   return fragmentsFromGlyphs(glyphs);
 }
 
@@ -1021,8 +1090,10 @@ function bbox(quads: [number, number, number, number][]): [number, number, numbe
 
 /** Assemble positioned fragments into lines (by baseline) and paragraph-like
  *  blocks (by vertical gap and left-edge alignment), ordered top-to-bottom. */
-export function extractStructured(doc: Document, page: Page): TextBlock[] {
-  const frags = extractFragments(doc, page);
+export function extractStructured(
+  doc: Document, page: Page, opts?: ExtractOptions,
+): TextBlock[] {
+  const frags = extractFragments(doc, page, opts);
   if (frags.length === 0) return [];
 
   // Group fragments into lines by baseline (PDF Y up: larger Y first).
@@ -1099,14 +1170,14 @@ export function extractStructured(doc: Document, page: Page): TextBlock[] {
 }
 
 /** Walk a page's content, collect positioned runs, assemble into text. */
-export function extractText(doc: Document, page: Page): string {
+export function extractText(doc: Document, page: Page, opts?: ExtractOptions): string {
   const runs: Run[] = [];
   visitContent(doc, page, {
     glyph: (e) => {
       if (!e.text) return;
       runs.push(runFromGlyph(e));
     },
-  });
+  }, walkOpts(opts));
   return assembleLines(runs);
 }
 
