@@ -185,6 +185,48 @@ export function readAttr(dicts: PdfDict[], key: string): PdfObject | undefined {
   return undefined;
 }
 
+/** The RAW name value of `key` in the element's `owner` attribute dict.
+ *
+ *  **Invariant: UNVALIDATED, unlike every typed reader here, and that is the
+ *  point.** `decEnum` drops a value outside its enumeration, so a typed read
+ *  cannot tell "absent" from "present and wrong" — and ISO 14289-2 8.2.5.14-4
+ *  has to REPORT a `/NoteType` outside {Footnote, Endnote, None}. The same
+ *  applies to `/Scope`: veraPDF's table-level gate counts a TH as scoped when it
+ *  states ANY name, junk included, so a validated read would examine cells the
+ *  anchor does not. */
+export function readOwnerName(
+  doc: Document, root: StructTreeRoot, elemDict: PdfDict, owner: string, key: string,
+): string | undefined {
+  const raw = readAttr(collectOwnerDicts(doc, root, elemDict, owner), key);
+  return raw === undefined ? undefined : decName(doc, raw);
+}
+
+/** The `/ListNumbering` in force for this element, walking `/P` upward and
+ *  falling back to `None`.
+ *
+ *  **Invariant, and first principles get it wrong: `ListNumbering` is
+ *  INHERITABLE.** `AttributeHelper.getListNumbering` passes
+ *  `isInheritable = true` and recurses on `/P`, while `NoteType` and `Scope`
+ *  pass `false`. So a nested `L` inherits its ancestor's numbering and does NOT
+ *  report under 8.2.5.25-1, while an absent value anywhere in the chain reads as
+ *  `None` and DOES — which is what makes that rule bite at all. `readList` does
+ *  not inherit, so the validator cannot simply call it.
+ *
+ *  **Note the depth bound:** `/P` can cycle in a file we did not write, and a
+ *  validator must not hang on damage — `lexer.ts`'s posture. */
+export function effectiveListNumbering(
+  doc: Document, root: StructTreeRoot, elemDict: PdfDict,
+): string {
+  let d: PdfDict | undefined = elemDict;
+  for (let depth = 0; d !== undefined && depth < 64; depth++) {
+    const v = readOwnerName(doc, root, d, 'List', 'ListNumbering');
+    if (v !== undefined) return v;
+    const p = doc.resolve(d.get('P'));
+    d = isDict(p) ? p : undefined;
+  }
+  return 'None';
+}
+
 /** Decode all known fields of `fields` from the owner's dict list, or undefined
  *  when the list is empty. */
 function readOwner<T>(

@@ -21,6 +21,298 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 8.10.3.5-1** — a graphic forming
+  part of a signature's appearance needs alternative text. A signature widget
+  (`/FT /Sig`) whose `/AP /N` paints an image, a shading or a path, and whose
+  enclosing structure element chain carries no `/Alt`, reports. The `/Alt` may
+  be **inherited** from any ancestor, which is deliberately not the same lookup
+  as the private-use rule's — that one reads the element directly. Text alone in
+  an appearance is not a graphic, so an ordinary typed-name signature field does
+  not report. This completes clauses 8.9 and 8.10 at 26 rules, and PDF/UA-2
+  validation at all 91 rules of the reference profile.
+
+  **Note this one rule is an APPROXIMATION rather than a transcription**, and
+  the source says so. The reference validator states it over a grouped
+  *content-item* model — each graphic item carrying its own structure parent and
+  inherited attributes — which this library does not have; the question is
+  therefore asked once per signature annotation rather than once per content
+  item. The two differ only when a single signature appearance is internally
+  tagged with marked content pointing at different structure elements carrying
+  different `/Alt` values, which no real signature appearance does. Every other
+  PDF/UA rule in this library is a faithful transcription. (`q7hc.4.6`)
+
+### Changed
+
+- **`ValidatePdfUa()` now checks PDF/UA identification at part 1**, not only at
+  part 2. `ConvertToPdfUa()` has written `pdfuaid:part 1` since it existed and
+  nothing verified it; veraPDF's PDF/UA-1 profile carries clause 5 exactly as
+  the PDF/UA-2 one does, so this was a gap rather than a difference between the
+  parts. **A document that is otherwise UA-1 conformant but carries no
+  `pdfuaid` will now report** — which is the point of the change. Note the two
+  clauses are *not* the same rule: part 1 wants `pdfuaid:part 1` and states no
+  `rev` requirement at all, since PDF/UA-1 carries `amd` and `corr` where
+  PDF/UA-2 carries `rev`. Requiring a rev at part 1 would report on every
+  conformant UA-1 file, including the ones this library writes. (`q7hc.4.5`)
+
+- **BREAKING (report severity): PDF/UA identification is now a WARNING rather
+  than an error**, at part 2 as well as part 1. Every rule of clause 5 is
+  tagged `minor` in the reference profile at both parts, and this library maps
+  that to a warning — the same treatment tab order already gets. The practical
+  effect is that `ValidatePdfUa(2).Passed` can now be `true` for a document
+  whose only defect is missing or wrong identification, where it was `false`
+  before; the finding still appears in `Issues` and in `Warnings`. This is what
+  keeps an authored tagged document passing `ValidatePdfUa` outright, since
+  authoring deliberately writes no `pdfuaid` — making a conformance claim on
+  the author's behalf is not the library's business. Callers who want
+  identification treated as fatal should test for the `PdfuaIdentification`
+  rule id directly rather than reading `Passed`. (`q7hc.4.5`)
+
+- **PDF/A level `a` validation does not report missing PDF/UA
+  identification.** ISO 19005 level `a` requires PDF/UA-1 *tagging*; it does
+  not require the document to carry a PDF/UA *conformance claim*, which is what
+  `pdfuaid:part` is. A PDF/A file identifies itself through `pdfaid:part`.
+  Without this exclusion the previous entry would have reported on essentially
+  every conformant level-`a` document. (`q7hc.4.5`)
+
+### Added
+
+- **A GoTo action now carries a structure destination (`/SD`) in a tagged
+  document** — `page.AddLink({ action: { type: 'goto', … } })` and everything
+  built on it, including a table of contents. `/SD` is written **beside** the
+  existing `/D`, never in place of it: a PDF 1.7 viewer reads `/D` and navigates
+  exactly as before, while a PDF 2.0 viewer reads `/SD`, so there is no
+  compatibility cost. It is written only when the document is tagged and a
+  structure element resolves for the target page — the first such element in
+  tree order — so an **untagged document is byte-identical**. Note outline
+  items, `/OpenAction` and named destinations are deliberately unchanged and
+  still report under 8.8-1: their destination is tested directly, so satisfying
+  the rule there would mean a destination older viewers cannot resolve, and
+  trading navigation for a conformance line is the caller's decision rather
+  than the library's default. (`q7hc.4.4`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 clauses 8.7, 8.8 and 8.14.1** —
+  optional content, intra-document destinations and embedded files. Five rules:
+  every optional-content configuration dictionary needs a non-empty `/Name`, and
+  none may carry `/AS` (8.7-1,2); every destination whose target is inside the
+  document must be a *structure* destination, both standalone and inside a GoTo
+  action (8.8-1,2); and every file specification in the `/EmbeddedFiles` name
+  tree needs a `/Desc` (8.14.1-1). **Note two asymmetries that are easy to get
+  backwards.** The `/Name` rule fires only when the catalog's `/OCProperties`
+  carries a `/Configs` array — a document with only a default configuration is
+  exempt entirely — while the `/AS` prohibition is ungated and examines the
+  default too. And a standalone destination qualifies as a structure
+  destination when its first array element is a structure element, whereas a
+  GoTo *action* qualifies only through `/SD`: a structure-destination array in
+  its `/D` does **not** satisfy the rule. Note also that 8.7-2 prohibits
+  automatic optional-content usage application outright, since `/AS` is what
+  makes a `/Usage` entry do anything. Nothing here is converted; all five land
+  in `unresolved`. (`q7hc.4.4`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 clauses 8.4.3, 8.4.4 and 8.6** —
+  private-use characters and natural language. Six rules: real content mapping
+  to a Unicode private-use code point needs an `/ActualText` or `/Alt` to say
+  what it means, and neither of those strings may itself contain one
+  (8.4.3-1..3); the catalog must state `/Lang`, and every `/Lang` — the
+  catalog's, a structure element's, or a marked-content property list's — must
+  be a valid language identifier (8.4.4-1,2); and no human-readable text string
+  may use the private-use area (8.6-1). **Note three things a reader would
+  otherwise get wrong.** The private-use area is *three* ranges
+  (U+E000–F8FF, U+F0000–FFFFD, U+100000–10FFFD), both supplementary bounds
+  ending at `FFFD` because the last two code points of each plane are
+  noncharacters. 8.4.4-1 tests only that `/Lang` is *present*: an empty value is
+  caught by the syntax rule instead, so the two together give the answer neither
+  gives alone. And an `/Alt` excuses a private-use glyph only on that glyph's
+  *own* structure element or an enclosing marked-content sequence — not on an
+  ancestor element, which is the opposite of the intuitive reading. 8.6-1 checks
+  a curated set of entries this library models as human-readable (document
+  metadata, outline titles, annotation and field text, structure `/Alt`,
+  `/ActualText`, `/E` and `/T`, and attachment descriptions) rather than every
+  string in the file, which would report on binary values such as `/ID` and
+  encryption or signature data. (`q7hc.4.4`)
+
+- **`GlyphEvent.mcProps` reports the marked-content string attributes in scope**
+  — the `/ActualText`, `/Alt` and `/Lang` inherited from the innermost `BDC`
+  that states each, including one carried on a form the page draws. It is
+  **absent unless some BDC in scope states one**, which is `GlyphEvent.color`'s
+  rule and keeps every existing consumer byte-identical. It rides on the glyph
+  rather than on the marked-content event because that event fires only when an
+  `/MCID` resolves, while a `BDC` may carry `/ActualText` with no `/MCID` at
+  all — and ISO 14289-2 8.4.3-1 reads exactly that case when deciding whether a
+  private-use code point has been given a meaning. (`q7hc.4.4`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 clause 8.4.5** — the five glyph
+  rules, which complete the clause at fifteen. An embedded font must define
+  every glyph the document shows (8.4.5.5.1-2), the width in the font dictionary
+  and the width in the font program must agree within one unit of 1/1000 em
+  (8.4.5.6-1), every code shown must map to a Unicode value and that value must
+  not contain U+0000, U+FEFF or U+FFFE (8.4.5.8-1,2), and no text-showing
+  operator may reference `.notdef` (8.4.5.9-1). **Findings are deduplicated per
+  (font, code, render mode)**, matching the reference validator's own glyph
+  cache: a page with five thousand `e`s in one font yields at most one finding
+  rather than five thousand. Four of the five exempt render mode 3, the
+  invisible OCR layer of a scanned page; `.notdef` deliberately does not, since
+  a `.notdef` there still stands for text that is lost. (`q7hc.4.3`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 clause 8.4.5** — fonts and CMaps.
+  Five more rules over composite fonts: a CMap outside ISO 32000-2 Table 116
+  must be embedded, an embedded CMap's `/WMode` must match the one its stream
+  dictionary states, a CMap may not reference one outside Table 116
+  (8.4.5.4-1..3), an embedded `CIDFontType2` must state `/CIDToGIDMap`
+  (8.4.5.3.2-1), and a CIDFont's `/CIDSystemInfo` must agree with its CMap's
+  registry and ordering with a supplement no higher (8.4.5.3.1-1). **Note
+  Table 116 is sixty-one names where this library bundles 195 predefined Adobe
+  CMaps** — "do we have this CMap" and "does PDF 2.0 sanction it" are different
+  questions, and answering the first would pass 134 CMaps the rule exists to
+  report. `Identity-H` and `Identity-V` are exempt from the `/CIDSystemInfo`
+  rule by name: they belong to no character collection, so there is nothing to
+  agree with. (`q7hc.4.3`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 clause 8.4.5** — fonts. The first
+  five rules: every rendered font embedded (8.4.5.5.1-1), and the four TrueType
+  encoding rules (8.4.5.7-1..4) — a non-symbolic face needs a `(3,1)` or `(1,0)`
+  cmap subtable and a `MacRomanEncoding` or `WinAnsiEncoding` base with
+  Unicode-resolvable `/Differences`, a symbolic one needs a `(3,0)` or `(1,0)`
+  subtable and must state no `/Encoding` at all. The embedding rule exempts
+  Type 3 (its glyphs are content streams, so there is no program to embed),
+  Type 0 (the rule falls on its descendant) and render mode 3, the invisible OCR
+  layer of a scanned page. **Note PDF 2.0 grants the Standard 14 no exemption**,
+  so a document drawing unembedded Helvetica now reports — a true positive that
+  `ConvertToPdfUa` deliberately does NOT fix, because embedding a face means
+  choosing one and writing it into the file, which is authoring rather than
+  remediation. Every rule here lands in `unresolved`. (`q7hc.4.3`)
+
+- **`TextFont.dictWidth(key)` reports the width the font DICTIONARY states**, or
+  `undefined` where it states none — a code for a simple font, a CID for a
+  composite one. It is deliberately **not** `Glyph.width`, which falls through
+  to the embedded font program when `/Widths` (or `/W`) has no entry for the
+  key: that fallback is right for measuring text and fatal for asking whether
+  the dictionary and the program AGREE, since comparing `Glyph.width` against
+  the program compares the program's answer with itself. It mirrors the width
+  lookup's first two branches and stops before the fallback, so the two cannot
+  disagree about what the dictionary says. (`q7hc.4.3`)
+
+- **`GlyphEvent.renderMode` reports the text rendering mode** (`/Tr`), the one
+  text-state operator the content walk did not track. It is **absent for mode
+  0**, the PDF initial value, which is `GlyphEvent.color`'s rule and keeps every
+  existing consumer that compares an event byte-identical — read it as `?? 0`
+  rather than testing presence. It exists because four of ISO 14289-2's five
+  glyph rules exempt mode 3, invisible text, which is the OCR layer of every
+  scanned PDF: without it those rules would fire on exactly the population they
+  are written to excuse. Note the new field IS restored by `Q` while the five
+  text-state values beside it (`Tc`, `Tw`, `Tz`, `TL`, `Ts`) are not, which is a
+  pre-existing divergence from 32000-2 9.3.1 filed separately — scoping this one
+  correctly matters because an OCR tool that wraps its invisible layer in
+  `q` … `Q` would otherwise leave the mode stuck at 3 and silently exempt the
+  visible text after it. (`q7hc.4.3`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 clauses 8.9 and 8.10** —
+  annotations and forms. Twenty-five rules: the annotations that must be
+  artifacts (Invisible, NoView without ToggleNoView, zero-size widgets,
+  printer's marks), the ones that must describe themselves (`/Ink`, `/Screen`,
+  `/3D`, `/RichMedia`, and a rubber stamp with neither `/Name` nor
+  `/Contents`), enclosure (markup annotations in an `Annot`, field widgets in a
+  `Form`, at most one widget per `Form`, a `/Popup` that must NOT be tagged),
+  the subtypes PDF/UA-2 prohibits outright (`/Sound`, `/Movie`, `/TrapNet`),
+  `/XFA`, tab order, and three textual-equivalence rules — `/Contents` against
+  the enclosing element's `/Alt`, `/RC` against `/Contents`, and a text field's
+  `/RV` against its `/V`. The last two reduce rich text the way the standard's
+  reference validator does, by concatenating every text node, which is a new
+  `{ verbatim: true }` mode on the existing reducer rather than a second one;
+  the default is unchanged. Note what is NOT converted: every rule here lands in
+  `unresolved`, because an absent `/Contents`, a missing label, a prohibited
+  `/Sound` and an XFA packet are all authoring or destructive decisions — though
+  `ConvertXfaToAcroForm()` converts the fields and removes `/XFA`, so running it
+  first satisfies that rule for free. All part 2 only; part 1 is unchanged.
+  (`q7hc.4.2`)
+
+- **`ValidatePdfUa(2)` now answers ISO 14289-2 8.2.5**, the per-type structure
+  requirements: a `TOCI` that identifies no target, the prohibited `H` and
+  `Note` types, a footnote whose `/Ref` graph does not close in both
+  directions, a link annotation outside a `Link`/`Reference` element or sharing
+  one with a link that targets elsewhere, malformed `Ruby` and `Warichu`
+  sequences, a labelled list with no numbering, an `LI` owning content
+  directly, a misplaced `Caption`, MathML outside a `Formula`, and — the
+  substantial half — table regularity and header connectivity. Tables are
+  placed on a new occupancy grid that puts every cell where the document
+  DECLARES it rather than where it fits, which is what makes an overlap or an
+  overhanging span visible at all; header association follows ISO 32000-2
+  14.8.5.7, including that an absent `/Scope` is filled in from the cell's
+  position rather than treated as absent, and that a table whose every header
+  states a scope is connected without a single cell being examined. Note two
+  readings that are not the obvious ones: `ListNumbering` is INHERITED, so a
+  nested list covered by an outer declaration does not report, while an absent
+  `NoteType` reads as the default `None` and PASSES. Twenty rules, all part 2
+  only — part 1 is unchanged. The twenty-first rule of the clause, a Figure's
+  alternate text, was already reported at both parts and is not duplicated.
+  (`q7hc.4.1`)
+
+- **`StructElement.References`** reads an element's `/Ref` entry — the structure
+  elements it points at, which is how a `TOCI` names its target and how a
+  footnote and its citations reference one another. Deliberately not spelled
+  `Refs`: `StructElement.Ref` already exists and is the element's own object
+  reference, so the plural would be one letter from an unrelated thing.
+  (`q7hc.4.1`)
+
+- **PDF/UA-2 validation and remediation.** `doc.ValidatePdfUa(2)` and
+  `doc.ConvertToPdfUa({ part: 2 })` target ISO 14289-2:2024, the PDF 2.0
+  sibling of PDF/UA-1; both default to part 1, so every existing call is
+  unchanged. Part 2 adds the `pdfuaid:part`/`pdfuaid:rev` identification, `/P`
+  on every structure element, the catalog `/Metadata` stream, the namespace
+  rules, and the requirement that the structure tree root hold a single
+  `Document` element in the PDF 2.0 standard structure namespace — which
+  conversion satisfies by wrapping existing top-level elements in one,
+  preserving reading order. Note what part 2 does NOT require, because the
+  obvious reading is wrong: an element that states no `/NS` is in the PDF 1.7
+  namespace by default and is perfectly conformant, so a tree carried over from
+  PDF/UA-1 needs no per-element change. Structure namespaces are also readable
+  and writable directly — `element.Namespace`, `root.Namespaces`,
+  `root.DeclareNamespace(uri)` and an `ns` option on `Append`, which is what
+  lets a PDF 2.0 type such as `Aside` or `FENote` be authored at all
+  (`q7hc.4`).
+
+- **Structure elements can be moved and reordered.**
+  `StructElement.MoveTo(parent, index?)` re-parents an element and its subtree
+  — `parent` being another element or the tree root, `index` counting element
+  children and defaulting to last — and `ReorderChildren(order)` permutes an
+  element's children in place, leaving its own content items where they were.
+  Reading order IS the tree's order, so this is what fixes a reading order
+  `AutoTag` got wrong, which its geometric heuristic regularly does on a
+  multi-column page with a full-width banner. Neither touches the
+  `/ParentTree`: every MCID still resolves to the same element on the same page
+  afterwards. Where an element relied on an inherited `/Pg`, the move
+  materializes it first, so re-parenting across pages cannot silently re-point
+  its marked content. A move into the element's own subtree, into a different
+  structure tree, or at an out-of-range index is refused with a `RangeError`
+  and writes nothing, as is a reorder whose argument is not exactly the
+  element's children. Note the tree's order drives `GetText`,
+  `StructElement.Nodes` and the `ToHtml('semantic')` / `ToMarkdown` / `ToDocx`
+  / `ToEpub` exports; `GetStructuredText` is geometric and is unaffected by
+  either (`q7hc.3`).
+
+- **A structure element can be removed.** `StructElement.Remove()` detaches an
+  element and its subtree, releases every `/ParentTree` slot its content items
+  and `/OBJR` kids hold, and returns
+  `{ elements, mcids, annotations, unreachable }`. **It does not delete ink:**
+  the `BDC`/`EMC` pair around the content is removed while every operator
+  between them survives, so the marked content stays on the page and becomes
+  untagged — which `ValidatePdfUa` now reports as `UntaggedContent`, a true
+  statement the caller can act on, where deleting the content would be a silent
+  edit to the page. An annotation keeps its `/Annots` entry and loses only its
+  `/StructParent`. Removing an already-detached element is a no-op returning
+  zeroes (`q7hc.2`).
+
+- **A structure element's type is writable.** `StructElement.SetType(type)`
+  changes `/S` and rewrites the marked-content `BDC` tag behind that element's
+  own content, returning `{ retagged, unreachable }`; `element.Type = 'H2'` is
+  the same operation with the report discarded. Retyping is the commonest
+  repair after supplying an `/Alt` — `AutoTag` is documented as a starting
+  point a human refines, and until now an element it typed wrongly could not be
+  corrected through the public API at all. The rewrite fails open: a `BDC` the
+  content walk cannot address (inside a tiling pattern, a Type 3 `/CharProcs`
+  or an annotation appearance) keeps its stale tag and is counted in
+  `unreachable` rather than throwing, because the tag name is advisory — the
+  `/MCID` is what binds content to the tree (`q7hc.1`).
+
 - **`ConvertToPdfA('1b')` now drops a transparency group that provably does
   nothing.** ISO 19005-1 prohibits transparency and conversion cannot flatten
   it — correctly, since flattening means rasterizing the page and losing its
@@ -60,7 +352,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   should not still carry a spot colorant a RIP would ink. `ConvertToPdfA` sets
   it, where the point is conformance rather than colour reduction (`ixxw.4`).
 
+### Changed
+
+- **BREAKING: a structure type is now validated where it is written.**
+  `StructTreeRoot.Append`, `StructElement.Append` and the new
+  `StructElement.SetType` reject a type that is neither one of the 49 standard
+  structure types nor mapped to one through the struct root's `/RoleMap`,
+  throwing `RangeError`. Previously any name whatever was accepted and written
+  to `/S`, and the document then failed `ValidatePdfUa`'s `StandardType` rule
+  with nothing at the call site to say so — a tree that looks tagged and is not
+  conformant. Map a deliberate custom type first with
+  `RegisterRole(custom, standard)`, which is what it is for. The check runs
+  before anything is allocated, so a rejected call leaves the document
+  byte-identical (`q7hc.1`).
+
 ### Fixed
+
+- **`ValidatePdfUa` called content tagged when its `/MCID` resolved to
+  nothing.** `UntaggedContent` tested only whether a marked-content sequence
+  carried an `/MCID`, so a `BDC` naming a `/ParentTree` slot that holds no
+  element — a slot released by `StructElement.Remove`, or a mapping a
+  third-party producer never wrote — read as perfectly tagged and no rule
+  fired. It now requires the `/MCID` to resolve to a structure element, which
+  is what "tagged" means. Measured: this moved no existing test, because every
+  `/MCID` this library authors resolves; it is a fix for documents we did not
+  write (`q7hc.2`).
 
 - **An image's colour space did not count as device colour, so a CMYK picture
   passed PDF/A validation under an sRGB intent.** The page scan behind

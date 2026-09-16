@@ -59,6 +59,14 @@ export function validatePdfA(doc: Document, catalog: PdfDict, level: PdfALevel):
   for (const rule of RULES) issues.push(...rule(ctx));
   if (lvl === 'a') {
     for (const ua of validatePdfUa(doc, catalog).Issues) {
+      // PDF/UA IDENTIFICATION is excluded, and that is not tidiness. ISO 19005
+      // level 'a' requires PDF/UA-1 TAGGING; it does not require the document
+      // to make a PDF/UA CONFORMANCE CLAIM. A PDF/A-2a file identifies itself
+      // through `pdfaid:part`, and demanding `pdfuaid:part` beside it would
+      // report on essentially every conformant level-'a' document in
+      // existence. `q7hc.4.5` made this reachable by widening the rule to part
+      // 1, and `test/pdfua-part1-identity.test.ts` caught it.
+      if (ua.rule === 'PdfuaIdentification') continue;
       issues.push({ ...ua, rule: `UA:${ua.rule}`, clause: `ISO 19005-${part} §6.8 / ${ua.clause ?? ''}`.trim() });
     }
   }

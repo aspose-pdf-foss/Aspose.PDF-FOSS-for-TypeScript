@@ -13,6 +13,11 @@ function g(
     quad: [x, baseline, x + size * 0.5, baseline + size],
     fontSize: size, angle: 0, text, elementIndex: 0,
     byteStart: 0, byteLen: 1, advance: 0.5,
+    // groupGlyphs reads neither, so these synthetic glyphs carry a placeholder.
+    // The fields are REQUIRED on GlyphEvent on purpose: the real walk must not
+    // be able to forget them, since a consumer that re-derives a code from
+    // byteStart/byteLen gets every non-Identity CMap silently wrong.
+    code: 0, cid: 0,
     ...extra,
   };
 }

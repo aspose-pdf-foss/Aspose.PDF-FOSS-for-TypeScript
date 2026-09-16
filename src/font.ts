@@ -269,7 +269,22 @@ export class TextFont {
   private programWidthInit = false;
   private inverse?: Map<string, number>;              // Unicode -> code (simple fonts, lazy)
 
+  /** The font dictionary this is a view over.
+   *
+   *  **Invariant:** it is the BRIDGE between the two font walks, and there is
+   *  no other. `validatectx.ts`'s `enumerateFonts` yields font DICTS — the one
+   *  walk `pdfavalidate.ts`, `pdfxvalidate.ts` and `uafont.ts` share — while a
+   *  `GlyphEvent` carries a `TextFont`. Asking "does this enumerated font
+   *  render any visible glyph" needs the two joined, and matching them on
+   *  `/BaseFont` instead would fold two distinct dicts that name one face,
+   *  which is the everyday shape for a subset embedded twice.
+   *
+   *  Identity is sound because `visitContent` memoizes `TextFont` per dict, so
+   *  the dict reached from here is the very object `enumerateFonts` yielded. */
+  readonly dict: PdfDict;
+
   constructor(dict: PdfDict, resolve: Resolve, inflate: Inflate) {
+    this.dict = dict;
     const subtype = resolve(dict.get('Subtype'));
     this.isType0 = isName(subtype) && subtype.name === 'Type0';
 
@@ -328,6 +343,33 @@ export class TextFont {
    * encoding, so this takes whichever key the font's own metrics use — pass a
    * code for a simple font and a CID for a composite one.
    */
+  /**
+   * The width the font DICTIONARY states for `key`, or `undefined` when it
+   * states none. Pass a code for a simple font and a CID for a composite one,
+   * exactly as {@link TextFont.advance} does.
+   *
+   * **This is NOT `Glyph.width`, and the difference is the whole reason it
+   * exists.** `advance` falls through to the embedded program when `/Widths`
+   * has no entry for the key — which is right for measuring text and fatal for
+   * ISO 14289-2 8.4.5.6-1, whose job is to compare the dictionary against the
+   * program. Reading `Glyph.width` there would compare the program's answer
+   * with itself and the rule could never fire.
+   *
+   * It mirrors `advance`'s first two branches and stops before the fallback, so
+   * the two provably cannot disagree about what the dictionary says.
+   *
+   * **Note the unit:** em units, like `Glyph.width` — `widthScale` is 0.001 for
+   * every font but Type 3, whose scale is its `/FontMatrix`. A Type 3 font has
+   * no font program, so 8.4.5.6-1 short-circuits before the units could matter.
+   */
+  dictWidth(key: number): number | undefined {
+    if (!this.hasWidths) return undefined;
+    const w = this.widths?.get(key);
+    if (w !== undefined) return w * this.widthScale;
+    if (this.hasMissingWidth) return this.defaultWidth * this.widthScale;
+    return undefined;
+  }
+
   private advance(key: number): number {
     if (this.hasWidths) {
       const w = this.widths?.get(key);

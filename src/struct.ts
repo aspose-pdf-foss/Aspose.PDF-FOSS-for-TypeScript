@@ -6,27 +6,34 @@ import {
 import { decodePdfText, encodePdfText } from './metadata.js';
 import { visitContent, assembleLines, runFromGlyph, scriptByGlyph, type GlyphEvent, type Run, type Rect } from './text.js';
 import type { Annotation } from './annotation.js';
-import { ElemOpts, createElement, kArray, allocContentMcid, tagAnnotation, markContentRegion } from './structwrite.js';
+import {
+  ElemOpts, createElement, kArray, allocContentMcid, tagAnnotation, markContentRegion,
+  retagContentItems, type StructRetagResult,
+} from './structwrite.js';
 import {
   TableAttributes, ListAttributes, LayoutAttributes,
   readTable, writeTable, readList, writeList, readLayout, writeLayout,
 } from './structattr.js';
+import { STANDARD_STRUCTURE_TYPES, resolveRole, checkStructType } from './structtype.js';
+import { lookupNumberTree } from './numbertree.js';
+import { removeElement, type StructRemoveResult } from './structremove.js';
+import { moveElement, reorderChildren, type StructContainer } from './structmove.js';
+import { ensureNamespace, namespaceUriOf, namespacesOf } from './structns.js';
 
-/** The PDF 1.7 standard structure types (grouping, block-level, inline-level,
- *  and illustration). Used by IsStandardType and to terminate RoleMap chains. */
-export const STANDARD_STRUCTURE_TYPES: ReadonlySet<string> = new Set([
-  // Grouping
-  'Document', 'Part', 'Art', 'Sect', 'Div', 'BlockQuote', 'Caption', 'TOC',
-  'TOCI', 'Index', 'NonStruct', 'Private',
-  // Block-level
-  'P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'L', 'LI', 'Lbl', 'LBody',
-  'Table', 'TR', 'TH', 'TD', 'THead', 'TBody', 'TFoot',
-  // Inline-level
-  'Span', 'Quote', 'Note', 'Reference', 'BibEntry', 'Code', 'Link', 'Annot',
-  'Ruby', 'RB', 'RT', 'RP', 'Warichu', 'WT', 'WP',
-  // Illustration
-  'Figure', 'Formula', 'Form',
-]);
+export type { StructRemoveResult } from './structremove.js';
+export type { StructContainer } from './structmove.js';
+
+// Re-exported so `structpreserve.ts`'s import path stays put. The local import
+// above is separate and required: `export … from` creates no local binding,
+// and `ElementFor` / `ElementForObject` call it directly.
+export { lookupNumberTree } from './numbertree.js';
+
+// Re-exported so `index.ts` and every existing import path stay put. The local
+// import above is separate and required: `export … from` creates no local
+// binding, and `IsStandardType` reads the set directly.
+export { STANDARD_STRUCTURE_TYPES } from './structtype.js';
+export { PDF17_NS, PDF20_NS, MATHML_NS } from './structns.js';
+export type { StructRetagResult } from './structwrite.js';
 
 /** A marked-content reference owned by a structure element. */
 export type ContentItem =
@@ -95,9 +102,35 @@ export class StructElement {
     return this.Root.ResolveRole(this.Type);
   }
 
-  /** Whether StandardType is a known PDF 1.7 standard structure type. */
+  /** Whether StandardType is a known PDF 1.7 standard structure type.
+   *
+   *  **Note this stays the PDF 1.7 question** even for an element in the PDF
+   *  2.0 namespace: it is what the accessor has always meant, and redefining it
+   *  is how part-1 behaviour moves silently. The namespace-aware question is
+   *  `isStandardTypeIn` (structtype.ts), which the PDF/UA-2 validator asks. */
   get IsStandardType(): boolean {
     return STANDARD_STRUCTURE_TYPES.has(this.StandardType);
+  }
+
+  /** The standard structure namespace this element's type is drawn from
+   *  (ISO 32000-2 14.8.6), or undefined when it states none — which means the
+   *  PDF 1.7 namespace.
+   *
+   *  Note `/NS` is a REF to a namespace dictionary here, while INSIDE that
+   *  dictionary `/NS` is the URI string; `structns.ts` owns both readings. */
+  get Namespace(): string | undefined {
+    return namespaceUriOf(this.doc, this.Dict);
+  }
+
+  /** Put this element's type in `uri`, declaring the namespace on the tree root
+   *  when it is not declared yet. `undefined` removes /NS. */
+  set Namespace(uri: string | undefined) {
+    if (uri === undefined) {
+      if (this.Dict.delete('NS')) this.doc.markModified();
+      return;
+    }
+    this.Dict.set('NS', ensureNamespace(this.doc, this.Root.Dict, uri));
+    this.doc.markModified();
   }
 
   /** The parent element, or undefined when the parent is the tree root. */
@@ -129,6 +162,21 @@ export class StructElement {
   get Expansion(): string | undefined { return textValue(this.doc, this.Dict.get('E')); }
   /** Element identifier (/ID). */
   get ID(): string | undefined { return textValue(this.doc, this.Dict.get('ID')); }
+
+  /** The structure elements this one REFERENCES — the `/Ref` key
+   *  (ISO 32000-2 14.7.5.4), an array of references to other structure
+   *  elements. Empty when the element states none.
+   *
+   *  **Note the collision this name avoids, and it is a real hazard:**
+   *  `StructElement.Ref` is this element's OWN object reference and has nothing
+   *  to do with `/Ref`. The two are unrelated, and under the obvious plural
+   *  `Refs` they would be one letter apart — so a `/Ref` rule reaching for
+   *  `el.Ref` would get a `PdfRef | undefined` that type-checks in some
+   *  positions. Read by the TOCI and FENote rules in `structvalidate.ts`. */
+  get References(): PdfRef[] {
+    const v = this.doc.resolve(this.Dict.get('Ref'));
+    return isArray(v) ? v.filter(isRef) : [];
+  }
   /** This element's own language (/Lang), if set. */
   get Lang(): string | undefined { return textValue(this.doc, this.Dict.get('Lang')); }
 
@@ -366,7 +414,7 @@ export class StructElement {
   Append(type: string, opts?: ElemOpts): StructElement {
     if (this.Ref === undefined) throw new Error('cannot append to an element with no ref');
     const k = kArray(this.doc, this.Dict);
-    const { dict, ref: r } = createElement(this.doc, type, this.Ref, k, opts);
+    const { dict, ref: r } = createElement(this.doc, type, this.Root.RoleMap, this.Ref, k, opts, this.Root.Dict);
     return new StructElement(this.doc, dict, r, this.Root);
   }
 
@@ -382,6 +430,63 @@ export class StructElement {
   set Title(v: string | undefined) { this.setText('T', v); }
   set Expansion(v: string | undefined) { this.setText('E', v); }
   set ID(v: string | undefined) { this.setText('ID', v); }
+
+  /** Change this element's structure type, rewriting the BDC tag of its own
+   *  marked content to match, and report what the rewrite reached.
+   *
+   *  Throws `TypeError` for a non-string or empty type and `RangeError` for one
+   *  that is neither standard nor mapped by the /RoleMap — map it first with
+   *  `StructTreeRoot.RegisterRole`.
+   *
+   *  **Invariant:** `set Type` is a thin wrapper over this, discarding the
+   *  report. A property setter cannot report what the surgery could not reach,
+   *  and one implementation behind both is what keeps them from drifting —
+   *  the `ToMarkdown` / `ToMarkdownAssets` pairing. */
+  SetType(type: string): StructRetagResult {
+    checkStructType(type, this.Root.RoleMap);
+    this.Dict.set('S', name(type));
+    this.doc.markModified();
+    return retagContentItems(this.doc, this, type);
+  }
+
+  set Type(v: string) { this.SetType(v); }
+
+  /** Remove this element and its subtree from the structure tree, releasing
+   *  every /ParentTree slot its content items and /OBJR kids hold.
+   *
+   *  **It does not delete ink.** The marked content stays in the page and
+   *  becomes untagged, which `ValidatePdfUa` then reports as
+   *  `UntaggedContent` — a true statement the caller can act on, where
+   *  deleting the content would be a silent edit to the page.
+   *
+   *  Removing an element that is already detached is a no-op returning zeroes. */
+  Remove(): StructRemoveResult {
+    return removeElement(this.doc, this);
+  }
+
+  /** Move this element under `parent`, at `index` among its element children
+   *  (default: last). `parent` may be another element or the tree root.
+   *
+   *  Reading order IS the tree's order, so this is what fixes a reading order
+   *  `AutoTag` got wrong. It changes `GetText`, `Nodes` and every export built
+   *  on them; `GetStructuredText` is geometric and is unaffected.
+   *
+   *  Throws `RangeError` for a move into this element's own subtree, into a
+   *  different structure tree, or at an out-of-range index, and `TypeError` for
+   *  a non-integer index. Nothing is written when it throws. */
+  MoveTo(parent: StructContainer, index?: number): void {
+    moveElement(this.doc, this, parent, index);
+  }
+
+  /** Reorder this element's element children into `order`, which must be
+   *  exactly those children, each once.
+   *
+   *  Content-item kids (MCIDs and OBJRs) keep their positions: only the
+   *  elements permute, in the slots they already occupy. Throws `RangeError`
+   *  otherwise, writing nothing. */
+  ReorderChildren(order: StructElement[]): void {
+    reorderChildren(this.doc, this, order);
+  }
 
   /** Allocate the next MCID for `page` against this element and wire the
    *  /ParentTree + /K. Returns the MCID — emit `/<Type> << /MCID n >> BDC … EMC`
@@ -464,13 +569,20 @@ export class StructTreeRoot {
   /** Follow the RoleMap chain from `role` to a standard structure type.
    *  Stops at the first standard type, at an unmapped name, or on a cycle. */
   ResolveRole(role: string): string {
-    let cur = role;
-    const seen = new Set<string>();
-    while (!STANDARD_STRUCTURE_TYPES.has(cur) && this.RoleMap.has(cur) && !seen.has(cur)) {
-      seen.add(cur);
-      cur = this.RoleMap.get(cur)!;
-    }
-    return cur;
+    return resolveRole(role, this.RoleMap);
+  }
+
+  /** Every standard structure namespace the tree declares, in /Namespaces
+   *  order. */
+  get Namespaces(): readonly string[] {
+    return namespacesOf(this.doc, this.Dict);
+  }
+
+  /** Declare `uri` in /Namespaces. Idempotent: a URI already declared reuses
+   *  its existing dictionary, so two elements in one namespace point at one
+   *  object — which is what ISO 14289-2 8.2.5.2-2 compares. */
+  DeclareNamespace(uri: string): void {
+    ensureNamespace(this.doc, this.Dict, uri);
   }
 
   /** The element for a page's marked content: ParentTree[structParentsKey] is
@@ -517,7 +629,7 @@ export class StructTreeRoot {
   Append(type: string, opts?: ElemOpts): StructElement {
     if (this.Ref === undefined) throw new Error('StructTreeRoot has no ref');
     const k = kArray(this.doc, this.Dict);
-    const { dict, ref: r } = createElement(this.doc, type, this.Ref, k, opts);
+    const { dict, ref: r } = createElement(this.doc, type, this.RoleMap, this.Ref, k, opts, this.Dict);
     return new StructElement(this.doc, dict, r, this);
   }
 
@@ -690,35 +802,3 @@ export function textValue(doc: Document, v: PdfObject | undefined): string | und
   return isString(s) ? decodePdfText(s.bytes) : undefined;
 }
 
-/** Look up `key` in a PDF number tree rooted at `node` (/Nums leaves, /Kids
- *  with /Limits for intermediate nodes). Returns the (unresolved) value or
- *  undefined. */
-export function lookupNumberTree(doc: Document, node: PdfDict, key: number): PdfObject | undefined {
-  let cur: PdfDict | undefined = node;
-  const seen = new Set<PdfDict>();
-  while (cur && !seen.has(cur)) {
-    seen.add(cur);
-    const nums = doc.resolve(cur.get('Nums'));
-    if (isArray(nums)) {
-      for (let i = 0; i + 1 < nums.length; i += 2) {
-        if (doc.resolve(nums[i]) === key) return nums[i + 1];
-      }
-    }
-    const kidsArr = doc.resolve(cur.get('Kids'));
-    if (!isArray(kidsArr)) return undefined;
-    let next: PdfDict | undefined;
-    for (const k of kidsArr) {
-      const kd = doc.resolve(k);
-      if (!isDict(kd)) continue;
-      const lim = doc.resolve(kd.get('Limits'));
-      if (isArray(lim) && lim.length === 2) {
-        const lo = doc.resolve(lim[0]); const hi = doc.resolve(lim[1]);
-        if (typeof lo === 'number' && typeof hi === 'number' && key >= lo && key <= hi) {
-          next = kd; break;
-        }
-      }
-    }
-    cur = next;
-  }
-  return undefined;
-}

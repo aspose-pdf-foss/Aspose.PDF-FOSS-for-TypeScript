@@ -1,0 +1,25 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`PDF/UA-1 report identity (refactor fence) > reports a document with a tree but no title in a stable order 1`] = `
+[
+  "error DocumentTitle Document has no title (/Info /Title and XMP dc:title are both empty).",
+  "error DisplayDocTitle Catalog /ViewerPreferences /DisplayDocTitle is not true.",
+  "warning UntaggedContent Page has visible content (text, image or vector) that is neither tagged nor marked as an artifact.",
+  "warning PdfuaIdentification No PDF/UA identification: XMP has no pdfuaid:part.",
+]
+`;
+
+exports[`PDF/UA-1 report identity (refactor fence) > reports an untagged document in a stable order 1`] = `
+[
+  "error Tagged Document is not tagged: no /StructTreeRoot in the catalog.",
+]
+`;
+
+exports[`PDF/UA-1 report identity (refactor fence) > reports the tagged fixture in a stable order 1`] = `
+[
+  "error DocumentTitle Document has no title (/Info /Title and XMP dc:title are both empty).",
+  "error DisplayDocTitle Catalog /ViewerPreferences /DisplayDocTitle is not true.",
+  "error HeadingNesting Heading H2 skips a level (previous numbered heading was H0).",
+  "warning PdfuaIdentification No PDF/UA identification: XMP has no pdfuaid:part.",
+]
+`;

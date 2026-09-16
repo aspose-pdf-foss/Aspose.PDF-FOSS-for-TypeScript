@@ -14,6 +14,9 @@ import {
 // textrank.ts imports this module type-only, so this value edge closes no cycle.
 import { dominantFragmentSize, roundSize } from './textrank.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
+// The one owner of the PDFDocEncoding/UTF-16 rule; `metadata.ts` imports only
+// `types.js`, so this closes no cycle.
+import { decodePdfText } from './metadata.js';
 
 /** 2x3 affine matrix [a b c d e f] with row-vector convention:
  *  x' = a*x + c*y + e ; y' = b*x + d*y + f. */
@@ -297,6 +300,43 @@ export interface GlyphEvent {
    *  the premise `docmodel.ts`'s link recovery is written against.
    *  `docxgroup.ts` groups glyphs rather than fragments for exactly this. */
   color?: Rgb;
+  /** /Tr, the text rendering mode in force when this glyph was shown, when it
+   *  is not 0.
+   *
+   *  **Absent means 0**, the PDF initial value — `color`'s rule, and for
+   *  `color`'s reason: a key present on every glyph would move every fixture
+   *  that compares an event. Read by ISO 14289-2's glyph rules, four of which
+   *  exempt mode 3 (invisible text, the OCR layer of a scanned page). */
+  renderMode?: number;
+  /** The character CODE this glyph was selected by — the bytes the show string
+   *  actually held, before any CMap.
+   *
+   *  **Invariant: carried here rather than re-derived from `byteStart`/
+   *  `byteLen`.** CLAUDE.md records that every consumer which re-derived it
+   *  that way "drew the right glyph for `/Identity-H` and the wrong one for
+   *  every other CMap, silently" — a code is not a CID except under Identity,
+   *  and both numbers are valid glyph ids, so the mistake throws nothing.
+   *  Present on every glyph rather than absent-by-default, unlike `renderMode`:
+   *  there is no initial value to mean "unset", and nothing in the suite
+   *  compares a whole glyph event, so it moves no fixture. */
+  code: number;
+  /** The CID this glyph selects, which is what indexes a composite font's `/W`
+   *  and its glyph program. Equal to `code` for a simple font and for
+   *  `/Identity-H`; different for every other CMap. */
+  cid: number;
+  /** `/ActualText`, `/Alt` and `/Lang` inherited from the marked-content stack
+   *  — the innermost BDC in scope that states each key.
+   *
+   *  **Absent when no BDC in scope states any of them**, `color`'s and
+   *  `renderMode`'s rule, which is what keeps every existing fixture that
+   *  compares an event byte-identical.
+   *
+   *  **Invariant: it rides on the GLYPH and not on `MarkedContentEvent`**,
+   *  which fires ONLY when an `/MCID` resolves (`q7hc.1`). A BDC may carry
+   *  `/ActualText` with no `/MCID` at all, and ISO 14289-2 8.4.3-1 reads
+   *  exactly that case — veraPDF's `containsStringKey` checks the inherited
+   *  marked-content attribute BEFORE it looks at the structure element. */
+  mcProps?: { actualText?: string; alt?: string; lang?: string };
 }
 
 /** A placed image with provenance. */
@@ -352,11 +392,37 @@ export interface ArtifactEvent {
   parent?: ContentAddr;
 }
 
+/** A `BDC` that opens a STRUCTURE CONTENT ITEM — a marked-content sequence
+ *  whose property list carries an /MCID.
+ *
+ *  Fired at the OPENING op, as `ArtifactEvent` is, which is what makes a
+ *  sequence enclosing no ink reportable at all.
+ *
+ *  **Invariant:** it fires ONLY when an /MCID resolves. The walker already
+ *  computes `mcidFromProps` in this branch, so the narrowing costs nothing —
+ *  and it means the event has exactly one meaning rather than overlapping the
+ *  `artifact` channel, since an `/Artifact` BDC carries no /MCID and the two
+ *  provably cannot both fire for one op. */
+export interface MarkedContentEvent {
+  /** Where the BDC op sits. */
+  addr: ContentAddr;
+  /** The tag operand — `/P` in `/P <</MCID 0>> BDC`. This is the name a
+   *  retyping edit rewrites; nothing in this library READS it, which is why a
+   *  test for such an edit must assert emitted bytes. */
+  tag: string;
+  /** The /MCID the property list carries. */
+  mcid: number;
+  /** The property list: the BDC's inline dict, or the dict its name resolved to
+   *  through /Resources /Properties. */
+  properties?: PdfDict;
+}
+
 export interface ContentVisitor {
   glyph?(e: GlyphEvent): void;
   image?(e: ImageEvent): void;
   path?(e: PathEvent): void;
   artifact?(e: ArtifactEvent): void;
+  marked?(e: MarkedContentEvent): void;
 }
 
 const MAX_XOBJECT_DEPTH = 8;
@@ -365,10 +431,26 @@ interface TextState {
   tm: Matrix; tlm: Matrix;
   font?: TextFont; fontSize: number;
   charSp: number; wordSp: number; hscale: number; leading: number; rise: number;
+  /** /Tr, the text rendering mode (32000-2 9.3.6). 0 is the initial value.
+   *
+   *  **Invariant, and it is a DELIBERATE INCONSISTENCY inside this struct:**
+   *  this field IS saved and restored across `q`/`Q`; its five siblings above
+   *  are NOT. `TextState` is built once per walk and the `q` stack held
+   *  `{ ctm, fill, conv }` alone, so `Tc`/`Tw`/`Tz`/`TL`/`Ts` persist across a
+   *  `Q` contrary to 9.3.1. Fixing all six moves glyph POSITIONS for any
+   *  document using `q`/`Q` around them, which reaches `GetTextFragments`,
+   *  table detection and every export — filed as `g5x6`.
+   *
+   *  Scoping only this one correctly is not tidiness: ISO 14289-2's glyph rules
+   *  exempt mode 3, and an OCR tool that wraps its invisible layer in `q` … `Q`
+   *  would otherwise leave the mode stuck at 3 and silently EXEMPT the visible
+   *  text after it — a false negative on exactly the population mode 3 exists
+   *  to excuse. */
+  renderMode: number;
 }
 
 function newState(): TextState {
-  return { tm: IDENTITY, tlm: IDENTITY, fontSize: 0, charSp: 0, wordSp: 0, hscale: 1, leading: 0, rise: 0 };
+  return { tm: IDENTITY, tlm: IDENTITY, fontSize: 0, charSp: 0, wordSp: 0, hscale: 1, leading: 0, rise: 0, renderMode: 0 };
 }
 
 interface Ctx {
@@ -459,7 +541,7 @@ export function visitFormContent(
 
 /** The subset of the graphics state this walker threads: the CTM, the fill
  *  colour, and the converter that resolves that colour's operands. */
-interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter }
+interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; renderMode: number }
 
 const cl255 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
 
@@ -498,6 +580,37 @@ const DEVICE_CS = new Set([
   'DeviceGray', 'DeviceRGB', 'DeviceCMYK', 'Pattern', 'G', 'RGB', 'CMYK',
 ]);
 
+/** The marked-content string attributes a BDC may state. */
+interface McProps { actualText?: string; alt?: string; lang?: string }
+
+/** The marked-content string attributes in force inside this BDC: the new
+ *  property list's values, falling back to the enclosing scope's.
+ *
+ *  Returns the SAME object when the BDC states none, so the common case
+ *  allocates nothing and `mcProps` stays absent on the event. */
+function inheritMcProps(
+  ctx: Ctx, outer: McProps | undefined,
+  operand: PdfObject | undefined, properties?: PdfDict,
+): McProps | undefined {
+  let d: PdfObject | undefined = operand;
+  if (isName(d)) d = properties?.get(d.name);
+  const props = ctx.doc.resolve(d);
+  if (!isDict(props)) return outer;
+  const str = (k: string): string | undefined => {
+    const v = ctx.doc.resolve(props.get(k));
+    return isString(v) ? decodePdfText(v.bytes) : undefined;
+  };
+  const actualText = str('ActualText') ?? outer?.actualText;
+  const alt = str('Alt') ?? outer?.alt;
+  const lang = str('Lang') ?? outer?.lang;
+  if (actualText === undefined && alt === undefined && lang === undefined) return undefined;
+  return {
+    ...(actualText !== undefined ? { actualText } : {}),
+    ...(alt !== undefined ? { alt } : {}),
+    ...(lang !== undefined ? { lang } : {}),
+  };
+}
+
 /** Walk one graphics-state scope (the page's content array, or a single
  *  XObject), threading text/CTM state across the given streams.
  *
@@ -512,7 +625,7 @@ function walkScope(
   resources: PdfDict | undefined, path: string[], baseCtm: Matrix,
   depth: number, seen: Set<PdfDict>,
   inheritedMcid?: number, inheritedArtifact?: ContentAddr,
-  inheritedFill?: Rgb,
+  inheritedFill?: Rgb, inheritedMcProps?: McProps,
 ): void {
   const st = newState();
   const gsStack: GState[] = [];
@@ -526,6 +639,11 @@ function walkScope(
   let activeMcid: number | undefined = inheritedMcid;
   const artifactStack: (ContentAddr | undefined)[] = [];
   let artScope: ContentAddr | undefined = inheritedArtifact;
+  // The inherited marked-content string attributes, a third stack of the same
+  // shape as the two above. A form drawn inside a BDC carrying /Alt inherits
+  // it, for the reason `inheritedMcid` is threaded.
+  const mcPropsStack: (McProps | undefined)[] = [];
+  let mcProps: McProps | undefined = inheritedMcProps;
   // Optional content. `ocvisible.ts` owns the nesting rule, so this walker,
   // `paths.ts`'s and `pagerender.ts`'s provably cannot disagree about which ops
   // a hidden section covers. Inert unless the caller asked to skip.
@@ -557,10 +675,10 @@ function walkScope(
       const op = ops[opIndex];
       const addr: ContentAddr = { path, streamIndex, opIndex };
       switch (op.operator) {
-        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv }); break;
+        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, renderMode: st.renderMode }); break;
         case 'Q': {
           const g = gsStack.pop();
-          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; }
+          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; st.renderMode = g.renderMode; }
           break;
         }
         case 'cm': { const m = nums(op.operands); if (m.length === 6) curCtm = mul(m as Matrix, curCtm); break; }
@@ -622,6 +740,7 @@ function walkScope(
         case 'Tz': st.hscale = num(op.operands[0]) / 100 || 1; break;
         case 'TL': st.leading = num(op.operands[0]); break;
         case 'Ts': st.rise = num(op.operands[0]); break;
+        case 'Tr': st.renderMode = num(op.operands[0]); break;
         case 'Tf': {
           st.fontSize = num(op.operands[1]);
           const fname = op.operands[0];
@@ -639,30 +758,47 @@ function walkScope(
         case 'TD': { const [tx, ty] = nums(op.operands); st.leading = -ty; lineMove(st, tx, ty); break; }
         case 'Tm': { const m = nums(op.operands); if (m.length === 6) { st.tlm = m as Matrix; st.tm = m as Matrix; } break; }
         case 'T*': lineMove(st, 0, -st.leading); break;
-        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden); break;
-        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden); break;
-        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden); break;
+        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps); break;
+        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden, mcProps); break;
+        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps); break;
         case '"': {
           st.wordSp = num(op.operands[0]); st.charSp = num(op.operands[1]);
-          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden); break;
+          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps); break;
         }
         case 'BMC':
-          mcidStack.push(activeMcid); artifactStack.push(artScope); oc.bmc();
+          mcidStack.push(activeMcid); artifactStack.push(artScope);
+          mcPropsStack.push(mcProps); oc.bmc();
           if (isArtifactTag(op.operands[0]))
             artScope = openArtifact(ctx, addr, undefined, properties, artScope);
           break;
         case 'BDC': {
           mcidStack.push(activeMcid); artifactStack.push(artScope);
+          mcPropsStack.push(mcProps);
+          mcProps = inheritMcProps(ctx, mcProps, op.operands[1], properties);
           oc.bdc(op.operands[0], op.operands[1], properties);
           if (isArtifactTag(op.operands[0]))
             artScope = openArtifact(ctx, addr, op.operands[1], properties, artScope);
           const m = mcidFromProps(ctx.doc, properties, op.operands[1]);
-          if (m !== undefined) activeMcid = m;
+          if (m !== undefined) {
+            activeMcid = m;
+            if (ctx.visitor.marked) {
+              const tagOp = op.operands[0];
+              let d: PdfObject | undefined = op.operands[1];
+              if (isName(d)) d = properties?.get(d.name);
+              const props = ctx.doc.resolve(d);
+              ctx.visitor.marked({
+                addr, mcid: m,
+                tag: isName(tagOp) ? tagOp.name : '',
+                properties: isDict(props) ? props : undefined,
+              });
+            }
+          }
           break;
         }
         case 'EMC':
           if (mcidStack.length) activeMcid = mcidStack.pop();
           if (artifactStack.length) artScope = artifactStack.pop();
+          if (mcPropsStack.length) mcProps = mcPropsStack.pop();
           oc.emc();
           break;
         case 'BI': if (op.inlineImage && !oc.hidden) emitImage(ctx, curCtm, addr, 'inline', activeMcid, artScope); break;
@@ -686,7 +822,7 @@ function walkScope(
             const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
             walkScope(ctx, [{ bytes: inflateStream(xo), streamIndex: 0 }],
               childRes, [...path, xn.name], childCtm, depth + 1, seen,
-              activeMcid, artScope, fill);
+              activeMcid, artScope, fill, mcProps);
             seen.delete(xo.dict);
           }
           break;
@@ -721,7 +857,7 @@ function lineMove(st: TextState, tx: number, ty: number): void {
  *  call outright would leave the pen where the hidden run began and misplace
  *  every visible glyph after it in the same text object — a quad that is wrong
  *  rather than absent, which is worse than the defect being fixed. */
-function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean): void {
+function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps): void {
   if (!isString(strObj) || !st.font) return;
   for (const g of st.font.decodeGlyphs(strObj.bytes)) {
     const startTm = st.tm;
@@ -752,15 +888,18 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
       artifactScope: artScope,
       vertical: g.vertical ? true : undefined,
       color: fill,
+      code: g.code, cid: g.cid,
+      ...(st.renderMode !== 0 ? { renderMode: st.renderMode } : {}),
+      ...(mcProps !== undefined ? { mcProps } : {}),
     });
   }
 }
 
 /** Handle a TJ array: strings emit glyphs, numbers shift the text matrix. */
-function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean): void {
+function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps): void {
   if (!isArray(arrObj) || !st.font) return;
   arrObj.forEach((el, idx) => {
-    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden);
+    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden, mcProps);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, st.fontSize, st.hscale, st.font!.wmode === 1);
       st.tm = mul(translate(dx, dy), st.tm);

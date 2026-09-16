@@ -38,12 +38,30 @@ const BLOCK = new Set([
  */
 const SEP = '\u0000';
 
-function walk(node: XmlNode, out: string[]): void {
+/** How to reduce the fragment.
+ *
+ *  **The two modes answer DIFFERENT QUESTIONS, which is why this is an option
+ *  and not a second module.** The default answers "is this text present" — a
+ *  SEARCH, where running two blocks together invents a phrase that never
+ *  appeared, which is what `BLOCK` exists to prevent. `verbatim` answers "are
+ *  these two the same text" — an EQUIVALENCE, where the only answer that
+ *  matters is the one ISO 14289-2's reference validator gives, and that
+ *  validator (veraPDF's `DictionaryKeysHelper.getAllNodeText`) concatenates
+ *  every text node and does nothing else. A second module would be two tag
+ *  walkers that drift; a second question is a parameter. */
+export interface RichTextOptions {
+  /** Concatenate every text node exactly as it appears: no block breaks, no
+   *  whitespace collapsing, no trim. Used ONLY by the ISO 14289-2 8.9.2.3-2 and
+   *  8.10.3.3-1 rules, which must agree with the anchor cell for cell. */
+  verbatim?: boolean;
+}
+
+function walk(node: XmlNode, out: string[], verbatim: boolean): void {
   for (const n of node.nodes) {
     if (typeof n === 'string') { out.push(n); continue; }
-    const block = BLOCK.has(n.name.toLowerCase());
+    const block = !verbatim && BLOCK.has(n.name.toLowerCase());
     if (block) out.push(SEP);
-    walk(n, out);
+    walk(n, out, verbatim);
     if (block) out.push(SEP);
   }
 }
@@ -61,7 +79,9 @@ function walk(node: XmlNode, out: string[]): void {
  * searching for `p` matching the tag name — and a regex strip would be a second
  * grammar to get wrong. One unreadable entry contributes nothing instead.
  */
-export function richTextToPlain(markup: string): string | undefined {
+export function richTextToPlain(
+  markup: string, opts: RichTextOptions = {},
+): string | undefined {
   // parseXml returns ONE root, and a fragment legitimately has several — a bare
   // `<p>a</p><p>b</p>` would otherwise yield only the first, dropping content
   // silently, which is worse than reporting nothing. The wrapper also lets the
@@ -74,9 +94,12 @@ export function richTextToPlain(markup: string): string | undefined {
     return undefined;
   }
 
+  const verbatim = opts.verbatim === true;
   const out: string[] = [];
-  walk(root, out);
-  return out.join('')
+  walk(root, out, verbatim);
+  const joined = out.join('');
+  if (verbatim) return joined;
+  return joined
     // XHTML collapses whitespace: the newlines and indentation between tags are
     // layout, not content.
     .replace(/[ \t\r\n\f\v]+/g, ' ')

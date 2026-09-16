@@ -72,10 +72,12 @@ export { imageKey } from './imagehref.js';
 export type { PageArtifact, ArtifactEdge, ArtifactBBoxSource } from './artifact.js';
 export type { TableStitchOptions } from './tablestitch.js';
 export { StructTreeRoot, StructElement, STANDARD_STRUCTURE_TYPES } from './struct.js';
-export type { ContentItem } from './struct.js';
+export type {
+  ContentItem, StructContainer, StructRemoveResult, StructRetagResult,
+} from './struct.js';
 export type { AutoTagOptions, AutoTagReport } from './autotag.js';
 export { ValidationReport } from './structvalidate.js';
-export type { ValidationIssue, Severity } from './structvalidate.js';
+export type { ValidationIssue, Severity, PdfUaPart } from './structvalidate.js';
 export type { PdfALevel } from './pdfavalidate.js';
 export type { PdfXLevel } from './pdfxvalidate.js';
 export type { PdfXConvertOptions } from './pdfxconvert.js';
@@ -83,6 +85,7 @@ export type { ConvertOptions, ConvertCategory } from './pdfaconvert.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
 export type { PdfUaConvertOptions } from './pdfuaconvert.js';
 export type { ElemOpts } from './structwrite.js';
+export { PDF17_NS, PDF20_NS, MATHML_NS } from './structns.js';
 export type {
   RGB, Edged, TableAttributes, ListAttributes, LayoutAttributes, BorderStyle,
 } from './structattr.js';

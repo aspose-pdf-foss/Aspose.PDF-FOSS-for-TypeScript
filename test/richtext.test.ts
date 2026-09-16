@@ -90,3 +90,32 @@ describe('richTextToPlain — degradation', () => {
     expect(richTextToPlain('')).toBe('');
   });
 });
+
+describe('richTextToPlain — verbatim mode', () => {
+  it('concatenates text nodes with no block break, no collapse and no trim', () => {
+    // veraPDF's DictionaryKeysHelper.getAllNodeText appends every text node's
+    // value and nothing else. THREE differences from the default, not one,
+    // which is why the option is not called `separateBlocks`.
+    expect(richTextToPlain('<p>a</p><p>b</p>', { verbatim: true })).toBe('ab');
+    expect(richTextToPlain('<p>a  b</p>', { verbatim: true })).toBe('a  b');
+    expect(richTextToPlain('<p> a </p>', { verbatim: true })).toBe(' a ');
+  });
+
+  it('keeps the whitespace BETWEEN tags, which is a text node too', () => {
+    expect(richTextToPlain('<body><p>a</p>\n<p>b</p></body>', { verbatim: true }))
+      .toBe('a\nb');
+  });
+
+  it('still returns undefined for markup that will not parse', () => {
+    expect(richTextToPlain('<p>unclosed', { verbatim: true })).toBeUndefined();
+  });
+
+  it('leaves the DEFAULT untouched', () => {
+    // The fence for every existing caller. A block boundary is a NEWLINE in the
+    // default, not a space — and whitespace collapses and the result is
+    // trimmed, all three of which verbatim mode declines.
+    expect(richTextToPlain('<p>a</p><p>b</p>')).toBe('a\nb');
+    expect(richTextToPlain('<p>a  b</p>')).toBe('a b');
+    expect(richTextToPlain('<p> a </p>')).toBe('a');
+  });
+});

@@ -10,6 +10,8 @@ import { visitContent, type Rect } from './text.js';
 import type { ContentAddr } from './editcontent.js';
 import type { ContentOp } from './content.js';
 import { wrapMarkedContent, wrapArtifact } from './pagecontent.js';
+import { checkStructType } from './structtype.js';
+import { ensureNamespace } from './structns.js';
 
 const asNum = (o: PdfObject): number | undefined => (typeof o === 'number' ? o : undefined);
 
@@ -67,6 +69,9 @@ export interface ElemOpts {
   title?: string;
   expansion?: string;
   id?: string;
+  /** Standard structure namespace URI for this element's type (ISO 32000-2
+   *  14.8.6). Absent means the PDF 1.7 namespace. */
+  ns?: string;
 }
 
 /** ElemOpts field -> PDF dict key. */
@@ -96,16 +101,29 @@ export function kArray(doc: Document, dict: PdfDict): PdfObject[] {
 }
 
 /** Allocate a new /StructElem under `parentRef`, append its ref to `parentK`,
- *  apply `opts`, and return the live dict + ref. */
+ *  apply `opts`, and return the live dict + ref.
+ *
+ *  **Invariant:** the type is validated BEFORE anything is allocated, so a
+ *  rejected call leaves the document byte-identical — `formcreate.ts`'s rule.
+ *  It is checked here rather than at the two `Append` call sites because this
+ *  is the allocation site, which makes that ordering structural rather than a
+ *  thing each caller has to remember. */
 export function createElement(
-  doc: Document, type: string, parentRef: PdfRef, parentK: PdfObject[], opts?: ElemOpts,
+  doc: Document, type: string, roleMap: ReadonlyMap<string, string>,
+  parentRef: PdfRef, parentK: PdfObject[], opts?: ElemOpts, rootDict?: PdfDict,
 ): { dict: PdfDict; ref: PdfRef } {
+  checkStructType(type, roleMap, opts?.ns);
+  // Declare BEFORE allocating the element, so a rejected call above has
+  // written nothing at all.
+  const nsRef = opts?.ns !== undefined && rootDict !== undefined
+    ? ensureNamespace(doc, rootDict, opts.ns) : undefined;
   const dict: PdfDict = new Map<string, PdfObject>([
     ['Type', name('StructElem')],
     ['S', name(type)],
     ['P', parentRef],
     ['K', []],
   ]);
+  if (nsRef !== undefined) dict.set('NS', nsRef);
   applyElemOpts(dict, opts);
   const r = doc.allocObject(dict);
   parentK.push(r);
@@ -595,4 +613,87 @@ export function markContentRegion(
   // carry stay valid — an insert into stream 0 shifts nothing in stream 1.
   ec.commit();
   return first;
+}
+
+/** What a retag reached, and what it could not.
+ *
+ *  `unreachable` counts marked-content items whose BDC the content walk cannot
+ *  address: an item whose /Pg does not resolve to a page, and a BDC inside a
+ *  tiling pattern, a Type 3 /CharProcs or an annotation appearance — none of
+ *  which `ContentAddr`'s XObject-name chain can name (the `85l8.6` limit). */
+export interface StructRetagResult { retagged: number; unreachable: number }
+
+/** Rewrite the BDC tag of `element`'s OWN marked-content items to `type`.
+ *
+ *  **Invariant:** it FAILS OPEN. An item the walk cannot address keeps its
+ *  stale tag, counts into `unreachable`, and never throws — a stale tag name is
+ *  a cosmetic divergence nothing in this library READS (`text.ts` reads the
+ *  operand's /MCID and compares the tag only against /Artifact), so it must not
+ *  cost the caller the retag they asked for. /S is written either way.
+ *
+ *  **Invariant:** only this element's own content items. Children carry their
+ *  own types and their own BDCs.
+ *
+ *  **Invariant:** every address is collected BEFORE any edit, which is sound
+ *  only because the rewrite REPLACES an op and never inserts or deletes one —
+ *  so no opIndex moves under a later edit. `markContentRegion` cannot take this
+ *  shortcut, which is why it comments on span ordering and this does not. */
+export function retagContentItems(
+  doc: Document, element: StructElement, type: string,
+): StructRetagResult {
+  const byPage = new Map<Page, Set<number>>();
+  let unreachable = 0;
+  for (const item of element.ContentItems) {
+    if (item.kind !== 'mcid') continue;   // an OBJR carries no BDC
+    if (!item.page) { unreachable++; continue; }
+    let s = byPage.get(item.page);
+    if (!s) { s = new Set<number>(); byPage.set(item.page, s); }
+    s.add(item.mcid);
+  }
+
+  let retagged = 0;
+  for (const [page, want] of byPage) {
+    const hits: { addr: ContentAddr; mcid: number }[] = [];
+    // No ContentWalkOptions: skipHidden keeps its `false` default, so content
+    // the current optional-content configuration hides is still retagged. An
+    // EDIT consumer must see what the file contains (q1g2.3).
+    visitContent(doc, page, {
+      marked(e) { if (want.has(e.mcid)) hits.push({ addr: e.addr, mcid: e.mcid }); },
+    });
+
+    const found = new Set(hits.map((h) => h.mcid));
+    for (const m of want) if (!found.has(m)) unreachable++;
+    if (hits.length === 0) continue;
+
+    // Group by scope so each op list is read once and written once.
+    //
+    // `indices` is a SET, not an array: a Form XObject drawn TWICE is walked
+    // twice and yields the same address both times (same path, same opIndex),
+    // so a list would rewrite one op twice and report `retagged: 2` for a
+    // single BDC. `EditableContent` keys its clone cache by path, so the
+    // second write already hits the cached clone — the count is the only thing
+    // that can go wrong, and it is what the caller reads.
+    const ec = new EditableContent(doc, page);
+    const scopes = new Map<string, { addr: ContentAddr; indices: Set<number> }>();
+    for (const h of hits) {
+      const key = `${h.addr.path.join('\0')}\u0001${h.addr.streamIndex}`;
+      const hit = scopes.get(key);
+      if (hit) hit.indices.add(h.addr.opIndex);
+      else scopes.set(key, { addr: h.addr, indices: new Set([h.addr.opIndex]) });
+    }
+    for (const { addr, indices } of scopes.values()) {
+      const top = addr.path.length === 0;
+      const ops = [...(top ? ec.topOps(addr.streamIndex) : ec.xobjectOps(addr.path))];
+      for (const i of indices) {
+        const op = ops[i];
+        if (!op || op.operator !== 'BDC') continue;   // defensive; the walk just read it
+        ops[i] = { operator: 'BDC', operands: [name(type), op.operands[1]] };
+        retagged++;
+      }
+      if (top) ec.setTopOps(addr.streamIndex, ops);
+      else ec.setXobjectOps(addr.path, ops);
+    }
+    ec.commit();
+  }
+  return { retagged, unreachable };
 }

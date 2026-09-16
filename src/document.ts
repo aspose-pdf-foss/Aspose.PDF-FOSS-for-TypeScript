@@ -19,7 +19,7 @@ import {
   renderDocumentToMarkdown, renderDocumentToMarkdownAssets,
   type MarkdownExportOptions, type MarkdownExportResult,
 } from './mdexport.js';
-import { validatePdfUa, ValidationReport } from './structvalidate.js';
+import { validatePdfUa, ValidationReport, type PdfUaPart } from './structvalidate.js';
 import { validatePdfA, type PdfALevel } from './pdfavalidate.js';
 import { convertToPdfA, type ConvertOptions, type ConversionReport } from './pdfaconvert.js';
 import { convertToPdfUa, type PdfUaConvertOptions } from './pdfuaconvert.js';
@@ -1184,9 +1184,11 @@ export class Document {
   }
 
   /** Validate the document against a curated, machine-checkable subset of
-   *  PDF/UA-1 (ISO 14289-1) rules. Read-only; never mutates. */
-  ValidatePdfUa(): ValidationReport {
-    return validatePdfUa(this, this.catalog());
+   *  PDF/UA (ISO 14289). `part` selects the standard: 1 (the default, ISO
+   *  14289-1) or 2 (ISO 14289-2, the PDF 2.0 sibling). Read-only; never
+   *  mutates. */
+  ValidatePdfUa(part: PdfUaPart = 1): ValidationReport {
+    return validatePdfUa(this, this.catalog(), part);
   }
 
   /** Validate the document against a curated, machine-decidable subset of

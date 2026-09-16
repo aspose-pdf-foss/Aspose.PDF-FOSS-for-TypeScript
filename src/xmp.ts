@@ -16,6 +16,7 @@ export interface XmpMetadata {
   pdfaConformance?: string;       // pdfaid:conformance (A/B/U)
   pdfaRev?: number;               // pdfaid:rev (PDF/A-4 identification; 2020)
   pdfuaPart?: number;             // pdfuaid:part (PDF/UA identification)
+  pdfuaRev?: number;              // pdfuaid:rev (PDF/UA-2 identification; 2024)
   pdfxVersion?: string;           // pdfxid:GTS_PDFXVersion (PDF/X identification)
   /** Namespaced properties outside the schemas above — how a product stamps its
    *  own provenance, and how a PDF/A custom schema is carried. Simple literal
@@ -186,6 +187,7 @@ export function readXmp(bytes: Uint8Array): XmpMetadata {
   const conf = idValue(raw, 'pdfaid:conformance'); if (conf !== undefined) meta.pdfaConformance = conf;
   const rev = idNumber(raw, 'pdfaid:rev'); if (rev !== undefined) meta.pdfaRev = rev;
   const uaPart = idNumber(raw, 'pdfuaid:part'); if (uaPart !== undefined) meta.pdfuaPart = uaPart;
+  const uaRev = idNumber(raw, 'pdfuaid:rev'); if (uaRev !== undefined) meta.pdfuaRev = uaRev;
   const xVersion = idValue(raw, 'pdfxid:GTS_PDFXVersion');
   if (xVersion !== undefined) meta.pdfxVersion = xVersion;
 
@@ -261,9 +263,11 @@ export function buildXmp(meta: XmpMetadata): string {
       + `/>`
     : '';
 
-  const pdfuaDesc = meta.pdfuaPart !== undefined
+  const pdfuaDesc = (meta.pdfuaPart !== undefined || meta.pdfuaRev !== undefined)
     ? `\n  <rdf:Description rdf:about="" xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"`
-      + ` pdfuaid:part="${meta.pdfuaPart}"/>`
+      + (meta.pdfuaPart !== undefined ? ` pdfuaid:part="${meta.pdfuaPart}"` : '')
+      + (meta.pdfuaRev !== undefined ? ` pdfuaid:rev="${meta.pdfuaRev}"` : '')
+      + `/>`
     : '';
 
   // One rdf:Description per prefix, carrying that prefix's xmlns declaration.

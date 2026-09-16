@@ -3,6 +3,7 @@ import { PdfDict, PdfObject, isArray, isDict, isName, isStream, isString, name }
 import { decodePdfText, encodePdfText } from './metadata.js';
 import { encodeDest, parseDest, resolvePageDest, type OutlineView } from './outline.js';
 import { decodeStream } from './filters.js';
+import type { StructElement } from './struct.js';
 
 /** A GoTo action: jump to a page in this document. */
 export type GoToAction = { type: 'goto'; page: number; view?: OutlineView };
@@ -49,6 +50,30 @@ function fieldNames(fields: unknown): PdfObject[] | undefined {
   return fields.map((f) => pdfText(f as string));
 }
 
+/** The first structure element, in TREE ORDER, whose content lies on `page`
+ *  (1-based, as `doc.pageRef` and `Page.Number` are).
+ *
+ *  Tree order rather than content order because it is deterministic and
+ *  independent of how the page was drawn — two documents with the same
+ *  structure produce the same destination. `StructElement.Page` walks `/Pg` up
+ *  the ancestor chain, so an element inheriting its page from a parent is
+ *  found. Returns `undefined` for an untagged document, which is what keeps
+ *  every existing fixture byte-identical. */
+function firstElementOnPage(doc: Document, page: number): StructElement | undefined {
+  const root = doc.GetStructTree();
+  if (!root) return undefined;
+  const walk = (els: StructElement[], depth: number): StructElement | undefined => {
+    if (depth > 64) return undefined;
+    for (const el of els) {
+      if (el.Page?.Number === page) return el;
+      const found = walk(el.Children, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  return walk(root.Children, 0);
+}
+
 /** Build the /A dict for `a`. Validates everything before returning, so a
  *  caller that lets this throw has allocated nothing. */
 export function encodeAction(doc: Document, a: PdfAction): PdfDict {
@@ -57,9 +82,21 @@ export function encodeAction(doc: Document, a: PdfAction): PdfDict {
       const p = a.page;
       if (!Number.isInteger(p) || p < 1 || p > doc.Pages.length)
         throw new RangeError(`action page ${String(p)} out of range 1..${doc.Pages.length}`);
-      return new Map<string, PdfObject>([
+      const dict = new Map<string, PdfObject>([
         ['S', name('GoTo')], ['D', encodeDest(doc.pageRef(p), a.view)],
       ]);
+      // ISO 14289-2 8.8-2: a GoTo action satisfies the rule only through /SD.
+      // PDAction.containsStructureDestination falls through to FALSE for a /D
+      // that is a direct ARRAY, even when that array IS a structure
+      // destination -- so /SD is the only route, and it sits BESIDE /D rather
+      // than replacing it, which costs no compatibility: a PDF 1.7 viewer
+      // reads /D and navigates exactly as before.
+      //
+      // Written only when the document is tagged AND an element resolves for
+      // the target page, so an untagged document is byte-identical.
+      const el = firstElementOnPage(doc, p);
+      if (el?.Ref !== undefined) dict.set('SD', encodeDest(el.Ref, a.view));
+      return dict;
     }
     case 'uri': {
       if (typeof a.uri !== 'string' || a.uri.length === 0)

@@ -603,6 +603,22 @@ Source (`src/`):
   reusable from neither, which is why a link carrying a submit action used to
   read back as `undefined`. A SubmitForm `/F` is a `/FS /URL` filespec, not a
   bare string.
+  **Invariant (`q7hc.4.4`):** a GoTo action gains `/SD` — a STRUCTURE
+  destination — BESIDE its `/D`, never in place of it, when the document is
+  tagged and an element resolves for the target page (the first in TREE order,
+  which is deterministic where content order is not). ISO 14289-2 8.8-2 is
+  satisfiable by an action ONLY through `/SD`:
+  `PDAction.containsStructureDestination` falls through to FALSE for a `/D`
+  that is a direct ARRAY, even when that array IS a structure destination.
+  Keeping `/D` costs no compatibility — a PDF 1.7 viewer reads it and navigates
+  as before — and an UNTAGGED document is byte-identical, since no element
+  resolves and no `/SD` is written.
+  **Note the deliberate asymmetry:** outline items, `/OpenAction` and named
+  destinations are NOT changed and still report 8.8-1. Their destination is
+  tested directly (`at(0).knownKey('S')`), so satisfying it means replacing the
+  page reference with a structure element — a destination a PDF 1.7 viewer
+  cannot resolve. Trading navigation in every existing viewer for a conformance
+  line is the caller's decision, not the library's default.
   **Invariant:** a field's `/AA` is written key by key, never whole. A created
   field is a *merged* field/widget dict, so one `/AA` carries the annotation's
   triggers (`/E`, `/X`, …) beside the field's four (`/K /F /V /C`); replacing
@@ -3328,6 +3344,52 @@ Source (`src/`):
   `BeginArtifact` pushes a part, so an unconditional call emits a bare
   `/Artifact BMC EMC` into a table with no backgrounds — moving bytes for no
   content, and breaking the byte-identical guarantee the untagged path relies on.
+- **structgrid.ts** — the occupancy grid behind a TAGGED table's declared spans
+  (`q7hc.4.1`): where each cell lands, whether the table is regular, and which
+  header cells pertain to a data cell (ISO 32000-2 14.8.5.7). Transcribed from
+  veraPDF's `GFSETable.java`/`GFSETH.java`, because the published profiles state
+  each table rule as a BARE PREDICATE (`hasIntersection`, `unknownHeaders`) and
+  say nothing about how cells are placed — so the profile is only the trigger.
+  **Invariant, and it is the whole reason the module exists: `tablespan.ts`
+  provably cannot answer these rules.** `buildSpanGrid` does
+  `while (busy[r][c]) c++` and clamps every `rowSpan` to the table end — it
+  places cells where they FIT, so a collision and an overhang can never occur.
+  8.2.5.26-1 asks whether cells COLLIDE and 8.2.5.26-2 whether a span OVERHANGS,
+  so reusing it leaves both rules permanently silent while looking correct.
+  **Note the THREE grids, and they are false friends:** `tablegrid.ts` infers
+  spans from gaps in ruling lines (extraction), `tablespan.ts` places declared
+  spans legally (authoring), this places them AS DECLARED (validation). Three
+  directions, no shared code — the `mdscan.ts`/`htmltoken.ts` idiom.
+  **Invariant:** a pure LEAF importing NOTHING, so every rule is drivable from
+  plain numbers with no PDF built; it never throws.
+  **Invariant:** the column count comes from the FIRST row alone and the row
+  count is NOT the row count — `getNumberOfRows` adds each row block's first
+  cell's `rowSpan` and skips that many rows. Both read wrong and both are the
+  anchor's; a grid sized by the widest row accepts tables veraPDF rejects.
+  **Note, measured, and the obvious fixture reaches NEITHER branch:** placement
+  SKIPS an occupied slot, so an intersection can only arise where a cell's
+  EXTENSION meets one already placed — a `rowSpan` above meeting a `colSpan`
+  beside it — and an overhang must sit OUTSIDE column 0, since a long span in
+  column 0 simply makes `countRows` report a taller table. The plan for this
+  issue proposed a fixture for each that measured nothing.
+  **Invariant:** an absent `/Scope` is not "no scope" — `defaultScope` supplies
+  one from POSITION ((0,0) → Both, row 0 → Column, column 0 → Row, else Both).
+  Defaulting to absent instead reports every TD in every table whose headers are
+  unscoped, which is most real tables.
+  **Invariant:** the header walk is gated TWICE before any TD is examined — an
+  empty or irregular table is connected by definition, and a table whose every
+  TH carries an explicit `/Scope` is connected without a single TD being
+  checked. A fixture built the obvious way therefore leaves 8.2.5.26-5 and -6
+  unmeasured whatever the code does.
+  **Note, measured, and it covers NOTHING:** the ORIGIN half of the
+  origin-slot test is a redundant defence and provably cannot be otherwise —
+  `derivable` reads the cell's origin whichever slot it is reached from, and
+  the address reported is that origin too, so examining a cell at a slot it
+  merely spans over gives the identical answer. Deleting it reddens not one
+  case; it is kept as the honest transcription of
+  `rowNumber != cell.getRowNumber()` and as a cost saving on a wide cell. The
+  CORNER half, which skips (0,0), IS load-bearing at 6 cases. All four arms of
+  `defaultScope` are load-bearing too (1, 6, 2 and 2).
 - **barcode.ts**, **qr.ts**, **barcodeplace.ts** — barcode generation and
   placement (`page.AddBarcode`): the pure geometry models in `barcode.ts`
   (Code 128, EAN-13/8, UPC-A) and `qr.ts` (QR: GF(256)/Reed–Solomon, mode/version
@@ -3574,6 +3636,15 @@ Source (`src/`):
   well as the enclosing section — that is the half this library itself WRITES,
   so without it extraction reports an image our own renderer skips. A hidden
   FORM is skipped outright rather than walked with a flag.
+  **Invariant (`q7hc.1`):** `ContentVisitor.marked` fires at a `BDC` whose
+  property list resolves an `/MCID` — a STRUCTURE CONTENT ITEM opening — and at
+  no other op. The walker already computes `mcidFromProps` there, so the
+  narrowing costs nothing, and it keeps the event from overlapping the
+  `artifact` channel: an `/Artifact` BDC carries no `/MCID`, so the two
+  provably cannot both fire for one op. It exists so ONE walker owns "where is
+  this MCID marked" — `structwrite.ts`'s retag would otherwise need a second
+  content walker that re-derived `/Resources` inheritance and Form XObject
+  descent, which is how two walkers come to disagree about one page.
   **font.ts** — `TextFont`, the per-font
   code→Unicode decoder (simple-font encodings, `/Differences`, `/ToUnicode`,
   Type0/Identity-H) plus glyph-advance widths. **encoding.ts** — base text
@@ -3647,6 +3718,23 @@ Source (`src/`):
   **Invariant:** a CFF charstring's width operand is a *delta* from
   `nominalWidthX`, and its absence means `defaultWidthX` — not zero. Reading the
   operand directly yields a plausible narrow glyph.
+  **Invariant (`q7hc.4.3`):** `TextFont.dictWidth(key)` is what the DICTIONARY
+  states and `undefined` where it states none — deliberately NOT `Glyph.width`,
+  which falls through to the embedded program. That fallback is right for
+  measuring text and fatal for ISO 14289-2 8.4.5.6-1, whose job is to compare
+  the dictionary AGAINST the program: reading `Glyph.width` there compares the
+  program's answer with itself and the rule can never fire. It mirrors
+  `advance`'s first two branches and stops before the fallback, so the two
+  provably cannot disagree about what the dictionary says. Note the unit is em,
+  like `Glyph.width`, while `programAdvance` is 1/1000 em — `uafont.ts` is the
+  one place the two spaces meet.
+  **Invariant (`q7hc.4.3`):** `TextFont.dict` is the font dictionary this is a
+  view over, and it is the ONLY bridge between the two font walks —
+  `validatectx.ts`'s `enumerateFonts` yields DICTS while a `GlyphEvent` carries
+  a `TextFont`. Identity is sound because `visitContent` memoizes a `TextFont`
+  per dict, so the dict reached through it is the very object `enumerateFonts`
+  yielded; matching on `/BaseFont` instead folds two distinct dicts that name
+  one face, the everyday shape for a subset embedded twice.
   **Invariant:** `/Widths` always wins, and an explicit `/MissingWidth` wins over
   the embedded program; both are statements the producer made, including a
   deliberate `/MissingWidth 0` for codes that should not advance. The program
@@ -3887,6 +3975,41 @@ Source (`src/`):
   **Note:** stroke colour is not tracked, so text under the stroke-only render
   modes (`Tr 1`/`5`) reports its fill. The miss is a shade rather than a
   disappearance, and tracking it would double the saved state for that one case.
+  **Invariant (`q7hc.4.3`):** `GlyphEvent.renderMode` is `/Tr`, and **ABSENT
+  MEANS 0** — `color`'s rule and for `color`'s reason, since a key present on
+  every glyph would move every fixture that compares an event. Read it as
+  `?? 0`, never by testing presence. `Tr` was the only text-state operator
+  `visitContent` did not track, and four of ISO 14289-2's five glyph rules
+  exempt mode 3, which is the OCR layer of every scanned PDF — so without it
+  those rules fire on exactly the population they exist to excuse.
+  **Invariant, and it is a DELIBERATE INCONSISTENCY inside `TextState`:**
+  `renderMode` IS saved and restored across `q`/`Q`; its five siblings
+  (`Tc`, `Tw`, `Tz`, `TL`, `Ts`) are NOT. The `q` stack held
+  `{ ctm, fill, conv }` alone, so those five persist across a `Q` contrary to
+  32000-2 9.3.1; fixing all six moves glyph POSITIONS for any document using
+  `q`/`Q` around them, which reaches `GetTextFragments`, table detection and
+  every export — filed as `g5x6`. Scoping only this one correctly is not
+  tidiness: an OCR tool that wraps its invisible layer in `q` … `Q` would
+  otherwise leave the mode stuck at 3 and silently EXEMPT the visible text
+  after it, a false negative on exactly the population mode 3 excuses.
+  **Invariant (`q7hc.4.3`):** `GlyphEvent` also carries `code` and `cid`, and
+  they are REQUIRED rather than absent-by-default — there is no initial value
+  to mean "unset", and measured, nothing in the suite compares a whole glyph
+  event, so they move no fixture. They exist so no consumer re-derives a code
+  from `byteStart`/`byteLen`, which this file already records as having "drawn
+  the right glyph for `/Identity-H` and the wrong one for every other CMap,
+  silently". Required is the safety property: the walk cannot forget them.
+  **Invariant (`q7hc.4.4`):** `GlyphEvent.mcProps` carries the `/ActualText`,
+  `/Alt` and `/Lang` INHERITED from the marked-content stack — the innermost
+  BDC in scope that states each — and threads into Form XObjects beside
+  `inheritedMcid` and `inheritedArtifact`, for their reason. **Absent unless
+  some BDC in scope states one**, `color`'s and `renderMode`'s rule.
+  **Invariant:** it rides on the GLYPH and NOT on `MarkedContentEvent`, which
+  fires only when an `/MCID` resolves (`q7hc.1`). A BDC may carry
+  `/ActualText` with no `/MCID` at all, and ISO 14289-2 8.4.3-1 reads exactly
+  that case — veraPDF's `containsStringKey` checks the inherited
+  marked-content attribute BEFORE it looks at the structure element. Widening
+  `marked` instead would break an invariant three consumers rely on.
   **Invariant:** `TextFragment.script` needs a size drop AND a baseline shift,
   both, measured against the line's DOMINANT size and that size's baseline.
   Neither alone works: without the size test, OpenType mark positioning is
@@ -4046,6 +4169,26 @@ Source (`src/`):
   `AnnotationTextMatch.value` for `/RC` is the REDUCED text, not the markup:
   `text` is a slice of `value`, so reporting markup there would index a string
   the caller never saw.
+  **Invariant (`q7hc.4.2`), and the two modes answer DIFFERENT QUESTIONS:**
+  `richTextToPlain(markup, { verbatim: true })` concatenates every text node and
+  does nothing else — no block breaks, no whitespace collapsing, no trim. The
+  default answers "is this text present" (a SEARCH, where running two blocks
+  together invents a phrase); `verbatim` answers "are these two the same text"
+  (an EQUIVALENCE, where the answer that matters is the one ISO 14289-2's
+  reference validator gives, and `DictionaryKeysHelper.getAllNodeText`
+  concatenates). A second module would be two tag walkers that drift; a second
+  question is a parameter. The default is unchanged, so every existing caller is
+  byte-identical BY CONSTRUCTION — `test/richtext.test.ts`'s pre-existing cases
+  and `test/annot-search.test.ts` are the fence.
+  **Note a divergence in verbatim mode, recorded rather than chased:**
+  `parseXml` SKIPS comments, where veraPDF's DOM walk returns a comment node's
+  value and so includes its text. Commented rich text is vanishingly rare, and
+  chasing it would mean teaching `xml.ts` to retain comments for one caller.
+  **Note, and THIS ENTRY SAID OTHERWISE until `q7hc.4.2`:** `readRichTextMarkup`
+  and its `readRichTextValue` alias live in **formfield.ts**, not here. This
+  module exports exactly TWO names, `richTextToPlain` and `RichTextOptions`.
+  The entry placed both readers here, which is the "read the code before
+  believing a comment about the code" rule catching this file itself.
   **textrank.ts** — font-size heuristics (dominant size, `headingRanks`) shared by
   structured text and HTML export. **paths.ts** — vector/path extraction
   (`page.GetPaths`): a focused content walker (cf. `imageusage.ts`, separate from
@@ -5280,6 +5423,491 @@ Source (`src/`):
   Artifacting by default would declare a barcode decorative and hide the data it
   encodes; auto-tagging a `/Figure` without an `/Alt` merely trades
   `UntaggedContent` for `IllustrationAlt`.
+  **Invariant (`q7hc.1`):** a structure type is validated wherever it is
+  WRITTEN — both `Append`s and `SetType` — through `structtype.ts`'s
+  `checkStructType`, and inside `createElement`, which is the ALLOCATION site,
+  so "a rejected call leaves the document byte-identical" is structural rather
+  than a thing each caller remembers.
+  **Invariant (`q7hc.1`):** `SetType` rewrites the BDC tag of the element's OWN
+  content items and FAILS OPEN — an item the walk cannot address keeps its
+  stale tag and is counted in `unreachable`. **Note, measured, and it is why
+  the tests assert emitted BYTES:** nothing in this library READS a BDC tag
+  name — `text.ts` reads the operand's `/MCID` and compares the tag only
+  against `/Artifact` — so a test that retags and re-reads `Type` passes with
+  the whole rewrite deleted. Verified: neutering `retagContentItems` reddens
+  the two byte-asserting cases and the `retagged` count, and leaves every
+  case that only reads `el.Type` green.
+  **Invariant (`q7hc.1`):** addresses are collected BEFORE any edit, which is
+  sound only because the rewrite REPLACES an op and never inserts or deletes
+  one, so no `opIndex` moves under a later edit.
+  **Note, measured:** EVERY MCID-bearing BDC this library authors is at page
+  TOP LEVEL — `markContentRegion` wraps top-level spans and `flatten.ts`
+  appends its own BDC to page content rather than into the form it draws — so
+  the nested path is reached by no fixture built the ordinary way.
+  `build-nested-mc-pdf.ts` is hand-built for exactly that: forcing the
+  top-level branch reddens its three cases and leaves all fourteen page-level
+  ones green.
+  **Note, measured, and the obvious reading of WHY is wrong:** the shared-form
+  case — one `/Fm0` drawn by two pages, each with its own `/StructParents` and
+  its own element — is the only shape that can see a second page keep the
+  original. But what protects it is NOT `cowXObject`'s clone: disabling that
+  clone alone leaves all 17 cases GREEN, because `EditableContent.commit`
+  ALWAYS allocates a fresh stream and repoints only the edited page's own
+  `/XObject` entry. Only disabling BOTH — the clone and the fresh allocation,
+  writing back through `replaceObject` — reddens, and then exactly that one
+  case. Two redundant defences at a single nesting level; the clone is
+  load-bearing on its own only for a DEEPER path, where an intermediate form
+  must be cloned before its parent's entry can be repointed. Do not read the
+  green suite as covering `cowXObject` at one level.
+- **structtype.ts** — what may be a structure type, and what a custom one
+  resolves to: `STANDARD_STRUCTURE_TYPES`, `resolveRole`, `checkStructType`.
+  **Invariant:** a pure LEAF importing NOTHING, so every rule is testable with
+  no PDF built. It is a module rather than a section of `struct.ts` because TWO
+  consumers need it and neither may reach the other — `struct.ts` imports
+  `structwrite.ts` by VALUE while `structwrite.ts` imports `StructElement` as a
+  TYPE only, so a value import back would close the first
+  `struct.ts` <-> `structwrite.ts` 2-cycle. The forcing argument behind
+  `colornames.ts`, `preformat.ts`, `bordersides.ts` and `langmatch.ts`.
+  `struct.ts` re-exports the constant, so `index.ts` and every internal import
+  path are unchanged.
+  **Invariant:** `resolveRole` tests the standard set BEFORE the RoleMap, so a
+  file whose /RoleMap shadows a standard type cannot change what that type
+  means document-wide.
+  **Invariant (`q7hc.4`):** the PDF 2.0 vocabulary is a SET PLUS A PATTERN.
+  `H1`..`H6` are ABSENT from `PDF20_STRUCTURE_TYPES` (40 entries) and standard
+  anyway through `HN_PATTERN` (`/^H[1-9][0-9]*$/`) — PDF 2.0 puts no ceiling on
+  a heading level, so `H7` and `H42` are standard too, and a set-only reading
+  rejects every heading in every PDF 2.0 document. Measured: dropping the
+  pattern reddens 1.
+  **Note two more arms of `isStandardTypeIn` that read wrong and are right:**
+  the MathML namespace makes ANY type standard, unconditionally — there is no
+  MathML type list — and an UNRECOGNISED namespace makes NOTHING standard,
+  which is what stops an invented namespace from laundering an arbitrary type.
+  Measured: letting the default arm fall back to the 1.7 set reddens 1. `H` is
+  in the PDF 2.0 set although ISO 14289-2 8.2.5.12-1 forbids a conforming file
+  from USING it — a standard type the conformance level prohibits, which is a
+  different rule and belongs to `q7hc.4.1`.
+  **Invariant:** `checkStructType`'s namespace parameter is OPTIONAL and
+  defaults to the PDF 1.7 arm, so it is a strict WIDENING — nothing previously
+  accepted becomes rejected, and every existing call site is byte-identical.
+  Without it `Append('Aside')` throws and a PDF 2.0 tree cannot be authored at
+  all.
+  **Note both vocabularies are TRANSCRIBED** from veraPDF-parser@integration
+  `src/main/java/org/verapdf/tools/TaggedPDFHelper.java` (fetched 2026-09-15)
+  and carry ASSERTED SIZES — 49 and 40 — so a half-pasted table is a red build,
+  the rule `htmlforeign.ts` sets for its five tables. Never write one of these
+  from memory: a guessed entry fails silently in both directions.
+- **numbertree.ts** — the PDF number tree (7.9.7), read and write:
+  `lookupNumberTree` and `numsArrays`. The NAME-tree sibling is `nametree.ts`.
+  **Invariant:** a near-LEAF taking `Document` as a TYPE only, so every rule is
+  testable from hand-built `Map`s with no PDF built. It is its own module
+  because `structremove.ts` needs it while `struct.ts` imports THAT by value,
+  so leaving the walk in `struct.ts` would close a cycle — the forcing argument
+  behind `structtype.ts`, `langmatch.ts` and `bordersides.ts`. `struct.ts`
+  re-exports `lookupNumberTree`, so `structpreserve.ts`'s import path is
+  unchanged.
+  **Invariant:** `numsArrays` descends `/Kids` WITHOUT consulting `/Limits`,
+  unlike the lookup. A release is collecting every leaf rather than steering by
+  a key, and a tree whose `/Limits` are wrong would otherwise hide a pair that
+  really is there — the damaged-file case it exists to survive.
+- **structremove.ts** — `StructElement.Remove()`: detach an element and its
+  subtree, release every `/ParentTree` slot it holds, and untag the content it
+  marked. Three phases — collect, release, unwrap.
+  **Invariant:** it DOES NOT DELETE INK. Only the `BDC` and its matching `EMC`
+  go; every operator between them survives, so the content stays on the page
+  and becomes untagged. A test for this must assert the OP LIST, not a render:
+  dropping the ink between the two still renders something.
+  **Invariant:** the two `/ParentTree` releases are DIFFERENT operations and
+  must not be conflated. A content item's slot is NULLED at its MCID index,
+  because MCIDs are indices and that key's value is the array shared by EVERY
+  element on the page — splicing the pair orphans all of them, which is
+  precisely what `untagObjects`'s `clearParentTreeKeys` does and why it is a
+  precedent here rather than a function to call. An `/OBJR` annotation's own
+  key names ONE entry, so its pair goes whole.
+  **Invariant:** an `/OBJR`'s annotation SURVIVES and loses only its
+  `/StructParent`. `untagObjects` never clears that key because its objects are
+  dying; here they are not, and a `/StructParent` naming a released entry
+  dangles.
+  **Invariant, and it is the INVERSE of `q7hc.1`'s:** `retagContentItems` may
+  collect every address before editing because a REPLACE moves nothing. A
+  DELETE shifts every later index, so each `BDC` is paired with its `EMC`
+  first and the indices are then deleted DESCENDING. Measured: ascending
+  reddens 3.
+  **Invariant:** `matchingEmc` counts NESTING. A child's marked content is
+  commonly nested inside its parent's, so the first `EMC` after a `BDC` is
+  frequently the child's; taking it leaves the parent's sequence unterminated.
+  **Note, measured, and BOTH fixtures had to be rebuilt before they measured
+  anything.** With ONE element on a page, nulling the slot and splicing the
+  page's whole pair are INDISTINGUISHABLE — the `untagObjects` mistake passes
+  every single-element fixture — so the rule is held only by the
+  two-sequences-on-one-page case. And that case must be built through
+  `PageGraphics`, not `MarkContent`: `AddText` splices a FRESH content stream
+  per call, so two `MarkContent` calls land in two different streams and the
+  shared-stream rule is never exercised.
+  **Note (`q7hc.3`):** `detachKid` and `subtreeOf` are exported for
+  `structmove.ts`. That edge is one-way — this module does not import back — so
+  it closes no cycle and nothing was extracted to a leaf for it, unlike
+  `numbertree.ts`.
+  **Note, measured, and sharper still:** the NESTED case cannot see
+  `matchingEmc`'s nesting rule when the two `EMC`s are ADJACENT. A first-EMC
+  build then pairs both sequences with the child's index and deletes that index
+  TWICE, which removes the parent's `EMC` as collateral and produces exactly
+  the right answer by luck. The fixture puts a third fill BETWEEN the two
+  `EMC`s, so the second delete lands on ink instead — the mutation then loses a
+  fill and strands an `EMC`.
+- **structmove.ts** — `StructElement.MoveTo` and `.ReorderChildren`: where an
+  element sits in the tree, and in what order its children do. Reading order IS
+  the tree's order, so this is what fixes a reading order `AutoTag` got wrong.
+  **Invariant:** it does NOT touch the `/ParentTree` — not one entry. A move
+  changes `/K` and `/P` and nothing else, which is what keeps every MCID
+  resolving, and it is why this is far smaller than `structremove.ts`.
+  **Invariant, and it is the safety property the issue's own text got wrong:**
+  `/Pg` is MATERIALIZED onto every element in the moved subtree that has a
+  BARE-INTEGER content item and no `/Pg` of its own, BEFORE the move.
+  `StructElement.Page` walks UP the ancestor chain and `ContentItems` resolves
+  a bare integer against that inherited page, so re-parenting such an element
+  across pages silently re-points every one of its MCIDs while the
+  `/ParentTree` goes on mapping them to the element — the two directions then
+  disagree, which is worse than either being wrong alone. It runs
+  UNCONDITIONALLY rather than only when the pages differ: deciding that means
+  resolving the destination's inherited `/Pg`, the same walk, so the
+  conditional buys nothing and adds a branch that is silent when wrong.
+  **Note, measured, and it is why the fixture is hand-built:** NOTHING this
+  library authors can reach that rule — `appendContentKid` writes `/Pg` onto
+  the element the first time content is added, so every element we create
+  already owns one. Neutering `materializePg` reddens only
+  `build-inherited-pg-pdf.ts`'s two cases and leaves all twelve other move
+  cases green. The bare-integer guard needs its own shape again: an element
+  owning a `/Pg` is skipped before the guard is consulted, so only a
+  `/Pg`-less, content-less `Span` inside the moved subtree reaches it.
+  **Invariant:** `ReorderChildren` permutes the ELEMENT kids among the raw
+  `/K` positions they ALREADY occupy; every MCID and OBJR kid stays exactly
+  where it is. That is what makes it meaningful for the inline shape — a `/P`
+  holding its own text beside a `/Link` child keeps its text where it was —
+  and permuting the whole `/K` would also break `Nodes`' interleaving, which
+  reads content order from the page and would then disagree with `/K`.
+  **Note, measured, and the fixture shape is what makes it measurable:** the
+  parent's own MCID must sit BETWEEN the two element kids. Appended LAST it
+  stays at the same index under a rebuild that writes "elements first, content
+  items after", so such a case measures nothing — with the interleaved one,
+  that mutation reddens exactly one case and leaves the plain permutation
+  green.
+  **Invariant:** a move into the element's own subtree is refused. A cycle
+  makes the tree unwalkable, so `GetText`, `Nodes`, `docmodel.ts` and the
+  validator would HANG rather than report anything — which is why the mutation
+  that removes the check is run under `--testTimeout`.
+  **Note:** `StructContainer`, deliberately NOT `StructParent` —
+  `/StructParent` is an unrelated key on an annotation dict and the collision
+  would be read as a relationship that does not exist.
+  **Note:** nothing is extracted to a leaf here, unlike `numbertree.ts` in
+  `q7hc.2`. `structmove.ts` → `structremove.ts` and → `structwrite.ts` are
+  one-way edges that close no cycle, and the extraction rule `resprune.ts`
+  follows applies only where one would.
+- **structns.ts** — the PDF 2.0 standard structure namespaces (`q7hc.4`): the
+  three URI constants, an element's namespace URI, the tree's declared
+  namespaces, find-or-declare, and `/RoleMapNS`. A near-LEAF taking `Document`
+  as a TYPE only — `numbertree.ts`'s arrangement, and forced by the same thing:
+  `struct.ts` imports it by VALUE, so a value import back closes a 2-cycle
+  `test/import-cycles.test.ts` fences as a red build.
+  **Invariant, and it is the whole reason the module exists:** `/NS` is TWO
+  DIFFERENT KEYS. On a structure element it is a REFERENCE TO A NAMESPACE
+  DICTIONARY; inside that dictionary it is THE URI STRING ITSELF. One owner, or
+  two readers come to disagree about which of the two they hold — and BOTH
+  readings produce a plausible answer rather than an error. Measured: reading
+  the element's own `/NS` as the URI reddens 2.
+  **Invariant:** `ensureNamespace` is idempotent and REUSES the existing
+  dictionary. A second dict for one URI makes two elements that are in the same
+  namespace compare unequal by ref, which is exactly what ISO 14289-2 8.2.5.2-2
+  compares. Measured: always allocating reddens 3.
+  **Note:** only the NAME form of a `/RoleMapNS` entry is read. The
+  `[name, namespace]` array form maps into ANOTHER namespace, and 8.2.4-3's
+  question is whether a mapping stays inside one — following it would answer a
+  different question.
+  **Note:** `decodePdfText` is `metadata.ts`'s, so the PDFDocEncoding/UTF-16
+  rule has one owner rather than a second reading here.
+  **Note:** `StructElement.IsStandardType` deliberately stays the PDF 1.7
+  question even for an element in the PDF 2.0 namespace — that is what the
+  accessor has always meant, and redefining it moves part-1 behaviour silently.
+  `isStandardTypeIn` (structtype.ts) is the namespace-aware one.
+- **uarule.ts** — the vocabulary every PDF/UA rule shares (`q7hc.4.2`):
+  `PdfUaPart`, `UaCtx`, `Rule` and `uaClause`.
+  **Invariant, and it is FORCED rather than tidy:** it lived in
+  `structvalidate.ts` until a SECOND rules module (`uaannot.ts`, clauses 8.9
+  and 8.10) arrived. `structvalidate.ts` imports that module's rules BY VALUE
+  to append them to `RULES`, and that module imports `uaClause` BY VALUE to
+  cite its clauses — a 2-cycle, which `test/import-cycles.test.ts` fences as a
+  red build. Extracting the shared vocabulary to a leaf both import is the move
+  `structtype.ts` and `numbertree.ts` each already made, for the same reason.
+  **Invariant:** a near-LEAF — `Document`, `StructElement`, `StructTreeRoot`,
+  `PdfDict` and `ValidationIssue` arrive as TYPES only, so it closes no edge.
+  `structvalidate.ts` re-exports `PdfUaPart` and `uaClause`, so no existing
+  import path moved.
+  **Invariant (`q7hc.4.4`):** it also owns `vctx` — the `UaCtx` →
+  `validatectx.Ctx` bridge, memoized per run so the shared font and
+  all-objects walks happen once — and `textOf`, "this string entry's text"
+  through `metadata.ts`'s `decodePdfText`. Both moved here from `uafont.ts`
+  when THREE rule modules came to need them and none may import another; three
+  copies is how three rule modules come to disagree about which objects a
+  document has, or about what a UTF-16 string says. That gave this module its
+  first two VALUE imports (`validatectx.js`, `metadata.js`); neither imports
+  back, so it still closes no edge.
+- **uaannot.ts** — ISO 14289-2 clauses 8.9 (annotations) and 8.10 (forms), the
+  25 rules `q7hc.4.2` added. Transcribed from the veraPDF profiles plus
+  `GFPDAnnot.java`, `annotations/GFPDWidgetAnnot.java`,
+  `annotations/GFPDMarkupAnnot.java`, `annotations/GFPDFileAttachmentAnnot.java`
+  and `gfse/GFSEForm.java` — as in `q7hc.4.1`, the profiles alone are not
+  enough, because `isArtifact`, `isFieldWidget`, `containsLbl` and the
+  rich-text reduction are bare identifiers there.
+  **Invariant:** its own module rather than more of `structvalidate.ts`, which
+  is the STRUCTURE TREE's rules and was already ~900 lines. The split is by
+  subject, the way `redactannots.ts` splits object-graph work off `redact.ts`'s
+  content-stream surgery; both import the shared vocabulary from `uarule.ts`,
+  which is what keeps the pair free of a cycle.
+  **Invariant:** ONE record per annotation, computed once. `isArtifact` walks an
+  ancestor chain, so computing it per rule would walk the same chain eight
+  times.
+  **Invariant, and the obvious reading is wrong:** `isArtifact` is an `Artifact`
+  element ANYWHERE up the chain, not the direct parent. A parent-only test
+  passes an annotation nested two deep inside an artifact subtree — silently,
+  on a document that renders identically.
+  **Invariant:** "in the structure tree" means `/StructParent` RESOLVES, and an
+  annotation outside the tree is EXEMPT from every artifact rule. That reads
+  wrong; it is what the anchor says, and `UntaggedContent` covers that case.
+  **Note, measured in `q7hc.4.1` and true here too:** that exemption is held by
+  a CONJUNCTION of the `/StructParent`-is-a-number test and the
+  `element === undefined` test — breaking either ALONE proves nothing.
+  **Invariant:** `MARKUP_ANNOTS` is **SIXTEEN** subtypes and is NOT ISO 32000-2
+  Table 171's markup list. Thirteen come from `GFPDAnnot`'s dispatch default
+  branch; `FileAttachment`, `Ink` and `Stamp` are there because their classes
+  EXTEND `GFPDMarkupAnnot`. Table 171 additionally counts `Sound` and `Movie`,
+  and veraPDF's model does not — the profile's `object="PDMarkupAnnot"` resolves
+  against the MODEL. Do not "fix" it toward ISO; both directions are
+  mutation-checked. **Note a THIRD set with a near-identical name:**
+  `annotation.ts`'s `MARKUP_SUBTYPES` is the narrow TEXT-markup family
+  (highlight, underline, strikeout, squiggly). Three sets, one word.
+  **Invariant:** `containsLbl` requires a NON-EMPTY `Lbl` — a label element with
+  nothing in it labels nothing — and it reads PLAIN children, not
+  `significantChildren`. `q7hc.4.1`'s pass-through splicing is a DIFFERENT
+  veraPDF method and is not called here.
+  **Invariant:** `isFieldWidget` is "the dict IS a field (`/FT`) or has a
+  `/Parent`", so a standalone widget is exempt from 8.10.1-1 and both 8.10.2.3
+  rules. Every widget this library's own form API creates is a field widget, so
+  that exemption is unmeasured without a hand-built fixture.
+  **Note 8.10.2.3-2 is NOT satisfied by a label**, unlike -1: an additional
+  action changes the field's behaviour and its description must travel with the
+  annotation.
+  **Note `TabOrder` is the one WARNING of both clauses** — the profile tags it
+  `minor` where every other rule is `major` — so a document with only that
+  defect still reports `Passed`.
+  **Invariant:** NOTHING here is converted. `ConvertToPdfUa` gains no pass: an
+  absent `/Contents`, a missing `Lbl`, a prohibited `/Sound` and an XFA packet
+  are authoring or destructive decisions, and the two that could be automated
+  (`/Tabs`, `/AFRelationship`) are not worth a pass alone. Every rule lands in
+  `unresolved`. **Note the `/XFA` overlap is documented rather than automated:**
+  `ConvertXfaToAcroForm()` converts the fields and removes the packet, so
+  running it first satisfies 8.10.1-3 for free.
+  **Invariant (`q7hc.4.6`), and it is the ONE rule of this module that is not a
+  transcription:** 8.10.3.5-1 (a graphic forming part of a signature's
+  appearance needs `/Alt`) is stated over a grouped CONTENT-ITEM model we do not
+  have, each item carrying its own structure parent and inherited attributes.
+  `visitFormContent` gives ANNOTATION granularity, so the question is asked once
+  per signature widget — does its `/AP /N` paint any image, shading or path, and
+  does its enclosing element chain carry an `/Alt` — where the anchor asks it
+  once per content item.
+  **What that loses, precisely:** the answers differ only when ONE signature
+  appearance is internally tagged with MCIDs pointing at DIFFERENT structure
+  elements carrying DIFFERENT `/Alt` values. No real signature appearance is
+  built that way, and the case the clause exists for — a scanned-signature image
+  with no alternate text — is caught exactly. Do not read it as faithful;
+  closing the gap means building the grouped content-item model, which
+  `q7hc.4.6` weighed and declined, a second content model beside
+  `visitContent`'s event walk being how two walkers come to disagree.
+  **Invariant:** its `/Alt` lookup is the INHERITED one — up the ancestor chain,
+  `groupedContent.getInheritedAlt()` — which is the OPPOSITE of 8.4.3-1 in
+  `uatext.ts`, whose lookup reads the glyph's own element DIRECTLY. Two rules of
+  one standard with two different lookups; each is pinned by its own case, and
+  copying either into the other is silent.
+  **Note two fixture traps, both measured:** a `filled` `Lbl` must be filled
+  with an ELEMENT kid rather than `MarkContent`, whose region covered no page
+  content and left the label empty — so the fixture measured the opposite of
+  what it said; and `FormWidgetCount`'s `/Subtype` filter is unmeasured until a
+  `Form` holds a NON-widget `/OBJR`.
+- **uafont.ts** — ISO 14289-2 clause 8.4.5, the 15 font and CMap rules
+  `q7hc.4.3` added. Transcribed from the same veraPDF profiles (`PDF_UA/2/8.4
+  Text representation for content/8.4.5 Fonts/**`) plus `GFGlyph.java` for the
+  glyph model's CACHE KEY, fetched 2026-09-15 — a TRANSCRIPTION with no runnable
+  oracle, `72nc.1`'s ceiling.
+  **Invariant:** its own module beside `uaannot.ts`, both over `uarule.ts`, for
+  `uaannot.ts`'s reason — the split is by SUBJECT, which keeps
+  `structvalidate.ts` the structure tree's rules and the three free of a cycle.
+  **Invariant:** the per-font rules reuse `validatectx.ts`'s `enumerateFonts`,
+  which `pdfavalidate.ts` and `pdfxvalidate.ts` already consume. A third font
+  walk is how three validators come to disagree about which fonts a document
+  has; a `validatectx.Ctx` is built from the `UaCtx` for that one purpose.
+  **Invariant:** `TABLE_116_CMAPS` is **SIXTY-ONE** names and is NOT
+  `predefcmap.ts`'s set. `cmapdata.ts` bundles **195** predefined Adobe CMaps —
+  every one Adobe published, the deprecated Japan2 collection included — where
+  Table 116 is the subset PDF 2.0 still sanctions. "Do we have this CMap
+  bundled" and "does PDF 2.0 sanction it" are different questions and the
+  bundled set is three times the size, so answering the first passes 134 CMaps
+  the rule exists to report. Asserted by SIZE in
+  `test/pdfua2-font-coverage.test.ts`, the rule `htmlforeign.ts` sets for its
+  five tables. The fixture is `UniJIS2004-UTF16-H`, verified to be one of the
+  195 and absent from the 61 — a name that is in NEITHER set demonstrates
+  nothing, which an earlier draft using `Identity-UTF16-H` did.
+  **Invariant:** a CMap's `/WMode`, its `usecmap` and its `/CIDSystemInfo` are
+  all read through `cidcmap.ts`'s `parseCidCMap`, the one owner of that grammar
+  and the one `scripts/gen-cmaps.ts` shares. A second reading here is how the
+  bundled data and a document's own CMap come to be read differently.
+  **Invariant:** the glyph rules run over a walk DEDUPED by
+  `(font dict, code, renderMode)`, from `GFGlyph.getGlyph`'s cache key. It is a
+  correctness rule as much as a cost one: without it the width rule loads the
+  font program once per character DRAWN and the report becomes one finding per
+  glyph on the page. The three key components we cannot cheaply model are
+  dropped, which only ever MERGES findings veraPDF would separate and never
+  splits one it would merge — a smaller report, never a missed defect.
+  **Invariant:** the walk joins to `enumerateFonts` through `TextFont.dict`,
+  which is the ONLY bridge — that walk yields font DICTS and a `GlyphEvent`
+  carries a `TextFont`. Matching on `/BaseFont` instead folds two distinct dicts
+  naming one face, the everyday shape for a subset embedded twice.
+  **Invariant:** the width rule reads `TextFont.dictWidth` and not
+  `Glyph.width`, and it is the ONE place two unit spaces meet — `programAdvance`
+  is already 1/1000 em while `dictWidth` is in em, so the dictionary value is
+  multiplied by 1000 there and nowhere else.
+  **Note, MEASURED, and it covers NOTHING — the plan predicted the opposite:**
+  falling back to `Glyph.width` where `dictWidth` is undefined reddens not one
+  case and PROVABLY cannot. `advance` returns the dictionary's value wherever
+  the dictionary has one, and falls through to the very program advance this
+  rule compares against where it does not, so the comparison becomes the program
+  against itself and is silent under both readings. Retained as the honest
+  spelling of the question the clause asks; do not cite the green suite as
+  covering it.
+  **Invariant:** four of the five glyph rules exempt render mode 3 — invisible
+  text, the OCR layer of every scanned page — and `NotdefUsed` alone does NOT,
+  because a `.notdef` there still stands for text that is lost. It reads like an
+  inconsistency, so it is asserted directly.
+  **Note the fixture trap the plan fell into, and it is the sharpest here:** a
+  SIMPLE font always resolves a Unicode value through its `/Encoding` and the
+  Adobe glyph list, so omitting `/ToUnicode` from one measures NOTHING for
+  8.4.5.8-1. Only a composite font in the Identity ordering has no route at all
+  — no `/ToUnicode`, and no character collection for `cidunicode.ts` to consult.
+  **Note the numGlyphs bound on `GlyphNotPresent` reddened nothing** until a
+  fixture drew a CID past the program's glyph count: `gidForProgram` answers
+  `undefined` rather than 0 on a cmap miss, so that half of "defines no glyph"
+  — the gid resolves perfectly well and simply is not there — is reachable only
+  through a composite font.
+  **Invariant:** NOTHING here is converted, and `ConvertToPdfUa` gains no pass.
+  Embedding a font, synthesizing `/ToUnicode` and correcting `/Widths` are
+  authoring decisions, so every rule lands in `unresolved` —
+  `test/pdfua2-convert.test.ts` names `FontNotEmbedded` beside `HeadingNesting`
+  and `LinkEnclosure` for that reason, PDF 2.0 granting the Standard 14 no
+  embedding exemption.
+- **uaglyph.ts** — the deduped glyph walk ISO 14289-2's glyph rules share,
+  moved out of `uafont.ts` by `q7hc.4.4`.
+  **Invariant:** a near-LEAF over `text.js` and `uarule.js`'s types, importing
+  NEITHER rule module — which is what lets `uafont.ts` and `uatext.ts` both
+  reach it without reaching each other. The extraction `colornames.ts`,
+  `preformat.ts`, `bordersides.ts`, `datauri.ts` and `langmatch.ts` each made.
+  **Invariant: its key is FINER than the font rules use, deliberately.** It
+  keys on `(font dict, code, renderMode, mcid, artifact)` where `uafont.ts`
+  wants `(font dict, code, renderMode)`. `q7hc.4.3` dropped the last two on the
+  reasoning that doing so only ever MERGES findings veraPDF would separate —
+  but 8.4.3-1 cannot accept that merge, since the same PUA code drawn once
+  under an element carrying `/Alt` and once under an element carrying none must
+  stay distinguishable, or a real defect hides behind a conformant sibling. A
+  MISSED DEFECT rather than a smaller report. So the leaf yields the fine
+  records and `uafont.ts` COLLAPSES the two extra components on its own side.
+  **Note, measured, and it covers NOTHING:** returning the fine records
+  uncollapsed to the font rules reddens not one case, because every fixture in
+  `test/pdfua2-font.test.ts` is UNTAGGED — `mcid` is `undefined` throughout, so
+  the two granularities coincide there. The collapse is held by reasoning
+  rather than by the suite.
+  **Invariant:** it resolves each glyph's STRUCTURE ELEMENT, because
+  `StructTreeRoot.ElementFor` needs the page's `/StructParents` and the walk is
+  the only place that knows which page it is on. A rule holding only a
+  `DistinctGlyph` would have to find the page again — a second answer to "which
+  element marked this glyph".
+- **uatext.ts** — ISO 14289-2 clauses 8.4.3, 8.4.4 and 8.6: private-use
+  characters and natural language, six of `q7hc.4.4`'s 11 rules. Transcribed
+  from the veraPDF profiles plus `PUAHelper.java` and
+  `MarkedContentHelper.java`, fetched 2026-09-16 — a TRANSCRIPTION with no
+  runnable oracle, `72nc.1`'s ceiling.
+  **Invariant: PUA is THREE ranges**, `E000..F8FF`, `F0000..FFFFD` and
+  `100000..10FFFD`, and both supplementary bounds end at `FFFD` because the
+  last two code points of each plane are NONCHARACTERS. A single-range check
+  silently passes every supplementary PUA code point — the everyday shape for a
+  symbol font that ran out of BMP room. Asserted by SIZE in
+  `test/pdfua2-misc-coverage.test.ts`.
+  **Invariant, and the OBVIOUS READING IS WRONG:** 8.4.3-1's `/Alt` lookup
+  reads the glyph's OWN structure element, NEVER its ancestors —
+  `containsStringKey` calls `structureElement.getKey(key)` directly and wants a
+  non-empty STRING. An `/Alt` on a grandparent does NOT excuse a PUA glyph. It
+  checks the inherited MARKED-CONTENT attribute first, which is why a `BDC`
+  carrying `/ActualText` with no `/MCID` counts.
+  **Invariant:** `isRealContent` maps to `!artifact`, transcribed by INFERENCE
+  rather than quotation — that term is a constructor parameter threaded down
+  from veraPDF's operator layer, not a quotable expression. Recorded as such.
+  **Invariant:** 8.4.4-1 tests PRESENCE only. The profile's prose says "with a
+  non-empty value" and its TEST is `containsLang == true` alone; an empty
+  `/Lang ()` is caught by 8.4.4-2 instead, whose regex demands at least one
+  letter. The pair gives the prose's answer and NEITHER RULE ALONE DOES, so
+  adding a non-empty check here reports one defect twice.
+  **Invariant:** 8.4.4-2's regex is the ANCHOR's own and is NARROWER than
+  BCP 47. Do not substitute a general matcher, and do not reach for
+  `langmatch.ts`, which answers a different question — does this tag MATCH that
+  range. Reporting what a conforming validator would not is as wrong as missing
+  what it would.
+  **Invariant:** 8.6-1 is a CURATED set of string entries, and that is a
+  DECISION. veraPDF decides "human readable" by which strings its model wraps
+  as `CosTextString`; we have no such model, and sweeping every string would
+  report on `/ID`, the encryption `/O` and `/U` and a signature's `/Contents` —
+  binary values that are not text, so every encrypted or signed file would
+  report. The set is what this library already models as human-readable.
+  **A stated NARROWING:** a property-list `/Lang` is seen only on a BDC that
+  encloses at least one glyph, because it arrives through the glyph walk.
+  `MarkedContentEvent` fires only when an `/MCID` resolves (`q7hc.1`) and
+  widening that would break an invariant three consumers rely on; a second
+  content walker would be the duplication this repo keeps recording. A `/Lang`
+  on a sequence containing no text is not examined.
+- **uadoc.ts** — ISO 14289-2 clauses 8.7, 8.8 and 8.14.1: optional content,
+  intra-document destinations and embedded files, five of `q7hc.4.4`'s 11.
+  Transcribed from the profiles plus `veraPDF-parser`'s `PDDestination.java`
+  and `PDAction.java`, which between them define what a structure destination
+  IS.
+  **Invariant, and the issue text got this wrong:** 8.7-1 is CONDITIONAL on a
+  `/Configs` array existing. `gContainsConfigs` is a document-level VARIABLE
+  over `PDOCProperties`, so a document carrying only a `/D` is exempt ENTIRELY
+  — "including the default" means `/D` is examined WHEN `/Configs` is present,
+  not that `/D` always needs a name. A fixture with only a `/D` measures
+  nothing whatever the code does. 8.7-2 is UNGATED by contrast, its test being
+  a bare `AS == null`, so a lone `/D` IS examined; the asymmetry has its own
+  case.
+  **Note what 8.7-2 prohibits outright:** `ocusage.ts` records that a `/Usage`
+  ALONE IS INERT and that `/AS` is what makes a usage application do anything.
+  So PDF/UA-2 bans automatic usage application altogether.
+  **Invariant:** a STRUCTURE DESTINATION is an ARRAY whose FIRST ELEMENT
+  carries `/S` — a structure element rather than a page — or a DICT carrying
+  `/SD`. A structure element dict always has `/S`, its type; a page never does.
+  Testing `/Type /StructElem` instead misses every element omitting that
+  optional key.
+  **Invariant, and it is NOT the same test:** 8.8-2 asks
+  `PDAction.containsStructureDestination`, which answers true for `/SD`, or for
+  a `/D` that is a NAME or STRING resolving to a structure destination — and
+  FALLS THROUGH TO FALSE for a `/D` that is a direct ARRAY, even when that
+  array IS a structure destination. An action qualifies only through `/SD` or a
+  named destination, which is why the authoring change adds `/SD` rather than
+  rewriting `/D`, and why a fixture that only toggles `/SD` cannot see the rule
+  at all.
+  **Invariant:** 8.14.1-1's walk starts FROM the `/EmbeddedFiles` name tree
+  rather than from every filespec in the file, because the profile's escape is
+  `presentInEmbeddedFiles == false` — which is what keeps a `/FileAttachment`
+  annotation's `/FS` out of the rule.
+  **Invariant:** NOTHING in either module is converted and `ConvertToPdfUa`
+  gains no pass, with ONE exception that is not these modules' doing — the
+  catalog `/Lang` pass has existed since PDF/UA-1, so `CatalogLangMissing`
+  resolves for any caller supplying `opts.lang`. It is the ONLY rule in the
+  whole epic an existing pass fixes, and `test/pdfua2-text.test.ts` asserts it
+  rather than leaving it to be noticed.
 - **structvalidate.ts**, **pdfavalidate.ts**, **pdfxvalidate.ts**,
   **validation.ts** — validators (`ValidatePdfUa`, `ValidatePdfA`,
   `ValidatePdfX`) returning a shared `ValidationReport`, over the neutral scan
@@ -5289,6 +5917,152 @@ Source (`src/`):
   **pdfuaconvert.ts**, **pdfxconvert.ts**, **pdfxcolor.ts**, **srgb.ts** —
   remediation (`ConvertToPdfA`, `ConvertToPdfUa`, `ConvertToPdfX`) with the
   bundled sRGB profile.
+  **Invariant (`q7hc.2`):** `UntaggedContent` means the `/MCID` RESOLVES to an
+  element, not merely that the content carries one — a `BDC` naming a released
+  or never-written `/ParentTree` slot is content in no structure tree. The
+  lookup is memoized per page, since `ElementFor` walks a number tree and
+  asking per glyph would make validation quadratic in a page's marked content.
+  **Note, measured, and it is why the fixture is hand-built:** widening this
+  reddened NOTHING across the whole suite — every `/MCID` this library authors
+  resolves, and so does every one in the vendored corpora — so
+  `test/helpers/build-dangling-mcid-pdf.ts` is the only thing that covers it.
+  It builds the same page BOTH ways, because the dangling case alone passes
+  for a build that reports every tagged page.
+  **Note, measured, and NOT covered:** treating a page with NO
+  `/StructParents` as fully tagged reddens nothing either — every tagged page
+  in the suite declares one, the dangling fixture included. The guard is
+  correct (a page with no key maps nothing) and is held by reasoning alone.
+  **Invariant (`q7hc.4`):** `validatePdfUa` takes a `PdfUaPart` defaulting to 1,
+  and the part-2 rules are APPENDED to `RULES` so the part-1 report order is
+  byte-identical — order is observable through `ValidationReport.Issues` and no
+  pre-existing assertion checks sequence, only membership.
+  `test/pdfua-part1-identity.test.ts` is the only thing in the suite that can
+  see a reordering, and it was committed BEFORE the rule-table refactor. It is
+  also why `structureRule` stays ONE rule over ONE loop: splitting it per check
+  would stop an element's findings being adjacent.
+  **Invariant:** `pdfavalidate.ts`'s level-`a` fold stays at part 1 forever.
+  PDF/A level `a` means PDF/UA-**1** tagging, so widening it would ask a
+  PDF/A-2a document for a PDF 2.0 namespace — silently, since every UA issue is
+  prefixed `UA:` either way. Pinned by a test rather than by a comment.
+  **Invariant (`q7hc.4.5`):** that fold EXCLUDES `PdfuaIdentification`. Level
+  `a` requires PDF/UA-1 TAGGING; it does not require the document to make a
+  PDF/UA CONFORMANCE CLAIM. A PDF/A file identifies itself through
+  `pdfaid:part`, and demanding `pdfuaid:part` beside it would report on
+  essentially every conformant level-`a` document in existence. It became
+  reachable only when `q7hc.4.5` widened the identification rule to part 1, and
+  the pre-existing test above is what caught it — the exclusion is pinned by
+  that same test rather than by this comment.
+  **Invariant (`q7hc.4.5`):** the identification rule is a WARNING at BOTH
+  parts. Every rule of clause 5 is tagged `minor` in the anchor — part 1 and
+  part 2 alike — which is `TabOrder`'s mapping. It shipped as an ERROR from
+  `q7hc.4` until `q7hc.4.5`; that was a transcription defect. Correcting it is
+  what lets a document carrying no `pdfuaid` still report `Passed`, and that
+  matters beyond tidiness: an authored tagged document carries none — writing
+  one would be a conformance CLAIM the library has no business making for the
+  author — and README promises such a document passes `ValidatePdfUa` outright.
+  Measured: reporting it as an error reddens `markdown-pdfua.test.ts`.
+  **Invariant, and it is the correction the issue was filed against:** an
+  element that states NO `/NS` is in the PDF 1.7 namespace (ISO 32000-2 14.8.6)
+  and is CONFORMANT at part 2. ISO 14289-2 8.2.4-1 permits three namespaces —
+  PDF 1.7, PDF 2.0 and MathML — so a UA-1 tree carried over whole PASSES, and
+  requiring per-element `/NS` (which `q7hc.4`'s issue text asked for) rejects
+  conformant documents. The PDF 2.0 namespace is required on exactly ONE
+  element, the tree root's single `Document` child (8.2.5.2-1/-2), and the PDF
+  1.7 namespace there is explicitly NOT enough. Measured: requiring the 2.0
+  namespace everywhere reddens 2, and accepting any stated namespace on the
+  `Document` element reddens 1.
+  **Note the anchor, and its CEILING:** the part-2 rules are transcribed from
+  veraPDF's published profiles (`veraPDF/veraPDF-validation-profiles`,
+  `integration` branch, `PDF_UA/2/**`, 90 rules, fetched 2026-09-15) and the two
+  type vocabularies from `veraPDF/veraPDF-parser`, `integration`,
+  `src/main/java/org/verapdf/tools/TaggedPDFHelper.java`. veraPDF is NOT
+  installed and a profile is a rule list rather than bytes, so unlike
+  `test/fixtures/pdfx/` there is NO runnable oracle: the suite proves the
+  implementation agrees with OUR READING of the profile, and nothing about
+  whether either matches ISO 14289-2. `72nc.1`'s exact ceiling. Do not read a
+  green suite as conformance evidence.
+  **Note, measured 2026-09-15 and a free corroboration:** our
+  `STANDARD_STRUCTURE_TYPES` is EXACTLY veraPDF's
+  `PDF_1_7_STANDARD_ROLE_TYPES` — 49 entries, no difference in either
+  direction. That set had shipped since the PDF/UA-1 work with no external
+  anchor at all; fetching the PDF 2.0 vocabulary incidentally anchored the 1.7
+  one.
+  **Note the SCOPE, so the absences read as decisions, and note the count was
+  WRONG until `q7hc.4.2` counted the files:** the anchor has **91** rule files,
+  not 90 — `8.9 Annotations` holds 19, not 18, and the extra is `8.9.4.2-1`,
+  which `q7hc.4.2`'s own issue text omitted. `q7hc.4` covered 18, `q7hc.4.1` the
+  8.2.5 clause (21), `q7hc.4.2` clauses 8.9 and 8.10 (25 of their 26),
+  `q7hc.4.3` clause 8.4.5 (fonts and CMaps, 15), `q7hc.4.4` clauses 8.4.3,
+  8.4.4, 8.6, 8.7, 8.8 and 8.14.1 (11), and `q7hc.4.6` the last one
+  (8.10.3.5-1), so **all 91** ship. **Note ONE of them is an APPROXIMATION**
+  rather than a transcription — 8.10.3.5-1 is asked at ANNOTATION granularity
+  where the anchor asks it per grouped CONTENT ITEM; `uaannot.ts` records what
+  that costs, and `test/pdfua2-annot-coverage.test.ts` asserts the record still
+  exists so a refactor cannot quietly drop the caveat. Every other rule is a
+  faithful transcription.
+  **Note the two UNITS, since this paragraph got them mixed twice before.**
+  Counted as profile FILES the epic closes exactly: 18 + 21 + 26 + 15 + 11 = 91.
+  Counted as rules IMPLEMENTED it is 90, because `8.2.5.28.2-1` is SATISFIED by
+  the pre-existing `IllustrationAlt` rather than newly written.
+  **Note the earlier figure mixed two UNITS**, which is how it came to be wrong
+  twice over: "38" counted the new rule NAMES `q7hc.4.1` added, while the rest
+  of the sentence counted profile FILES — and `8.2.5.28.2-1` is covered without
+  being newly implemented, so the file count was 39.
+  **Invariant (`q7hc.4.1`):** the 8.2.5 clause is **20 new rules, not 21**.
+  `8.2.5.28.2-1` (a Figure shall carry `/Alt` or `/ActualText`) is already
+  reported at BOTH parts by `IllustrationAlt`, whose set is
+  Figure/Formula/Form, so it is SATISFIED rather than implemented — the one
+  rule of the clause that is not silent at part 1, and a part-2-only twin would
+  report one missing `/Alt` twice. The issue's "each of the 21 reports at part
+  2 and is silent at part 1" is amended to say so, and the exemption is
+  asserted directly so it reads as a decision.
+  **Invariant (`q7hc.4.1`):** the profile splits three defects across six table
+  rule ids — 26-3/26-4 and 26-5/26-6 are complementary tests differing only in
+  whether the message can carry its counts — and we mirror that as FOUR
+  distinct names, so one defect reports under exactly one. That is what keeps
+  an unrunnable anchor checkable by COMPARING REPORTS rather than by reading
+  code.
+  **Invariant (`q7hc.4.1`), and it reads wrong:** a link annotation with NO
+  `/StructParent` PASSES 8.2.5.20-1 — the profile test carries an explicit
+  `|| structParentType == null`. `UntaggedContent` covers that case instead.
+  **Note, measured, and the rule is held by a CONJUNCTION:** the
+  `typeof spRaw !== 'number'` guard and the `parent === undefined` guard below
+  it are redundant defences — an absent `/StructParent` resolves to `null`,
+  which the first rejects, and `ElementForObject` would find nothing for it
+  anyway. Removing BOTH reddens one case; removing either is GREEN. Do not
+  "simplify" one away.
+  **Note, measured, and it covers NOTHING:** `tableRules`' `continue` for an
+  irregular table is redundant with `headerConnectivity`'s own gate 1, which
+  returns `undefined` for a grid carrying an irregularity. `structgrid.test.ts`
+  holds that rule; deleting the `continue` reddens nothing.
+  **Note the fixture traps, each measured the hard way:** an all-TD table
+  leaves `everyHeaderScoped` TRUE, so GATE 2 answers first and a fixture for
+  gate 1 built that way measures nothing — it needs an unscoped TH and a
+  genuinely disconnected cell. A table whose every TH states a `/Scope` never
+  reaches the per-TD walk at all. And the RAW `/Scope` read differs from the
+  typed one on exactly one input, a scope outside the enumeration, which
+  `SetTableAttributes` cannot express — without a hand-written junk scope,
+  reading it through the typed accessor reddens nothing.
+  **Note a DELIBERATE DIVERGENCE:** `versionPass` writes catalog `/Version 2.0`
+  and NO rule validates it. There is no version rule anywhere in the 90 — UA-2
+  is defined over PDF 2.0 but the anchor never encodes a version test — so
+  adding one would make our report disagree with veraPDF's on a conformant file.
+  The shape `72nc.1` records for `psXObjectRule`.
+  **Note the second one was CLOSED by `q7hc.4.5` and is recorded here because
+  the gating read as a divergence and was not:** identification used to be gated
+  to part 2 although `PDF_UA/1/` carries clause 5 too. It now runs at BOTH
+  parts. The two clauses are NOT the same rule — part 1 wants `part == 1` and
+  states NO rev requirement, since UA-1 carries `amd` and `corr` where UA-2
+  carries `rev`, so demanding a rev at part 1 would report on every conformant
+  UA-1 document including the ones this library writes. Part 1 still implements
+  only about nine of that profile's 106 rules.
+  **Note, measured:** `buildTaggedPdf` cannot exercise `documentElementPass`'s
+  WRAPPING branch — it already holds a single `/Document` child, so it
+  satisfies 8.2.5.2-1 by accident. `build-multi-root-pdf.ts` exists for that
+  branch alone, and its order assertion reads TEXT rather than child count,
+  which cannot see a permutation. It also carries a pre-existing
+  `HeadingNesting` defect, so a conversion test there must assert that every
+  PART-2 rule resolved rather than that `unresolved` is empty.
   **Invariant:** PDF/X conversion never silently alters printed appearance —
   live transparency, non-embeddable fonts, RGB rasters and annotations
   overlapping the trim area are reported unresolved, and the RGB→CMYK rewrite is

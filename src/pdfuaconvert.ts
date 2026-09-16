@@ -1,11 +1,14 @@
 import type { Document } from './document.js';
-import { PdfDict, PdfObject, isDict } from './types.js';
-import { validatePdfUa } from './structvalidate.js';
+import { PdfDict, PdfObject, PdfRef, isDict, isName, name } from './types.js';
+import { validatePdfUa, type PdfUaPart } from './structvalidate.js';
 import { STANDARD_STRUCTURE_TYPES } from './struct.js';
 import type { StructElement } from './struct.js';
+import { PDF20_NS } from './structns.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 
 export interface PdfUaConvertOptions {
+  /** Which part of ISO 14289 to target: 1 (the default) or 2. */
+  part?: PdfUaPart;
   /** Catalog /Lang (e.g. 'en-US'); resolves NaturalLanguage. Never fabricated. */
   lang?: string;
   /** Fallback /Info /Title, used only when no title is already present. */
@@ -17,6 +20,7 @@ export interface PdfUaConvertOptions {
 interface Uctx {
   doc: Document;
   catalog: PdfDict;
+  part: PdfUaPart;
   opts: PdfUaConvertOptions;
   R(o: PdfObject | undefined): PdfObject;
 }
@@ -95,14 +99,95 @@ const suspectsPass: Pass = (ctx) => {
   return [{ rule: 'Suspects', action: 'Cleared catalog /MarkInfo /Suspects.' }];
 };
 
-/** Write the required PDF/UA-1 identification metadata (pdfuaid:part 1). */
+/** Write the required PDF/UA identification metadata. Part 2 additionally
+ *  carries pdfuaid:rev, the four-digit year of the revision (ISO 14289-2:2024). */
 const identificationPass: Pass = (ctx) => {
+  if (ctx.part === 2) {
+    ctx.doc.SetXmp({ pdfuaPart: 2, pdfuaRev: 2024 });
+    return [{ rule: 'PdfuaIdentification',
+      action: 'Wrote pdfuaid:part 2 and pdfuaid:rev 2024 XMP identification.' }];
+  }
   ctx.doc.SetXmp({ pdfuaPart: 1 });
   return [{ rule: 'PdfuaIdentification', action: 'Wrote pdfuaid:part 1 XMP identification.' }];
 };
 
+/** PDF/UA-2 is defined over PDF 2.0, so declare it. serializer.ts's
+ *  headerVersion() reads the catalog /Version (invariant 909q), so this is the
+ *  whole of writing a 2.0 header.
+ *
+ *  **Note, a DELIBERATE DIVERGENCE:** there is NO version rule in the anchor's
+ *  90, so we write this and validate nothing for it — adding a validator rule
+ *  veraPDF does not carry would make our report disagree with it on a
+ *  conformant file. The shape `72nc.1` records for psXObjectRule. */
+const versionPass: Pass = (ctx) => {
+  if (ctx.part !== 2) return [];
+  const cur = ctx.R(ctx.catalog.get('Version'));
+  if (isName(cur) && cur.name === '2.0') return [];
+  ctx.catalog.set('Version', name('2.0'));
+  ctx.doc.markModified();
+  return [{ rule: 'Version', action: 'Set catalog /Version to 2.0.' }];
+};
+
+/** ISO 14289-2 8.2.1-2: every structure element dictionary shall contain /P. */
+const parentPass: Pass = (ctx) => {
+  if (ctx.part !== 2) return [];
+  const tree = ctx.doc.GetStructTree();
+  if (tree === null) return [];
+  let fixed = 0;
+  const walk = (parentRef: PdfRef | undefined, els: StructElement[]): void => {
+    for (const el of els) {
+      if (!el.Dict.has('P') && parentRef !== undefined) {
+        el.Dict.set('P', parentRef); ctx.doc.markModified(); fixed++;
+      }
+      walk(el.Ref, el.Children);
+    }
+  };
+  walk(tree.Ref, tree.Children);
+  return fixed === 0 ? []
+    : [{ rule: 'StructParent', action: `Wrote /P onto ${fixed} structure element(s).` }];
+};
+
+/** ISO 14289-2 8.2.5.2: a single Document element as the tree root's only
+ *  child, in the PDF 2.0 namespace.
+ *
+ *  Where the root already holds exactly one Document this is one /NS write.
+ *  Otherwise a Document is created and every existing top-level child is
+ *  re-parented under it with MoveTo (`q7hc.3`) — mechanical, deterministic and
+ *  ORDER-PRESERVING because they move in order. MoveTo materializes an
+ *  inherited /Pg first, so the re-parenting cannot re-point anyone's marked
+ *  content. */
+const documentElementPass: Pass = (ctx) => {
+  if (ctx.part !== 2) return [];
+  const tree = ctx.doc.GetStructTree();
+  if (tree === null) return [];
+  const actions: ConvertAction[] = [];
+  const kids = tree.Children;
+  let docEl = kids.length === 1 && kids[0].StandardType === 'Document' ? kids[0] : undefined;
+
+  if (docEl === undefined) {
+    const created = tree.Append('Document', { ns: PDF20_NS });
+    // Re-read: Append pushed the new element onto /K, so the originals are
+    // every child that is not the one just created.
+    const originals = tree.Children.filter((c) => c.Dict !== created.Dict);
+    for (const child of originals) child.MoveTo(created);
+    docEl = created;
+    actions.push({ rule: 'DocumentElement',
+      action: `Wrapped ${originals.length} top-level element(s) in a Document element.` });
+  }
+  if (docEl.Namespace !== PDF20_NS) {
+    docEl.Namespace = PDF20_NS;
+    actions.push({ rule: 'DocumentElement',
+      action: 'Put the Document element in the PDF 2.0 standard structure namespace.' });
+  }
+  return actions;
+};
+
 const PASSES: Pass[] = [
-  markedPass, titlePass, displayDocTitlePass, langPass, roleMapPass, suspectsPass, identificationPass,
+  markedPass, titlePass, displayDocTitlePass, langPass, roleMapPass, suspectsPass,
+  // Part 2 only; each returns [] at part 1, so the part-1 action list is
+  // byte-identical.
+  versionPass, parentPass, documentElementPass,
+  identificationPass,
 ];
 
 /** Remediate `doc` toward PDF/UA-1, then re-validate. The facade supplies the
@@ -110,9 +195,14 @@ const PASSES: Pass[] = [
 export function convertToPdfUa(
   doc: Document, catalog: PdfDict, opts: PdfUaConvertOptions = {},
 ): ConversionReport {
-  const ctx: Uctx = { doc, catalog, opts, R: (o) => doc.resolve(o) };
+  const part = opts.part ?? 1;
+  const ctx: Uctx = { doc, catalog, part, opts, R: (o) => doc.resolve(o) };
   const applied: ConvertAction[] = [];
   for (const pass of PASSES) applied.push(...pass(ctx));
-  const unresolved = validatePdfUa(doc, catalog).Errors;
+  // **Invariant:** the re-validation part MUST match the conversion part.
+  // Leaving it at the default reports a part-2 conversion as passing while the
+  // part-2 rules were never asked — and convertToPdfUa's contract is that
+  // `unresolved` mirrors the validator exactly.
+  const unresolved = validatePdfUa(doc, catalog, part).Errors;
   return { applied, unresolved, passed: unresolved.length === 0 };
 }
