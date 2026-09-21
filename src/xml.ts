@@ -1,4 +1,5 @@
 import { PdfParseError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 
 /** A parsed XML element. `text` is the concatenated direct text content
  *  (CDATA included, entities resolved); `raw` is the verbatim source between
@@ -37,10 +38,16 @@ export function escapeXml(s: string): string {
 
 /** Parse an XML document and return its root element. Throws PdfParseError on
  *  malformed input. Deliberately minimal: no DTD internal subsets, no
- *  namespace resolution (prefixes are stripped), no entity declarations. */
-export function parseXml(bytes: Uint8Array): XmlNode {
+ *  namespace resolution (prefixes are stripped), no entity declarations.
+ *
+ *  Element nesting is bounded by `limits.maxNestingDepth` (`ibzo.11`):
+ *  `parseElement` recurses per element, so a 200,000-deep `<g>` chain
+ *  overflowed the stack. Past the bound is `ResourceLimitError`, not
+ *  `PdfParseError` — the markup is well formed, it is merely too deep. */
+export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): XmlNode {
   const src = new TextDecoder('utf-8').decode(bytes);
   let i = 0;
+  let depth = 0;
 
   const fail = (msg: string): never => { throw new PdfParseError(`XML: ${msg}`, i); };
 
@@ -70,6 +77,11 @@ export function parseXml(bytes: Uint8Array): XmlNode {
   };
 
   const parseElement = (): XmlNode => {
+    limits.enforce('maxNestingDepth', ++depth, 'XML element');
+    try { return parseElementBody(); } finally { depth--; }
+  };
+
+  const parseElementBody = (): XmlNode => {
     if (src[i] !== '<') fail('expected <');
     i++;
     const name = readName();

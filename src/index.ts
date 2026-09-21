@@ -1,10 +1,12 @@
 export { defaultPrunePolicy } from './extractor.js';
 export type { PrunePolicy } from './extractor.js';
-export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError } from './errors.js';
+export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError } from './errors.js';
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
-  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile,
+  saveImagesFile, saveMarkdownFile, saveDocxFile,
+  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, htmlFileToPdf,
 } from './node.js';
+export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions } from './node.js';
 export { Document } from './document.js';
 export type {
   SplitOptions, ExtractPagesOptions, InsertPagesOptions, OpenOptions, SaveOptions,
@@ -112,6 +114,8 @@ export type { AddTableOptions, AddTableResult } from './tablerender.js';
 export type { TOCEntry, TOCOptions } from './toc.js';
 export type { AddTOCResult } from './tocrender.js';
 export { PageFormat } from './pageformat.js';
+export { LoadLimits, LIMIT_FIELDS } from './loadlimits.js';
+export type { LoadLimitValues, LoadLimitPatch, LimitField } from './loadlimits.js';
 export { Flow, paragraph, heading, list, image } from './flow.js';
 export type {
   FlowOptions, FlowParagraphOptions, FlowHeadingOptions, FlowListOptions, FlowImageOptions,

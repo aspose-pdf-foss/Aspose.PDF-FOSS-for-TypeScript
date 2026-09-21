@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { Matrix, mul, translate, IDENTITY } from './text.js';
 import { PdfDict, PdfObject, isName, isArray, isStream, isDict, isString, isRef, PdfStream } from './types.js';
-import { parseContentStream } from './content.js';
+import { parseContentStream, type ContentTokenBudget } from './content.js';
 import { inlineImageToStream } from './inlinedict.js';
 import { inflateStream } from './flate.js';
 import { resolveColorSpace, deviceGray, Rgb, ColorConverter } from './colorspace.js';
@@ -10,6 +10,8 @@ import { TextFont, glyphDisplacement, runDisplacement, tjShift } from './font.js
 import { isAnnotVisible, resolveAppearance } from './annotappearance.js';
 import { BlendMode, blendModeFromName } from './blend.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
+import { rethrowLimit } from './errors.js';
+import { registerStream } from './decodebudget.js';
 
 export type { Matrix } from './text.js';
 export type { Rgb } from './colorspace.js';
@@ -210,6 +212,10 @@ interface RenderCtx {
   doc: Document; sink: RenderSink;
   resources: PdfDict | undefined;
   depth: number; seen: Set<PdfDict>;
+  /** The `maxContentTokens` count for the whole render — page content, every
+   *  form, pattern, glyph procedure and annotation appearance — shared BY
+   *  REFERENCE through each `{ ...ctx }` child (`ibzo.8`). */
+  tokens: ContentTokenBudget;
   /** Optional-content visibility for this render, absent when the document
    *  declares no `/OCProperties` — in which case every section is visible and
    *  no lookup is made at all. */
@@ -279,7 +285,7 @@ function paintTiling(ctx: RenderCtx, gs: GState, pat: TilingPattern, baseCtm: Ma
   if (ctx.depth >= MAX_OFFSCREEN_DEPTH || ctx.seen.has(pat.stream.dict)) return;
   const patCtm = mul(pat.matrix, baseCtm);
   let bytes: Uint8Array;
-  try { bytes = inflateStream(pat.stream as Parameters<typeof inflateStream>[0]); } catch { return; }
+  try { bytes = inflateStream(pat.stream as Parameters<typeof inflateStream>[0]); } catch (caught) { rethrowLimit(caught); return; }
 
   // The cell draws in pattern space, which generally lies outside the region it
   // fills, so the buffer is placed over the cell's own device bbox.
@@ -307,7 +313,7 @@ function paintTiling(ctx: RenderCtx, gs: GState, pat: TilingPattern, baseCtm: Ma
     ctx.seen.add(pat.stream.dict);
     walk({ ...ctx, resources: pat.resources ?? ctx.resources, depth: ctx.depth + 1 }, bytes, st);
     ctx.seen.delete(pat.stream.dict);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever the cell drew before failing still tiles.
   }
   ctx.sink.endOffscreen({
@@ -433,7 +439,7 @@ function realizeSoftMask(ctx: RenderCtx, ref: SoftMaskRef): void {
   ctx.sink.beginOffscreen();
   try {
     drawForm({ ...ctx, depth: ctx.depth + 1 }, initialState(ref.ctm), g);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever the mask group drew before failing still masks.
   }
   ctx.sink.endOffscreen({ kind: 'softmask', luminosity, backdrop });
@@ -466,7 +472,7 @@ export function interpret(
   doc: Document, page: Page, base: Matrix, sink: RenderSink, opts: InterpretOptions = {},
 ): void {
   const ctx: RenderCtx = {
-    doc, sink, resources: page.Resources, depth: 0, seen: new Set(),
+    doc, sink, resources: page.Resources, depth: 0, seen: new Set(), tokens: { tokens: 0 },
     oc: ocVisibilityFor(doc),
   };
   walk(ctx, page.Contents, initialState(base));
@@ -494,7 +500,7 @@ function drawAnnots(
       // Matrix × place × base — placementMatrix already mapped the
       // /Matrix-transformed BBox onto /Rect, so this is not a double-apply.
       drawForm(ctx, initialState(mul(ap.place, base)), ap.stream);
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // Degrade: a malformed appearance costs only itself.
     }
   }
@@ -504,7 +510,7 @@ const MAX_XOBJECT_DEPTH = 8;
 
 function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = false): void {
   const sink = ctx.sink;
-  const ops = parseContentStream(bytes);
+  const ops = parseContentStream(bytes, ctx.doc.loadLimits, ctx.tokens);
   const gsStack: GState[] = [];
   let gs = initial;
   const baseCtm = initial.ctm;   // default coord space of this stream (for pattern matrices)
@@ -721,7 +727,11 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
             // over made each such image decode to nothing and draw nothing, in
             // both backends and with no error raised (`6dud`) -- while the
             // full-name spelling, which Table 93 equally permits, worked.
-            sink.image(inlineImageToStream(img), gs.ctm, gs.fill);
+            // (ibzo.7) Registered, so the inline image's own filters decode under
+            // this document's policy rather than the defaults.
+            const inlineStream = inlineImageToStream(img);
+            registerStream(inlineStream, ctx.doc.decodeBudget);
+            sink.image(inlineStream, gs.ctm, gs.fill);
           });
         }
         break;
@@ -1058,13 +1068,13 @@ function drawGlyphProc(
   ctx: RenderCtx, gs: GState, proc: PdfStream, ctm: Matrix, resources: PdfDict | undefined,
 ): void {
   let bytes: Uint8Array;
-  try { bytes = inflateStream(proc as Parameters<typeof inflateStream>[0]); } catch { return; }
+  try { bytes = inflateStream(proc as Parameters<typeof inflateStream>[0]); } catch (caught) { rethrowLimit(caught); return; }
   const state = clone(gs);
   state.ctm = ctm;
   ctx.seen.add(proc.dict);
   try {
     walk({ ...ctx, resources: resources ?? ctx.resources, depth: ctx.depth + 1 }, bytes, state);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever the glyph drew before failing stays, and the rest of
     // the run still draws.
   } finally {

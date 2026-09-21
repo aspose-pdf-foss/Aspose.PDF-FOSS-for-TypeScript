@@ -81,6 +81,11 @@ function isStructElem(doc: Document, o: PdfObject): boolean {
 
 /** A node in the structure tree: a live handle over its real /StructElem dict. */
 export class StructElement {
+  /** How deep this handle was reached from where the walk started: 1 for an
+   *  element obtained from the root, a lookup or `Parent`, one more for each
+   *  descent through `Children`, `Nodes`, `GetText` or `GetBBox`. */
+  readonly Depth: number;
+
   constructor(
     private readonly doc: Document,
     /** The live structure-element dict. */
@@ -89,7 +94,31 @@ export class StructElement {
     readonly Ref: PdfRef | undefined,
     /** The owning structure tree root (for RoleMap resolution). */
     readonly Root: StructTreeRoot,
-  ) {}
+    /** The handle this one was descended from, when it was. */
+    private readonly lineage?: StructElement,
+  ) {
+    this.Depth = lineage ? lineage.Depth + 1 : 1;
+  }
+
+  /** A child handle for `d`, or undefined when `d` is this element or one of
+   *  the elements it was descended through (`ibzo.6`).
+   *
+   *  **Invariant:** every descent in this class goes through here, which is what
+   *  bounds EVERY structure walker at once — validation, table extraction, the
+   *  Markdown/HTML/DOCX/EPUB model, `GetText` — rather than each keeping its own
+   *  counter. Each element is its own flat object, so the COS grammar sees no
+   *  depth; before this, a deep tree ended in a `RangeError`, and where a caller
+   *  caught that, in an export that silently came back empty.
+   *
+   *  **Invariant:** a CYCLE is damage, not depth. A `/K` naming an ancestor is a
+   *  broken file; the back edge is dropped and the walk goes on, where reading it
+   *  as a depth limit would misdescribe the file. The lineage check is O(depth)
+   *  per child, and depth is bounded by the same policy. */
+  private child(d: PdfDict, k: PdfObject): StructElement | undefined {
+    for (let e: StructElement | undefined = this; e; e = e.lineage) if (e.Dict === d) return undefined;
+    this.doc.loadLimits.enforce('maxNestingDepth', this.Depth + 1, 'structure tree');
+    return new StructElement(this.doc, d, isRef(k) ? k : undefined, this.Root, this);
+  }
 
   /** The raw structure type (/S), e.g. 'P', 'H1', or a custom role name. */
   get Type(): string {
@@ -147,7 +176,8 @@ export class StructElement {
     for (const k of kids(this.doc, this.Dict)) {
       if (!isStructElem(this.doc, k)) continue;
       const d = this.doc.resolve(k) as PdfDict;
-      out.push(new StructElement(this.doc, d, isRef(k) ? k : undefined, this.Root));
+      const c = this.child(d, k);
+      if (c) out.push(c);
     }
     return out;
   }
@@ -253,10 +283,8 @@ export class StructElement {
       if (typeof r === 'number') {
         items.push({ kind: 'text', page: ownPage, mcid: r });
       } else if (isStructElem(this.doc, k)) {
-        items.push({
-          kind: 'elem',
-          el: new StructElement(this.doc, r as PdfDict, isRef(k) ? k : undefined, this.Root),
-        });
+        const el = this.child(r as PdfDict, k);
+        if (el) items.push({ kind: 'elem', el });
       } else if (isDict(r)) {
         const type = this.doc.resolve(r.get('Type'));
         if (isName(type) && type.name === 'MCR') {
@@ -355,8 +383,8 @@ export class StructElement {
       if (typeof r === 'number') {
         if (ownPage) parts.push(glyphsToText(mcidGlyphs(this.doc, ownPage).get(r) ?? []));
       } else if (isStructElem(this.doc, k)) {
-        const child = new StructElement(this.doc, r as PdfDict, isRef(k) ? k : undefined, this.Root);
-        if (skip?.(child)) continue;
+        const child = this.child(r as PdfDict, k);
+        if (!child || skip?.(child)) continue;
         parts.push(child.GetText(skip));
       } else if (isDict(r)) {
         const type = this.doc.resolve(r.get('Type'));
@@ -395,8 +423,8 @@ export class StructElement {
       if (typeof r === 'number') {
         if (ownPage) out.push(...(mcidGlyphs(this.doc, ownPage).get(r) ?? []));
       } else if (isStructElem(this.doc, k)) {
-        const child = new StructElement(this.doc, r as PdfDict, isRef(k) ? k : undefined, this.Root);
-        child.collectGlyphs(child.Page ?? ownPage, out);
+        const child = this.child(r as PdfDict, k);
+        if (child) child.collectGlyphs(child.Page ?? ownPage, out);
       } else if (isDict(r)) {
         const type = this.doc.resolve(r.get('Type'));
         if (isName(type) && type.name === 'MCR') {

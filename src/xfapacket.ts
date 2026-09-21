@@ -24,6 +24,7 @@ import { isArray, isName, isStream, isString, type PdfDict, type PdfObject } fro
 import { parseXml, type XmlNode } from './xml.js';
 import type { Inflate, Resolve } from './colorimage.js';
 import { decodePdfText } from './metadata.js';
+import { rethrowLimit } from './errors.js';
 
 export interface XfaPacketSet {
   /** Parsed packets by local name. First wins on a duplicate. */
@@ -45,7 +46,7 @@ function entryName(o: PdfObject): string | undefined {
 function parse(bytes: Uint8Array): XmlNode | { reason: string } {
   try {
     return parseXml(bytes);
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     return { reason: e instanceof Error ? e.message : 'XML could not be parsed' };
   }
 }

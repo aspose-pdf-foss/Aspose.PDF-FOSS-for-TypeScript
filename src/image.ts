@@ -143,12 +143,13 @@ export function collectImages(
 ): ImageInfo[] {
   const out: ImageInfo[] = [];
   const seen = new Set<PdfDict>();
-  const walk = (res: PdfObject) => {
+  const walk = (res: PdfObject, depth: number) => {
     const r = doc.resolve(res);
     if (!isDict(r)) return;
     const xobj = doc.resolve(r.get('XObject'));
     if (!isDict(xobj) || seen.has(xobj)) return;
     seen.add(xobj);
+    doc.loadLimits.enforce('maxNestingDepth', depth, 'Form XObject resources');
     for (const [key, val] of xobj) {
       const obj = doc.resolve(val);
       if (!isStream(obj)) continue;
@@ -157,10 +158,10 @@ export function collectImages(
       if (subName === 'Image') {
         out.push(new ImageInfo(doc, key, obj, page));
       } else if (subName === 'Form') {
-        walk(obj.dict.get('Resources') ?? null);
+        walk(obj.dict.get('Resources') ?? null, depth + 1);
       }
     }
   };
-  walk(resources ?? null);
+  walk(resources ?? null, 1);
   return out;
 }

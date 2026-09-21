@@ -313,3 +313,26 @@ export function buildWidthCff(): Uint8Array {
   return concat([header, nameIndex, topIndex, stringIndex, gsubrIndex,
     charStrings, charset, privateDict]);
 }
+
+/** A bare CFF whose SUBROUTINES FAN OUT (`ibzo.12`): glyph 1 calls global subr
+ *  0, each subr `i < levels - 1` calls subr `i + 1` `k` times, and the last one
+ *  draws one line. Operators executed for glyph 1: the glyph's own call and
+ *  `endchar`, `k + 1` per instance of each fan-out subr, and 2 per leaf — so
+ *  2 + sum_{i=0..levels-2} k^i (k + 1) + 2 k^(levels-1). Under the depth cap
+ *  of 10 this is 10^9 leaves at k = 10, in well under a kilobyte. */
+export function buildSubrFanoutCff(k: number, levels: number): Uint8Array {
+  const gsubrs: Uint8Array[] = [];
+  for (let i = 0; i < levels; i++) {
+    gsubrs.push(i === levels - 1
+      ? Uint8Array.from([140, 140, 5, 11])                                   // 1 1 rlineto return
+      : Uint8Array.from([...Array.from({ length: k }, () => [i + 1 + 32, 29]).flat(), 11]));
+  }
+  const header = Uint8Array.from([1, 0, 4, 1]);
+  const nameIndex = index([new TextEncoder().encode('FAN')]);
+  const stringIndex = index([]);
+  const gsubrIndex = index(gsubrs);
+  const top = (off: number) => index([concat([dictInt5(off), [17]])]);
+  const charStringsOffset = header.length + nameIndex.length + top(0).length + stringIndex.length + gsubrIndex.length;
+  const charStrings = index([Uint8Array.from([14]), Uint8Array.from([32, 29, 14])]);   // gid1: 0 callgsubr endchar
+  return concat([header, nameIndex, top(charStringsOffset), stringIndex, gsubrIndex, charStrings]);
+}

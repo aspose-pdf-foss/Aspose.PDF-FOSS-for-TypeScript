@@ -15,6 +15,7 @@
  * and it is invisible to this suite: raster.ts is a scanline filler over
  * flattened outlines and ignores hints entirely.
  */
+import type { LoadLimits } from './loadlimits.js';
 import type { Path } from './pagerender.js';
 import { Type1Font } from './type1.js';
 import { readType1Header, type Type1Header } from './type1header.js';
@@ -119,8 +120,8 @@ export function encodeType2(path: Path, width: number): Uint8Array {
  * LAST, so taking the font's own order puts the wrong glyph at 0 and shifts
  * every other by one.
  */
-export function type1ToCff(bytes: Uint8Array): Type1Conversion {
-  const t1 = new Type1Font(bytes);
+export function type1ToCff(bytes: Uint8Array, limits?: LoadLimits): Type1Conversion {
+  const t1 = new Type1Font(bytes, limits);
   const header = readType1Header(bytes);
 
   // .notdef first, then every other glyph in the font's own order.
@@ -210,8 +211,8 @@ export function newGidByOldGid(order: number[]): Map<number, number> {
  * `OS/2` table and states no typographic ascender, so the box is the only
  * source available; it is an approximation and deliberately so.
  */
-export function sfntFromType1(bytes: Uint8Array): Uint8Array {
-  const c = type1ToCff(bytes);
+export function sfntFromType1(bytes: Uint8Array, limits?: LoadLimits): Uint8Array {
+  const c = type1ToCff(bytes, limits);
   return otfFromCff(c.cff, buildCmap(c.unicode), {
     numGlyphs: c.order.length,
     unitsPerEm: c.header.unitsPerEm,

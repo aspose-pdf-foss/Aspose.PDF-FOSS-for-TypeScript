@@ -3,6 +3,7 @@ import type { Page } from './page.js';
 import { semanticBody } from './htmlsemantic.js';
 import { buildDocModel } from './docmodel.js';
 import { fixedBody } from './htmlfixed.js';
+import { rethrowLimit } from './errors.js';
 
 /** Options for {@link Page.ToHtml} and {@link Document.ToHtml}. */
 export interface HtmlOptions {
@@ -103,7 +104,7 @@ function render(doc: Document, pages: Page[], opts: HtmlOptions): string {
     let out = { body: '', css: '' };
     try {
       out = fixedBody(doc, pages, opts);
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // Degrade: emit a well-formed shell around whatever was produced.
     }
     return opts.fragment ? out.body : shell(doc, out.body, opts, FIXED_CSS + out.css);
@@ -111,7 +112,7 @@ function render(doc: Document, pages: Page[], opts: HtmlOptions): string {
   let body = '';
   try {
     body = bodyFor(doc, pages, opts);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: emit a well-formed shell around whatever was produced. Matches
     // renderPageToSvg, which never throws.
   }

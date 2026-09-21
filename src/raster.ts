@@ -20,7 +20,7 @@ import {
 // Re-exported so `redact.ts` and the tests keep the import path they have had
 // since before the move -- the shape `redact.ts` already uses for resprune.ts.
 export { decodeImageRgba, type ImageRgba } from './imagergba.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { encodeJpeg } from './jpegencode.js';
 import { encodeTiff, type TiffFrame } from './tiffencode.js';
 import { encodeBmp } from './bmpencode.js';
@@ -691,7 +691,7 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
     if (isDict(df)) {
       fd = doc.resolve(df.get('FontDescriptor'));
       const c2g = doc.resolve(df.get('CIDToGIDMap'));
-      if (isStream(c2g)) { try { cidToGid = inflateStream(c2g as Parameters<typeof inflateStream>[0]); } catch { /* identity */ } }
+      if (isStream(c2g)) { try { cidToGid = inflateStream(c2g as Parameters<typeof inflateStream>[0]); } catch (caught) { rethrowLimit(caught); /* identity */ } }
     }
   } else {
     fd = doc.resolve(fontDict.get('FontDescriptor'));
@@ -987,7 +987,7 @@ function rasterizeMesh(
   const csObj = dict.get('ColorSpace');
   const cs = csObj !== undefined ? resolveColorSpace(csObj, r, infl) : localDeviceGray();
   const fnObj = dict.get('Function');
-  const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl) : undefined;
+  const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl, doc.loadLimits) : undefined;
   // With a /Function the stream carries ONE component per vertex whatever the
   // colour space says; without one it carries the space's own count.
   const components = fn ? 1 : cs.components;
@@ -1006,7 +1006,7 @@ function rasterizeMesh(
   if (type !== 5 && !layout.bitsPerFlag) return false;
 
   let data: Uint8Array;
-  try { data = infl(shading); } catch { return false; }
+  try { data = infl(shading); } catch (caught) { rethrowLimit(caught); return false; }
 
   // Everything arrives in shading space and every walk below is in DEVICE
   // space, so the mapping happens ONCE here rather than per pixel. It is
@@ -1147,7 +1147,7 @@ function rasterizeShading(
   let evalShade: ShadingEval;
   if (supported) {
     const dom = arrNums(doc, dict.get('Domain'));
-    const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl) : (x: number[]) => x;
+    const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl, doc.loadLimits) : (x: number[]) => x;
     if (type === 1) {
       evalShade = functionEval(fn, cs, invert(matrix), dom.length >= 4 ? dom : [0, 1, 0, 1]);
     } else {
@@ -1763,6 +1763,11 @@ function renderCanvas(
 
   const devW = Math.max(1, Math.round(w0 * sx));
   const devH = Math.max(1, Math.round(h0 * sy));
+  // (ibzo.4) Only a canvas whose size the DOCUMENT decided: a width and height
+  // the caller states outright are theirs to get wrong, while a page box times a
+  // scale is the file declaring an allocation. Checked before the Float32Array.
+  if (opts.width == null || opts.height == null)
+    doc.loadLimits.enforce('maxCanvasPixels', devW * devH, 'page canvas');
   const device = mul(matrix, [sx, 0, 0, sy, 0, 0]);
 
   const canvas = new Canvas(devW, devH, opaqueWhite);
@@ -1770,7 +1775,7 @@ function renderCanvas(
   try {
     interpret(doc, page, device, sink,
       { annotations: opts.annotations, hideWidgets: o.hideWidgets });
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever composited before the failure still renders.
   }
   return canvas;
@@ -1901,7 +1906,7 @@ export function rasterizeFormRgba(
   const canvas = new Canvas(w, h, false);
   try {
     interpret(doc, page, baseMatrix(page, 'media').matrix, new RasterSink(doc, canvas));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever composited before the failure still comes back.
   }
 

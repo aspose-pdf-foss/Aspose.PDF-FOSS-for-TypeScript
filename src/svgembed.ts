@@ -3,7 +3,7 @@
 // SVG stack that touches a Document.
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { PdfParseError } from './errors.js';
+import { PdfParseError, rethrowLimit } from './errors.js';
 import { parseXml } from './xml.js';
 import { enc } from './serialize.js';
 import { num, ensureOwnResources, ensureOwnSubdict, freshKey, appendContent } from './pagecontent.js';
@@ -171,7 +171,7 @@ function rasterSink(doc: Document): SvgRasterSink {
     rasterize: (dict, content, devW, devH) => {
       try {
         return rasterizeFormRgba(doc, { kind: 'stream', dict, raw: enc(content) }, devW, devH);
-      } catch {
+      } catch (caught) { rethrowLimit(caught);
         return null;
       }
     },
@@ -230,7 +230,7 @@ export function buildSvgForm(
   if (resolveImage !== undefined && typeof resolveImage !== 'function')
     throw new TypeError('resolveImage must be a function');
 
-  const root = parseXml(data);                 // throws PdfParseError if malformed
+  const root = parseXml(data, doc.loadLimits); // throws PdfParseError if malformed
   if (root.name !== 'svg') throw new PdfParseError(`SVG: root element is <${root.name}>, not <svg>`);
 
   const origin: [number, number, number, number] = [0, 0, sw, sh];
@@ -247,7 +247,7 @@ export function buildSvgForm(
   const m0 = placementMatrix(vb, origin, par, fit);
   const { content, resources, skipped, rasterized } = drawSvg(
     root, vb, provider, streamSink(doc), imageSink(doc),
-    { deviceScale: ctmScale(m0), filterScale, raster: rasterSink(doc), resolveImage });
+    { deviceScale: ctmScale(m0), filterScale, raster: rasterSink(doc), resolveImage, limits: doc.loadLimits });
 
   const form: PdfDict = new Map<string, PdfObject>([
     ['Type', name('XObject')],

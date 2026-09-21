@@ -116,7 +116,7 @@ export class FloatingBox {
   /** Append an image inside the box. `height` omitted/0 → auto from aspect at the
    *  drawn width (default the box content width). Chainable. */
   AddImage(data: Uint8Array, options: FloatBoxImageOptions = {}): this {
-    const built = buildImageXObject(data, options.format);
+    const built = buildImageXObject(data, options.format, 0, this.doc.loadLimits);
     const w = built.stream.dict.get('Width') as number;
     const h = built.stream.dict.get('Height') as number;
     const drawW = options.width ?? this.contentWidth();

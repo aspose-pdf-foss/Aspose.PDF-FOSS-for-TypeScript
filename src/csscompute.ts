@@ -18,6 +18,7 @@
  *  the element's own. cssprop.ts's computeFontSize owns that, and this module
  *  hands it a context whose `parentFontSize` is real. */
 
+import type { LoadLimits } from './loadlimits.js';
 import type { HtmlDocument, HtmlElement, HtmlNode } from './htmldom.js';
 import { cssWideOf } from './cssvalue.js';
 import type { Color } from './cssvalue.js';
@@ -107,8 +108,8 @@ function resolveProp(
   return fallback();
 }
 
-export function computeStyles(root: HtmlDocument): ComputeResult {
-  const collected = collect(root);
+export function computeStyles(root: HtmlDocument, limits?: LoadLimits): ComputeResult {
+  const collected = collect(root, limits);
   const decls = cascade(root, collected);
   const styles = new Map<HtmlElement, ComputedStyle>();
   const unsupported: UnsupportedDeclaration[] = [...collected.unsupported];

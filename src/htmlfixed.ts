@@ -12,6 +12,7 @@ import { escapeHtml, HtmlOptions } from './html.js';
 import { FontRegistry, resolveFont } from './htmlfont.js';
 import { EmbeddedFontRegistry } from './htmlfontembed.js';
 import { BlendMode } from './blend.js';
+import { rethrowLimit } from './errors.js';
 
 /** RenderSink that paints non-text ops onto an internal SvgSink backdrop and
  *  diverts each glyph run to an absolutely positioned <span>. One interpret()
@@ -188,7 +189,7 @@ export function fixedBody(
     try {
       interpret(doc, page, matrix, sink,
         { annotations: opts.annotations, hideWidgets: fc?.converted });
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // Degrade: whatever was emitted before the failure still renders.
     }
     const kind = opts.backdrop ?? 'vector';
@@ -204,7 +205,7 @@ export function fixedBody(
         const png = renderPageBackdropToPng(doc, page, img,
           { skipGlyphs: kind === 'raster', hideWidgets: fc?.converted });
         backdrop = `<img src="data:image/png;base64,${Buffer.from(png).toString('base64')}">`;
-      } catch {
+      } catch (caught) { rethrowLimit(caught);
         // **Invariant:** a page that will not rasterize falls back to 'vector',
         // both raster modes, one rule. docxexport.ts degrades by dropping the
         // backdrop and keeping the text, which is right there and wrong here:

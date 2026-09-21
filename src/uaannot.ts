@@ -41,6 +41,7 @@ import { uaClause, type Rule, type UaCtx } from './uarule.js';
 import type { ValidationIssue } from './validation.js';
 import { resolveAppearance } from './annotappearance.js';
 import { visitFormContent } from './text.js';
+import { rethrowLimit } from './errors.js';
 
 /** What every annotation rule reads, computed ONCE per annotation.
  *
@@ -506,7 +507,7 @@ function appearancePaintsGraphic(ctx: UaCtx, a: AnnotCtx): boolean {
       image: () => { graphic = true; },
       path: () => { graphic = true; },
     });
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // A damaged appearance costs its own finding, never the validation run —
     // `svgdraw.ts`'s posture, and the rule this whole validator holds for a
     // file we did not write.

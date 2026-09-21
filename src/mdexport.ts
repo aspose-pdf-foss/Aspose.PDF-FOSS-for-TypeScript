@@ -7,6 +7,7 @@ import {
 import type { PdfStream } from './types.js';
 import { encodeImage, imageExtension, imageKey } from './imagehref.js';
 import { emphasizeMarkdown, escapeLinkDestination, escapeMarkdown } from './mdescape.js';
+import { rethrowLimit } from './errors.js';
 
 export { escapeMarkdown } from './mdescape.js';
 
@@ -242,7 +243,7 @@ function render(doc: Document, pages: Page[], opts: MarkdownExportOptions): Mark
   const blocks: string[] = [];
   try {
     for (const node of buildDocModel(doc, pages)) nodeBlocks(doc, ctx, node, blocks);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: emit whatever was produced. Matches ToHtml and renderPageToSvg,
     // neither of which throws on a document we could not fully reconstruct.
   }

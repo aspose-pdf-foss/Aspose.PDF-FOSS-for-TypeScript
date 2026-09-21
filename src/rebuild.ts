@@ -7,7 +7,8 @@
 import { XrefEntry } from './xref.js';
 import { PdfObject, PdfDict, isArray, isDict, isName, isRef, isStream, ref } from './types.js';
 import { decodeObjStm, ObjStmDamage } from './objstm.js';
-import { PdfParseError } from './errors.js';
+import { PdfParseError, rethrowLimit } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { readXmp, mirrorXmpToMeta } from './xmp.js';
 import { applyUpdate } from './metadata.js';
 import { inflateStream } from './flate.js';
@@ -27,6 +28,7 @@ import { inflateStream } from './flate.js';
 export function expandObjectStreams(
   entries: Map<number, XrefEntry>,
   load: (num: number) => PdfObject,
+  limits: LoadLimits = LoadLimits.defaults,
 ): { added: number[]; damaged: ObjStmDamage[] } {
   const added: number[] = [];
   const damaged: ObjStmDamage[] = [];
@@ -38,10 +40,11 @@ export function expandObjectStreams(
       if (!isStream(s)) continue;
       const t = s.dict.get('Type');
       if (!isName(t) || t.name !== 'ObjStm') continue;
-      const r = decodeObjStm(s, num);
+      const r = decodeObjStm(s, num, limits);
       contents = r.objects;
       if (r.damage) damaged.push(r.damage);
-    } catch {
+    } catch (e) {
+      rethrowLimit(e);
       continue;
     }
     let index = 0;
@@ -183,7 +186,8 @@ export function findEncryptDict(
     let d: PdfObject;
     try {
       d = loadRaw(num);
-    } catch {
+    } catch (e) {
+      rethrowLimit(e);
       continue;
     }
     if (!isDict(d) || d.has('Type')) continue;
@@ -212,7 +216,8 @@ function infoFromXmp(
   const info: PdfDict = new Map<string, PdfObject>();
   try {
     applyUpdate(info, mirrorXmpToMeta(readXmp(inflateStream(md))));
-  } catch {
+  } catch (e) {
+    rethrowLimit(e);
     return undefined;
   }
   return info.size > 0 ? info : undefined;

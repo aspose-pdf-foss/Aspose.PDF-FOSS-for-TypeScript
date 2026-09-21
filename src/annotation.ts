@@ -1005,7 +1005,7 @@ export function addStamp(doc: Document, page: Page, opts: StampAnnotationOptions
 
   // Parse/validate the image before mutating the page (validate-before-attach).
   const built: BuiltImage | undefined =
-    opts.image !== undefined ? buildImageXObject(opts.image) : undefined;
+    opts.image !== undefined ? buildImageXObject(opts.image, undefined, 0, doc.loadLimits) : undefined;
 
   const dict = createAnnotation(doc, page, {
     subtype: 'Stamp',

@@ -1,9 +1,10 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfStream, PdfRef, isArray, isDict, isStream, isRef } from './types.js';
-import { ContentOp, parseContentStream, serializeContentStream } from './content.js';
+import { ContentOp, parseContentStream, serializeContentStream, type ContentTokenBudget } from './content.js';
 import { streamOf, ensureOwnResources, ensureOwnSubdict } from './pagecontent.js';
 import { inflateStream } from './flate.js';
+import { budgetFor } from './decodebudget.js';
 
 /** Address of an operator within a page's content. */
 export interface ContentAddr {
@@ -31,6 +32,10 @@ export class EditableContent {
   private readonly streams: PdfStream[];
   private readonly parsed: (ContentOp[] | undefined)[]; // lazily parsed per stream
   private readonly dirty = new Set<number>();
+  // One `maxContentTokens` count for this page's edit, shared by every top-level
+  // stream and every form path it parses (`ibzo.9`). Forms are cached by PATH,
+  // so one form reached along two paths is parsed twice and charged twice.
+  private readonly tokens: ContentTokenBudget = { tokens: 0 };
   // path.join('\0') -> the deepest clone's owning XObject subdict + name, its
   // dict (preserved across re-serialization), and its parsed/edited ops.
   private readonly xobj = new Map<string,
@@ -50,7 +55,7 @@ export class EditableContent {
     if (cached) return cached;
     const s = this.streams[streamIndex];
     if (!s) throw new RangeError(`no content stream at index ${streamIndex}`);
-    const ops = parseContentStream(inflateStream(s));
+    const ops = parseContentStream(inflateStream(s), budgetFor(s).limits, this.tokens);
     this.parsed[streamIndex] = ops;
     return ops;
   }
@@ -132,7 +137,7 @@ export class EditableContent {
     }
     const entry = {
       path: [...path], nm: lastNm, dict: clone!.dict,
-      ops: parseContentStream(inflateStream(clone!)), dirty: false,
+      ops: parseContentStream(inflateStream(clone!), budgetFor(clone!).limits, this.tokens), dirty: false,
     };
     this.xobj.set(key, entry);
     return entry;

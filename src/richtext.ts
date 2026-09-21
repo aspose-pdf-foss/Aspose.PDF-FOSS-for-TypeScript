@@ -12,6 +12,7 @@
  * value — all three of which appear in real rich text.
  */
 import { parseXml, type XmlNode } from './xml.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * Elements after which a line break belongs. Everything else concatenates.
@@ -90,7 +91,7 @@ export function richTextToPlain(
   let root: XmlNode;
   try {
     root = parseXml(new TextEncoder().encode(`<pdf4ts-rich>${markup}</pdf4ts-rich>`));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
 

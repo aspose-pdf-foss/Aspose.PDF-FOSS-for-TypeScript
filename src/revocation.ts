@@ -8,6 +8,7 @@
 import { createHash, X509Certificate } from 'node:crypto';
 import { parse, readOid, readInteger, Asn1Node } from './asn1.js';
 import { verifyData, x509SigAlg } from './sigalg.js';
+import { rethrowLimit } from './errors.js';
 
 /** A revocation verdict for one certificate. `unchecked` means no material was
  *  available; `unknown` means material was present but inconclusive (no matching
@@ -162,7 +163,7 @@ export function verifyOcspSignature(resp: OcspResponse, issuer: Uint8Array): boo
     try {
       const key = new X509Certificate(Buffer.from(candidate)).publicKey;
       if (verifyData(resp.tbsResponseData, key, resp.signature, alg.scheme, alg.digest)) return true;
-    } catch { /* try the next candidate */ }
+    } catch (caught) { rethrowLimit(caught); /* try the next candidate */ }
   }
   return false;
 }
@@ -219,7 +220,7 @@ export function verifyCrlSignature(crl: Crl, issuer: Uint8Array): boolean {
   try {
     const key = new X509Certificate(Buffer.from(issuer)).publicKey;
     return verifyData(crl.tbsCertList, key, crl.signature, alg.scheme, alg.digest);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return false;
   }
 }
@@ -238,13 +239,13 @@ export function checkRevocation(cert: Uint8Array, issuer: Uint8Array, material: 
         const st = ocspStatus(resp, cert, issuer);
         if (st !== 'unknown') return { status: st, source: 'ocsp' };
       }
-    } catch { /* fall through to CRL */ }
+    } catch (caught) { rethrowLimit(caught); /* fall through to CRL */ }
   }
   if (material.crl) {
     try {
       const crl = parseCrl(material.crl);
       if (verifyCrlSignature(crl, issuer)) return { status: crlStatus(crl, cert), source: 'crl' };
-    } catch { /* fall through */ }
+    } catch (caught) { rethrowLimit(caught); /* fall through */ }
   }
   return { status: material.ocsp || material.crl ? 'unknown' : 'unchecked' };
 }

@@ -8,12 +8,14 @@
  * no folder registered and no filesystem touched -- the seam `colorimage.ts`
  * takes `resolve`/`inflate` through. It never throws.
  */
+import { budgetFor } from './decodebudget.js';
 import { PdfDict, PdfObject, PdfStream, isStream, isName } from './types.js';
 import { parseCMap } from './cmap.js';
 import { getCidToUnicode } from './cidunicode.js';
 import { cidSystemOrdering, resolveSimpleEncoding, type FontStyle } from './font.js';
 import { matchChain } from './fontmatch.js';
 import type { FaceRecord } from './fontsource.js';
+import { rethrowLimit } from './errors.js';
 
 // The house shape, matching font.ts, colorspace.ts and colorimage.ts: the
 // return is PdfObject rather than PdfObject | undefined, because
@@ -58,11 +60,11 @@ export function wantedCodepoints(dict: PdfDict, resolve: Resolve, inflate: Infla
   const tu = resolve(dict.get('ToUnicode'));
   if (isStream(tu)) {
     try {
-      for (const [, text] of parseCMap(inflate(tu)).entries()) {
+      for (const [, text] of parseCMap(inflate(tu), budgetFor(tu).limits).entries()) {
         add(text);
         if (out.size >= WANTED_CAP) return out;
       }
-    } catch { /* a damaged /ToUnicode costs its own contribution, not the font */ }
+    } catch (caught) { rethrowLimit(caught); /* a damaged /ToUnicode costs its own contribution, not the font */ }
   }
   if (out.size > 0) return out;
 

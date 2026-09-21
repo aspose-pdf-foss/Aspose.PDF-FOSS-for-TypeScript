@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
 import { PageFormat } from '../src/pageformat.js';
 import { frameBoxes, type BoxFrame } from '../src/cssframe.js';
+import { MIN_CONTENT_WIDTH } from '../src/flowelement.js';
 import type {
   FlowElement, MeasureContext, PlaceContext, PlaceResult,
 } from '../src/flowelement.js';
@@ -80,12 +81,33 @@ describe('BoxElement geometry', () => {
     expect(res.usedHeight).toBeCloseTo(7 + 30 + 9, 6);
   });
 
-  it('declines rather than overflowing when the insets exceed the width', () => {
+  /** `e1bp` REVERSED this case, which used to assert `drew === false`. A frame
+   *  narrower than its own insets declined, and `place` reads that as "nothing
+   *  to draw" — so nested `<blockquote>`s, 40px of margin on each side, left a
+   *  BLANK PAGE from depth 8 with nothing reported. It squeezes now. */
+  it('squeezes to the floor rather than declining when the insets exceed the width', () => {
     const { doc, page } = ctxFor();
-    const [el] = frameBoxes([new Stub(30)], { ...FRAME, insetLeft: 300, insetRight: 300 });
+    const stub = new Stub(30);
+    const [el] = frameBoxes([stub], { ...FRAME, insetLeft: 300, insetRight: 300 });
     const res = el.place({ doc, page, x: 0, top: 700, width: 400, availHeight: 500 });
-    expect(res.drew).toBe(false);
-    expect(res.usedHeight).toBe(0);
+    expect(res.drew).toBe(true);
+    expect(res.usedHeight).toBeCloseTo(30, 6);
+    // Both insets scale by ONE factor, so the content keeps the floor AND stays
+    // inside the region: 600 wanted, 388 available, so each 300 becomes 194.
+    expect(stub.seen?.width).toBeCloseTo(MIN_CONTENT_WIDTH, 6);
+    expect(stub.seen?.x).toBeCloseTo(300 * ((400 - MIN_CONTENT_WIDTH) / 600), 6);
+    expect((stub.seen?.x ?? 0) + (stub.seen?.width ?? 0)).toBeLessThanOrEqual(400);
+  });
+
+  it('adds no inset at all to a region already at or below the floor', () => {
+    const { doc, page } = ctxFor();
+    const stub = new Stub(30);
+    const [el] = frameBoxes([stub], { ...FRAME, insetLeft: 5, insetRight: 5 });
+    el.place({ doc, page, x: 0, top: 700, width: MIN_CONTENT_WIDTH, availHeight: 500 });
+    // Never narrower: that is what makes a positive width stay positive however
+    // many frames nest inside one another.
+    expect(stub.seen?.width).toBeCloseTo(MIN_CONTENT_WIDTH, 6);
+    expect(stub.seen?.x).toBeCloseTo(0, 6);
   });
 });
 
@@ -99,6 +121,20 @@ describe('BoxElement ink', () => {
     // border box x = 100 + 10 = 110, width = 400 - 10 - 20 = 370,
     // band = [700 - 50, 700].
     expect(cs(page)).toMatch(/110 650 370 50 re/);
+  });
+
+  it('paints the border box of a SQUEEZED frame around the content it handed over', () => {
+    // `e1bp`: the ink reads the same scale factor the geometry does. Built from
+    // the stated margins instead, the border box of a squeezed frame is
+    // 400 - 600 = -200 wide, which `paint` declines outright — so a deeply
+    // nested box would draw its text and lose its background entirely.
+    const { doc, page } = ctxFor();
+    const [el] = frameBoxes([new Stub(50)], {
+      ...FRAME, marginLeft: 300, marginRight: 300, background: [1, 0, 0],
+    });
+    el.place({ doc, page, x: 0, top: 700, width: 400, availHeight: 500 });
+    // 600 wanted, 388 available: each margin becomes 194, the box 12 wide.
+    expect(cs(page)).toMatch(/194 650 12 50 re/);
   });
 
   it('paints the background BEFORE the inner element draws', () => {

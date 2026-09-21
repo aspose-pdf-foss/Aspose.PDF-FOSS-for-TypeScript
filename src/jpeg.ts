@@ -2,6 +2,7 @@
 // sample precision. Zero deps beyond ./errors.js. Arithmetic and lossless coding
 // are unsupported. 12-bit samples are downscaled to 8-bit in the output.
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { decodeArithScan } from './jpegarith.js';
 import { setupLosslessGeometry, decodeLosslessScan, assembleLossless } from './jpeglossless.js';
 import { isHierarchical, decodeHierarchical } from './jpeghier.js';
@@ -113,10 +114,16 @@ export function parseDAC(data: Uint8Array, seg: number, segEnd: number, dcCond: 
 
 // Parse a SOF (or DHP) header into a Frame with process flags, geometry, and a
 // per-component quant-table snapshot (immune to later DQT redefinition).
-export function parseSof(data: Uint8Array, seg: number, marker: number, qt: (Int32Array | undefined)[]): Frame {
+export function parseSof(
+  data: Uint8Array, seg: number, marker: number, qt: (Int32Array | undefined)[],
+  limits: LoadLimits = LoadLimits.defaults,
+): Frame {
   const u16 = (p: number) => (data[p] << 8) | data[p + 1];
   const precision = data[seg]; if (precision !== 8 && precision !== 12) throw new UnsupportedFeatureError('JPEG: only 8-bit and 12-bit precision are supported');
   const height = u16(seg + 1), width = u16(seg + 3), nc = data[seg + 5];
+  // (ibzo.3) From the SOF, before setupGeometry sizes every component's
+  // coefficient buffer from it. A u16 frame is up to 4.3 billion pixels.
+  limits.enforce('maxImagePixels', width * height, 'JPEG frame');
   let maxH = 1, maxV = 1; const comps: Comp[] = []; let p = seg + 6;
   for (let i = 0; i < nc; i++) { const id = data[p], h = data[p + 1] >> 4, v = data[p + 1] & 15, tq = data[p + 2]; p += 3; maxH = Math.max(maxH, h); maxV = Math.max(maxV, v); comps.push({ id, h, v, tq, blocks: new Int32Array(0), bpl: 0, bpc: 0, blocksPerLine: 0, blocksPerColumn: 0, quant: qt[tq] }); }
   const differential = (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xcd && marker <= 0xcf);
@@ -146,7 +153,7 @@ export interface JpegFrameResult {
  * Hierarchical JPEGs are NOT handled here -- they have no single frame -- so a
  * caller that may see one tests `isHierarchical` first, as `decodeJpeg` does.
  */
-export function decodeJpegFrame(data: Uint8Array): JpegFrameResult {
+export function decodeJpegFrame(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults): JpegFrameResult {
   if (data.length < 2 || data[0] !== 0xff || data[1] !== 0xd8) throw new PdfParseError('JPEG: missing SOI');
   const u16 = (p: number) => (data[p] << 8) | data[p + 1];
   const qt: (Int32Array | undefined)[] = [];
@@ -177,7 +184,7 @@ export function decodeJpegFrame(data: Uint8Array): JpegFrameResult {
     } else if (marker === 0xee) {                                // APP14 Adobe
       if (len >= 14 && data[seg] === 0x41 && data[seg + 1] === 0x64 && data[seg + 2] === 0x6f && data[seg + 3] === 0x62 && data[seg + 4] === 0x65) adobe = data[seg + 11];
     } else if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2 || marker === 0xc3 || marker === 0xc9 || marker === 0xca || marker === 0xcb) { // SOF0/1 seq, SOF2 prog, SOF3 lossless, SOF9/10 arith DCT, SOF11 arith lossless
-      frame = parseSof(data, seg, marker, qt);
+      frame = parseSof(data, seg, marker, qt, limits);
     } else if ((marker >= 0xc3 && marker <= 0xcf) && marker !== 0xc4 && marker !== 0xc8) {
       throw new UnsupportedFeatureError(`JPEG: unsupported coding process (SOF${marker - 0xc0})`);
     } else if (marker === 0xda) {                                // SOS
@@ -194,10 +201,10 @@ export function decodeJpegFrame(data: Uint8Array): JpegFrameResult {
   return { frame, qt, adobe };
 }
 
-export function decodeJpeg(data: Uint8Array): JpegImage {
+export function decodeJpeg(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults): JpegImage {
   if (data.length < 2 || data[0] !== 0xff || data[1] !== 0xd8) throw new PdfParseError('JPEG: missing SOI');
-  if (isHierarchical(data)) return decodeHierarchical(data);
-  const { frame, qt, adobe } = decodeJpegFrame(data);
+  if (isHierarchical(data)) return decodeHierarchical(data, limits);
+  const { frame, qt, adobe } = decodeJpegFrame(data, limits);
   return frame.lossless ? assembleLossless(frame, adobe) : assemble(frame, adobe, qt);
 }
 

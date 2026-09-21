@@ -1,5 +1,7 @@
 import { PdfDict, PdfObject, isDict, isArray, isStream } from './types.js';
 import { evalPostScript, parsePostScriptFunction, type PsProgram } from './psfunc.js';
+import { LoadLimits } from './loadlimits.js';
+import { rethrowLimit } from './errors.js';
 
 export type PdfFunction = (input: number[]) => number[];
 
@@ -23,14 +25,41 @@ function interp(x: number, x0: number, x1: number, y0: number, y1: number): numb
 
 /** Parse a PDF function (dict or stream) into a numeric map. Arrays of functions
  *  are each single-output and concatenated. */
-export function parseFunction(obj: PdfObject, resolve: Resolve, inflate: Inflate): PdfFunction {
+export function parseFunction(
+  obj: PdfObject, resolve: Resolve, inflate: Inflate, limits: LoadLimits = LoadLimits.defaults,
+): PdfFunction {
+  return parseNested(obj, resolve, inflate, limits, 1, new Set());
+}
+
+/** **Invariant (`ibzo.2`):** a function already on the parse PATH is a cycle —
+ *  damage, answered with the constant a missing function already gets, never a
+ *  throw. Depth is a bound and throws. A type 3 function stitching itself used
+ *  to recurse until the stack gave out, since nothing here guarded either. */
+function parseNested(
+  obj: PdfObject, resolve: Resolve, inflate: Inflate,
+  limits: LoadLimits, depth: number, path: Set<PdfObject>,
+): PdfFunction {
   const r = resolve(obj);
+  if (r !== null && typeof r === 'object' && path.has(r)) return () => [0];
   if (isArray(r)) {
-    const fns = r.map((e) => parseFunction(e, resolve, inflate));
+    const fns = r.map((e) => parseNested(e, resolve, inflate, limits, depth, path));
     return (input) => fns.flatMap((f) => f(input));
   }
   const dict = isStream(r) ? r.dict : isDict(r) ? r : undefined;
   if (!dict) return () => [0];
+  limits.enforce('maxNestingDepth', depth, 'function');
+  path.add(r as PdfObject);
+  try {
+    return parseOne(r as PdfObject, dict, resolve, inflate, limits, depth, path);
+  } finally {
+    path.delete(r as PdfObject);
+  }
+}
+
+function parseOne(
+  r: PdfObject, dict: PdfDict, resolve: Resolve, inflate: Inflate,
+  limits: LoadLimits, depth: number, path: Set<PdfObject>,
+): PdfFunction {
   const type = n(dict.get('FunctionType'), resolve, -1);
   const domain = nums(dict.get('Domain'), resolve);
   const clampDomain = (input: number[]) =>
@@ -49,7 +78,8 @@ export function parseFunction(obj: PdfObject, resolve: Resolve, inflate: Inflate
 
   if (type === 3) {
     const subDicts = resolve(dict.get('Functions'));
-    const fns = isArray(subDicts) ? subDicts.map((f) => parseFunction(f, resolve, inflate)) : [];
+    const fns = isArray(subDicts)
+      ? subDicts.map((f) => parseNested(f, resolve, inflate, limits, depth + 1, path)) : [];
     const bounds = nums(dict.get('Bounds'), resolve);
     const encode = nums(dict.get('Encode'), resolve);
     const d0 = domain[0] ?? 0; const d1 = domain[1] ?? 1;
@@ -72,6 +102,9 @@ export function parseFunction(obj: PdfObject, resolve: Resolve, inflate: Inflate
     const encode = nums(dict.get('Encode'), resolve);
     const decode = nums(dict.get('Decode'), resolve);
     const m = size.length; const nOut = range.length / 2;
+    // (ibzo.3) The declared table — every grid point times every output — before
+    // the payload is inflated, which is the allocation a lying /Size sizes.
+    limits.enforce('maxFunctionSamples', size.reduce((a, s) => a * Math.max(0, s), 1) * Math.max(1, nOut), 'sampled function');
     const samples = inflate(r);
     const maxIn = (1 << bps) - 1 || 1;
     // 1-D fast path (the common shading case); higher-D falls back to nearest.
@@ -116,7 +149,7 @@ export function parseFunction(obj: PdfObject, resolve: Resolve, inflate: Inflate
     // The try guards `inflate`, which throws on a corrupt stream;
     // parsePostScriptFunction itself reports failure by returning undefined.
     let prog: PsProgram | undefined;
-    try { prog = parsePostScriptFunction(inflate(r)); } catch { prog = undefined; }
+    try { prog = parsePostScriptFunction(inflate(r)); } catch (caught) { rethrowLimit(caught); prog = undefined; }
     if (prog) {
       // A tint transform runs per pixel for an image in a Separation or DeviceN
       // space, so an interpreted program would be re-run millions of times. The

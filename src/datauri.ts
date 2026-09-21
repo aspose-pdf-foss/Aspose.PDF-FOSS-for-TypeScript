@@ -1,3 +1,4 @@
+import { rethrowLimit } from './errors.js';
 /** Decoding a `data:` URI's payload.
  *
  *  Invariant: a PURE LEAF importing NOTHING. Two consumers — mdflow.ts's
@@ -18,7 +19,7 @@ export function decodeDataUri(dest: string): Uint8Array | undefined {
   try {
     if (/;base64$/i.test(meta)) return new Uint8Array(Buffer.from(payload, 'base64'));
     return new TextEncoder().encode(decodeURIComponent(payload));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
 }

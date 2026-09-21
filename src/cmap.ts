@@ -1,3 +1,4 @@
+import { LoadLimits } from './loadlimits.js';
 import { Lexer } from './lexer.js';
 
 export interface CMap {
@@ -29,9 +30,21 @@ function utf16beToString(bytes: Uint8Array): string {
 }
 
 /** Parse a (decoded) ToUnicode/CMap stream into a lookup table. */
-export function parseCMap(buf: Uint8Array): CMap {
+export function parseCMap(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults): CMap {
   const lx = new Lexer(buf);
-  const single = new Map<number, string>();
+  // (ibzo.12) Every entry WRITTEN counts against maxContainerItems — a
+  // `bfrange` expands `lo..hi`, so one line of forty bytes asked for 65,536
+  // entries, and a four-byte range for 2^32.
+  let written = 0;
+  const entries = new Map<number, string>();
+  const single = {
+    set(code: number, text: string): void {
+      limits.enforce('maxContainerItems', ++written, 'ToUnicode CMap');
+      entries.set(code, text);
+    },
+    get: (code: number) => entries.get(code),
+    entries: () => entries.entries(),
+  };
   let codeWidth = 2;
   let sawCodespace = false;
 
@@ -85,7 +98,10 @@ export function parseCMap(buf: Uint8Array): CMap {
           const lo = bytesToCode(a.bytes), hi = bytesToCode(b.bytes);
           const base = utf16beToString(c.bytes);
           const baseCp = base.codePointAt(0) ?? 0;
-          for (let code = lo; code <= hi; code++) {
+          // Past U+10FFFF there is no character to map to: stop rather than
+          // letting String.fromCodePoint throw a RangeError out of the parse.
+          const last = Math.min(hi, lo + (0x10ffff - baseCp));
+          for (let code = lo; code <= last; code++) {
             single.set(code, String.fromCodePoint(baseCp + (code - lo)));
           }
           j += 3;

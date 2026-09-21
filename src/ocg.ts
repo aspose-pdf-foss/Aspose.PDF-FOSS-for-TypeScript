@@ -12,6 +12,7 @@ import {
   LayerUsage, UsageContext, UsageEvent,
   readUsage, writeUsage, applyUsageEntry, combineUsageStates, usageCategoryEvent,
 } from './ocusage.js';
+import { budgetFor } from './decodebudget.js';
 
 export type { LayerUsage, UsageContext, UsageEvent } from './ocusage.js';
 
@@ -52,35 +53,49 @@ export function refMatchesLayer(doc: Document, o: PdfObject | undefined, target:
 }
 
 /** True when `target` appears as any leaf OCG ref in a /VE expression tree. */
-function veReferencesLayer(doc: Document, ve: PdfObject | undefined, target: PdfRef): boolean {
+function veReferencesLayer(
+  doc: Document, ve: PdfObject | undefined, target: PdfRef, depth = 1, path = new Set<PdfObject>(),
+): boolean {
   const a = doc.resolve(ve);
-  if (!isArray(a)) return false;
+  // (ibzo.6) A sub-expression already on the path is a cycle: it references
+  // nothing further. Depth is the policy's.
+  if (!isArray(a) || path.has(a)) return false;
+  doc.loadLimits.enforce('maxNestingDepth', depth, 'visibility expression');
+  path.add(a);
   // a[0] is the operator name; operands are a[1..]
   for (let i = 1; i < a.length; i++) {
     const operand = a[i];
     if (sameRef(operand, target)) return true;
-    if (isArray(doc.resolve(operand)) && veReferencesLayer(doc, operand, target)) return true;
+    if (isArray(doc.resolve(operand)) && veReferencesLayer(doc, operand, target, depth + 1, path)) return true;
   }
+  path.delete(a);
   return false;
 }
 
 /** Prune `target` from a /VE expression tree, returning the rewritten tree, or
  *  `undefined` when the operator is left with no operands (an empty expression).
  *  Nested sub-expressions that collapse to empty are dropped from their parent. */
-function pruneVE(doc: Document, ve: PdfObject | undefined, target: PdfRef): PdfObject | undefined {
+function pruneVE(
+  doc: Document, ve: PdfObject | undefined, target: PdfRef, depth = 1, path = new Set<PdfObject>(),
+): PdfObject | undefined {
   const a = doc.resolve(ve);
   if (!isArray(a)) return isArray(ve) ? ve : undefined;
+  // A cycle is left as written rather than unrolled; depth is the policy's.
+  if (path.has(a)) return ve;
+  doc.loadLimits.enforce('maxNestingDepth', depth, 'visibility expression');
+  path.add(a);
   const operands: PdfObject[] = [];
   for (let i = 1; i < a.length; i++) {
     const operand = a[i];
     if (sameRef(operand, target)) continue;
     if (isArray(doc.resolve(operand))) {
-      const pruned = pruneVE(doc, operand, target);
+      const pruned = pruneVE(doc, operand, target, depth + 1, path);
       if (pruned !== undefined) operands.push(pruned);
     } else {
       operands.push(operand);
     }
   }
+  path.delete(a);
   return operands.length === 0 ? undefined : [a[0], ...operands];
 }
 
@@ -244,7 +259,7 @@ function stripLayerContent(doc: Document, page: Page, ex: Excision): boolean {
   if (!buf) return false;
   const props = resolveDict(doc, page.Resources?.get('Properties'));
   const xobjs = resolveDict(doc, page.Resources?.get('XObject'));
-  const { out, dropped } = stripOcBlocks(doc, parseContentStream(buf), props, xobjs, ex);
+  const { out, dropped } = stripOcBlocks(doc, parseContentStream(buf, doc.loadLimits), props, xobjs, ex);
   if (!dropped) return false;
   page.Dict.set('Contents', [doc.allocObject(streamOf(serializeContentStream(out)))]);
   return true;
@@ -327,7 +342,7 @@ function stripLayerFromXObjects(doc: Document, resources: PdfDict | undefined, e
     const res = resolveDict(doc, xo.dict.get('Resources'));
     const props = resolveDict(doc, res?.get('Properties'));
     const innerX = resolveDict(doc, res?.get('XObject'));
-    const { out, dropped } = stripOcBlocks(doc, parseContentStream(decodeStream(xo)), props, innerX, ex);
+    const { out, dropped } = stripOcBlocks(doc, parseContentStream(decodeStream(xo), budgetFor(xo).limits), props, innerX, ex);
     if (dropped) {
       const raw = serializeContentStream(out);
       const dict: PdfDict = new Map(xo.dict);
@@ -370,7 +385,7 @@ function collectInvokedXObjects(doc: Document): Set<number> {
     if (!bytes) return;
     const xobjs = resolveDict(doc, scope?.get('XObject'));
     if (!xobjs) return;
-    for (const op of parseContentStream(bytes)) {
+    for (const op of parseContentStream(bytes, doc.loadLimits)) {
       const n = doTarget(doc, op, xobjs);
       if (n === undefined) continue;
       invoked.add(n);
@@ -496,14 +511,27 @@ export class LayerConfig {
 
   /** @internal Evaluate a /VE expression tree under this config. Malformed input
    *  (unknown operator, /Not with != 1 operand, empty) -> true. */
-  private evaluateVE(ve: PdfObject | undefined): boolean {
+  private evaluateVE(ve: PdfObject | undefined, depth = 1, path = new Set<PdfObject>()): boolean {
     const a = this.doc.resolve(ve);
-    if (!isArray(a) || a.length === 0) return true;
+    // (ibzo.6) A cycle is a malformed expression, which this method already
+    // reads as true; depth is the policy's. Before this, both recursed until the
+    // stack gave out — and a render caught that and left the section undrawn.
+    if (!isArray(a) || a.length === 0 || path.has(a)) return true;
+    this.doc.loadLimits.enforce('maxNestingDepth', depth, 'visibility expression');
+    path.add(a);
+    try {
+      return this.evaluateOperator(a, depth, path);
+    } finally {
+      path.delete(a);
+    }
+  }
+
+  private evaluateOperator(a: PdfObject[], depth: number, path: Set<PdfObject>): boolean {
     const op = this.doc.resolve(a[0]);
     const opName = isName(op) ? op.name : '';
     const operands = a.slice(1);
     const evalOperand = (o: PdfObject): boolean => {
-      if (isArray(this.doc.resolve(o))) return this.evaluateVE(o);
+      if (isArray(this.doc.resolve(o))) return this.evaluateVE(o, depth + 1, path);
       if (isRef(o)) return this.isRefVisible(o);
       return true;
     };

@@ -7,6 +7,7 @@ import { serializeObject } from './serialize.js';
 import { decodeCosXmlAppearance } from './cosxml.js';
 import type { AnnotData } from './annotdata.js';
 import type { SkippedAnnot } from './formdata.js';
+import { rethrowLimit } from './errors.js';
 
 /** PDF /Subtype → XFDF element name. The XFDF names are the PDF ones
  *  lowercased, with no other transformation. */
@@ -261,7 +262,7 @@ export function decodeAppearance(b64: string): PdfStream | undefined {
     if (firstByte(bytes) === 0x3c /* < */) return decodeCosXmlAppearance(bytes);
     const { value } = new ObjectParser(new Lexer(bytes, 0)).parseIndirectObject();
     return isStream(value) ? value : undefined;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;   // unreadable is not an error: we regenerate instead
   }
 }
@@ -401,7 +402,7 @@ export function readAnnots(root: XmlNode, skipped: SkippedAnnot[]): AnnotData[] 
     let entry: AnnotData;
     try {
       entry = readOne(node, subtype);
-    } catch (err) {
+    } catch (err) { rethrowLimit(err);
       const attr = err instanceof AttrError ? err.attr : '';
       const pageText = node.attrs.get('page');
       const page = pageText === undefined ? NaN : Number(pageText);
@@ -424,7 +425,7 @@ export function readAnnots(root: XmlNode, skipped: SkippedAnnot[]): AnnotData[] 
         }
         entry.popupName = decodePdfText((nm as { bytes: Uint8Array }).bytes);
         out.push(popup);
-      } catch {
+      } catch (caught) { rethrowLimit(caught);
         // A malformed popup loses the popup, not the annotation that owns it.
       }
     }

@@ -42,6 +42,7 @@ import { elementFloat } from './flowfloat.js';
 import { buildSvgForm } from './svgembed.js';
 import { lowerHtml } from './cssflow.js';
 import { documentFamilyResolver } from './cssfont.js';
+import { rethrowLimit } from './errors.js';
 
 /** Options shared by the three `AddHtml` entry points. */
 export interface HtmlFlowOptions {
@@ -111,6 +112,7 @@ export function htmlElements(
   const root = typeof src === 'string' ? parseHtml(src) : src;
   return lowerHtml(root, {
     width,
+    limits: doc.loadLimits,
     resolveFamily: options.resolveFamily ?? documentFamilyResolver(doc),
     resolveImage: options.resolveImage,
     // The adapter captures this Document. cssflow.ts is a pure leaf and cannot
@@ -124,7 +126,7 @@ export function htmlElements(
     renderSvg: (markup, size) => {
       try {
         return buildSvgForm(doc, new TextEncoder().encode(markup), size);
-      } catch {
+      } catch (caught) { rethrowLimit(caught);
         // parseXml throws PdfParseError on markup it cannot read, and the
         // importer throws for a root that is not <svg>. A mapper whose whole
         // contract is that damage is a value must not let either out.

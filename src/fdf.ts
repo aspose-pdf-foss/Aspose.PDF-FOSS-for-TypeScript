@@ -1,6 +1,6 @@
 import { Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
-import { PdfParseError } from './errors.js';
+import { PdfParseError, rethrowLimit } from './errors.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isRef, isString, name } from './types.js';
 import { enc, serializeObject, serializeValue } from './serialize.js';
 import { decodePdfText, encodePdfText } from './metadata.js';
@@ -137,7 +137,7 @@ export function readFdf(bytes: Uint8Array): FormData {
     try {
       const { num, value } = new ObjectParser(new Lexer(bytes, m.index ?? 0)).parseIndirectObject();
       objects.set(num, value);
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // A stray "n g obj" inside a string or comment: not an object, skip it.
     }
   }

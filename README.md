@@ -70,6 +70,11 @@ flowchart TD
   `ASCII85Decode`, `ASCIIHexDecode`, `RunLengthDecode`) has a matching encoder. When the
   cross-reference structure is damaged, `Document.Open` falls back to scanning the file and
   reports exactly what it repaired and lost through `doc.recovery`.
+- Open files you did not write under a resource policy with bounded defaults: `LoadLimits` caps
+  input size, object counts, nesting, decoded stream size, filter expansion, image and canvas
+  pixels and content tokens, and a file past a bound raises `ResourceLimitError` naming the limit
+  instead of exhausting memory. It reduces known amplification; it is not a sandbox — see
+  *Scope and Limitations*.
 - Open PDFs protected with the standard security handler — RC4, AES-128 or AES-256 — and write
   encrypted output the same way, or as an `/Adobe.PubSec` certificate envelope for RSA/EC
   recipients. Digital signatures (`await doc.Sign(signer, opts?)`/`doc.Certify`) support the
@@ -335,6 +340,73 @@ try {
   else throw e;
 }
 ```
+
+### Open Untrusted PDFs Under Resource Limits
+
+`Document.Open` and `Document.OpenFile` apply `LoadLimits.defaults` when you pass nothing.
+A file that reaches a bound raises `ResourceLimitError`, which is deliberately **not** a
+`PdfParseError`: "this file is too big" and "this file is broken" call for different handling.
+The error names the bound in `limit`, beside the `allowed` and `reached` values.
+
+```ts
+import { Document, LoadLimits, ResourceLimitError, PdfParseError } from '@asposefoss/pdf';
+
+// Tighter than the defaults for an upload endpoint; null disables one field alone.
+const limits = LoadLimits.defaults.with({ maxFileBytes: 50 * 1024 * 1024, maxImagePixels: 1 << 26 });
+
+try {
+  const doc = Document.OpenFile('upload.pdf', { limits });
+  console.log(doc.Pages[0].GetText());
+} catch (e) {
+  if (e instanceof ResourceLimitError) console.error(`refused: ${e.limit} (allowed ${e.allowed}, reached ${e.reached})`);
+  else if (e instanceof PdfParseError) console.error('not a readable PDF');
+  else throw e;
+}
+
+// Input you produced yourself can opt out explicitly.
+const trusted = Document.OpenFile('our-own-report.pdf', { limits: LoadLimits.unlimited() });
+```
+
+The bounds are enforced when the document is opened and again as it is used: `GetText`,
+`ToImage`, exports and conversions decode streams and images under the same policy, so a
+file that opens cleanly can still raise `ResourceLimitError` later.
+
+| Limit | Default | Bounds |
+|---|---|---|
+| `maxFileBytes` | 1 GiB | Input bytes; `OpenFile` checks the file size before reading it |
+| `maxObjects` | 2,000,000 | Cross-reference rows, object-stream entries and objects found by recovery |
+| `maxXrefSections` | 1,000 | Cross-reference sections followed through `/Prev` and `/XRefStm` |
+| `maxObjectBytes` | 256 MiB | One object's encoded size, including one string or name |
+| `maxNestingDepth` | 256 | Arrays and dictionaries in objects and content, and the page, outline, form-field, structure, name and number trees, Form XObject resources, visibility expressions, annotations, functions and object graphs copied between documents; the element nesting of HTML, SVG and XML input and the block nesting of CSS |
+| `maxContainerItems` | 1,000,000 | Items in one array or dictionary; entries a font's `cmap` or a `/ToUnicode` CMap maps |
+| `maxDecodedStreamBytes` | 512 MiB | Decoded bytes from one stream, or from one block of a PNG, TIFF, WOFF or WOFF2 file |
+| `maxTotalDecodedBytes` | 2 GiB | Decoded bytes across one document, each stream counted once, and across the blocks of one image or font file |
+| `maxExpansionRatio` | 2,000 | Decoded size over the encoded input of a whole filter chain, above 1 MiB of output |
+| `maxFilterChain` | 8 | Filters in one chain |
+| `maxImagePixels` | 2^27 | Pixels an image, JPEG frame, JPX image, CCITT image or JBIG2 page, region, grid or symbol declares, and a PNG, BMP or TIFF file added to a document |
+| `maxFunctionSamples` | 2^24 | Entries a sampled function declares |
+| `maxSalvageProbes` | 64 | Attempts to salvage a damaged Flate stream |
+| `maxContentBytes` | 256 MiB | A page's decoded content, `/Contents` arrays combined |
+| `maxContentTokens` | 10,000,000 | Tokens in one page walk: the page and every form, pattern and appearance it draws; one stream in the document-wide rewrites; the content one `AddSVGObject` emits |
+| `maxCanvasPixels` | 2^26 | A render canvas sized from the page box; an explicit `ToImage` width and height are exempt |
+| `maxGlyphOperations` | 100,000 | Work to produce one glyph from a font program: CFF and Type 1 charstring operators, subroutine calls included, or TrueType composite components |
+
+Each limit is checked on its own, so the memory the defaults admit is their sum rather than the
+largest of them. Measured costs, on Node 24:
+
+| Resource | Cost | At the default |
+|---|---|---|
+| Parsed objects | ~670 bytes an object | ~1.3 GiB at `maxObjects` |
+| Content tokens | ~97 bytes a token | ~0.9 GiB at `maxContentTokens` |
+| Rendering one image | 8–10 bytes a pixel | ~1.2 GiB at `maxImagePixels` |
+| A page canvas, encoded to PNG | ~25 bytes a pixel | ~1.6 GiB at `maxCanvasPixels` |
+| The input file | 1 byte a byte | 1 GiB at `maxFileBytes` |
+
+A single hostile page render can therefore reach about 6 GiB. Most of it is typed arrays outside
+the JavaScript heap, which `--max-old-space-size` does not limit, so on a smaller machine lower
+the fields that dominate — usually `maxCanvasPixels` and `maxImagePixels`. There is no single
+combined bound: memory in a garbage-collected runtime is never reported as released, so any
+running total would be a lifetime total that refuses long-lived documents.
 
 ### Write Encrypted Output
 
@@ -2704,8 +2776,8 @@ const fixed = doc.ToDocx({ mode: 'textbox' });  // .docx keeping each page's own
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 356 public types plus 131
-functions and classes, grouped below by capability. Every name `index.ts` exports appears in one
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 377 public types plus 143
+functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
 <details>
@@ -2730,8 +2802,7 @@ of these tables.
 | `CommitmentType` | Standard CAdES commitment-type identifiers, or a custom dotted OID string. |
 | `ContentItem` | A marked-content reference owned by a structure element. |
 | `ConvertCategory` | Class in the PDF TypeScript API. |
-| `Decoration-svgtext` | Class in the PDF TypeScript API. |
-| `Decoration-textdecor` | `true` uses the font's metrics and the text's own colour; `false` is off. |
+| `Decoration` | `true` uses the font's metrics and the text's own colour; `false` is off. |
 | `DigestAlgorithm` | Class in the PDF TypeScript API. |
 | `Document` | Class with 109 methods and 26 properties. |
 | `Edged` | A single value, or one-per-edge [top, right, bottom, left]. |
@@ -2752,14 +2823,14 @@ of these tables.
 | `JavaScriptAction` | A JavaScript action. |
 | `Layer` | A single optional-content group (layer): a live handle over its /OCG dict. |
 | `LayerConfig` | A viewing configuration (/D or a /Configs entry). |
+| `LoadLimits` | An immutable resource policy for opening untrusted files: `LoadLimits.defaults`, `LoadLimits.unlimited()`, `.with(patch)`. |
 | `MdAlign` | GFM table alignment, from the `:` markers on the delimiter row. |
 | `MdBlock` | Class in the PDF TypeScript API. |
 | `MdInline` | Class in the PDF TypeScript API. |
 | `MdNode` | Class in the PDF TypeScript API. |
 | `OpenAction` | What a document does when it is opened: go to a view, or run an action. |
 | `OptionalContent` | The document's optional-content properties (/OCProperties). |
-| `Padding-floatbox` | Class with 4 properties. |
-| `Padding-tableauthor` | Inner cell padding: one value for every side, or an object naming the sides that differ. |
+| `Padding` | Inner cell padding: one value for every side, or an object naming the sides that differ. |
 | `Page` | A single PDF page: a live, mutable handle over its real page dict. |
 | `PageFormat` | A page size in points (1/72"). |
 | `PageGraphics` | A buffered builder for drawing vector content onto a page. |
@@ -2771,11 +2842,10 @@ of these tables.
 | `PdfXLevel` | PDF/X conformance target. |
 | `PubSecRecipient` | Class with 4 properties. |
 | `QrEcc` | Class in the PDF TypeScript API. |
-| `RGB-annotdraw` | Class in the PDF TypeScript API. |
-| `RGB-structattr` | Class in the PDF TypeScript API. |
-| `Rect-tablemodel` | Class extending TextRect. |
-| `Rect-text` | A page-space rectangle [x0,y0,x1,y1] (corners in any order). |
+| `RGB` | An RGB colour in a structure attribute (`/BackgroundColor`, `/Color`, …): three components in 0..1. |
+| `Rect` | A page-space rectangle [x0,y0,x1,y1] (corners in any order). |
 | `ResetAction` | A ResetForm action: clear the named fields, or every field. |
+| `ResourceLimitError` | A document exceeded a `LoadLimits` bound; `limit`, `allowed` and `reached` say which and by how much. Not a `PdfParseError`. |
 | `RevocationFetcher` | A fetcher for revocation material: given the target and its issuer (DER), return the OCSP response / CRL bytes, or undefined when none is available. |
 | `RevocationStatus` | A revocation verdict for one certificate. |
 | `RowBuilder` | One row: an ordered list of cells plus an optional row-level style. |
@@ -2794,7 +2864,7 @@ of these tables.
 | `TableBuilder` | A page-independent table: ordered rows over shared text defaults. |
 | `Template` | A reusable piece of drawn content, placed on any number of pages from a single Form XObject. |
 | `TextFont` | Class with 6 methods and 10 properties. |
-| `TilingPattern-tiling` | A handle returned by `Document.NewTilingPattern`. |
+| `TilingPattern` | A handle returned by `Document.NewTilingPattern`. |
 | `TimestampProvider` | A timestamp provider: given a DER `TimeStampReq`, return either the bare `TimeStampToken` (a CMS ContentInfo) or a full `TimeStampResp`. |
 | `UnsupportedFeatureError` | Class with 1 method. |
 | `UriAction` | A URI action: open an external URL. |
@@ -2802,6 +2872,11 @@ of these tables.
 | `VectorGraphics` | A buffered builder for vector content: every path constructor, paint operator, graphics-state setting and marked-content bracket, accumulated in memory as operator text. |
 | `XmpUpdate` | A partial XMP update: each known field may be set, or `null` to delete. |
 | `AddBarcodeOptions` | Interface with 8 properties. |
+| `makeCode128(data)` | A Code 128 model with automatic A/B/C code-set selection and the modulo-103 check |
+| `makeEan13(digits)` | An EAN-13 model: 12 digits (check computed) or 13 (check validated) |
+| `makeEan8(digits)` | An EAN-8 model: 7 digits (check computed) or 8 (check validated) |
+| `makeUpcA(digits)` | A UPC-A model: 11 digits (check computed) or 12 (check validated) |
+| `makeQr(data, opts?)` | A QR model: `ecc` defaults to `'M'`, and the smallest fitting version is chosen unless `version` forces one |
 | `AddImageOptions` | Interface with 5 properties. |
 | `AddImagePagesOptions` | Interface with 3 properties. |
 | `AddImagePagesResult` | Interface with 2 properties. |
@@ -2827,6 +2902,7 @@ of these tables.
 | `CheckboxInit` | Options for Form.AddCheckbox / Page.AddCheckbox. |
 | `ChoiceInit` | Options common to both choice field types. |
 | `CmykTransform` | A caller-supplied RGB->CMYK function, e.g. from `iccCmykTransform`. |
+| `iccCmykTransform(profile, opts?)` | A `CmykTransform` from an ICC v2 CMYK destination profile; declines what it cannot honour before any colour converts |
 | `CollectionFieldDef` | Interface with 6 properties. |
 | `CollectionSettings` | Interface with 5 properties. |
 | `ColorConvertOptions` | Options shared by the colour-conversion entry points. |
@@ -2852,7 +2928,6 @@ of these tables.
 | `ExportFormDataOptions` | Interface with 3 properties. |
 | `ExternalSigner` | Sign via an external callback (HSM/KMS/smartcard) — the key never leaves the device. |
 | `ExtractPagesOptions` | Interface with 1 property. |
-| `Field-structattr` | One field: its PDF key plus a decode/encode pair. |
 | `FieldActions` | A field's additional-actions (/AA), PDF 32000-1 table 197. |
 | `FieldInit` | Options common to every field-creation entry point. |
 | `FieldStyle` | WidgetStyle plus the /DA text half. |
@@ -2889,12 +2964,15 @@ of these tables.
 | `LayerState` | One layer's resolved state, as LayerConfig.ResolveForEvent reports it. |
 | `LayerUsage` | A group's /Usage dictionary, as a typed view: what it says about viewing, printing, exporting, zoom, language and who the content is for. |
 | `LayoutAttributes` | Interface with 32 properties. |
+| `LimitField` | One `LoadLimits` field name. |
 | `LinearBarcode` | 1D barcode geometry: alternating bar/space run widths in unit modules. |
 | `LinearGradient` | An axial (linear) gradient: a colour ramp along the axis from (x1, y1) to (x2, y2), in the **default** user space of the content stream it paints into — see the /Matrix note on PageGraphics.setFillGradient. |
 | `LinearizationCheck` | Interface with 2 properties. |
 | `ListAttributes` | Interface with 1 property. |
 | `ListBoxInit` | Options for Form.AddListBox / Page.AddListBox. |
 | `LoadFontOptions` | A style request alongside the ordinary font options. |
+| `LoadLimitPatch` | A partial policy for `LoadLimits.with`: `undefined` leaves a field, `null` disables it. |
+| `LoadLimitValues` | The seventeen `LoadLimits` fields, each a positive integer or `null`. |
 | `MatrixBarcode` | 2D barcode geometry: a square matrix of dark/light modules, row-major. |
 | `MdBlockQuote` | Interface with 2 properties. |
 | `MdCode` | Interface with 2 properties. |
@@ -2926,7 +3004,7 @@ of these tables.
 | `OcspSingleResponse` | Interface with 8 properties. |
 | `OoxmlPart` | One part of an OPC package. |
 | `OoxmlRelationship` | One entry of a `.rels` file. |
-| `OpenOptions` | Interface with 2 properties. |
+| `OpenOptions` | `password`, `recipient` and `limits` (a `LoadLimits`). |
 | `OptimizeImageOptions` | Target for the lossy image pass. |
 | `OptimizeOptions` | Which concerns to run. |
 | `OptimizeReport` | Interface with 13 properties. |
@@ -2946,6 +3024,7 @@ of these tables.
 | `PlaceOptions` | Options for PlaceOn. |
 | `PlaceResult` | Outcome of place. |
 | `PrunePolicy` | Interface with 1 method and 1 property. |
+| `defaultPrunePolicy()` | The `PrunePolicy` `ExtractPages` and `Split` apply when given none |
 | `PushButtonInit` | Options for Form.AddPushButton / Page.AddPushButton. |
 | `QrOptions` | Interface with 2 properties. |
 | `Quantized` | The result of quantizing an image. |
@@ -2953,7 +3032,6 @@ of these tables.
 | `RadioGroupInit` | Options for Form.AddRadioGroup. |
 | `RadioOption` | One button of a radio group. |
 | `RecoveryReport` | How Open obtained its cross-reference data. |
-| `Rect-barcodeplace` | A dark rectangle in PDF user space. |
 | `RegionHits` | Glyph and image events intersecting a set of regions. |
 | `RemoveImageOptions` | Options for removeImage / `ImageInfo.Remove`. |
 | `ReplaceImageOptions` | Options for replaceImage / `ImageInfo.Replace`. |
@@ -2986,7 +3064,6 @@ of these tables.
 | `TextLine` | Interface with 4 properties. |
 | `TextMatch` | A positioned text match. |
 | `TextRun` | One styled span of a rich text block. |
-| `TilingPattern-pagerender` | A resolved PatternType 1 (tiling) pattern. |
 | `TilingPatternOptions` | Placement and repetition for a tiling pattern. |
 | `TimestampInfo` | Verdict on a signature timestamp: the asserted time plus whether the token binds to the signature (imprint) and whether the TSA's signature is valid. |
 | `TrailerChoice` | What trailer synthesis chose. |
@@ -3005,6 +3082,13 @@ of these tables.
 | `PageBoundary` | The page boundary a /ViewArea, /ViewClip, /PrintArea or /PrintClip names. |
 | `ReadingDirection` | /Direction — the predominant reading order. |
 | `ViewerPreferencesUpdate` | A merge over `ViewerPreferences`: `undefined` leaves the entry alone, `null` deletes it, a value sets it — `MetadataUpdate`'s convention, not a second one. |
+| `ViewerPreferences` | What a document states about how it should open and print (32000-1 Table 150). An unstated entry is `undefined`, never the spec default |
+| `NonFullScreenPageMode` | `/NonFullScreenPageMode`: a `PageMode` other than `FullScreen` and `UseAttachments` |
+| `PrintScaling` | `/PrintScaling`: `'None'` or `'AppDefault'` |
+| `Duplex` | `/Duplex`: `'Simplex'`, `'DuplexFlipShortEdge'` or `'DuplexFlipLongEdge'` |
+| `PrintPageRange` | One inclusive 1-based `[first, last]` page range of `/PrintPageRange` |
+| `PageMode` | `/PageMode`: which viewer panel is open when the document opens (Table 28). `'FullScreen'` presents it |
+| `PageLayout` | `/PageLayout`: how a viewer arranges pages when the document opens (Table 28) |
 | `PageTransition` | What a page STATES about the transition to play on arriving at it (32000-1 Table 165). |
 | `TransitionStyle` | /S — the transition style. |
 | `TransitionDimension` | /Dm — the axis a Split or Blinds runs along. |
@@ -3014,6 +3098,7 @@ of these tables.
 | `ArtifactEdge` | Which edges of the page a pagination artifact is attached to (Table 331). |
 | `ArtifactEvent` | An /Artifact marked-content scope opening: `/Artifact BMC` or `/Artifact <<props>> BDC`. |
 | `extractArtifacts` | The `/Artifact` scopes a page declares — the free function behind `page.Artifacts`. |
+| `PageArtifact` | One `/Artifact` marked-content scope a page draws: its `type`, `subtype`, `attached` edges and a `bbox` with `bboxSource` |
 | `EncodedImage` | An image XObject encoded as a file: its bytes and their media type. |
 | `SaveImageFormat` | What `ImageInfo.Save` can be asked to produce. |
 | `SaveImageOptions` | How an image is to be saved. |
@@ -3021,10 +3106,16 @@ of these tables.
 | `encodeBmp` | Encode interleaved top-down 8-bit RGB as an uncompressed 24-bit BMP. @param width pixels, ≥ 1 @param height pixels, ≥ 1 @param samples `width * height * 3` bytes, RGB order, TOP-DOWN |
 | `encodeGif` | Encode interleaved top-down 8-bit RGB as a GIF89a. |
 | `encodeTiff` | Encode one or more frames as a baseline TIFF. |
+| `encodeStream(bytes, filter, extraDict?)` | Build a `PdfStream` whose payload is `bytes` encoded with `filter`; `decodeStream` returns the input exactly |
+| `ascii85Encode(input)` | ASCII85 encode, terminated by `~>` |
+| `asciiHexEncode(input)` | ASCIIHex encode, terminated by `>` |
+| `lzwEncode(input, earlyChange?)` | Variable-width (9..12-bit) LZW encode, the inverse of `LZWDecode` |
+| `runLengthEncode(input)` | RunLength (PackBits) encode, terminated by the EOD byte 128 |
 | `encodeG4` | Encode packed 1-bpp rows as CCITT Group 4. @param bits `ceil(columns/8) * rows` bytes, MSB-first, 1 = black @param columns pixels per row @param rows row count |
 | `encodeFilter` | Encode bytes into one of the PDF byte filters. |
 | `quantize` | Reduce an RGBA image to a 256-colour palette, exactly when it already has 256 or fewer. |
 | `STANDARD_STRUCTURE_TYPES` | The PDF 1.7 standard structure types (grouping, block-level, inline-level, and illustration). |
+| `LIMIT_FIELDS` | The seventeen `LoadLimits` field names, in boundary order. |
 | `XfaConvertOptions` | Options for `doc.ConvertXfaToAcroForm`: `removeXfa` (default true). |
 | `XfaConvertReport` | What an XFA conversion produced and what it refused. |
 | `XfaFieldResult` | One converted field: its SOM name, type, route and page. |
@@ -3078,6 +3169,8 @@ of these tables.
 | Class | Description |
 |---|---|
 | `ImageFormat` | What `ImageOptions.format` accepts. |
+| `IMAGE_FORMATS` | Every `format` `page.ToImage` can produce, as a runtime list — `ImageFormat` is derived from it |
+| `IMAGE_MODES` | Every `mode` `page.ToImage` accepts: `'rgb'`, `'gray'`, `'bilevel'` |
 | `MarkdownFontSpec` | A single face (whose family is derived when it is Standard-14) or an explicit family. |
 | `AddMarkdownResult` | What AddMarkdown reports. |
 | `ConversionReport` | The result of a conversion run: what was applied, what still fails, pass flag. |
@@ -3108,7 +3201,7 @@ of these tables.
 | `ButtonField` | A push button (`/FT /Btn` with the Pushbutton flag). |
 | `CheckboxField` | A checkbox (`/FT /Btn`, neither Pushbutton nor Radio). |
 | `ChoiceField` | A combo box or list box (`/FT /Ch`). |
-| `Field-formfield` | A terminal AcroForm field: a live, mutable handle over its field dict. |
+| `Field` | A terminal AcroForm field: a live, mutable handle over its field dict. |
 | `FieldType` | Class in the PDF TypeScript API. |
 | `RadioField` | A radio group (`/FT /Btn` with the Radio flag). |
 | `TextField` | A text field (`/FT /Tx`). |
@@ -3143,6 +3236,11 @@ of these tables.
 | `parseCrl` | Parse a `CertificateList` (CRL, RFC 5280). |
 | `parseOcspResponse` | Parse an `OCSPResponse` (RFC 6960). |
 | `parseTimeStampRequest` | Parse the message imprint and nonce out of a DER `TimeStampReq`. |
+| `buildTimeStampRequest(imprint, hashAlg, opts?)` | A DER RFC 3161 `TimeStampReq` over an already-hashed imprint |
+| `buildTimeStampToken(request, signer, opts?)` | Answer a `TimeStampReq` as a TSA would: a signed `TimeStampToken` |
+| `extractTimeStampToken(respOrToken)` | A bare `TimeStampToken` from a TSA reply, unwrapping a `TimeStampResp` |
+| `parseTstInfo(token)` | The `TSTInfo` a `TimeStampToken` carries |
+| `verifyTimestampToken(token, signedValue)` | Check a token's imprint binding and the TSA's own signature |
 | `readDssCerts` | All certificates embedded in the document's `/DSS` (top-level `/Certs`), DER. |
 | `readDssMaterial` | Read `/DSS` validation data into per-signature `RevocationMaterial`, keyed by signature field name. |
 | `verifyCertChain` | Build and validate a path from `leaf` to a trust anchor through `pool` (intermediates from the CMS / `/DSS`). |
@@ -3164,6 +3262,9 @@ of these tables.
 | `PageDest` | A page destination: 1-based page number plus an optional view. |
 | `TOCEntry` | One row of a table of contents. |
 | `TOCOptions` | Options for AddTOC. |
+| `PDF17_NS` | The PDF 1.7 standard structure namespace URI (ISO 32000-2 14.8.6) — the one an element stating no `/NS` is in |
+| `PDF20_NS` | The PDF 2.0 standard structure namespace URI |
+| `MATHML_NS` | The MathML namespace URI |
 
 ### Text
 
@@ -3181,7 +3282,22 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `Document.New(format?)` | Create a document from scratch: zero pages, or one page of `format` |
 | `Document.Open(buf, opts?)` | Parse a PDF from a `Uint8Array` |
 | `Document.OpenFile(name, opts?)` | Parse a PDF from disk |
+| `splitPdfFile(inputPath, outDir, opts?)` | Split a PDF on disk into `page-N.pdf` files |
+| `readMetadataFile(inputPath)` | A PDF's `/Info` metadata, read from disk |
+| `updateMetadataFile(inputPath, outputPath, update)` | Merge `update` into a PDF's metadata: `undefined` leaves a field, `null` deletes it |
+| `clearMetadataFile(inputPath, outputPath)` | Remove all document metadata |
+| `savePageImageFile(inputPath, pageIndex, outPath, opts?)` | Render one page (0-based) with `page.ToImage` and write the result |
+| `saveImagesFile(inputPath, outDir, opts?)` | Every distinct embedded image as a file → `{ written, skipped }`; one damaged image costs itself, not the run |
+| `saveMarkdownFile(inputPath, outPath, opts?)` | Export to Markdown with its images as files alongside → every path written, the Markdown first |
+| `saveDocxFile(inputPath, outPath, opts?)` | Export to a `.docx` |
+| `exportFdfFile(pdfPath, fdfPath, opts?)` / `exportXfdfFile(pdfPath, xfdfPath, opts?)` | Write a PDF's form-field values as FDF or XFDF |
+| `importFdfFile(pdfPath, fdfPath, outPath?, opts?)` / `importXfdfFile(pdfPath, xfdfPath, outPath?, opts?)` | Import FDF or XFDF values; `outPath` defaults to rewriting `pdfPath` |
+| `htmlFileToPdf(inputPath, outPath, opts?)` | Render an HTML file to a PDF, decoding its bytes and resolving relative `<img src>` inside its own directory → `{ skipped }` |
+| `SaveImagesOptions` | What `saveImagesFile` takes: `ImageInfo.Save`'s options |
+| `SaveImagesSkipped` | One image `saveImagesFile` could not write: its `page`, resource `name` and `reason` |
+| `HtmlFileOptions` | What `htmlFileToPdf` takes: `doc.AddHtml`'s options, `title`, and the input bytes' `encoding` |
 | `Document.Merge(...docs)` | Build a new document from the pages of several |
+| `doc.loadLimits` | The `LoadLimits` the document was opened under — the caller's, else `LoadLimits.defaults` |
 | `doc.Pages` | `Page[]` in document order |
 | `doc.AddPage(source?)` / `doc.InsertPage(at, source?)` | Append/insert a blank page (A4, or a `PageFormat` size), or a copy of a `Page` source |
 | `doc.RemovePage(numberOrPage)` | Remove a page |
@@ -3258,10 +3374,19 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.AddText(text, x, y, opts?)` | Stamp single-line text at `(x, y)` (font/size/color/rotate/opacity/align; `shape`/`dir`/`script`/`language` for embedded fonts) |
 | `page.AddTextBlock(text, rect, opts?)` | Flow wrapped text into `[x, y, w, h]` (align/valign/leading; shaping options as `AddText`); returns the overflow remainder or `null` |
 | `page.AddTable(table, x, top, opts)` | Lay out a `createTable` table with its top-left at `(x, top)` and draw it (`opts.width` = total width; `cellPadding?`); paginates a too-tall table — returns `remainder` or, with `autoPaginate`, appends `pages` (`bottomMargin?`/`topMargin?`); repeat header rows with `table.setRepeatingRowsCount(n)`, span cells with `{ colSpan }` / `{ rowSpan }` (a rowSpan group is never cut across a page), embed a cell image with `cell.setImage(bytes, opts?)`; `{ tagged: true }` also emits `/Table` + `/TR` + `/TD`/`/TH` logical structure |
+| `createTable(opts?)` | Start a `TableBuilder` with optional shared defaults — style, alignment, borders, background, padding — each overridable per row and cell |
 | `page.AddTOC(entries, rect, opts?)` | Render a table of contents into `[x, y, w, h]`: wrapped titles indented by `level`, dot leaders, right-aligned page labels (default: the target page's `/PageLabels` label), one borderless GoTo link per row; returns `remainder` or, with `autoPaginate`, appends `pages`; `{ tagged: true }` also emits `/TOC` + `/TOCI` logical structure |
 | `doc.NewFlow(opts?)` | Start a multi-column document flow (`format`, `columns`, `columnGap`, `margin*`, `paragraphSpacing`, `keepHeadingsWithNext`, `tagged`) → `Flow` |
 | `flow.AddParagraph(text, opts?)` / `AddHeading(level, text, opts?)` / `AddList(items, opts?)` / `AddImage(data, opts?)` | Append a flow element — body text, a level 1–6 heading, a nestable bullet/`ordered` list, or an atomic JPEG/PNG/BMP/TIFF block; all take `spaceBefore`/`spaceAfter`/`clear` |
 | `flow.AddCodeBlock(text, opts?)` / `AddQuote(blocks, opts?)` / `AddRule(opts?)` | Append a preformatted code block, a block quote (built with the `paragraph`/`list`/`codeBlock`/`quote` builders, nestable) or a thematic break |
+| `paragraph(text, opts?)` | The builder behind `flow.AddParagraph`: a word-wrapped paragraph element, for a list item's `blocks` or a quote |
+| `heading(level, text, opts?)` | The builder behind `flow.AddHeading`: levels 1..6, `/H1`..`/H6` when tagged |
+| `list(items, opts?)` | The builder behind `flow.AddList`: the elements of a bullet or numbered list |
+| `image(data, opts?)` | The builder behind `flow.AddImage`: a JPEG or PNG element |
+| `rule(opts?)` | The builder behind `flow.AddRule`: a horizontal rule |
+| `codeBlock(text, opts?)` | The builder behind `flow.AddCodeBlock`: monospaced and indentation-preserving |
+| `quote(blocks, opts?)` | The builder behind `flow.AddQuote`: indents already-built elements and gives them a gutter bar; nests |
+| `table(t, opts?)` | The builder behind `flow.AddTable`: splits by row across columns and pages |
 | `flow.AddTable(t, opts?)` | Append a `createTable` table, paginated **by row** across columns and pages (`width`, `cellPadding`, `spaceBefore`/`spaceAfter`/`clear`); repeating headers via `setRepeatingRowsCount`, and one `/Table` for the whole thing under a tagged flow. Contrast `page.AddTable`, which is page-positioned |
 | `flow.AddMarkdown(src, opts?)` / `page.AddMarkdown(src, rect, opts?)` / `doc.AddMarkdown(src, opts?)` | Render CommonMark (GFM with `{ gfm: true }`) — see [Markdown](#markdown) |
 | `flow.AddHtml(src, opts?)` / `page.AddHtml(src, rect, opts?)` / `doc.AddHtml(src, opts?)` | Render an HTML document through the CSS cascade and box model — see [Features](#key-capabilities) and [Limitations](#scope-and-limitations) |
@@ -3296,6 +3421,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.Search(find, options?)` | Find a string/`RegExp` → `TextMatch[]` (`text`, per-line `quads`, glyph `hits`). `options.region` restricts the search to a page-space rect; `options.includeHidden` also reports matches on a hidden optional-content layer, which the **edit** entries (`ReplaceText`, `RedactText`, `MarkRedactText`) always do |
 | `page.SearchAnnotations(find, options?)` | Find a string/`RegExp` in the text the page's annotations **draw** (`/AP` appearance streams) → `AnnotationMatch[]` (`annot`, `text`, per-line `quads`), in `/Annots` order. Same `options.region`. Only annotations a static render would draw are searched (not Hidden, NoView or `/Popup`); a match carries no glyph `hits` |
 | `page.SearchAnnotationText(find)` | Find a string/`RegExp` in the text the page's annotations **carry** — `/Contents`, `/T` (author), `/Subj` — → `AnnotationTextMatch[]` (`annot`, `key`, `value`, `text`). Searches **every** annotation, hidden ones included. No geometry and no options, deliberately |
+| `richTextToPlain(markup, opts?)` | The plain text of an XHTML rich-text fragment (`/RC`, `/RV`), or `undefined` when it will not parse. Never throws |
 | `page.ReplaceText(find, replacement, options?)` | Replace matches in place (same font/encoding, no reflow) → count. Takes `options.region` |
 | `doc.ReplaceText(find, replacement)` | `ReplaceText` across every page → total count |
 | `page.Redact(rects, opts?)` | Remove text/images under `[x0,y0,x1,y1]` regions, prune orphans, paint markers |
@@ -3344,6 +3470,8 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `serializeContentStream(ops)` | Serialize `ContentOp[]` back to bytes |
 | `new EditableContent(doc, page)` | Low-level editable per-stream op model with Form-XObject copy-on-write (the foundation `Redact`/`ReplaceText` build on) |
 | `mapRegions(doc, page, rects)` / `visitContent(doc, page, visitor)` | Map page-space rectangles to the glyphs/images that occupy them; walk content emitting positioned glyph/image/path events. An `ImageEvent` carries the image XObject as `stream` (undefined for an inline image) and the enclosing `mcid`, so marked content can be tied back to the bytes it draws |
+| `ContentWalkOptions` | How `visitContent` treats optional content. `skipHidden` defaults to **false**, so a walker sees everything the file holds unless it asks otherwise |
+| `ExtractOptions` | What a read API reports about optional content. `includeHidden` defaults to false: `GetText` and friends answer what the page SHOWS |
 | `searchText` | Find every occurrence of `find` in the page's assembled text. |
 | `redactText` | Redact every match of a string or `RegExp` on a page. |
 | `replaceText` | Replace every match on a page, re-encoding in the run's own font without reflow. |
@@ -3359,7 +3487,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 > previous behaviour. Each handle exposes typed, mutable accessors (`Rect`,
 > `Color`, `Contents`, `Name`, `ModDate`, `Flags`, `Print`, `Hidden`, `Opacity`).
 
-Errors: `PdfParseError`, `UnsupportedFeatureError`, `InvalidPasswordError`.
+Errors: `PdfParseError`, `UnsupportedFeatureError`, `InvalidPasswordError`, `ResourceLimitError`.
 
 ### HTML
 
@@ -3408,9 +3536,16 @@ implementation-defined and we decline to guess.
 | `parseHtml(src)` | HTML text → `HtmlDocument`. Never throws |
 | `parseHtmlBytes(bytes, opts?)` | HTML **bytes** → `HtmlDocument`, sniffing the encoding. Never throws |
 | `ParseHtmlBytesOptions.encoding` | An encoding label from outside the document. Beaten only by a BOM; an unknown label is ignored |
-| `HtmlNode` | `HtmlDocument` | `HtmlDoctype` | `HtmlElement` | `HtmlText` | `HtmlComment` | `HtmlProcessingInstruction` | `HtmlFragment` |
+| `ParseHtmlBytesOptions` | How `parseHtmlBytes` decodes: `encoding` is the only option |
+| `HtmlNode` | Any node of a parsed tree: one of the six kinds below or an `HtmlProcessingInstruction` |
+| `HtmlDocument` | The root `parseHtml` returns: its `children` (a doctype among them, if any) and `quirks`. Mutable, with parent pointers |
+| `HtmlDoctype` | A `<!DOCTYPE>`: its `name`, `publicId` and `systemId` |
+| `HtmlElement` | An element: `ns`, `name`, `attrs` (a `Map`), `children` and `parent` |
+| `HtmlText` | A run of character data |
+| `HtmlComment` | A comment, and what a bogus `<!…>` or `<?xml …>` parses into |
+| `HtmlFragment` | A `<template>`'s content: a real node whose children are not part of the document |
 | `HtmlProcessingInstruction` | `<?target data?>`, per whatwg/html#12118. `xml` and `xml-stylesheet` targets stay bogus comments |
-| `HtmlElement.ns` | `'html'` | `'svg'` | `'math'` — an inline `<svg>` parses into its own namespace |
+| `HtmlElement.ns` | `'html'`, `'svg'` or `'math'` — an inline `<svg>` parses into its own namespace |
 | `HtmlElement.content` | A `<template>`'s content fragment. Absent on every other element |
 | `AddHtmlResult` | What `Page.AddHtml` reports. |
 | `HtmlFlowOptions` | Options shared by the three `AddHtml` entry points. |
@@ -3419,6 +3554,7 @@ implementation-defined and we decline to guess.
 | `htmlElements` | Lower an HTML document to flow elements — the one implementation the three `AddHtml` entry points share. |
 | `HtmlNamespace` | The three namespaces tree construction can produce. |
 | `NotRendered` | One thing a document asked for that did not render as specified. |
+| `describeNotRendered(r)` | One `NotRendered` as the flat string a logger wants — `construct` or `construct:detail` |
 | `Construct` | Every construct this stack can report. |
 | `ElementPolicy` | What happens to an element's children, and how the element is reported. |
 | `CONSTRUCTS` | Every construct name a `NotRendered` record can carry. |
@@ -3559,6 +3695,14 @@ See [the docs](https://example.com).
 
 ## Scope and Limitations
 
+- **Resource limits reduce known amplification; they do not make a hostile file safe** —
+  `LoadLimits` bounds the paths listed under *Open Untrusted PDFs Under Resource Limits*, but it
+  bounds each structure separately, not the process: the defaults together admit several
+  gigabytes (a 2^28-pixel render canvas alone is about 4 GB of `Float32Array`), and nothing
+  bounds CPU time. Process documents you did not write in a separate process with an operating
+  system memory and time limit — `worker_threads` `resourceLimits` cap the V8 heap, not the
+  `ArrayBuffer` memory where decoded streams and canvases live. See the detailed reference for the
+  paths that are not covered.
 - **Encrypted output passwords are UTF-8, not SASLprep-normalized** (R6), matching the read side. Opening an RC4/AES-128 file requires the *user* password (the reader does not derive the user key from the owner password for R≤4).
 - **Classic xref output by default** — `Save()` writes an uncompressed classic cross-reference table unless `{ compressed: true }` is passed, which emits a cross-reference stream and compressed object streams.
 - **Page copies are pruned** — pages copied between documents lose document-level links such as `GoTo` actions, `/Dest`, and `/StructParents` (see `defaultPrunePolicy` / the `PrunePolicy` option to customize).
@@ -3574,6 +3718,32 @@ See [the docs](https://example.com).
 
 #### Detailed Limitations Reference
 
+- **What `LoadLimits` does not cover** — the policy governs `Document.Open`, `OpenFile` and the work
+  done on the resulting document; it is a reduction of known memory and CPU amplification, not a
+  proof that every denial-of-service technique is bounded. Not covered today: **CPU time** (there
+  is no timeout, and an algorithm that is expensive within every bound — a large shading, a
+  deeply nested `:has()` selector in `AddHtml`, a JBIG2 or JPX image just under the pixel bound —
+  simply runs); **combined memory**, since each bound is separate — the defaults together admit
+  about 6 GiB for one page render (see *Open Untrusted PDFs Under Resource Limits*);
+  **recursive walks nobody has probed** — every public operation was run over files 200,000
+  levels deep and each walk that overflowed is now bounded, but a walk that fixture did not
+  reach could still end in a `RangeError` rather than a `ResourceLimitError`;
+  **the content token budget is per page, never per document** — every walk that follows a
+  page's content (`GetText`, `GetPaths`, `ToImage`, `ToSvg`, the exports, `Optimize`'s
+  scans, redaction, the validators) counts that page and every form it draws against one
+  budget, while `ConvertColors`, `FlattenLayers` and `RemoveLayer` parse each distinct
+  stream once and count it on its own; **CPU time on inputs other than a PDF** — image files and
+  web fonts decode under the document's pixel and decode-size limits, HTML, CSS, SVG and XML nesting
+  under `maxNestingDepth`, and the content an SVG import emits under `maxContentTokens`, but
+  `AddHtml` and `AddMarkdown` are not bounded in TIME: deeply nested HTML blocks, a very long
+  paragraph and long runs of Markdown delimiters are known to be slow, and Markdown nesting relies
+  on its parser's own 1,000-level cap; and **font parsing beyond one glyph** — each glyph's
+  charstring or composite expansion is bounded by `maxGlyphOperations` and each character map by
+  `maxContainerItems`, but a font with tens of thousands of glyphs each just under the bound is
+  bounded only per glyph, so drawing all of them multiplies. The `node.ts` file helpers
+  (`splitPdfFile`, `savePageImageFile` and the rest) take no `limits` option and always apply the
+  defaults. A `/Prev` cycle is damage rather than a limit: the file opens through recovery and
+  `doc.recovery` names the cycle.
 - **Damaged-file recovery is partial** — `Document.Open` falls back to scanning the file for `N G obj` headers when the cross-reference structure cannot be read, when an object will not parse at the offset the xref gave, or when `/Root` does not resolve to a `/Type /Catalog`. `doc.recovery` then describes what was `repaired` and what was `lost`; it is `undefined` after a clean parse, and a healthy file is never scanned. Objects stored inside an `/ObjStm` carry no `N G obj` header of their own, but the container does, so the scan finds it and registers everything it declares. A container whose payload is damaged is decoded as far as it goes rather than dropped whole: the objects stored before the damage are recovered, the rest are reported in `doc.recovery.objectStreams` (one record per container, naming what it recovered, what it cost, and why), and a reference to a dropped object resolves to `null`. This is the one loss recovery cannot backfill — an object inside an `/ObjStm` exists nowhere else in the file — and the recovered bytes immediately after the damage point are best-effort, so an object that parses cleanly is kept and anything malformed is dropped. When no trailer survives anywhere, one is rebuilt: `/Root` is the `/Type /Catalog` object with a walkable `/Pages` at the highest file offset, and `/Info` is the metadata-bearing dict the catalog graph does not reach — or, failing that, the `/Root /Metadata` XMP packet. `doc.recovery.trailer` then reports both choices and every catalog candidate considered. Two limits: an encrypted document that lost its trailer also lost `/ID`, which RC4 and AES-128 hash into the file key, so those are refused with an error naming `/ID` (AES-256 and certificate-based encryption derive their keys without it and recover normally); and a scan cannot distinguish a live object from a freed one whose bytes remain, so a deleted object may be revived (harmless — `Save()` sweeps anything unreferenced). Strictness is unchanged for sound files: if the xref reads and `/Root` resolves, a malformed object still throws. `Save()` rewrites the whole reachable graph, so saving a recovered document produces a clean file; signing one throws, because incremental signing appends to the damaged original bytes.
 - **A document opened encrypted is saved encrypted again**, reusing its original `/Encrypt` dictionary and file key. Reusing them is the only faithful route rather than an optimization: the owner password is hashed into `/O` and cannot be recovered, so re-deriving encryption would have to invent one — and doing so would silently equate the owner and user passwords. Pass `Save({ encrypt: false })` to write plaintext, or `Save({ encrypt })` to re-encrypt with stated credentials. Preserving requires the trailer's `/ID`, which the file key is derived from, and throws `UnsupportedFeatureError` without it.
 - **Public-key (PubSec) encryption** supports RSA recipients (RSAES-PKCS1-v1_5 or RSAES-OAEP key transport), EC recipients (ECDH-ES via `KeyAgreeRecipientInfo`, `dhSinglePass-stdDH-*kdf` + AES key wrap), and per-recipient permission groups (recipients sharing a permission set are grouped into one CMS envelope over a shared seed). Not supported: cofactor-DH KDF schemes, the `RecipientKeyIdentifier` rid form (only `issuerAndSerialNumber` is emitted/matched), and mixing password and certificate recipients in one document. Permissions are surfaced via `doc.Permissions` but not enforced.
@@ -3595,7 +3765,7 @@ See [the docs](https://example.com).
 - **Annotation appearances across XFDF** — FDF carries `/AP` as a real stream, so it is exact. XFDF has no normative encoding for its `<appearance>` element, so producers disagree. Two are **read**: this library's own (base64 of the `/AP` `/N` form XObject as a one-object PDF fragment), which is also the only one **written**; and Acrobat's, which is base64 of an XML serialization of the COS objects rooted at `<DICT KEY="AP">` (`STREAM`/`DICT`/`ARRAY`/`INT`/`FIXED`/`NAME`/`BOOL` elements keyed by `KEY`, stream bytes in a `DATA` child with `ENCODING="HEX"` or `"ASCII"`). An `<appearance>` this library cannot read — a third producer's encoding, or a corrupt payload — is treated as absent and the appearance is **regenerated from the annotation's properties** instead, which is lower fidelity but never fails the import. Subtypes with no generator (`Sound`, `Text`, `Stamp`, `Link`, `FileAttachment`, `Popup`) import without an appearance in that case.
 - **Annotation coordinates are untransformed** — `rect`, `coords`, `vertices`, `inklist`, `start`/`end` are exchanged in unrotated PDF user space, exactly as the annotation dictionary holds them. `/Rotate` and `/UserUnit` are not applied in either direction. Rich text (`/RV`) is transported verbatim but is **not rendered** into the generated appearance, which is built from the plain `/V`. The FDF writer emits no cross-reference table (permitted for FDF); the reader scans objects sequentially and ignores an xref if one is present. Imported values are validated exactly as `Field.Value` validates them, so a value the field rejects is reported in `skipped`, not applied.
 - **Text authoring: Standard-14 or embedded sfnt fonts** — `AddText`/`AddTextBlock` accept the 12 Latin Standard-14 fonts (Helvetica/Times/Courier families, WinAnsiEncoding) or a font embedded via `doc.AddFont`/`AddFontFile`. Embedding supports TrueType (`glyf`, subset as `FontFile2`) and CFF OpenType (`.otf`, subset as `FontFile3` `/CIDFontType0C`, whole-embed fallback for malformed CFF), fed from raw sfnt (`.ttf`/`.otf`) or **WOFF/WOFF2** web fonts; **bare CFF, Type1/PFB, and bitmap fonts are not supported**, nor is hinting preservation or vertical writing. Complex-text shaping is **opt-in** for embedded fonts (`{ shape: true }`); with shaping off, text maps one code point → one glyph via the font cmap. `'justify'` spreads each line's slack across its inter-word gaps for Standard-14 text (the final line and single-word lines stay left-aligned), and falls back to left alignment for embedded fonts. `Symbol`/`ZapfDingbats` remain unavailable for authoring.
-- **Markdown rendering covers the block and inline vocabulary** — `AddMarkdown` renders headings, paragraphs with inline styling (emphasis, strong, code spans, strikethrough), lists (tight/loose, nested, task items), code blocks, block quotes, thematic breaks, figures, GFM tables and links. What it does **not** do: raw HTML (`html_block`/`html_inline`) and syntax highlighting are out of scope and reported in `skipped`; an inline image is drawn everywhere inline text can go — a paragraph, a heading, a list item and a GFM table cell — and falls back to its alt text, reported, only when its bytes cannot be had or decoded; a link with an empty destination (`[text]()`) is styled but not linked. A table's columns are sized from their content (proportional to each column's widest unwrapped line, floored at its widest word), since GFM declares no widths — use `flow.AddTable` with `setColumnWidths` for exact control. Emphasis selects from a four-face family, so an embedded face with no bold/italic sibling falls back to its regular face rather than being synthetically slanted or emboldened.
+- **Markdown rendering covers the block and inline vocabulary** — `AddMarkdown` renders headings, paragraphs with inline styling (emphasis, strong, code spans, strikethrough), lists (tight/loose, nested, task items), code blocks, block quotes, thematic breaks, figures, GFM tables and links. What it does **not** do: raw HTML (`html_block`/`html_inline`) and syntax highlighting are out of scope and reported in `skipped`; an inline image is drawn everywhere inline text can go — a paragraph, a heading, a list item and a GFM table cell — and falls back to its alt text, reported, only when its bytes cannot be had or decoded; a link with an empty destination (`[text]()`) is styled but not linked. A table's columns are sized from their content (proportional to each column's widest unwrapped line, floored at its widest word), since GFM declares no widths — use `flow.AddTable` with `setColumnWidths` for exact control. Emphasis selects from a four-face family, so an embedded face with no bold/italic sibling falls back to its regular face rather than being synthetically slanted or emboldened. **Nesting deeper than the column can hold squeezes rather than failing**: an indent is scaled to whatever room is left above a 12pt floor, so quotes or lists nested past that point (26 and 49 levels on a default A4 flow) render in a narrow, very tall column instead of throwing — a quote whose indent has run out draws its gutter bar over its own text. The squeeze is reported, as `squeezed` in `skipped`, once per block however many levels did the squeezing; a block drawn past the column bottom is reported as `overflow` and an over-tall image scaled to fit as `image:scaled-to-fit`. Those three are decided while placing, so `doc.AddMarkdown` and `page.AddMarkdown` fold them into `skipped` while a `Flow`, whose `AddMarkdown` returns before `Render`, takes an `onSkipped: (s) => void` callback instead.
 - **Complex-text shaping caveats** — shaping applies generic OpenType GSUB/GPOS only; there are **no script-specific reordering engines** (Indic / SEA / Khmer). GPOS cursive and mark-to-ligature attachment are best-effort. `justify` alignment falls back to left for shaped/embedded text. Standard-14 fonts do not shape (`shape` is ignored — WinAnsi/Latin only). Text is shaped **as-is with no Unicode normalization** — supply input in **NFC** form (the common case, handled well by fonts' `ccmp`/`mark` features) for best results; decomposed marks are not canonically reordered and are positioned by GPOS alone.
 - **Image insertion is JPEG, PNG, BMP and TIFF** — `AddImage` accepts JPEG (`DCTDecode`, including CMYK), PNG (`FlateDecode`, including interlaced/Adam7 and palette `tRNS`), BMP and TIFF (both decoded to samples and stored as `FlateDecode`; the saved file carries no trace of the original container). Still unsupported in PNG: 16-bit-with-alpha, grayscale/RGB `tRNS` color-key masks, interlaced below 8-bit, and palette `tRNS` below 8-bit. For BMP, an embedded ICC profile in a `BITMAPV5HEADER` is ignored and the image read as sRGB; and a V4/V5 file that *declares* an alpha mask and then writes zeros everywhere renders fully transparent — that is the producer contradicting itself, and honouring the declaration is the reading the format supports, but it will look like a defect here. For TIFF, declined with a named reason: BigTIFF, `PlanarConfiguration` 2, photometric YCbCr/CIELab/transparency-mask outside the JPEG route, old-style JPEG (compression 6), 16- and 32-bit samples, and floating-point `Predictor` 3. Other raster formats remain out of scope.
 - **Redaction is rectangle-driven and removes whole glyphs/images** — `Redact` takes explicit regions; `RedactText` derives them from a text search (still rectangle-based underneath — a neighboring glyph whose box overlaps a match's union quad may be removed too, and device-space quads assume unrotated pages); any glyph whose box touches a region is dropped entirely. A fully-covered image is deleted; a partially-covered image is decoded, its covered pixels destroyed, and the image re-encoded — sample-preservingly (keeping the original colorspace and bit-depth) for `FlateDecode`/`LZWDecode`/`CCITTFaxDecode`, or as DeviceRGB for baseline/progressive/arithmetic/lossless/hierarchical JPEG (`DCTDecode`) and any image carrying an `/SMask`/`/Mask`. This covers both image XObjects and inline images, and rotated/skewed placements. Only `JPXDecode`, `JBIG2Decode`, and non-mask inline images that decode with an alpha channel throw `UnsupportedFeatureError` (transparency can't be represented inline). Rasterized text inside images is not detected (no OCR), and vector artwork under a region is covered by the marker box but not removed.
@@ -3614,7 +3784,7 @@ See [the docs](https://example.com).
 - **Markdown export covers headings, paragraphs, lists, code blocks, quotes, tables and images** — `ToMarkdown` reuses the same document reconstruction as semantic `ToHtml`, so it inherits that path's strengths and limits: tagged documents drive off the `/StructTree`, untagged ones off font-size ranks (a document whose headings are not larger than its body text yields paragraphs throughout). A tagged `/L` becomes a nested bullet, ordered (`start` preserved) or task list, a `/P` > `/Code` becomes a fenced block with its indentation intact, and a `/BlockQuote` becomes `>`-prefixed lines. **Untagged documents recover lists and code blocks from page geometry too**, provided the marker is text on the page: a line opening with `•`, `-`, `1.`, `(3)`, `iv.` or `☐` starts an item, nesting comes from the marker's indent, and a run of lines set in a monospaced face becomes a code block. Two limits there, both deliberate. A marked line needs corroboration — a neighbouring item or a continuation indented to its body — so a genuinely single-item list is missed rather than reading `1990. It was a good year` as a list; and a block quote has no untagged form at all, since indentation alone is not evidence of quoting. One consequence is worth stating plainly: documents *this library* renders draw their bullets and task boxes as vector geometry (WinAnsi has no ballot-box glyph), so an untagged rendering of a **bullet** list carries no marker to recognise — round-tripping one needs `{ tagged: true }`, while an ordered list round-trips either way. Links are recovered as `[text](uri)` on both paths: tagged from the `/Link` element's annotation, untagged by resolving each `/Link` annotation's rectangle to the glyphs it covers. Only external URIs become links — an internal `GoTo` names a page object rather than an address, so it renders as its text — and a linked phrase that appears twice on one line is left unlinked rather than guessed at. Images are emitted inline as `data:` URIs by default; `ToMarkdownAssets({ images: 'external' })` instead references one file per distinct image and returns the bytes to write (`saveMarkdownFile` does both from disk). Identical images are deduplicated by content in either mode, so a picture repeated across pages is encoded once and, externally, written once. `ToMarkdown` throws on `images: 'external'`, since a string has nowhere to return the bytes and the links would point at files nobody wrote. Table cells go through `Table.toMarkdown()`, which escapes the full inline set, so a cell containing `*`, `_`, `` ` `` or `[…](…)` reads back as its own text. What GFM's table grammar cannot express is reported rather than dropped: a nested table follows its parent as a separate table, a `/Summary` becomes a paragraph above it, and a cell's line breaks become `<br>`. Column alignment is not emitted, because extraction records none. A table that reports its structure and names no header row gets an empty header row (GFM requires one); a geometry-detected table, which reports no header information either way, keeps its first row as the header.
 - **EPUB navigation is chapter-level** — `ToEpub` splits at the shallowest heading level the document actually contains, so the navigation lists chapters but not the sub-headings inside them; a nested TOC would need an `id` anchor on every heading, which the shared HTML serializer does not emit. A document with no headings at all is one chapter, and inference quality is inherited from the document model: a tagged PDF splits off its `/StructTree`, while an untagged one splits off font-size ranking and yields one chapter when its headings are not larger than its body text. There is no `Page.ToEpub`: a book is a document. Structural conformance to EPUB 3 is tested — the stored first-entry `mimetype`, a container resolving to the OPF, every manifest href resolving to a part, every spine idref to a manifest item, and well-formed XML throughout — The suite stays hermetic, so no test opens a reader — but opening in **Calibre 7.26.0** was verified by hand and recorded in [docs/epub-calibre-verification.md](docs/epub-calibre-verification.md), including which evidence does and does not prove the navigation document is read. Other readers, `epubcheck`, and fixtures carrying images, tables or CJK text remain unverified.
 - **Bundled fonts add ~3.1 MB to the library** — `Page.ToImage()` embeds deflate-compressed TrueType outline data for the 14 Standard-14 substitute faces so non-embedded text rasterizes as real glyphs. Sources: Liberation (SIL OFL 1.1) for the 12 Latin faces, and URW Standard Symbols PS / Dingbats (AGPLv3 + font exception) for Symbol/ZapfDingbats; license texts and provenance live under `fonts/`. Only the generated data ships in the package (the raw font files are excluded); regenerate it with `npm run gen:fonts`. Symbol/ZapfDingbats coverage is best-effort (glyphs the substitute cmap cannot resolve fall back to a placeholder box), and subsetting the bundled faces to shrink this footprint is future work.
-- **HTML rendering is a documented subset** — the parser and cascade beneath it are conformance-tested against vendored and browser-generated corpora (6,995 tokenizer cases, 1,918 tree-construction cases, 149 CSS syntax cases, plus Blink-generated selector, cascade and box goldens), but the *renderer* does not yet draw everything they can describe. **What it cannot draw, it reports** — `skipped` names every construct with the element it came from and whether it was *dropped* or *degraded*, so a caller can tell a lost subtree from an approximated one, and from an empty document. **Floats place**: a floated box is painted at the channel edge, text narrows beside it and resumes at full width below it, `clear` drops past it, and an auto-width float is shrink-to-fitted rather than filling the column. Three limits, each reported or documented: a float that does not fit leads the next column WHOLE rather than splitting; two same-side floats stack rather than sitting side by side, and the pair is reported as `float`/`degraded`; and a float that can neither fit nor fragment lays out in flow and is reported as `float`/`degraded` too. **Content taller than an empty column renders rather than refusing the document**: an image scales to fit, aspect preserved, and anything that cannot be scaled draws past the column bottom, reported as `image:scaled-to-fit` and under the `overflow` construct respectively. Both are decided while *placing*, so `doc.AddHtml` and `page.AddHtml` — which place before they return — include them in `skipped`, while a `Flow`, whose `AddHtml` returns before `Render` runs, takes an `onNotRendered: (r) => void` callback instead. `page.AddHtml` never draws outside the rect you gave it: an element it cannot scale comes back in `remainder`. Tables and images render, with three documented degradations: a cell holding block content (a `<p>`, a nested list, a nested table) flattens to its text, because the authoring layer's cells take runs rather than elements; CSS column widths are not read, so columns auto-fit; and four cell border edges that differ collapse to the first painted one's width and colour. **An `<img>` among words renders inline**, sized from `width`/`height` or its intrinsic pixels and clamped to the column if wider, honouring `vertical-align: baseline`, `top` and `bottom` — `middle` is not implemented and is reported, since CSS defines it against half the x-height, which the AFM tables do not expose. **Inline `<svg>` RENDERS**, through the same importer `page.AddSVGObject` uses, sized as a browser sizes it — a viewBox-only graphic fills its container, and what the importer could not draw is reported as a `text`-style `svg` record rather than lost. **`<iframe>` and `<math>` content is still deliberately not drawn**, because no browser draws the first — an `<iframe>`'s children are "ignored by conforming user agents" — and there is no MathML importer here. `<object>`, `<video>`, `<audio>` and `<canvas>` children *do* render, being genuine fallback content. **Form controls are text, not widgets**: an `<input>`'s value, a `<select>`'s selected option, a `<textarea>`'s content and a `<button>`'s caption are drawn as ordinary text — except `type=hidden` and `type=password`, which draw nothing, since a password value must never reach a content stream. `display: inline-block`, `vertical-align` and padding on an inline box are reported rather than implemented. A fragment-only `href` (`#intro`) gets no link and is reported: a `/URI` action pointing at a fragment looks clickable and does nothing, which is worse than no link. Also absent: `@property` and registered custom properties, `env()`, `@media` feature queries (media *types* are honoured, features are reported), absolute and relative positioning, `inline-block`, `vertical-align` and inline padding, and `vw`/`vh` units. What does render: block and inline formatting contexts, margins with collapsing, padding, borders and backgrounds, `width`/`height` (the latter as a minimum), `line-height`, `text-align`, `text-decoration`, colours, headings and lists, and the math functions `calc()`, `min()`, `max()` and `clamp()` at every length, percentage and number site — type-checked, so `calc(1px + 2)` is refused and reported rather than guessed at, and with one deliberate divergence from browsers: `calc(10px / 0)` is refused where Chrome follows CSS Values 4 and computes 33554432px. **Custom properties and `var()`** render too, with inheritance, `!important`, case-sensitive names, shorthands and `calc()`; an unresolvable `var()` falls back to inherited-or-initial as CSS specifies and is reported as `undefined-var` or `var-cycle` rather than silently dropped, and a substitution is capped at 65,536 tokens (a deliberate divergence: Chrome expands further). Selector support reaches `:has()`, `:lang()` and `:dir()` — the last two answered from the DOM, with `dir=auto` resolved by first strong character rather than defaulted. **Text the resolved face cannot encode is dropped — and reported.** With no `RegisterFontFolder` call the fallback is Standard-14 with WinAnsi, which has no code for Cyrillic, Greek, CJK or anything else outside Latin-1, so such text draws as nothing. It names itself as a `text` construct, `dropped` when the block drew nothing at all and `degraded` when only some characters vanished — the second being the failure you cannot see, since `alpha При omega` draws as `alpha  omega` and the page looks fine. `AddMarkdown` reports it as `text` / `text:partial`, and hand-built flow and page text through an opt-in `onUndrawable` callback. **No fallback face is substituted**: we report that Times cannot draw `При`, we do not go looking for a face that can — register a folder holding a face that covers the script and it renders normally. There is no oracle for the *rendering* step — the corpora anchor the parser, the cascade and the box arithmetic, while which builder a box goes through and where its ink lands are held by hand-built cases and mutation testing.
+- **HTML rendering is a documented subset** — the parser and cascade beneath it are conformance-tested against vendored and browser-generated corpora (6,995 tokenizer cases, 1,918 tree-construction cases, 149 CSS syntax cases, plus Blink-generated selector, cascade and box goldens), but the *renderer* does not yet draw everything they can describe. **What it cannot draw, it reports** — `skipped` names every construct with the element it came from and whether it was *dropped* or *degraded*, so a caller can tell a lost subtree from an approximated one, and from an empty document. **Floats place**: a floated box is painted at the channel edge, text narrows beside it and resumes at full width below it, `clear` drops past it, and an auto-width float is shrink-to-fitted rather than filling the column. Three limits, each reported or documented: a float that does not fit leads the next column WHOLE rather than splitting; two same-side floats stack rather than sitting side by side, and the pair is reported as `float`/`degraded`; and a float that can neither fit nor fragment lays out in flow and is reported as `float`/`degraded` too. **Content taller than an empty column renders rather than refusing the document**: an image scales to fit, aspect preserved, and anything that cannot be scaled draws past the column bottom, reported as `image:scaled-to-fit` and under the `overflow` construct respectively. Both are decided while *placing*, so `doc.AddHtml` and `page.AddHtml` — which place before they return — include them in `skipped`, while a `Flow`, whose `AddHtml` returns before `Render` runs, takes an `onNotRendered: (r) => void` callback instead. `page.AddHtml` never draws outside the rect you gave it: an element it cannot scale comes back in `remainder`. Tables and images render, with three documented degradations: a cell holding block content (a `<p>`, a nested list, a nested table) flattens to its text, because the authoring layer's cells take runs rather than elements; CSS column widths are not read, so columns auto-fit; and four cell border edges that differ collapse to the first painted one's width and colour. **An `<img>` among words renders inline**, sized from `width`/`height` or its intrinsic pixels and clamped to the column if wider, honouring `vertical-align: baseline`, `top` and `bottom` — `middle` is not implemented and is reported, since CSS defines it against half the x-height, which the AFM tables do not expose. **Inline `<svg>` RENDERS**, through the same importer `page.AddSVGObject` uses, sized as a browser sizes it — a viewBox-only graphic fills its container, and what the importer could not draw is reported as a `text`-style `svg` record rather than lost. **`<iframe>` and `<math>` content is still deliberately not drawn**, because no browser draws the first — an `<iframe>`'s children are "ignored by conforming user agents" — and there is no MathML importer here. `<object>`, `<video>`, `<audio>` and `<canvas>` children *do* render, being genuine fallback content. **Form controls are text, not widgets**: an `<input>`'s value, a `<select>`'s selected option, a `<textarea>`'s content and a `<button>`'s caption are drawn as ordinary text — except `type=hidden` and `type=password`, which draw nothing, since a password value must never reach a content stream. `display: inline-block`, `vertical-align` and padding on an inline box are reported rather than implemented. A fragment-only `href` (`#intro`) gets no link and is reported: a `/URI` action pointing at a fragment looks clickable and does nothing, which is worse than no link. Also absent: `@property` and registered custom properties, `env()`, `@media` feature queries (media *types* are honoured, features are reported), absolute and relative positioning, `inline-block`, `vertical-align` and inline padding, and `vw`/`vh` units. What does render: block and inline formatting contexts, margins with collapsing, padding, borders and backgrounds, `width`/`height` (the latter as a minimum), `line-height`, `text-align`, `text-decoration`, colours, headings and lists, and the math functions `calc()`, `min()`, `max()` and `clamp()` at every length, percentage and number site — type-checked, so `calc(1px + 2)` is refused and reported rather than guessed at, and with one deliberate divergence from browsers: `calc(10px / 0)` is refused where Chrome follows CSS Values 4 and computes 33554432px. **Custom properties and `var()`** render too, with inheritance, `!important`, case-sensitive names, shorthands and `calc()`; an unresolvable `var()` falls back to inherited-or-initial as CSS specifies and is reported as `undefined-var` or `var-cycle` rather than silently dropped, and a substitution is capped at 65,536 tokens (a deliberate divergence: Chrome expands further). Selector support reaches `:has()`, `:lang()` and `:dir()` — the last two answered from the DOM, with `dir=auto` resolved by first strong character rather than defaulted. **Text the resolved face cannot encode is dropped — and reported.** With no `RegisterFontFolder` call the fallback is Standard-14 with WinAnsi, which has no code for Cyrillic, Greek, CJK or anything else outside Latin-1, so such text draws as nothing. It names itself as a `text` construct, `dropped` when the block drew nothing at all and `degraded` when only some characters vanished — the second being the failure you cannot see, since `alpha При omega` draws as `alpha  omega` and the page looks fine. `AddMarkdown` reports it as `text` / `text:partial`, and hand-built flow and page text through an opt-in `onUndrawable` callback. **No fallback face is substituted**: we report that Times cannot draw `При`, we do not go looking for a face that can — register a folder holding a face that covers the script and it renders normally. A box whose margins and padding exceed the width it was given **squeezes rather than drawing nothing**: every horizontal amount of one box scales by the same factor down to a 12pt content floor, so deeply nested blocks (nested `<blockquote>`s carry 40px on both sides, so 8 levels exhaust a default column) render squeezed and tall rather than coming out blank — the CSS *used* widths are unchanged, the clamp applying only at placement. A squeeze **is reported**, as a `squeezed`/`degraded` record against the innermost element it narrowed, once per element however many levels did the squeezing. There is no oracle for the *rendering* step — the corpora anchor the parser, the cascade and the box arithmetic, while which builder a box goes through and where its ink lands are held by hand-built cases and mutation testing.
 - **Artifact enumeration is read-only, and most artifacts declare nothing** — `page.Artifacts` reports scopes; it does not create, edit or remove them, and the writing side stays what it was (`BeginArtifact` and the `artifact: true` options emit a bare `/Artifact BMC` with no property list, so a document this library produces reports no `type`, `subtype` or declared `bbox`). A declared `/BBox` is reported verbatim: 32000-1 14.8.2.2 puts it in default user space, so one declared *inside* a Form XObject — rare, and ambiguous in the standard — is reported in that form's coordinates rather than the page's. A measured `bbox` covers every glyph, image and path the scope encloses, whether or not that content is ultimately visible: like `GetPaths`, the walk tracks no clip and no text render mode, so a clipped-away fill and text drawn in the invisible mode (an OCR layer) both count toward it.
 - **PDF/A-4 (ISO 19005-4:2020) is covered** for `'4'`, `'4e'` and `'4f'`, with the same curated posture: about twenty of its clauses are checked and roughly twenty-five are not — ICC profile internals, glyph presence and widths inside font programs, `.notdef` references, JPEG 2000 codestream internals, embedded CMap internals, byte-level file structure (binary comment, xref EOL, hex-string syntax, `obj`/`endobj` spacing, `/Length` accuracy, trailing bytes), undefined content operators, UTF-8 name validity, ActualText private-use values, DeviceN and Separation consistency, and CMYK overprint. Clause 6.9-3 (embedded files must themselves be PDF/A) is reported as a **warning** rather than checked, since this validator does not recursively validate embedded documents. Note PDF/A-4's rules are **not** a superset of parts 1–3 — `/ToUnicode` presence, `/CIDSet`, JavaScript actions and the `/Info`-versus-XMP consistency check all go silent at part 4 — so a document can fail at `'2u'` and pass at `'4'` for the same reason. The part-4 rules are transcribed from veraPDF's published validation profiles; there is no runnable oracle in this repository, so a passing report attests agreement with that transcription, not certified ISO 19005-4 conformance.
 - **Image extraction sees XObjects, not inline images** — `saveImagesFile` and `page.Images` enumerate image XObjects, descending into Form XObjects. An inline `BI … EI` image occupies no `/XObject` entry and has no stream object, so neither ever sees one and `InlineImageInfo` (which `page.InlineImages` returns) has no `Save`; extracting one means re-encoding samples that live in the content operator itself. The extension of every file written comes from the encoder's media type, so a document whose images cannot be encoded yields an empty directory and a populated `skipped` rather than files of the wrong kind.

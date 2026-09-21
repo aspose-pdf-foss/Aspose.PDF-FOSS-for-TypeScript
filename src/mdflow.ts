@@ -14,7 +14,7 @@ import type {
   MdBlock, MdCodeBlock, MdDocument, MdHeading, MdImage, MdInline, MdItem, MdList, MdParagraph,
   MdTable,
 } from './mdast.js';
-import type { FlowElement } from './flowelement.js';
+import type { Compromise, FlowElement } from './flowelement.js';
 import {
   paragraph, heading, list, image,
   type FlowAtomic, type FlowListItem, type FlowListNode,
@@ -27,6 +27,7 @@ import { createTable, type TableBuilder } from './tableauthor.js';
 import { inlineRuns, plainText, type AtomicResolver } from './mdruns.js';
 import { decodeDataUri } from './datauri.js';
 import { resolveMarkdownStyle, type MarkdownStyle, type ResolvedMarkdownStyle } from './mdstyle.js';
+import { rethrowLimit } from './errors.js';
 
 /** Options for the Markdown entry points. Extends {@link MarkdownOptions}, so
  *  `{ gfm: true }` reaches the parser unchanged. */
@@ -38,6 +39,18 @@ export interface MarkdownFlowOptions extends MarkdownOptions {
    *  `fs`. Return `undefined` for a destination you cannot resolve: the image
    *  falls back to its alt text and names itself in `skipped`. */
   resolveImage?: (destination: string, title: string) => Uint8Array | undefined;
+  /** Called for what the engine could only place by compromising (`kk3q`):
+   *  `'squeezed'` when nesting ran out of room to indent and a block drew
+   *  narrower than specified, `'overflow'` when a block was drawn past the
+   *  column bottom, `'image:scaled-to-fit'` when an over-tall image was scaled.
+   *  The same strings `describeNotRendered` gives for the HTML records.
+   *
+   *  These are PLACEMENT-time facts, so `doc.AddMarkdown` and
+   *  `page.AddMarkdown` fold them into the `skipped` they return; a caller
+   *  needs this only for a `Flow`, whose `AddMarkdown` returns before
+   *  `Render` runs. One record per block and kind, however many levels of
+   *  nesting squeezed it. */
+  onSkipped?: (construct: string) => void;
 }
 
 /** What a Markdown entry point reports. */
@@ -155,7 +168,7 @@ function imageElement(n: MdImage, c: Ctx, extraBefore: number): FlowElement[] | 
       spaceBefore: c.st.image.spaceBefore + extraBefore,
       spaceAfter: c.st.image.spaceAfter + c.st.paragraphSpacing,
     });
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // buildImageXObject rejects anything that is not JPEG or PNG.
     return undefined;
   }
@@ -408,10 +421,45 @@ export function markdownElements(
 ): MarkdownElements {
   if (options.resolveImage !== undefined && typeof options.resolveImage !== 'function')
     throw new TypeError('resolveImage must be a function');
+  checkOnSkipped(options);
   // Validate the whole style before building anything, so a rejected call
   // leaves the document byte-identical.
   const st = resolveMarkdownStyle(options.style);
   const doc = typeof src === 'string' ? parseMarkdown(src, options) : src;
   const c: Ctx = { st, opts: options, skipped: [] };
-  return { elements: blockElements(doc.children, c, 0), skipped: c.skipped };
+  const elements = blockElements(doc.children, c, 0);
+  if (options.onSkipped !== undefined) reportCompromises(elements, options.onSkipped);
+  return { elements, skipped: c.skipped };
+}
+
+/** @internal Refuse a non-function `onSkipped` up front. `doc.AddMarkdown` and
+ *  `page.AddMarkdown` wrap the caller's sink in their own before this module
+ *  sees it, so they call this first — otherwise a bad value would throw only
+ *  once placement fired it, after pages had been allocated. */
+export function checkOnSkipped(options: MarkdownFlowOptions): void {
+  if (options.onSkipped !== undefined && typeof options.onSkipped !== 'function')
+    throw new TypeError('onSkipped must be a function');
+}
+
+const COMPROMISE: Readonly<Record<Compromise, string>> = {
+  squeezed: 'squeezed', overflow: 'overflow', scaled: 'image:scaled-to-fit',
+};
+
+/** Give each mapped element a one-shot report per kind (`kk3q`) — the Markdown
+ *  counterpart of `cssflow.ts`'s `attribute`. A decorator FORWARDS
+ *  `onCompromise` to what it wraps, so assigning it on the outermost quote or
+ *  list block sets it on the element that draws, and every level of a nest then
+ *  shares one callback. The engine may fire more than once for one element (a
+ *  squeezed box fires at each level, and again on a continuation), which is
+ *  what the one-shot is for. */
+function reportCompromises(elements: FlowElement[], sink: (s: string) => void): void {
+  for (const el of elements) {
+    if (el.onCompromise !== undefined) continue;
+    const done = new Set<Compromise>();
+    el.onCompromise = (how) => {
+      if (done.has(how)) return;
+      done.add(how);
+      sink(COMPROMISE[how]);
+    };
+  }
 }

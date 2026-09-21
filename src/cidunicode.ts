@@ -1,5 +1,6 @@
 import { brotliDecompressSync } from 'node:zlib';
 import { CID_UNICODE_DATA } from './cidunidata.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * CID -> Unicode, from Adobe's published mapping tables (cidunidata.ts).
@@ -77,7 +78,7 @@ export function getCidToUnicode(ordering: string): CidToUnicode | undefined {
     const bytes = new Uint8Array(
       brotliDecompressSync(Buffer.from(CID_UNICODE_DATA[ordering], 'base64')));
     table = buildTable(ordering, decodeCidUnicode(bytes));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     table = null;
   }
   cache.set(ordering, table);

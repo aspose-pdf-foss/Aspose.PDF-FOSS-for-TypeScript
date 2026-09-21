@@ -1,7 +1,8 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Document, SplitOptions } from './document.js';
+import { LoadLimits } from './loadlimits.js';
 import { Metadata, MetadataUpdate } from './metadata.js';
 import { ImageOptions } from './raster.js';
 import { imageExtension, imageKey, type SaveImageOptions } from './imagehref.js';
@@ -13,10 +14,21 @@ import type { HtmlFlowOptions } from './htmlflow.js';
 import type { FlowOptions } from './flow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { UnsupportedDeclaration } from './cssprop.js';
+import { rethrowLimit } from './errors.js';
+
+/** Read a PDF for one of the wrappers below, refusing an oversized file from
+ *  its SIZE before reading it — `Document.OpenFile`'s rule, for the same
+ *  reason. The wrappers take no `limits` option, so they are always bounded by
+ *  the defaults; a caller trusting a larger file opens it with
+ *  `Document.Open(bytes, { limits })` directly. */
+async function readPdfFile(path: string): Promise<Uint8Array> {
+  LoadLimits.defaults.enforce('maxFileBytes', (await stat(path)).size, path);
+  return new Uint8Array(await readFile(path));
+}
 
 /** Read a PDF from disk, split it, and write `page-N.pdf` files into `outDir`. */
 export async function splitPdfFile(inputPath: string, outDir: string, options?: SplitOptions): Promise<string[]> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   const docs = Document.Open(input).Split(options);
   await mkdir(outDir, { recursive: true });
   const paths: string[] = [];
@@ -36,7 +48,7 @@ export async function savePageImageFile(
   outPath: string,
   options?: ImageOptions,
 ): Promise<void> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   const png = doc.Pages[pageIndex].ToImage(options);
   await writeFile(outPath, png);
@@ -89,7 +101,7 @@ export async function saveImagesFile(
   outDir: string,
   options?: SaveImagesOptions,
 ): Promise<{ written: string[]; skipped: SkippedImage[] }> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   await mkdir(outDir, { recursive: true });
 
@@ -103,7 +115,7 @@ export async function saveImagesFile(
       let enc;
       try {
         enc = image.Save(options);
-      } catch (e) {
+      } catch (e) { rethrowLimit(e);
         skipped.push({ page: i, name: image.Name, reason: (e as Error).message });
         continue;
       }
@@ -129,7 +141,7 @@ export async function saveMarkdownFile(
   outPath: string,
   options?: MarkdownExportOptions,
 ): Promise<string[]> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   const { markdown, images } = Document.Open(input).ToMarkdownAssets(options);
   const base = dirname(outPath);
   await mkdir(base, { recursive: true });
@@ -151,14 +163,14 @@ export async function saveMarkdownFile(
 export async function saveDocxFile(
   inputPath: string, outPath: string, options?: DocxOptions,
 ): Promise<void> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, Document.Open(input).ToDocx(options));
 }
 
 /** Read a PDF from disk and return its document metadata (/Info). */
 export async function readMetadataFile(inputPath: string): Promise<Metadata> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   return Document.Open(input).GetMetadata();
 }
 
@@ -171,7 +183,7 @@ export async function updateMetadataFile(
   outputPath: string,
   update: MetadataUpdate,
 ): Promise<void> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   doc.SetMetadata(update);
   await writeFile(outputPath, doc.Save());
@@ -182,7 +194,7 @@ export async function clearMetadataFile(
   inputPath: string,
   outputPath: string,
 ): Promise<void> {
-  const input = new Uint8Array(await readFile(inputPath));
+  const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   doc.ClearMetadata();
   await writeFile(outputPath, doc.Save());
@@ -194,7 +206,7 @@ export async function exportFdfFile(
   fdfPath: string,
   options?: ExportFormDataOptions,
 ): Promise<void> {
-  const doc = Document.Open(new Uint8Array(await readFile(pdfPath)));
+  const doc = Document.Open(await readPdfFile(pdfPath));
   await writeFile(fdfPath, doc.ExportFdf(options));
 }
 
@@ -204,7 +216,7 @@ export async function exportXfdfFile(
   xfdfPath: string,
   options?: ExportFormDataOptions,
 ): Promise<void> {
-  const doc = Document.Open(new Uint8Array(await readFile(pdfPath)));
+  const doc = Document.Open(await readPdfFile(pdfPath));
   await writeFile(xfdfPath, doc.ExportXfdf(options));
 }
 
@@ -216,7 +228,7 @@ export async function importFdfFile(
   outPath = pdfPath,
   options?: ImportOptions,
 ): Promise<ImportReport> {
-  const doc = Document.Open(new Uint8Array(await readFile(pdfPath)));
+  const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportFdf(new Uint8Array(await readFile(fdfPath)), options);
   await writeFile(outPath, doc.Save());
   return report;
@@ -229,7 +241,7 @@ export async function importXfdfFile(
   outPath = pdfPath,
   options?: ImportOptions,
 ): Promise<ImportReport> {
-  const doc = Document.Open(new Uint8Array(await readFile(pdfPath)));
+  const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportXfdf(new Uint8Array(await readFile(xfdfPath)), options);
   await writeFile(outPath, doc.Save());
   return report;
@@ -297,7 +309,7 @@ function siblingImages(base: string): (src: string, alt: string) => Uint8Array |
     if (path === undefined) return undefined;
     try {
       return new Uint8Array(readFileSync(path));
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // A src naming nothing readable is an image we could not resolve, which
       // `skipped` already has a vocabulary for. It is never an exception.
       return undefined;

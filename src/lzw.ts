@@ -4,8 +4,12 @@ const CLEAR = 256;
 const EOD = 257;
 
 /** Variable-width (9..12 bit) LZW decode as used by PDF LZWDecode.
- *  `earlyChange` (default 1) bumps the code width one step early. */
-export function lzwDecode(input: Uint8Array, earlyChange = 1): Uint8Array {
+ *  `earlyChange` (default 1) bumps the code width one step early.
+ *
+ *  Stops as soon as the output passes `maxOut` (`ibzo.3`) and returns what it
+ *  has, so the caller sees the overshoot and names the bound; it never throws
+ *  for it, keeping this module free of a policy it has no business knowing. */
+export function lzwDecode(input: Uint8Array, earlyChange = 1, maxOut = Infinity): Uint8Array {
   const out: number[] = [];
   let table: number[][] = [];
   const reset = () => {
@@ -41,6 +45,7 @@ export function lzwDecode(input: Uint8Array, earlyChange = 1): Uint8Array {
     else throw new PdfParseError(`LZWDecode: bad code ${code} (next ${next})`);
 
     for (const b of entry) out.push(b);
+    if (out.length > maxOut) break;
 
     if (prev) {
       table[next++] = [...prev, entry[0]];

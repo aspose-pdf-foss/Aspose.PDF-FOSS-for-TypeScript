@@ -2,6 +2,7 @@ import { inflateSync } from 'node:zlib';
 import { parseSfnt, SfntFont } from './sfnt.js';
 import { STD14_DATA } from './std14data.js';
 import type { StdFont } from './metrics.js';
+import { rethrowLimit } from './errors.js';
 
 // Parsed-font cache: null marks a face that failed to load (do not retry).
 const cache = new Map<StdFont, SfntFont | null>();
@@ -15,7 +16,7 @@ export function getStd14Sfnt(std: StdFont): SfntFont | undefined {
   try {
     const b64 = STD14_DATA[std];
     if (b64) font = parseSfnt(new Uint8Array(inflateSync(Buffer.from(b64, 'base64'))));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     font = null;
   }
   cache.set(std, font);

@@ -1,3 +1,4 @@
+import { LoadLimits } from './loadlimits.js';
 import type { Path } from './pagerender.js';
 import { PdfParseError } from './errors.js';
 import { standardEncodingNames } from './encoding.js';
@@ -37,7 +38,8 @@ export class Type1Font {
   private readonly encoding?: Map<number, string>;
   private readonly cache = new Map<number, Type1Glyph>();
 
-  constructor(input: Uint8Array) {
+  /** `limits.maxGlyphOperations` bounds each glyph's interpretation (`ibzo.12`). */
+  constructor(input: Uint8Array, private readonly limits: LoadLimits = LoadLimits.defaults) {
     this.raw = input;
     const bytes = stripPfb(input);
     const at = indexOfAscii(bytes, 'eexec');
@@ -89,6 +91,7 @@ export class Type1Font {
     if (!cs) return undefined;
     const env: Type1Env = {
       subrs: this.subrs,
+      limits: this.limits,
       seacGlyph: (code) => {
         const n = standardEncodingNames[code & 0xff];
         return n ? this.byName.get(n) : undefined;

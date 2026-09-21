@@ -45,6 +45,11 @@ export type Construct =
   // with svgdraw.ts — an overflowing block drew every character perfectly, and
   // filing it under 'text' would send a caller hunting a font problem.
   | 'overflow'
+  // Content placed in a column narrower than its own indents asked for: a
+  // decorator scaled its margins and insets down to keep MIN_CONTENT_WIDTH
+  // (e1bp, rfba). Its own construct for 'overflow''s reason — it drew every
+  // glyph, only narrower than specified.
+  | 'squeezed'
   // Text the resolved face cannot draw. Matches svgdraw.ts's name for the
   // same failure, so the library states one rule across both importers.
   | 'text';
@@ -55,7 +60,7 @@ export const CONSTRUCTS: readonly Construct[] = [
   'input', 'select', 'textarea', 'button',
   'inline-block', 'vertical-align', 'inline-box',
   'float', 'image', 'table', 'table-cell-blocks', 'link',
-  'overflow',
+  'overflow', 'squeezed',
   'text',
 ];
 

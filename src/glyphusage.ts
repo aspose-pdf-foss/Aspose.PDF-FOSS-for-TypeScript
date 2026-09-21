@@ -3,13 +3,15 @@ import type { Page } from './page.js';
 import {
   PdfDict, PdfObject, PdfStream, isDict, isName, isStream, isArray, isString,
 } from './types.js';
-import { parseContentStream, ContentOp } from './content.js';
+import { parseContentStream, ContentOp, type ContentTokenBudget } from './content.js';
 import { contentStreamBytes } from './text.js';
 import { decodeStream } from './filters.js';
 import { CffFont } from './cff.js';
 import { parseSfnt, SfntFont } from './sfnt.js';
 import { resolveSimpleEncoding } from './font.js';
 import { winAnsi, standardEncoding, glyphToUnicode } from './encoding.js';
+import { rethrowLimit } from './errors.js';
+import { budgetFor } from './decodebudget.js';
 
 /** Glyphs a font actually shows, and whether that set is trustworthy. */
 export interface FontUsage {
@@ -90,7 +92,7 @@ function sfntOf(doc: Document, font: PdfDict): { sfnt?: SfntFont; reason?: strin
   if (!stream) return { reason: 'TrueType font program is not embedded' };
 
   try { return { sfnt: parseSfnt(decodeStream(stream)) }; }
-  catch { return { reason: 'font program failed to parse' }; }
+  catch (caught) { rethrowLimit(caught); return { reason: 'font program failed to parse' }; }
 }
 
 /** The best Unicode cmap subtable, scored as readCmap does but never falling
@@ -167,7 +169,7 @@ function simpleCffMapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; r
   }
 
   let cff: CffFont;
-  try { cff = new CffFont(cffBytesOf(ff3)); } catch { return { reason: 'CFF program failed to parse' }; }
+  try { cff = new CffFont(cffBytesOf(ff3), budgetFor(ff3).limits); } catch (caught) { rethrowLimit(caught); return { reason: 'CFF program failed to parse' }; }
   if (cff.isCID) return { reason: 'simple font dict points at a CID-keyed CFF' };
 
   const names = cff.charsetNames();
@@ -219,7 +221,7 @@ function type0Mapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; reaso
     const c2g = doc.resolve(d0.get('CIDToGIDMap'));
     if (isStream(c2g)) {
       let map: Uint8Array;
-      try { map = decodeStream(c2g); } catch { return { reason: 'CIDToGIDMap stream failed to decode' }; }
+      try { map = decodeStream(c2g); } catch (caught) { rethrowLimit(caught); return { reason: 'CIDToGIDMap stream failed to decode' }; }
       return {
         mapper: {
           codeWidth: 2,
@@ -235,7 +237,7 @@ function type0Mapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; reaso
     const ff3 = fd ? doc.resolve(fd.get('FontFile3')) : undefined;
     if (!isStream(ff3)) return { reason: 'CIDFontType0 has no FontFile3' };
     let cff: CffFont;
-    try { cff = new CffFont(cffBytesOf(ff3)); } catch { return { reason: 'CFF program failed to parse' }; }
+    try { cff = new CffFont(cffBytesOf(ff3), budgetFor(ff3).limits); } catch (caught) { rethrowLimit(caught); return { reason: 'CFF program failed to parse' }; }
     return { mapper: { codeWidth: 2, gidsOf: (cid) => [cff.cidToGid(cid)] } };
   }
   return { reason: `unsupported descendant subtype: ${dSub ?? 'none'}` };
@@ -265,6 +267,10 @@ interface Ctx {
   doc: Document;
   usage: UsageMap;
   mappers: Map<PdfDict, CodeMapper | undefined>;
+  /** The `maxContentTokens` count for the page being walked — reset by `walkPage`, so a form reached from
+   *  that page, its annotations, patterns and Type 3 procedures charge it, shared by every stream it
+   *  parses rather than counted afresh per stream (`ibzo.8`, `ibzo.9`). */
+  tokens: ContentTokenBudget;
 }
 
 function usageFor(ctx: Ctx, font: PdfDict): FontUsage {
@@ -349,8 +355,8 @@ function walkStream(
   seen.add(stream.dict);
   let ops: ContentOp[];
   try {
-    ops = parseContentStream(decodeStream(stream));
-  } catch {
+    ops = parseContentStream(decodeStream(stream), budgetFor(stream).limits, ctx.tokens);
+  } catch (caught) { rethrowLimit(caught);
     markScopeIncomplete(ctx, resources, 'content stream failed to parse');
     return;
   }
@@ -420,7 +426,7 @@ function walkType3(ctx: Ctx, fonts: PdfDict | undefined, seen: Set<PdfDict>): vo
 
 /** Scan every site that can show a glyph and return per-font used GIDs. */
 export function collectGlyphUsage(doc: Document): UsageMap {
-  const ctx: Ctx = { doc, usage: new Map(), mappers: new Map() };
+  const ctx: Ctx = { doc, usage: new Map(), mappers: new Map(), tokens: { tokens: 0 } };
   for (const page of doc.Pages) walkPage(ctx, page);
 
   // Safety net: any font dict in the object graph that no walked scope reached
@@ -445,17 +451,18 @@ export function collectGlyphUsage(doc: Document): UsageMap {
 function walkPage(ctx: Ctx, page: Page): void {
   const resources = page.Resources;
   const seen = new Set<PdfDict>();
+  ctx.tokens = { tokens: 0 };
   let streams: Uint8Array[];
   try {
     streams = contentStreamBytes(ctx.doc, page);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     markScopeIncomplete(ctx, resources, 'page contents failed to decode');
     return;
   }
   for (const bytes of streams) {
     let ops: ContentOp[];
-    try { ops = parseContentStream(bytes); }
-    catch { markScopeIncomplete(ctx, resources, 'content stream failed to parse'); continue; }
+    try { ops = parseContentStream(bytes, ctx.doc.loadLimits, ctx.tokens); }
+    catch (caught) { rethrowLimit(caught); markScopeIncomplete(ctx, resources, 'content stream failed to parse'); continue; }
     walkOps(ctx, ops, resources, 0, seen);
   }
   walkAnnotations(ctx, page, seen);

@@ -1,4 +1,5 @@
-import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { PdfParseError, UnsupportedFeatureError, rethrowLimit } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { readFontNames } from './fontnames.js';
 import { extractTtcFace } from './ttc.js';
 import { parseOtLayout, type OtLayout } from './otlayout.js';
@@ -43,6 +44,11 @@ export class SfntFont {
   advances: number[] = [];
   /** @internal code point -> gid, from the best available Unicode cmap subtable. */
   cmap: Map<number, number> = new Map();
+  /** The policy this font was parsed under (`ibzo.12`): composite expansion
+   *  against `maxGlyphOperations`, `cmap` entries against `maxContainerItems`. */
+  limits: LoadLimits = LoadLimits.defaults;
+  /** @internal components visited by the {@link glyphOutline} call in flight. */
+  private outlineOps = 0;
   /** @internal numGlyphs+1 byte offsets into the glyf table (glyf fonts only). */
   loca: number[] = [];
   /** @internal the raw glyf table bytes (glyf fonts only). */
@@ -88,13 +94,16 @@ export class SfntFont {
    *  `[]` for empty glyphs, CFF fonts, or on malformed data. */
   glyphOutline(gid: number, depth = 0): GlyphPoint[][] {
     if (this.outlines !== 'glyf' || depth > 6) return [];
+    // (ibzo.12) Depth 6 bounds nothing on its own: a composite may list thousands
+    // of components, each itself a composite, so the visits multiply per level.
+    if (depth === 0) this.outlineOps = 0;
     const g = this.glyphData(gid);
     if (g.length < 10) return [];
     const v = new DataView(g.buffer, g.byteOffset, g.byteLength);
     const numContours = v.getInt16(0);
     try {
       return numContours < 0 ? this.decodeComposite(g, v, depth) : this.decodeSimple(g, v, numContours);
-    } catch { return []; }
+    } catch (caught) { rethrowLimit(caught); return []; }
   }
 
   private decodeSimple(g: Uint8Array, v: DataView, numContours: number): GlyphPoint[][] {
@@ -147,6 +156,7 @@ export class SfntFont {
       else if (flags & X_AND_Y_SCALE) { a = f2dot14(v.getInt16(p)); d = f2dot14(v.getInt16(p + 2)); p += 4; }
       else if (flags & TWO_BY_TWO) { a = f2dot14(v.getInt16(p)); b = f2dot14(v.getInt16(p + 2)); c = f2dot14(v.getInt16(p + 4)); d = f2dot14(v.getInt16(p + 6)); p += 8; }
       const dx = (flags & ARGS_XY) ? arg1 : 0, dy = (flags & ARGS_XY) ? arg2 : 0;
+      this.limits.enforce('maxGlyphOperations', ++this.outlineOps, 'TrueType composite glyph');
       for (const contour of this.glyphOutline(gi, depth + 1)) {
         out.push(contour.map((pt) => ({ x: a * pt.x + c * pt.y + dx, y: b * pt.x + d * pt.y + dy, on: pt.on })));
       }
@@ -188,7 +198,7 @@ export class SfntFont {
     }
     const off = this._cmapDir.get(key);
     if (off === undefined) return undefined;
-    const m = parseCmapSubtable(data, off);
+    const m = parseCmapSubtable(data, off, this.limits);
     this._cmapSubs.set(key, m);
     return m;
   }
@@ -263,10 +273,24 @@ export class SfntFont {
   }
 }
 
-function parseCmapSubtable(data: Uint8Array, base: number): Map<number, number> {
+function parseCmapSubtable(
+  data: Uint8Array, base: number, limits: LoadLimits = LoadLimits.defaults,
+): Map<number, number> {
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const format = v.getUint16(base);
-  const out = new Map<number, number>();
+  // (ibzo.12) Every entry WRITTEN is counted against maxContainerItems, not the
+  // size of the map: overlapping format 4 segments rewrite the same codes, and
+  // 32,767 of them spanning 0..0xFFFE ran 2.1 billion iterations into a map that
+  // never grew. Formats 4 and 12 expand ranges; the rest are bounded by their
+  // own fixed sizes but count all the same, so the rule has one spelling.
+  let written = 0;
+  const map = new Map<number, number>();
+  const out = {
+    set(c: number, gid: number): void {
+      limits.enforce('maxContainerItems', ++written, 'cmap subtable');
+      map.set(c, gid);
+    },
+  };
   if (format === 0) {
     for (let c = 0; c < 256; c++) {
       const gid = v.getUint8(base + 6 + c);
@@ -305,11 +329,14 @@ function parseCmapSubtable(data: Uint8Array, base: number): Map<number, number> 
     let g = base + 16;
     for (let i = 0; i < nGroups; i++) {
       const startChar = v.getUint32(g); const endChar = v.getUint32(g + 4); const startGid = v.getUint32(g + 8);
-      for (let c = startChar; c <= endChar; c++) out.set(c, startGid + (c - startChar));
+      // A code point past U+10FFFF is not Unicode, so a group reaching 0xFFFFFFFF
+      // maps nothing there — and without the clamp it asked for 2^32 entries.
+      const last = Math.min(endChar, 0x10ffff);
+      for (let c = startChar; c <= last; c++) out.set(c, startGid + (c - startChar));
       g += 12;
     }
   }
-  return out;
+  return map;
 }
 
 /** A `cmap` table's best Unicode subtable as code point -> gid.
@@ -317,7 +344,7 @@ function parseCmapSubtable(data: Uint8Array, base: number): Map<number, number> 
  *  Exported so `fontsource.ts`'s `peekCmap` reads a candidate face's coverage
  *  through THIS parser rather than a second one written beside it -- the rule
  *  `cidcmap.ts` already follows for the bundled CMaps and a document's own. */
-export function readCmap(data: Uint8Array): Map<number, number> {
+export function readCmap(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults): Map<number, number> {
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const numTables = v.getUint16(2);
   const candidates: { score: number; offset: number }[] = [];
@@ -333,7 +360,7 @@ export function readCmap(data: Uint8Array): Map<number, number> {
   }
   candidates.sort((a, b) => b.score - a.score);
   for (const c of candidates) {
-    const m = parseCmapSubtable(data, c.offset);
+    const m = parseCmapSubtable(data, c.offset, limits);
     if (m.size > 0) return m;
   }
   return new Map();
@@ -371,22 +398,23 @@ function readPostNames(data: Uint8Array | undefined): (string | undefined)[] | u
  * else — a caller may not know which kind of file it was handed, so naming a
  * face of a plain font is meaningless rather than an error.
  */
-export function parseSfnt(bytes: Uint8Array, faceIndex = 0): SfntFont {
+export function parseSfnt(bytes: Uint8Array, faceIndex = 0, limits: LoadLimits = LoadLimits.defaults): SfntFont {
   const sig = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
-  if (sig === 0x774f4646 /* wOFF */ || sig === 0x774f4632 /* wOF2 */) bytes = sfntFromWoff(bytes);
+  if (sig === 0x774f4646 /* wOFF */ || sig === 0x774f4632 /* wOF2 */) bytes = sfntFromWoff(bytes, limits);
   // A collection is rebuilt into a standalone sfnt before anything else sees
   // it — see ttc.ts for why reading one in place would be a trap.
   else if (sig === 0x74746366 /* ttcf */) bytes = extractTtcFace(bytes, faceIndex);
   // A Type 1 is converted to OpenType-CFF for the same reason: everything
   // downstream then sees an ordinary sfnt. faceIndex is ignored — a Type 1
   // holds exactly one face.
-  else if (isType1(bytes)) bytes = sfntFromType1(bytes);
+  else if (isType1(bytes)) bytes = sfntFromType1(bytes, limits);
   // A .dfont carries no signature, so this is a structural walk rather than a
   // u32 compare — which is why it goes LAST, after every cheap test. A face is
   // a subarray of one `sfnt` resource; see dfont.ts for why nothing is rebuilt.
   else if (isDfont(bytes)) bytes = extractDfontFace(bytes, faceIndex);
   const f = new SfntFont(bytes);
   const maxp = f.table('maxp')!;
+  f.limits = limits;
   f.numGlyphs = new DataView(maxp.buffer, maxp.byteOffset, maxp.byteLength).getUint16(4);
 
   const head = f.table('head')!;
@@ -402,7 +430,7 @@ export function parseSfnt(bytes: Uint8Array, faceIndex = 0): SfntFont {
   for (let i = 0; i < numberOfHMetrics; i++) f.advances.push(mv.getUint16(i * 4));
 
   const cmapTable = f.table('cmap', false); // optional: subset fonts carry no cmap
-  if (cmapTable) f.cmap = readCmap(cmapTable);
+  if (cmapTable) f.cmap = readCmap(cmapTable, limits);
 
   if (f.outlines === 'glyf') {
     const locaBytes = f.table('loca')!;

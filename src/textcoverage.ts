@@ -52,9 +52,30 @@ function canDraw(font: AuthoringFont, ch: string): boolean {
     : encodeWinAnsi(ch).length > 0;
 }
 
+/** How much of a long text is probed before the whole of it is (`pl2h`).
+ *  Ordinary text draws on its first character; a block that draws NOTHING is
+ *  normally short — an empty run, a lone newline, an unencodable word. */
+const PROBE_HEAD = 64;
+
 /** The painter's question: will showing `text` through `driver` emit anything?
- *  Exported so stamp.ts's early returns and this module state it once. */
+ *  Exported so stamp.ts's early returns and this module state it once.
+ *
+ *  A PREFIX that draws already answers it, and the whole text is probed only
+ *  when the prefix drew nothing (`pl2h`). Probing encodes: `probe` is
+ *  `encodeWinAnsi(t).length` for a Standard-14 face, so asking about a
+ *  megabyte allocates a megabyte — and a paginated block asks once per page
+ *  over a remainder that starts out as the whole text, which is quadratic.
+ *  The answer is still exactly `probe(text) === 0`, since a driver that draws
+ *  a prefix draws a text containing it. */
 export function drawsNothing(text: string, driver: FontDriver): boolean {
+  if (text.length === 0) return true;
+  if (text.length > PROBE_HEAD) {
+    // Cut at a code point boundary, so a surrogate pair is never probed as a
+    // lone half — which no face draws, and which would cost the fast path.
+    const c = text.charCodeAt(PROBE_HEAD - 1);
+    const cut = c >= 0xd800 && c <= 0xdbff ? PROBE_HEAD - 1 : PROBE_HEAD;
+    if (driver.probe(text.slice(0, cut)) > 0) return false;
+  }
   return driver.probe(text) === 0;
 }
 

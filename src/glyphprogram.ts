@@ -1,7 +1,9 @@
+import { budgetFor } from './decodebudget.js';
 import { PdfDict, PdfObject, isDict, isStream } from './types.js';
 import { SfntFont, parseSfnt } from './sfnt.js';
 import { CffFont } from './cff.js';
 import { Type1Font } from './type1.js';
+import { rethrowLimit } from './errors.js';
 
 type Resolve = (o: PdfObject | undefined) => PdfObject;
 type Inflate = (s: { dict: PdfDict; raw: Uint8Array }) => Uint8Array;
@@ -52,10 +54,15 @@ export function loadEmbeddedProgram(
   let type1: Type1Font | undefined;
 
   const ff2 = resolve(fd.get('FontFile2'));
-  if (isStream(ff2)) { try { sfnt = parseSfnt(inf(ff2)); } catch { sfnt = undefined; } }
+  // (ibzo.12) Each program parses under the policy of the document holding its
+  // stream — the registry ibzo.3 built — so no signature had to change.
+  if (isStream(ff2)) {
+    try { sfnt = parseSfnt(inf(ff2), 0, budgetFor(ff2).limits); }
+    catch (caught) { rethrowLimit(caught); sfnt = undefined; }
+  }
   if (sfnt?.outlines === 'cff') {
     const t = sfnt.table('CFF ', false);
-    if (t) { try { cff = new CffFont(t); } catch { /* keep sfnt for its cmap */ } }
+    if (t) { try { cff = new CffFont(t, sfnt.limits); } catch (caught) { rethrowLimit(caught); /* keep sfnt for its cmap */ } }
   }
 
   if (!cff) {
@@ -63,19 +70,23 @@ export function loadEmbeddedProgram(
     if (isStream(ff3)) {
       try {
         const raw = inf(ff3);
+        const limits = budgetFor(ff3).limits;
         if (isSfnt(raw)) {
-          const s = parseSfnt(raw);
+          const s = parseSfnt(raw, 0, limits);
           sfnt = sfnt ?? s;
           const t = s.table('CFF ', false);
-          if (t) cff = new CffFont(t);
-        } else cff = new CffFont(raw);
-      } catch { /* undecodable */ }
+          if (t) cff = new CffFont(t, limits);
+        } else cff = new CffFont(raw, limits);
+      } catch (caught) { rethrowLimit(caught); /* undecodable */ }
     }
   }
 
   if (!cff && !sfnt) {
     const ff1 = resolve(fd.get('FontFile'));
-    if (isStream(ff1)) { try { type1 = new Type1Font(inf(ff1)); } catch { type1 = undefined; } }
+    if (isStream(ff1)) {
+      try { type1 = new Type1Font(inf(ff1), budgetFor(ff1).limits); }
+      catch (caught) { rethrowLimit(caught); type1 = undefined; }
+    }
   }
 
   const out: EmbeddedProgram = {};

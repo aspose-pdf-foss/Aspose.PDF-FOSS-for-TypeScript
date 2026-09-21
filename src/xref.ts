@@ -3,6 +3,15 @@ import { ObjectParser } from './object-parser.js';
 import { inflateStream } from './flate.js';
 import { PdfParseError } from './errors.js';
 import { PdfDict, isDict, isStream } from './types.js';
+import { LoadLimits } from './loadlimits.js';
+
+/** Rows read so far across every section of one `readXref`, checked against
+ *  `maxObjects` as each row is PRODUCED. Deliberately not against a declared
+ *  count: a subsection header or `/Size` that overstates what follows is
+ *  damage the recovery ladder already opens, and refusing it would turn a file
+ *  that opens into one that does not. What costs memory is rows that exist. */
+interface RowBudget { limits: LoadLimits; rows: number }
+const countRow = (b: RowBudget): void => b.limits.enforce('maxObjects', ++b.rows, 'cross-reference rows');
 
 export type XrefEntry =
   | { type: 'offset'; offset: number; gen: number }
@@ -33,17 +42,31 @@ export interface XrefResult {
   revisions: PdfRevision[];
 }
 
-export function readXref(buf: Uint8Array): XrefResult {
+/** **Invariant (`ibzo.2`):** a `/Prev` cycle is DAMAGE and throws
+ *  `PdfParseError`, which `Document.Open` answers with the recovery sweep. It
+ *  used to be skipped silently, which opened the file and reported nothing. It
+ *  is not a `ResourceLimitError`: a cycle is a broken file rather than a large
+ *  one, and a caller branching on that difference must see the difference.
+ *  Only `/Prev` counts — a hybrid `/XRefStm` naming a section already read is
+ *  the ordinary shape and stays a silent skip.
+ *
+ *  **Invariant:** every section read, `/XRefStm` included, counts against
+ *  `maxXrefSections` BEFORE it is parsed. */
+export function readXref(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults): XrefResult {
   const start = findStartXref(buf);
   const entries = new Map<number, XrefEntry>();
   let trailer: PdfDict | undefined;
   const seen = new Set<number>();
   const revisions: PdfRevision[] = [];
   let pos: number | undefined = start;
+  const budget: RowBudget = { limits, rows: 0 };
+  let sections = 0;
 
-  while (pos !== undefined && !seen.has(pos)) {
+  while (pos !== undefined) {
+    if (seen.has(pos)) throw new PdfParseError(`cycle in /Prev chain at offset ${pos}`, pos);
     seen.add(pos);
-    const section = readXrefSection(buf, pos);
+    limits.enforce('maxXrefSections', ++sections, '/Prev chain');
+    const section = readXrefSection(buf, pos, budget);
     // earlier sections must not overwrite newer entries
     for (const [num, e] of section.entries) if (!entries.has(num)) entries.set(num, e);
     if (!trailer) trailer = section.trailer;
@@ -51,7 +74,8 @@ export function readXref(buf: Uint8Array): XrefResult {
     // Hybrid: /XRefStm points to a parallel xref stream
     const xrefStm = section.trailer.get('XRefStm');
     if (typeof xrefStm === 'number' && !seen.has(xrefStm)) {
-      const hs = readXrefSection(buf, xrefStm);
+      limits.enforce('maxXrefSections', ++sections, '/XRefStm');
+      const hs = readXrefSection(buf, xrefStm, budget);
       for (const [num, e] of hs.entries) if (!entries.has(num)) entries.set(num, e);
     }
     const prev = section.trailer.get('Prev');
@@ -100,17 +124,17 @@ interface Section {
   end: number;
 }
 
-function readXrefSection(buf: Uint8Array, pos: number): Section {
+function readXrefSection(buf: Uint8Array, pos: number, budget: RowBudget): Section {
   // Classic table begins with keyword `xref`. Otherwise it's an xref stream (Task 8).
   const lx = new Lexer(buf, pos);
   const save = lx.pos;
   const first = lx.next();
-  if (first.t === 'kw' && first.v === 'xref') return readClassicTable(buf, lx);
+  if (first.t === 'kw' && first.v === 'xref') return readClassicTable(buf, lx, budget);
   // Not a classic table -> delegate to xref-stream reader (added in Task 8).
-  return readXrefStream(buf, save);
+  return readXrefStream(buf, save, budget);
 }
 
-function readClassicTable(buf: Uint8Array, lx: Lexer): Section {
+function readClassicTable(buf: Uint8Array, lx: Lexer, budget: RowBudget): Section {
   const entries = new Map<number, XrefEntry>();
   for (;;) {
     const t = lx.next();
@@ -120,6 +144,7 @@ function readClassicTable(buf: Uint8Array, lx: Lexer): Section {
     const count = lx.next();
     if (count.t !== 'num') throw new PdfParseError('expected subsection count', count.pos);
     for (let i = 0; i < (count.v as number); i++) {
+      countRow(budget);
       const off = lx.next(); const gen = lx.next(); const kind = lx.next();
       if (off.t !== 'num' || gen.t !== 'num' || kind.t !== 'kw')
         throw new PdfParseError('malformed xref entry', off.pos);
@@ -129,16 +154,18 @@ function readClassicTable(buf: Uint8Array, lx: Lexer): Section {
       else if (kind.v === 'f') entries.set(num, { type: 'free', gen: gen.v as number });
     }
   }
-  const trailer = new ObjectParser(lx).parseObject();
+  const trailer = new ObjectParser(lx, undefined, budget.limits).parseObject();
   if (!isDict(trailer)) throw new PdfParseError('trailer is not a dict');
   return { entries, trailer, end: lx.pos };
 }
 
-export function readXrefStream(buf: Uint8Array, pos: number): Section {
+export function readXrefStream(
+  buf: Uint8Array, pos: number, budget: RowBudget = { limits: LoadLimits.defaults, rows: 0 },
+): Section {
   // The lexer is held so its position can be read back: it lands past the
   // stream payload, which is where the revision-end scan must begin.
   const lx = new Lexer(buf, pos);
-  const parser = new ObjectParser(lx);
+  const parser = new ObjectParser(lx, undefined, budget.limits);
   const { value } = parser.parseIndirectObject();
   if (!isStream(value)) throw new PdfParseError('xref stream object is not a stream', pos);
   const dict = value.dict;
@@ -157,6 +184,7 @@ export function readXrefStream(buf: Uint8Array, pos: number): Section {
     const cnt = indexArr[s + 1];
     for (let i = 0; i < cnt; i++, objNum++) {
       if (p + rowLen > data.length) break;
+      countRow(budget);
       const f0 = w0 === 0 ? 1 : readField(w0); // default type 1 when W[0]=0
       const f1 = readField(w1);
       const f2 = readField(w2);

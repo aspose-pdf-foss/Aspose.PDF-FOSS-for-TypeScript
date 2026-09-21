@@ -2,6 +2,7 @@
 // Orchestrates segment parsing and page assembly; the entropy-coded region and
 // symbol-dictionary bodies live in jbig2generic.ts / jbig2symbol.ts / jbig2text.ts.
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { decodeGeneric } from './jbig2generic.js';
 import { decodeSymbolDict } from './jbig2symbol.js';
 import { decodeTextRegion } from './jbig2text.js';
@@ -87,9 +88,16 @@ export function packBitmap(bm: Bitmap): Uint8Array {
 /** Region segment information field (T.88 §7.4.1): the 17-byte header shared by
  *  every region segment. `bodyStart` is the offset just past it. */
 export interface RegionInfo { width: number; height: number; x: number; y: number; combOp: number; bodyStart: number }
-export function parseRegionInfo(data: Uint8Array, start: number): RegionInfo {
+export function parseRegionInfo(
+  data: Uint8Array, start: number, limits: LoadLimits = LoadLimits.defaults,
+): RegionInfo {
   const u32 = (o: number) => ((data[o] << 24) | (data[o + 1] << 16) | (data[o + 2] << 8) | data[o + 3]) >>> 0;
-  return { width: u32(start), height: u32(start + 4), x: u32(start + 8), y: u32(start + 12), combOp: data[start + 16] & 7, bodyStart: start + 17 };
+  const width = u32(start), height = u32(start + 4);
+  // (ibzo.3) EVERY region kind reads its size here, and every one then sizes a
+  // bitmap from it — generic, text, refinement and halftone alike — so this is
+  // the one place the declared region is refused.
+  limits.enforce('maxImagePixels', width * height, 'JBIG2 region');
+  return { width, height, x: u32(start + 8), y: u32(start + 12), combOp: data[start + 16] & 7, bodyStart: start + 17 };
 }
 
 /** An intermediate region segment's decoded result (T.88 §7.4): the bitmap plus
@@ -193,7 +201,11 @@ export function selectSymbolTables(flags: number, custom: HuffmanTable[], at = 0
 
 /** Decode an embedded JBIG2 image stream to packed 1-bpp samples. `globals` is
  *  the decoded `/JBIG2Globals` stream (shared segments), if any. */
-export function decodeJbig2(data: Uint8Array, globals: Uint8Array | undefined, width: number, height: number): Uint8Array {
+export function decodeJbig2(
+  data: Uint8Array, globals: Uint8Array | undefined, width: number, height: number,
+  limits: LoadLimits = LoadLimits.defaults,
+): Uint8Array {
+  limits.enforce('maxImagePixels', width * height, 'JBIG2 page');
   const page = newBitmap(width, height);
   const located: Located[] = [
     ...(globals ? parseSegments(globals).map((h) => ({ h, src: globals })) : []),
@@ -244,12 +256,12 @@ export function decodeJbig2(data: Uint8Array, globals: Uint8Array | undefined, w
         const tables = huffman
           ? selectSymbolTables(flags, customTables(h, tablesBySeg), h.dataStart)
           : undefined;
-        const syms = decodeSymbolDict(src, o, h.dataStart + h.dataLength, { huffman, refAgg, template, at, numExSyms, numNewSyms, inputSymbols, rTemplate, rAt, tables });
+        const syms = decodeSymbolDict(src, o, h.dataStart + h.dataLength, { huffman, refAgg, template, at, numExSyms, numNewSyms, inputSymbols, rTemplate, rAt, tables, limits });
         symbolsBySeg.set(h.number, syms);
         break;
       }
       case 36: case 38: case 39: { // generic region: 36 intermediate, 38/39 immediate (lossless)
-        const ri = parseRegionInfo(src, h.dataStart);
+        const ri = parseRegionInfo(src, h.dataStart, limits);
         const flags = src[ri.bodyStart];
         const mmr = (flags & 1) !== 0;
         const template = (flags >> 1) & 3;
@@ -267,7 +279,7 @@ export function decodeJbig2(data: Uint8Array, globals: Uint8Array | undefined, w
         break;
       }
       case 4: case 6: case 7: { // text region: 4 intermediate, 6/7 immediate (lossless)
-        const ri = parseRegionInfo(src, h.dataStart);
+        const ri = parseRegionInfo(src, h.dataStart, limits);
         const f = (src[ri.bodyStart] << 8) | src[ri.bodyStart + 1];
         const huffman = (f & 1) !== 0;
         const refine = (f & 2) !== 0;
@@ -320,7 +332,7 @@ export function decodeJbig2(data: Uint8Array, globals: Uint8Array | undefined, w
         // 17-byte region info + 1 flags byte + HGW/HGH/HGX/HGY (4 each) +
         // HRX/HRY (2 each) is 38 bytes before any coded data.
         if (h.dataLength < 38) throw new PdfParseError('JBIG2: truncated halftone region segment', h.dataStart);
-        const ri = parseRegionInfo(src, h.dataStart);
+        const ri = parseRegionInfo(src, h.dataStart, limits);
         const u32 = (o: number) => ((src[o] << 24) | (src[o + 1] << 16) | (src[o + 2] << 8) | src[o + 3]) >>> 0;
         const flags = src[ri.bodyStart];
         const mmr = (flags & 1) !== 0;
@@ -330,6 +342,9 @@ export function decodeJbig2(data: Uint8Array, globals: Uint8Array | undefined, w
         const defPixel = (flags >> 7) & 1;
         const o = ri.bodyStart + 1;
         const gridWidth = u32(o), gridHeight = u32(o + 4);
+        // HGW x HGH sizes the skip bitmap and the grayscale value array, and it
+        // is independent of the region's own size, which may be 1x1.
+        limits.enforce('maxImagePixels', gridWidth * gridHeight, 'JBIG2 halftone grid');
         // HGX/HGY are SIGNED and in 1/256 pel; HRX/HRY are 8.8 fixed point.
         const gridX = s32(src, o + 8), gridY = s32(src, o + 12);
         const vectorX = (src[o + 16] << 8) | src[o + 17];
@@ -349,7 +364,7 @@ export function decodeJbig2(data: Uint8Array, globals: Uint8Array | undefined, w
         // 17-byte region info + 1 flags byte is the minimum; anything shorter is
         // a damaged file, and parsing on would build a bitmap out of undefined.
         if (h.dataLength < 18) throw new PdfParseError('JBIG2: truncated refinement region segment', h.dataStart);
-        const ri = parseRegionInfo(src, h.dataStart);
+        const ri = parseRegionInfo(src, h.dataStart, limits);
         const flags = src[ri.bodyStart];
         const template = flags & 1;
         const tpgron = ((flags >> 1) & 1) !== 0;

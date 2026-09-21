@@ -1,5 +1,6 @@
 import { parseXml, XmlNode } from './xml.js';
 import { PdfArray, PdfDict, PdfObject, PdfStream, name as pdfName } from './types.js';
+import { rethrowLimit } from './errors.js';
 
 /** Adobe's COS-as-XML encoding, read-only.
  *
@@ -129,7 +130,7 @@ export function decodeCosXmlAppearance(bytes: Uint8Array): PdfStream | undefined
   let root: XmlNode;
   try {
     root = parseXml(bytes);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
   if (!is(root, 'DICT') || root.attrs.get('KEY') !== 'AP') return undefined;

@@ -307,7 +307,7 @@ function drawImage(
 export function drawImageOnPages(
   doc: Document, pages: Page[], data: Uint8Array, p: Placement, width?: number,
 ): void {
-  const built = buildImageXObject(data);
+  const built = buildImageXObject(data, undefined, 0, doc.loadLimits);
   if (built.smask) built.stream.dict.set('SMask', doc.allocObject(built.smask));
   const imgRef = doc.allocObject(built.stream);
   const img = doc.resolve(imgRef);

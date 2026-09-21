@@ -7,7 +7,7 @@ import {
 } from './rebuild.js';
 import { decodeObjStm, ObjStmDamage } from './objstm.js';
 import { PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isStream, isName, isArray, isString, ref, name } from './types.js';
-import { PdfParseError, UnsupportedFeatureError, InvalidPasswordError } from './errors.js';
+import { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, rethrowLimit } from './errors.js';
 import { Metadata, MetadataUpdate, readMetadata, applyUpdate, decodePdfText, encodePdfText } from './metadata.js';
 import { StructTreeRoot } from './struct.js';
 import { renderDocumentToHtml, HtmlOptions } from './html.js';
@@ -102,7 +102,7 @@ import { diffObjects } from './incrementaldelta.js';
 import { DEFAULT_PLACEHOLDER_BYTES, fillSignature } from './sigplaceholder.js';
 import { buildTimeStampRequest, extractTimeStampToken, type TimestampProvider } from './rfc3161.js';
 import { Flow, type FlowOptions } from './flow.js';
-import type { MarkdownFlowOptions } from './mdflow.js';
+import { checkOnSkipped, type MarkdownFlowOptions } from './mdflow.js';
 import { documentTitle, type HtmlFlowOptions } from './htmlflow.js';
 import { parseHtml } from './htmltree.js';
 import type { HtmlDocument } from './htmldom.js';
@@ -111,6 +111,8 @@ import type { NotRendered } from './htmlreport.js';
 import type { MdDocument } from './mdast.js';
 import { FloatingBox, type FloatBoxOptions } from './floatbox.js';
 import { PageFormat } from './pageformat.js';
+import { LoadLimits } from './loadlimits.js';
+import { DecodeBudget, registerStream } from './decodebudget.js';
 import type { DigestAlgorithm } from './sigalg.js';
 import { buildSignedData, CmsSigner, commitmentTypeOid } from './cms.js';
 import { Signer, resolveSigner } from './signer.js';
@@ -145,7 +147,7 @@ import { X509Certificate, KeyObject } from 'node:crypto';
 import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { buildEmbeddedFont } from './fontembed.js';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { systemFontFolders, indexFolder, peekCmap, type FaceRecord } from './fontsource.js';
 import { readFontNames } from './fontnames.js';
 import {
@@ -194,6 +196,14 @@ export interface OpenOptions {
   password?: string;
   /** Recipient credential for a public-key (PubSec) document. */
   recipient?: PubSecRecipient;
+  /** Bounds on what this document may cost to open (`ibzo`). Defaults to
+   *  {@link LoadLimits.defaults}; pass `LoadLimits.unlimited()` for input you
+   *  trust. Reads back as {@link Document.loadLimits}.
+   *
+   *  A `LoadLimits` and never a bare patch: one shape at the boundary, so every
+   *  value reaching a document has been through that class's own validation.
+   *  `LoadLimits.defaults.with({ ... })` is how a caller tweaks one field. */
+  limits?: LoadLimits;
 }
 
 /** True when the file ends with a startxref whose value is a plausible offset
@@ -423,11 +433,38 @@ export class Document {
    *  undefined after a clean parse. */
   recovery?: RecoveryReport;
 
+  /** The resource policy this document was opened under (`ibzo`) — what the
+   *  caller passed as {@link OpenOptions.limits}, else {@link
+   *  LoadLimits.defaults}. Always a complete policy, never the patch a caller
+   *  wrote, so reading a field here always answers.
+   *
+   *  **Invariant (`ibzo.2`):** it is set in the CONSTRUCTOR, before the page
+   *  tree is walked, because that walk is bounded by it. Assigned after
+   *  construction, as it was until `ibzo.2`, the page tree ran under the
+   *  defaults whatever the caller asked for — a lower limit silently had no
+   *  effect on the one graph `Open` itself walks.
+   *
+   *  The parse boundary (`ibzo.2`) is enforced; the filter and codec boundary
+   *  (`ibzo.3`) and the content and render boundary (`ibzo.4`) are not yet. */
+  loadLimits: LoadLimits;
+
+  /** @internal What this document's streams have cost to decode (`ibzo.3`),
+   *  shared by every stream registered to it. See `decodebudget.ts`. */
+  readonly decodeBudget: DecodeBudget;
+
   private constructor(
     /** Every indirect object, eagerly parsed and live-mutable. */
     private readonly objects: Map<number, PdfObject>,
     readonly trailer: PdfDict,
+    limits: LoadLimits = LoadLimits.defaults,
+    budget?: DecodeBudget,
   ) {
+    this.loadLimits = limits;
+    this.decodeBudget = budget ?? new DecodeBudget(limits);
+    // Every stream the document holds decodes under its policy, whether it was
+    // parsed, merged in or built by `New` — the constructor is the one place
+    // all three pass through. Re-registering a parsed stream is a no-op.
+    for (const obj of objects.values()) if (isStream(obj)) registerStream(obj, this.decodeBudget);
     const tree: PageTree = buildPages(this);
     this.Pages = tree.pages;
     this.pageObjNums = tree.pageObjNums;
@@ -545,7 +582,7 @@ export class Document {
         const src = this.objects.get(num);
         const clone: PdfDict = isDict(src) ? new Map(src) : new Map<string, PdfObject>();
         num = ++maxObjNum;
-        this.objects.set(num, clone);
+        this.install(num, clone);
       }
       used.add(num);
       const pageDict = this.objects.get(num);
@@ -560,16 +597,27 @@ export class Document {
   }
 
   static Open(buf: Uint8Array, opts: OpenOptions = {}): Document {
+    const limits = opts.limits ?? LoadLimits.defaults;
+    // Before anything is read. The bound is on what a caller handed us, so it is
+    // checked once against the whole input rather than per structure.
+    limits.enforce('maxFileBytes', buf.length, 'input');
+    // One decode budget for the whole Open, shared by every build pass and then
+    // by the document, so object streams decoded while parsing count against
+    // the same running total as everything decoded afterwards.
+    const budget = new DecodeBudget(limits);
     let entries = new Map<number, XrefEntry>();
     let trailer: PdfDict | undefined;
     let xrefFailure: RecoveryReport | undefined;
     let revisions: PdfRevision[] = [];
     try {
-      const r = readXref(buf);
+      const r = readXref(buf, limits);
       entries = r.entries;
       trailer = r.trailer;
       revisions = r.revisions;
-    } catch (e) {
+    } catch (e) { rethrowLimit(e);
+      // A bound reached is not damage: sweeping here is exactly the brute-force
+      // scan over a hostile file the bound just refused.
+      if (e instanceof ResourceLimitError) throw e;
       const detail = e instanceof Error ? e.message : String(e);
       // Classify by what is actually wrong, not by the message text: if the
       // startxref pointer is missing, malformed or out of range, the pointer is
@@ -584,7 +632,7 @@ export class Document {
     // entry map and the trailer come from the sweep. This is the lossy case —
     // objects inside an /ObjStm carry no `N G obj` header and cannot be found.
     if (xrefFailure) {
-      const sweep = sweepObjects(buf);
+      const sweep = sweepObjects(buf, limits);
       // dxfk.1's first message, preserved: "nothing in the file" and "objects
       // but no catalog" mean very different things to a caller.
       if (sweep.candidates.size === 0) throw new PdfParseError('no indirect objects found');
@@ -594,7 +642,7 @@ export class Document {
         merged.set(num, { type: 'offset', offset: c.offset, gen: c.gen });
       }
       // A surviving trailer always wins; synthesis runs only when there is none.
-      const existing = Document.recoverTrailer(buf, sweep, merged);
+      const existing = Document.recoverTrailer(buf, sweep, merged, limits);
       // With no trailer there is no /Encrypt reference and no /ID. The dict is
       // findable by shape; /ID is not findable at all, and whether that is fatal
       // depends on the handler: R>=5 (AES-256) and PubSec derive their key
@@ -604,7 +652,7 @@ export class Document {
         encrypt = findEncryptDict(merged, (n) => {
           const e = merged.get(n);
           if (!e || e.type !== 'offset') return null;
-          return new ObjectParser(new Lexer(buf, e.offset)).parseIndirectObject().value;
+          return new ObjectParser(new Lexer(buf, e.offset), undefined, limits).parseIndirectObject().value;
         });
         const filter = encrypt?.dict.get('Filter');
         const R = encrypt?.dict.get('R');
@@ -620,7 +668,7 @@ export class Document {
       // and assemble the real trailer afterwards from what that one pass produced.
       const provisional: PdfDict = existing ?? new Map<string, PdfObject>();
       if (encrypt) provisional.set('Encrypt', ref(encrypt.num));
-      const pass = Document.build(buf, merged, provisional, opts, sweep.candidates);
+      const pass = Document.build(buf, merged, provisional, opts, sweep.candidates, budget);
       let recovered = existing;
       if (!recovered) {
         const rebuilt = rebuildTrailer(pass.objects, merged, encrypt);
@@ -630,7 +678,7 @@ export class Document {
       xrefFailure.repaired = [...merged.keys()];
       xrefFailure.lost = [...pass.failed, ...pass.lostInObjStm];
       if (pass.objStmDamage.length > 0) xrefFailure.objectStreams = pass.objStmDamage;
-      const doc = new Document(pass.objects, recovered);
+      const doc = new Document(pass.objects, recovered, limits, budget);
       doc.originalBytes = buf;
       doc.openOptions = opts;
       doc.revisions = revisions;
@@ -643,7 +691,7 @@ export class Document {
     // Unreachable: readXref either threw (handled above) or produced a trailer.
     if (!trailer) throw new PdfParseError('no trailer found');
 
-    let pass = Document.build(buf, entries, trailer, opts, undefined);
+    let pass = Document.build(buf, entries, trailer, opts, undefined, budget);
 
     // Three damage signals reachable from here: an object that would not parse
     // at the offset the xref gave, a /Root that is not a catalog (a byte shift
@@ -676,7 +724,7 @@ export class Document {
     // inside an /ObjStm has no `N G obj` header, so there is nothing to find.
     // Sweeping anyway would be pure cost on a file whose xref read cleanly.
     if (report && report.reason !== 'objstm-undecodable') {
-      const sweep = sweepObjects(buf);
+      const sweep = sweepObjects(buf, limits);
       // Merge, never replace: entries the xref already had — including every
       // `compressed` one, which a sweep can never find — are kept, and swept
       // offsets fill only the gaps.
@@ -687,7 +735,7 @@ export class Document {
           merged.set(num, { type: 'offset', offset: c.offset, gen: c.gen });
         }
       }
-      pass = Document.build(buf, merged, trailer, opts, sweep.candidates);
+      pass = Document.build(buf, merged, trailer, opts, sweep.candidates, budget);
       report.repaired = pass.repaired;
       // Strictness: reaching here means readXref succeeded, and the reason being
       // `object-parse-failure` means /Root resolved to a catalog (otherwise the
@@ -713,7 +761,7 @@ export class Document {
       if (pass.objStmDamage.length > 0) report.objectStreams = pass.objStmDamage;
     }
 
-    const doc = new Document(pass.objects, trailer);
+    const doc = new Document(pass.objects, trailer, limits, budget);
     doc.originalBytes = buf;
     doc.openOptions = opts;
     doc.revisions = revisions;
@@ -729,22 +777,22 @@ export class Document {
    *  file, which has no `trailer` keyword anywhere. Returns undefined when
    *  neither survives, which is the case trailer synthesis handles. */
   private static recoverTrailer(
-    buf: Uint8Array, sweep: SweepResult, entries: Map<number, XrefEntry>,
+    buf: Uint8Array, sweep: SweepResult, entries: Map<number, XrefEntry>, limits: LoadLimits,
   ): PdfDict | undefined {
     for (const at of sweep.trailerOffsets) {
       try {
-        const d = new ObjectParser(new Lexer(buf, at)).parseObject();
+        const d = new ObjectParser(new Lexer(buf, at), undefined, limits).parseObject();
         if (isDict(d) && d.get('Root') !== undefined) return d;
-      } catch { /* try the next one */ }
+      } catch (e) { rethrowLimit(e); /* try the next one */ }
     }
     for (const e of entries.values()) {
       if (e.type !== 'offset') continue;
       try {
-        const v = new ObjectParser(new Lexer(buf, e.offset)).parseIndirectObject().value;
+        const v = new ObjectParser(new Lexer(buf, e.offset), undefined, limits).parseIndirectObject().value;
         if (!isStream(v)) continue;
         const t = v.dict.get('Type');
         if (isName(t) && t.name === 'XRef' && v.dict.get('Root') !== undefined) return v.dict;
-      } catch { /* try the next one */ }
+      } catch (err) { rethrowLimit(err); /* try the next one */ }
     }
     return undefined;
   }
@@ -768,7 +816,9 @@ export class Document {
     trailer: PdfDict,
     opts: OpenOptions,
     alternates: Map<number, ObjCandidate[]> | undefined,
+    budget: DecodeBudget,
   ): BuildResult {
+    const limits = opts.limits ?? LoadLimits.defaults;
     // Raw (un-decrypted) resolver for the /Encrypt dict and /ID — these are never
     // encrypted, and must be read before a Decryptor exists.
     const rawObject = (num: number): PdfObject => {
@@ -777,7 +827,7 @@ export class Document {
       const p = new ObjectParser(new Lexer(buf, e.offset), (lenObj) => {
         const r = isRef(lenObj) ? rawObject(lenObj.num) : lenObj;
         return typeof r === 'number' ? r : undefined;
-      });
+      }, limits);
       return p.parseIndirectObject().value;
     };
     const resolveRaw = (o: PdfObject | undefined): PdfObject =>
@@ -842,7 +892,7 @@ export class Document {
           const parser = new ObjectParser(new Lexer(buf, entry.offset), (lenObj) => {
             const r = isRef(lenObj) ? parseEntry(lenObj.num) : lenObj;
             return typeof r === 'number' ? r : undefined;
-          });
+          }, limits);
           value = parser.parseIndirectObject().value;
           // Decrypt top-level offset objects, except the /Encrypt dict and any
           // cross-reference stream (/Type /XRef is never encrypted).
@@ -855,7 +905,7 @@ export class Document {
           if (!map) {
             const s = parseEntry(entry.streamObj);
             if (!isStream(s)) throw new PdfParseError(`object stream ${entry.streamObj} is not a stream`);
-            const r = decodeObjStm(s, entry.streamObj);
+            const r = decodeObjStm(s, entry.streamObj, limits);
             if (r.damage) damagedStreams.set(entry.streamObj, r.damage);
             map = r.objects;
             objStmCache.set(entry.streamObj, map);
@@ -865,6 +915,7 @@ export class Document {
           value = map.get(num) ?? null;
           // Objects from an object stream are already plaintext — do not decrypt.
         }
+        if (isStream(value)) registerStream(value, budget);
         objects.set(num, value);
         return value;
       } finally {
@@ -882,7 +933,10 @@ export class Document {
     // decryptor exists — an /ObjStm payload is encrypted — and parseEntry is
     // the loader that decrypts, which is why it is called here and not earlier.
     if (alternates) {
-      const ex = expandObjectStreams(entries, parseEntry);
+      const ex = expandObjectStreams(entries, parseEntry, limits);
+      // What the containers DECLARED joins what the sweep found; together they
+      // are the objects this recovery will try to build.
+      limits.enforce('maxObjects', entries.size, 'recovered objects');
       repaired.push(...ex.added);
       for (const d of ex.damaged) damagedStreams.set(d.container, d);
     }
@@ -890,7 +944,8 @@ export class Document {
     for (const num of entries.keys()) {
       try {
         parseEntry(num);
-      } catch {
+      } catch (e) {
+        rethrowLimit(e);
         objects.delete(num);
         // Last occurrence wins, but only if it parses: on a tail-truncated file
         // the newest copy of an object is precisely the broken one, so walk the
@@ -907,7 +962,8 @@ export class Document {
             parseEntry(num);
             ok = true;
             repaired.push(num);
-          } catch {
+          } catch (e) {
+            rethrowLimit(e);
             objects.delete(num);
           }
         }
@@ -929,7 +985,8 @@ export class Document {
           parseEntry(num);
           failed.delete(num);
           progress = true;
-        } catch {
+        } catch (e) {
+          rethrowLimit(e);
           objects.delete(num);
         }
       }
@@ -959,6 +1016,11 @@ export class Document {
 
   /** Open a PDF from a file path (synchronous), delegating to Open. */
   static OpenFile(fileName: string, opts: OpenOptions = {}): Document {
+    // From the SIZE, before reading: reading first is the exhaustion the bound
+    // exists to prevent, and past 2 GiB readFileSync throws its own error, which
+    // a caller could not tell from any other I/O failure. Open re-checks the
+    // buffer, which costs nothing and covers a file that grew in between.
+    (opts.limits ?? LoadLimits.defaults).enforce('maxFileBytes', statSync(fileName).size, fileName);
     return Document.Open(new Uint8Array(readFileSync(fileName)), opts);
   }
 
@@ -983,9 +1045,21 @@ export class Document {
   }
 
   /** @internal Allocate a fresh indirect object, returning its ref. */
+  /** The ONE place an object enters the live map (`ibzo.7`): a stream is tied
+   *  to this document's decode budget on the way in, so it decodes under the
+   *  caller's policy and is charged to the running total however it arrived —
+   *  allocated, replaced, imported from another document or merged. Every other
+   *  insertion site called `objects.set` directly, and a page brought in with
+   *  `AddPage` decoded under the defaults. `test/limits-acquired.test.ts`
+   *  fails the build naming any direct `this.objects.set` outside this method. */
+  private install(num: number, obj: PdfObject): void {
+    if (isStream(obj)) registerStream(obj, this.decodeBudget);
+    this.objects.set(num, obj);
+  }
+
   allocObject(obj: PdfObject): PdfRef {
     const n = this.maxObjNum() + 1;
-    this.objects.set(n, obj);
+    this.install(n, obj);
     this.markModified();
     return ref(n);
   }
@@ -994,7 +1068,7 @@ export class Document {
    *  indirect reference to it sees the new value (used to rewrite a shared
    *  stream — whose `raw` is immutable — without repointing each referrer). */
   replaceObject(num: number, obj: PdfObject): void {
-    this.objects.set(num, obj);
+    this.install(num, obj);
     this.markModified();
   }
 
@@ -1421,19 +1495,20 @@ export class Document {
     const rootRef = this.catalog().get('Outlines');
     if (!isRef(rootRef)) return;
     const seen = new Set<number>();
-    const walk = (r: PdfObject): void => {
+    const walk = (r: PdfObject, depth: number): void => {
       let cur = r;
+      if (isRef(cur)) this.loadLimits.enforce('maxNestingDepth', depth, 'outline');
       while (isRef(cur) && !seen.has(cur.num)) {
         seen.add(cur.num);
         const d = this.objects.get(cur.num);
         const next = isDict(d) ? d.get('Next') ?? null : null;
-        if (isDict(d)) walk(d.get('First') ?? null);
+        if (isDict(d)) walk(d.get('First') ?? null, depth + 1);
         this.objects.delete(cur.num);
         cur = next;
       }
     };
     const root = this.objects.get(rootRef.num);
-    if (isDict(root)) walk(root.get('First') ?? null);
+    if (isDict(root)) walk(root.get('First') ?? null, 1);
     this.objects.delete(rootRef.num);
   }
 
@@ -1445,7 +1520,7 @@ export class Document {
     this.deleteOutlineSubtree();
     if (items.length === 0) { catalog.delete('Outlines'); return; }
     const rootNum = buildOutlineObjects(items, {
-      alloc: (obj) => { const n = this.maxObjNum() + 1; this.objects.set(n, obj); return n; },
+      alloc: (obj) => { const n = this.maxObjNum() + 1; this.install(n, obj); return n; },
       pageRef: (p) => this.pageRefForNumber(p),
     });
     catalog.set('Outlines', ref(rootNum));
@@ -1601,7 +1676,7 @@ export class Document {
     if (existing) return existing;
     const num = this.maxObjNum() + 1;
     const info: PdfDict = new Map<string, PdfObject>();
-    this.objects.set(num, info);
+    this.install(num, info);
     this.trailer.set('Info', ref(num));
     return info;
   }
@@ -1815,7 +1890,7 @@ export class Document {
    *  Throws {@link UnsupportedFeatureError}/{@link PdfParseError} for an
    *  unsupported container or malformed font. */
   AddFont(bytes: Uint8Array, opts: AddFontOptions = {}): EmbeddedFont {
-    const font = new EmbeddedFont(parseSfnt(bytes, opts.faceIndex ?? 0));
+    const font = new EmbeddedFont(parseSfnt(bytes, opts.faceIndex ?? 0, this.loadLimits));
     font.shape = opts.shape ?? false;
     this.embeddedFonts.push(font);
     return font;
@@ -1947,7 +2022,7 @@ export class Document {
     // Parsed HERE rather than on first use, which is what makes the throw
     // land at the call that supplied the bytes — and it populates the load
     // memo, so the face is parsed exactly once however often it is drawn.
-    const sfnt = parseSfnt(bytes, faceIndex);
+    const sfnt = parseSfnt(bytes, faceIndex, this.loadLimits);
     // Names come off the EXTRACTED face (`sfnt.raw`), not the buffer handed
     // in: a collection's own bytes carry a `ttcf` header that states no names
     // at all, so reading them from the input would answer nothing for every
@@ -1993,8 +2068,8 @@ export class Document {
     if (hit !== undefined) return hit ?? undefined;
     let font: SfntFont | null = null;
     try {
-      font = parseSfnt(new Uint8Array(readFileSync(face.path)), face.faceIndex);
-    } catch {
+      font = parseSfnt(new Uint8Array(readFileSync(face.path)), face.faceIndex, this.loadLimits);
+    } catch (caught) { rethrowLimit(caught);
       font = null;   // indexable, not parseable
     }
     this.renderFaces.set(key, font);
@@ -2103,7 +2178,7 @@ export class Document {
       // to AddFont.
       font = this.AddFont(new Uint8Array(readFileSync(hit.path)),
         { shape: opts.shape, faceIndex: hit.faceIndex });
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       return undefined;   // readable enough to index, not enough to parse
     }
     this.fontsByPath.set(key, font);
@@ -2167,7 +2242,7 @@ export class Document {
     for (const font of this.embeddedFonts) {
       if (font.objNum === undefined || font.usedGids.size === 0) continue;
       const type0 = buildEmbeddedFont(font.sfnt, font.usedGids, (obj) => this.allocObject(obj), font.toUnicode);
-      this.objects.set(font.objNum, type0);
+      this.install(font.objNum, type0);
     }
   }
 
@@ -2700,7 +2775,7 @@ export class Document {
     pagesNode.set('Type', name('Pages'));
     pagesNode.set('Kids', kids);
     pagesNode.set('Count', kids.length);
-    this.objects.set(rootNum, pagesNode);
+    this.install(rootNum, pagesNode);
     const tree = buildPages(this);
     this.Pages.length = 0;
     this.Pages.push(...tree.pages);
@@ -2717,7 +2792,7 @@ export class Document {
       ['MediaBox', format.mediaBox()],
       ['Resources', new Map<string, PdfObject>()],
     ]);
-    this.objects.set(num, page);
+    this.install(num, page);
     return num;
   }
 
@@ -2731,7 +2806,7 @@ export class Document {
     const offset = this.maxObjNum();
     for (const [num, obj] of sub) {
       offsetRefs(obj, offset);
-      this.objects.set(num + offset, obj);
+      this.install(num + offset, obj);
     }
     const newNum = pageNum + offset;
     const page = this.objects.get(newNum);
@@ -2805,14 +2880,20 @@ export class Document {
     const title = options.title;
     if (title !== undefined && (typeof title !== 'string' || title === ''))
       throw new TypeError('title must be a non-empty string');
+    checkOnSkipped(options);
     const flow = new Flow(this, options);
-    const { skipped } = flow.AddMarkdown(src, options);
+    // Placement-time reports (kk3q), collected and concatenated on the way out
+    // as Document.AddHtml does — never appended to the array flow.AddMarkdown
+    // handed back. A caller's own sink still fires.
+    const late: string[] = [];
+    const onSkipped = (s: string): void => { late.push(s); options.onSkipped?.(s); };
+    const { skipped } = flow.AddMarkdown(src, { ...options, onSkipped });
     const pages = flow.Render();
     if (title !== undefined) {
       this.SetMetadata({ title });   // mirrors to XMP dc:title on its own
       this.DisplayDocTitle = true;
     }
-    return { pages, skipped };
+    return { pages, skipped: [...skipped, ...late] };
   }
 
   /** Render a whole HTML document, appending freshly sized pages to the end of
@@ -2939,7 +3020,7 @@ export class Document {
         nn = ++next;
         map.set(r.num, nn);
         const cloned = cloneShallow(other.getObject(r.num));
-        this.objects.set(nn, cloned);
+        this.install(nn, cloned);
         queue.push(cloned);
       }
       return ref(nn);
@@ -2964,7 +3045,7 @@ export class Document {
         leaf.set('Annots', isArray(annots) ? policy.sanitizeAnnots(other, annots) : []);
       }
       const leafNum = ++next;
-      this.objects.set(leafNum, leaf);
+      this.install(leafNum, leaf);
       queue.push(leaf);
       leafNums.push(leafNum);
     }

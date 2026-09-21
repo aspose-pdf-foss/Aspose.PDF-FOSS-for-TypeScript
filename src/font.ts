@@ -1,3 +1,4 @@
+import { budgetFor } from './decodebudget.js';
 import { PdfDict, PdfObject, PdfStream, isDict, isName, isArray, isStream, isString } from './types.js';
 import type { Matrix } from './text.js';
 import {
@@ -9,7 +10,7 @@ import { parseCMap, CMap } from './cmap.js';
 import { CidCMap, parseCidCMap } from './cidcmap.js';
 import { getPredefinedCMap } from './predefcmap.js';
 import { CidToUnicode, getCidToUnicode } from './cidunicode.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { gidForProgram, gidForCid, loadEmbeddedProgram, programAdvance } from './glyphprogram.js';
 
 type Resolve = (o: PdfObject | undefined) => PdfObject;
@@ -296,7 +297,7 @@ export class TextFont {
     this.italic = style.italic;
 
     const tu = resolve(dict.get('ToUnicode'));
-    if (isStream(tu)) this.toUnicode = parseCMap(inflate(tu));
+    if (isStream(tu)) this.toUnicode = parseCMap(inflate(tu), budgetFor(tu).limits);
 
     if (this.isType0) {
       this.encoding = resolveEncodingCMap(resolve(dict.get('Encoding')), resolve, inflate, 0);
@@ -727,7 +728,7 @@ function resolveEncodingCMap(
 
   if (isStream(enc)) {
     let parts;
-    try { parts = parseCidCMap(inflate(enc)); } catch { return undefined; }
+    try { parts = parseCidCMap(inflate(enc)); } catch (caught) { rethrowLimit(caught); return undefined; }
     // The stream dict's /UseCMap outranks the name inside the stream: it is the
     // PDF object the document actually points at.
     const useObj = resolve(enc.dict.get('UseCMap'));
@@ -979,7 +980,7 @@ function buildCidProgramWidths(
   let cidToGid: Uint8Array | undefined;
   const c2g = resolve(cidFont.get('CIDToGIDMap'));
   if (isStream(c2g)) {
-    try { cidToGid = inflate(c2g as { dict: PdfDict; raw: Uint8Array }); } catch { cidToGid = undefined; }
+    try { cidToGid = inflate(c2g as { dict: PdfDict; raw: Uint8Array }); } catch (caught) { rethrowLimit(caught); cidToGid = undefined; }
   }
 
   const cache = new Map<number, number | undefined>();

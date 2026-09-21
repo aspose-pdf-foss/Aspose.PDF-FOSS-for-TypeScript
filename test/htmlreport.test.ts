@@ -22,11 +22,11 @@ function el(src: string, name: string): HtmlElement {
 }
 
 suite('the construct vocabulary', () => {
-  it('has exactly 21 entries', () => {
+  it('has exactly 22 entries', () => {
     // Asserted by SIZE so a half-filled table is a red build rather than a
     // silently unreported element — htmlforeign.ts's pattern with its five
     // asserted table sizes.
-    expect(CONSTRUCTS.length).toBe(21);
+    expect(CONSTRUCTS.length).toBe(22);
   });
 
   it('has no duplicates', () => {

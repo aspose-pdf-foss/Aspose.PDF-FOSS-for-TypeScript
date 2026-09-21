@@ -967,3 +967,39 @@ export function buildTtc(fonts: Uint8Array[]): Uint8Array {
   ]);
   return concat([header, ...dirs, ...bodies]);
 }
+
+/** A TrueType whose composite glyphs FAN OUT (`ibzo.12`): glyph 1 is a simple
+ *  one-point glyph, and each of glyphs 2..`levels+1` is a composite listing `k`
+ *  components that all name the glyph below it. The top glyph, `levels + 1`,
+ *  therefore visits k + k^2 + ... + k^levels components — a few hundred bytes
+ *  that multiply per level under a depth cap. Long loca, so the glyphs may grow. */
+export function buildCompositeFanoutTtf(k: number, levels: number): Uint8Array {
+  const simple = concat([i16(1), i16(0), i16(0), i16(1), i16(1), u16(0), u16(0), Uint8Array.from([1, 0, 0])]);
+  const glyphs: Uint8Array[] = [new Uint8Array(0), simple];
+  for (let g = 2; g < 2 + levels; g++) {
+    const comps: Uint8Array[] = [];
+    for (let c = 0; c < k; c++) comps.push(u16((c < k - 1 ? 0x20 : 0) | 0x03), u16(g - 1), i16(0), i16(0));
+    glyphs.push(concat([i16(-1), i16(0), i16(0), i16(1), i16(1), ...comps]));
+  }
+  const offs = [0];
+  for (const g of glyphs) offs.push(offs[offs.length - 1] + g.length);
+  const head = buildHead(); new DataView(head.buffer).setInt16(50, 1);   // long loca
+  const maxp = buildMaxp(); new DataView(maxp.buffer).setUint16(4, glyphs.length);
+  const tables: { tag: string; data: Uint8Array }[] = [
+    { tag: 'OS/2', data: buildOS2() }, { tag: 'cmap', data: buildCmap() },
+    { tag: 'glyf', data: concat(glyphs) }, { tag: 'head', data: head },
+    { tag: 'hhea', data: buildHhea() }, { tag: 'hmtx', data: buildHmtx() },
+    { tag: 'loca', data: concat(offs.map(u32)) }, { tag: 'maxp', data: maxp },
+    { tag: 'name', data: buildName() }, { tag: 'post', data: buildPost() },
+  ];
+  let offset = 12 + tables.length * 16;
+  const placed = tables.map((t) => {
+    const at = offset; const padded = pad4(t.data); offset += padded.length;
+    return { tag: t.tag, at, length: t.data.length, padded };
+  });
+  return concat([
+    u32(0x00010000), u16(tables.length), u16(0), u16(0), u16(0),
+    ...placed.map((p) => concat([new TextEncoder().encode(p.tag), u32(0), u32(p.at), u32(p.length)])),
+    ...placed.map((p) => p.padded),
+  ]);
+}

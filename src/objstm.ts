@@ -2,7 +2,8 @@ import { Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
 import { inflateStream } from './flate.js';
 import { PdfObject, PdfStream } from './types.js';
-import { PdfParseError } from './errors.js';
+import { PdfParseError, rethrowLimit } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 
 /** What one /ObjStm container yielded, and what it cost. Surfaced verbatim as
  *  RecoveryReport.objectStreams.
@@ -30,7 +31,9 @@ export interface ObjStmResult {
 /** Decode an /ObjStm into a map of objectNumber -> PdfObject, degrading per
  *  object: an object wholly inside the surviving payload is recovered even when
  *  the container is damaged. Throws only when there is nothing to work with. */
-export function decodeObjStm(s: PdfStream, container: number): ObjStmResult {
+export function decodeObjStm(
+  s: PdfStream, container: number, limits: LoadLimits = LoadLimits.defaults,
+): ObjStmResult {
   const declaredN = s.dict.get('N');
   const declaredFirst = s.dict.get('First');
   const notes: string[] = [];
@@ -41,13 +44,15 @@ export function decodeObjStm(s: PdfStream, container: number): ObjStmResult {
   let data: Uint8Array;
   try {
     data = inflateStream(s);
-  } catch {
+  } catch (e) {
+    rethrowLimit(e);
     // Z_SYNC_FLUSH salvages a payload that stopped mid-stream, but a payload
     // that is not DEFLATE at all fails its header check and throws a raw zlib
     // error — which must not escape as anything but a PdfParseError.
     try {
       data = inflateStream(s, { partial: true });
-    } catch {
+    } catch (e) {
+      rethrowLimit(e);
       throw new PdfParseError(`object stream ${container} payload did not decode`);
     }
     notes.push(`payload inflated to ${data.length} bytes before it stopped`);
@@ -68,6 +73,9 @@ export function decodeObjStm(s: PdfStream, container: number): ObjStmResult {
   for (let i = 0; i < want; i++) {
     const a = lx.next(); const b = lx.next();
     if (a.t !== 'num' || b.t !== 'num') break;
+    // Header pairs are what the container PRODUCES, so they count as objects
+    // exactly as xref rows do — and this is the loop `/N` does not bound.
+    limits.enforce('maxObjects', pairs.length + 1, `object stream ${container}`);
     pairs.push({ num: a.v, off: b.v });
     headerEnd = lx.pos;
   }
@@ -93,8 +101,9 @@ export function decodeObjStm(s: PdfStream, container: number): ObjStmResult {
     const at = first + off;
     if (!Number.isFinite(at) || at < 0 || at >= data.length) { lost.push(num); continue; }
     try {
-      objects.set(num, new ObjectParser(new Lexer(data, at)).parseObject());
-    } catch {
+      objects.set(num, new ObjectParser(new Lexer(data, at), undefined, limits).parseObject());
+    } catch (e) {
+      rethrowLimit(e);
       lost.push(num);
     }
   }

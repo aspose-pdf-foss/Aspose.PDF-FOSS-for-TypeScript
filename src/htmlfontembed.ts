@@ -7,6 +7,7 @@ import { buildCmap, replaceTable, otfFromCff, OtfMetrics } from './sfntwrite.js'
 import { sfntToWoff } from './woffwrite.js';
 import { Type1Font } from './type1.js';
 import { type1ToCff, newGidByOldGid } from './type1cff.js';
+import { rethrowLimit } from './errors.js';
 
 const PUA_BASE = 0xe000;
 
@@ -74,7 +75,7 @@ export class EmbeddedFontRegistry {
         const woff = sfntToWoff(buildProgramSfnt(prog));
         const b64 = Buffer.from(woff).toString('base64');
         faces.push(`@font-face{font-family:pf${prog.key};src:url(data:font/woff;base64,${b64}) format("woff")}`);
-      } catch { /* drop this font — its runs already carry embedded classes; a
+      } catch (caught) { rethrowLimit(caught); /* drop this font — its runs already carry embedded classes; a
                    missing @font-face degrades to the class's absent family */ }
     }
     return faces.join('') + this.classRules.join('');

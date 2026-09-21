@@ -19,7 +19,357 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Font programs cannot exhaust memory or spin on one glyph.** A CFF or
+  Type 1 font under a kilobyte, whose subroutines call each other ten times
+  per level across the ten levels allowed, exhausted the heap and killed the
+  process when a page using it was rendered; a TrueType composite glyph
+  fanning out the same way ran for minutes. The new `maxGlyphOperations`
+  field (default 100,000) bounds the operators or composite components one
+  glyph may take — measured against every glyph of 283 real faces, whose
+  maximum was 274 — and raises `ResourceLimitError`. Character maps now count
+  the entries they write against `maxContainerItems`: a font `cmap` with
+  overlapping segments no longer spins for a minute, one whose range reaches
+  0xFFFFFFFF no longer dies on the map size, and a `/ToUnicode` range running
+  past U+10FFFF stops there instead of throwing `RangeError`. Fonts embedded
+  in a document follow that document's `LoadLimits`, as do `AddFont` and
+  `Optimize`. (ibzo.12)
+
+- **Image files and web fonts decompress under the document's limits.**
+  `AddImage`, `AddImagePages`, an SVG `<image>` and every other way an image
+  file enters a document, and `AddFont` for a WOFF or WOFF2, now decode under
+  the same `LoadLimits` a PDF stream does. Before, a PNG whose image data
+  inflated to 4.5 GB, or a WOFF table inflating to 2.3 GB, was decompressed in
+  full before anything noticed; each now stops at `maxDecodedStreamBytes`,
+  `maxExpansionRatio` or, across a file's strips or tables together,
+  `maxTotalDecodedBytes`, and raises `ResourceLimitError`. A WOFF whose header
+  declares a table larger than those limits is refused before inflating. A PNG
+  now checks its declared size against `maxImagePixels` — one claiming
+  2^31 × 2^31 used to be embedded unchecked — and an oversized BMP or TIFF raises
+  `ResourceLimitError` naming `maxImagePixels` where it used to raise
+  `PdfParseError`. Deeply nested input no longer crashes with a stack
+  overflow: `AddHtml` refuses a document nested past `maxNestingDepth` in its
+  elements or in its CSS (parentheses or `calc()` thousands deep), and
+  `AddSVGObject` and every XML reader refuse element nesting past it, each as
+  `ResourceLimitError` — 200,000 levels used to end in a `RangeError`. An SVG
+  import now counts the content it emits against `maxContentTokens`, so
+  `<use>` elements referencing ten copies of each other per level can no
+  longer expand without end; a 10^9-element expansion is refused after about
+  four seconds. (ibzo.11)
+
+- **Lower default pixel limits, sized from measured memory.** A page canvas
+  is 16 bytes a pixel as floating point and about 25 once encoded to PNG, so
+  the shipped `maxCanvasPixels` of 2^28 let one hostile page box demand a
+  ~6 GiB render — half of the ~12 GiB the defaults together admitted, and
+  mostly outside the JavaScript heap where `--max-old-space-size` cannot
+  stop it. `maxCanvasPixels` is now 2^26 (~1.6 GiB; A4 at 600 dpi still
+  fits) and `maxImagePixels` is 2^27 (~1.2 GiB at the measured 8–10 bytes a
+  rendered pixel; a 100-megapixel photograph still fits). BMP and TIFF files
+  read the same pixel bound instead of their own copy of the old one. Raise
+  either field with `LoadLimits.defaults.with(...)` for larger work. No
+  combined memory limit was added: nothing reports memory released in a
+  garbage-collected runtime, so a running total would refuse long-lived
+  documents; the README now publishes the measured cost of each limit
+  instead. (ibzo.10)
+
+- **A page drawing many small forms is now bounded in total.**
+  `maxContentTokens` was counted afresh for every content stream parsed, so a
+  page reaching thousands of Form XObjects, tiling patterns or Type 3 glyph
+  procedures — each comfortably under the limit — cost as much CPU as it liked
+  in `GetText`, `ToImage`, `ToSvg`, `GetPaths`, `Optimize`, redaction, the
+  validators and every export built on those walks. Each walk now shares one
+  count across the page's content, every nested scope and its annotation
+  appearances, and raises `ResourceLimitError` once the total passes the bound.
+  The count is per page rather than per document, so a long document whose
+  every page is fine still opens. `ConvertColors`, `FlattenLayers` and
+  `RemoveLayer` keep a per-stream count, since they parse each distinct stream
+  once. `Optimize`'s unused-`/DR` pass did not: it re-parsed an appearance
+  shared by many widgets once per widget and every kept resource stream once per
+  round, and now parses each stream once — on the test fixture, 4 parses where
+  it took 9. (ibzo.8, ibzo.9)
+
+- **Deeply nested structure no longer crashes or silently drops content.** A
+  tagged PDF whose structure tree, parent tree or optional-content visibility
+  expression nests thousands of levels deep — every level a separate object, so
+  nothing looked deep to the parser — now raises `ResourceLimitError` naming
+  `maxNestingDepth`. Before, thirteen operations ended in a raw `RangeError`
+  (`ValidatePdfUa`, `ValidatePdfA`, `GetTables`, `Split`, `ExtractPages`,
+  `Merge`, `StampWith`, `NUp`, `GetText`, `GetPaths`, `RemoveLayer`,
+  `FlattenLayers`, removing a structure element), and two were worse: the
+  Markdown, HTML and DOCX exports of a 200,000-deep structure tree returned an
+  empty document where a shallow one gives its text, and `ToImage` left a deep
+  optional-content section out with nothing said. The structure tree is bounded
+  in one place every consumer descends through, so walkers added later are
+  bounded too. A structure tree or visibility expression that refers back to
+  itself used to recurse until the stack overflowed; it is now read as damage —
+  the loop is skipped and the rest of the document works. (ibzo.6)
+
+- **`GetText`, `ToImage` and every other content walker are now bounded**,
+  which is what makes them safe on a file that parsed fine — the usual shape of
+  a content-stream bomb. A page whose content expands to gigabytes is stopped at
+  256 MiB of decoded content and refused with `ResourceLimitError` naming
+  `maxContentBytes`, from extraction and rendering alike; the bound is on the
+  page's content as a whole, so a `/Contents` array of many streams cannot pass
+  stream by stream. Parsing counts content tokens (default 10 million, measured
+  at ~97 heap bytes each — the 50 million the policy first shipped with was
+  roughly 4.8 GB and bounded nothing) and operand nesting, whose reader used to
+  recurse until the stack overflowed. The renderer refuses an image from its
+  declared `/Width` x `/Height`, and a page canvas whose size the document's
+  page box decided; a `width` and `height` you pass to `ToImage` yourself are
+  exempt. Measured, a normal page pays nothing: parsing 2.1 MB of ordinary
+  content stayed within ±3% of before. **Changed along the way:** a picture over
+  64 megapixels used to be silently left out of a render; it now draws, up to
+  the 268-megapixel image bound, and is refused past it rather than vanishing.
+  (ibzo.4)
+
+- **Decoding a stream or an image is now bounded too**, and refused with
+  `ResourceLimitError` naming the limit rather than exhausting memory.
+  Measured before this change: 64 MiB of zeros deflated twice is a few hundred
+  bytes, and decoding it allocated the whole 64 MiB; a JBIG2 region declaring
+  2^31 pixels, or a JPX image declaring a 100,000 x 100,000 tile grid, sized an
+  allocation straight from the header. Now every stage of a filter chain stops
+  at a cap — zlib's own `maxOutputLength`, and the LZW and RunLength loops —
+  set by the decoded size per stream (512 MiB), the expansion ratio against the
+  encoded input of the WHOLE chain (2,000:1, applied above 1 MiB of output so a
+  tiny blank stream is never refused), a total of 2 GiB across the document
+  (each stream counted once, so rendering a page twice costs nothing extra), and
+  at most 8 filters. Image codecs refuse from DECLARED geometry before
+  allocating: the JPEG frame, the JPX image area, CCITT columns x rows, the JBIG2
+  page, regions, halftone grid and symbols, and a sampled function's table.
+  **BREAKING** in one visible way: rendering, exporting and colour conversion
+  used to skip an image they could not decode; an image refused for a limit now
+  raises instead of silently vanishing, since a bomb rendered as a blank picture
+  tells the caller nothing. Lift a bound with
+  `LoadLimits.defaults.with({ maxImagePixels: null })`. (ibzo.3)
+
+- **`Document.Open` now bounds what a hostile file can cost to parse**, and
+  refuses past a bound with `ResourceLimitError` naming the limit, where it
+  used to exhaust memory, overflow the stack or misreport the file as damaged.
+  **BREAKING** for a caller opening very large trusted files: the defaults
+  refuse input over 1 GiB, more than 2 million objects, more than 1,000
+  cross-reference sections, an object over 256 MiB encoded, nesting deeper
+  than 256, or a container of more than a million items — pass
+  `{ limits: LoadLimits.unlimited() }`, or lift one field with
+  `LoadLimits.defaults.with({ maxFileBytes: null })`. What each bound replaced,
+  measured: a 10-million-row cross-reference table killed the process outright;
+  a 10,000-deep array overflowed the stack and was reported as
+  `object-parse-failure`; a 20,000-deep page tree threw a raw `RangeError` out
+  of `Open`; a name tree naming itself, or a type 3 function stitching itself,
+  recursed until the stack gave out. `OpenFile` and the `node.ts` file
+  helpers refuse an oversized file from its size, before reading it. The bounds
+  also govern the recovery sweep, and a bound reached there is never swallowed
+  as damage — otherwise the brute-force scan over a hostile file is exactly what
+  would run. Nesting is bounded in the object grammar and in the page, outline,
+  form-field, name-tree, Form XObject resource, annotation and function graphs,
+  where every node is a separate flat object. Decoded stream sizes, image
+  pixels and content streams are not bounded yet. (ibzo.2)
+
+### Fixed
+
+- **`saveImagesFile`, `htmlFileToPdf`, `saveMarkdownFile` and `saveDocxFile`
+  are importable from the package.** All four were written, tested and
+  announced, and README's own example imports the first two from
+  `@asposefoss/pdf` — but `index.ts` exported none of them, so that example
+  did not compile and the only way to reach them was a deep import. Their
+  tests import `src/node.js` directly, which is why nothing noticed. Their
+  option types are exported too: `SaveImagesOptions`, `HtmlFileOptions`, and
+  `SaveImagesSkipped` for `saveImagesFile`'s skip record, renamed on the way
+  out because `SkippedImage` already names `Optimize`'s. README's API
+  Reference now gives every export a row — 69 were missing, including these,
+  the three structure-namespace constants, the flow builders and the RFC 3161
+  helpers — and its counts are corrected to 377 types and 143 values. A test
+  now asks the TypeScript compiler what the package exports and fails when a
+  name lacks a row, a count drifts, or a README example imports something the
+  package does not export. (clik)
+- **Markdown now reports what it could only place by compromising.** A quote,
+  list or code block nested past what the column can indent renders squeezed
+  to a 12pt content column, a block too tall for an empty column draws past its
+  bottom, and an over-tall image is scaled to fit — and `AddMarkdown` said
+  nothing about any of the three, so its `skipped` was empty for a page laid
+  out as written and for one crushed into a sliver. They now arrive as
+  `squeezed`, `overflow` and `image:scaled-to-fit`, the strings
+  `describeNotRendered` gives for the matching HTML records, one per block
+  however many levels of nesting did the squeezing. They are decided while
+  placing, so `doc.AddMarkdown` and `page.AddMarkdown` fold them into the
+  `skipped` they return, and a `Flow` — whose `AddMarkdown` returns before
+  `Render` — receives them through a new `onSkipped: (s) => void` option. The
+  squeeze reaches hand-built flows too: the quote, list and code-block
+  elements report it through the same `onCompromise` channel HTML boxes use.
+  (kk3q)
+- **HTML nested past what the column can indent now says so.** Since the
+  deep-nesting fix a box that cannot afford its own margins and padding scales
+  them down to a 12pt content floor and renders, where it used to come out
+  blank — but that removed the `overflow` record the blank page had carried and
+  put nothing in its place, so `AddHtml` gave the same empty `skipped` for a
+  page laid out as specified and one squeezed into a 12pt column. It now
+  reports a new `squeezed` construct, `degraded`, against the innermost element
+  it narrowed. Its own construct rather than `overflow`, which keeps meaning
+  "drew past the column bottom". Twenty nested `<blockquote>`s around one
+  paragraph are ONE record, not one per level, because every level reports
+  through that paragraph's single one-shot callback; content that draws nothing
+  reports no squeeze. (rfba)
+- **Text inside a Form XObject is extracted with the text state it is drawn
+  in.** A form started its content walk with every text state parameter reset,
+  where ISO 32000-2 8.10.1 draws a form in the graphics state in force at its
+  `Do`. So a form showing text in the font, horizontal scaling or rise the page
+  had set before invoking it came back from `GetText`, `GetTextFragments`,
+  table detection and every export with no font — and so no text at all — or
+  with its glyphs misplaced, while the renderer drew it correctly. The form now
+  starts from a copy of the caller's `Tc`, `Tw`, `Tz`, `TL`, `Ts`, `Tf` and
+  `Tr`, and a setting it makes still cannot reach back out to the page.
+  Annotation appearances are unchanged: they are not drawn inside the page's
+  graphics state. (mih4)
+- **Text extraction now honours `q`/`Q` around the text state.** The content
+  walker behind `GetText`, `GetTextFragments`, `GetStructuredText`, `Search`,
+  table detection and every export restored the CTM and fill colour at `Q` but
+  not the text state, so a `Tc`, `Tw`, `Tz`, `TL`, `Ts` or `Tf` set inside a
+  `q` … `Q` leaked into everything drawn after it — contrary to ISO 32000-2
+  9.3.1, which makes all of them graphics state. A producer that scoped a
+  superscript's rise or a condensed run's horizontal scaling that way got every
+  later glyph on the page reported raised or misplaced, while the renderer drew
+  it correctly. `q` now saves every text state parameter but the two text
+  matrices, which `BT` resets instead. No existing test fixture moved: none sets
+  text state inside a `q` and shows text after the `Q`. (g5x6)
+- **Deeply nested Markdown and HTML now render instead of throwing or coming
+  out blank.** Every decorator that indents — a block quote, a list item, a
+  list item's further blocks, a code block's padding, a CSS box's margins and
+  insets — subtracted its inset from the region width with no floor, so nesting
+  drove the content width to zero. That failed two ways from one cause, and the
+  second was the worse of them. `doc.AddMarkdown('>'.repeat(26) + ' x')` threw
+  `TypeError: rect width and height must be positive` from inside the painter,
+  a bare error naming nothing a caller could act on; a list nested 49 deep did
+  the same. HTML did not throw — it rendered a BLANK PAGE and reported nothing,
+  from depth 8, because a `<blockquote>` carries a 40px margin on both sides
+  and `BoxElement` reads a non-positive width as "nothing to draw".
+  An inset is now scaled to whatever room is left above a 12pt floor, about one
+  em of body text, and every horizontal amount of one frame scales by the same
+  factor — so the content BOX stays inside its column rather than sliding off
+  the right edge, and a chain of decorators converges on a narrow column
+  instead of reaching zero (a word wider than the floor still overflows its
+  box, as an over-wide word does in any column). Deep content renders squeezed and tall, which is `zch2.16`'s
+  decision in the horizontal direction: content that cannot fit renders rather
+  than refusing the document. Nothing that fitted before moves, since the
+  factor is 1 whenever there is room; the CSS used widths `cssresolve.ts`
+  computes are untouched, the clamp being placement-only. Note a quote nested
+  past the point its indent runs out draws its gutter bar over its own text,
+  and a squeezed box is not reported — filed separately. (e1bp)
+
+- **A word longer than a page no longer costs time quadratic in its length.**
+  `layoutRuns` paginates an over-wide word by handing the tail back as a
+  remainder and flowing it again, so everything that ran before the split ran
+  again on every page the word spanned: the code point array, the character
+  offset table and the UAX #14 line-break analysis, 64% of the profile between
+  them. `lqs1` made the split and the over-wide test stop at the page and left
+  all three. Measured on `'[a]('.repeat(n)` through `AddMarkdown`, the time per
+  doubling was climbing to 4 — 0.29 s, 0.81, 2.4, 8.5, 32.1 at 50 K to 800 K
+  characters, and 196 s at 2,000,000. All three are now grown ON DEMAND, so a
+  page costs what it keeps: 0.24 s, 0.38, 0.82, 1.55, 3.21 and 8.8 s, a flat 2
+  per doubling and 22x faster at two million.
+  The analysis is the part that could not simply be chunked, which is why this
+  was filed rather than done at the time. `lineBreakPrefix` states how far into
+  a prefix its answers are FINAL, and the rest of the word is analysed only if
+  the split reaches that far, over a prefix that doubles. The horizon is `n - 1`
+  and the reasoning is worth recording, since the obvious reading is that a
+  numeric run straddling the cut must cost much more: LB25's scan does run
+  forward an unbounded distance, but its unguarded reads all sit within two
+  characters of where it starts, so it can only notice the end of a prefix when
+  it starts within two of that end — and the marks it would then differ on begin
+  at `n - 1`, exactly where LB15b's and LB28a's one-character lookahead already
+  put the answer at risk. No line break moves; that is asserted over every
+  prefix of every row of the UAX #14 conformance corpus. (lt63)
+
+- **A long run of Markdown delimiters no longer costs time quadratic in its
+  length.** `AddMarkdown` took 3.7 s on `'*'.repeat(20000)`, 3.9 s on
+  `'['.repeat(20000)` and 7.0 s on `'[a]('.repeat(20000)`, and none of the
+  three finished at 500,000 characters in a minute. They are three separate
+  defects, found by profiling rather than by reading. Two are in LAYOUT: an
+  over-wide word was measured once per character to find its break points, and
+  the answer was used only where a break opportunity had already been seen —
+  so a word with none at all (a run of `*` or `[` is one, since UAX #14
+  prohibits a break in both) computed and discarded every one of those
+  measurements, each re-walking the prefix; and the split was materialized in
+  full even though the page keeps only what fits, so a word longer than the
+  page was re-split on every page as the remainder was re-flowed, which is the
+  rule the previous entry fixed for ordinary words and did not reach here. The
+  third is in PARSING: a bare link destination counted nesting parentheses
+  with no bound, so every `]` scanned to the end of the document and then threw
+  the work away, and a destination now stops being one past 32 levels of
+  nesting — which is what cmark, the reference implementation, already does.
+  Measured at 20,000: 22 ms, 9 ms and 292 ms, so 166x, 436x and 24x; the first
+  two are linear to 500,000 characters and beyond. The three `subject.slice`
+  calls behind every close bracket are gone too, though that one is an
+  allocation saving rather than a quadratic — V8 answers such a slice in
+  constant time. **A residual remains and is tracked separately:** a single
+  word of millions of characters is still analysed in full on every page it
+  spans, because UAX #14 line-break analysis has no incremental form, so
+  `'[a]('.repeat(500000)` takes 41 s where it used to take longer than a
+  minute. (lqs1)
+
+- **A long paragraph no longer costs time quadratic in its length.**
+  `AddHtml` took 26.4 s to lay out 100,000 words and did not finish 400,000 in
+  two minutes; `AddMarkdown` took 6.2 s and 95.1 s. Each doubling of the text
+  cost four times the work, because the engine paginates by handing the
+  overflow back as a remainder and flowing it again — and wrapping was eager,
+  so every page measured every word of the whole remaining text, twice over,
+  and then handed it on to be measured again. Wrapping now stops at the height
+  budget, the remainder is cut from the input rather than rebuilt line by
+  line, and `drawsNothing` no longer encodes a whole block to learn that it is
+  not empty. The cost is linear: 400,000 words take 0.9 s through
+  `AddMarkdown` and 2.8 s through `AddHtml`, a 108x and 38x improvement, and
+  every emitted page is byte-identical. **One behaviour changed as a
+  consequence:** the remainder from `AddTextBlock` now preserves runs of
+  spaces and blank lines. It used to collapse both, so an overflowing block
+  containing `a\n\n\nb` came back as `a` and `b` with the blank lines gone,
+  and a continuation the flow engine re-placed lost them from the page.
+  (pl2h)
+
+- **Nested HTML no longer costs exponential time to lay out.** `AddHtml` took
+  2.6 s to build a document nesting 20 levels of blocks and 39 s at 25 levels,
+  doubling with every further level — and generated markup nests 20 levels
+  routinely, so ordinary documents hit it. Margin collapsing walks a box's
+  first-child chain for the margin escaping its top edge and its last-child
+  chain for the bottom (CSS 2.1 §8.3.1 rules 2 and 3); it computed both at
+  every level, which in the common single-child chain, where the first and the
+  last child are the same box, made two calls per level for one answer. The
+  two edges now descend separately, one chain each, so the work is polynomial
+  in nesting depth: the 20-level document builds in 11 ms and one nested to
+  the 256-level `maxNestingDepth` in 36 ms. Collapsed margins are unchanged,
+  which the browser-generated corpus in `test/fixtures/css-box/` fences.
+  (bjov)
+
+- **Resource limits now reach every stream a document holds, not only the ones
+  it parsed.** A page brought in from another document with `AddPage` or
+  `InsertPage`, and inline images, decoded under the default limits whatever
+  policy the document was opened with — so opening a file with tighter limits
+  and then importing pages into it quietly lifted them — and none of it, nor the
+  streams of a `Merge` result, counted toward `maxTotalDecodedBytes`. Every object a document
+  acquires now goes through one insertion point that ties its streams to the
+  document's policy. (ibzo.7)
+
+- **A `/Prev` cycle in the cross-reference chain is now reported.** It was
+  skipped silently, so a document with one opened with nothing said. It is
+  treated as damage rather than as a resource limit: the file still opens,
+  through the recovery sweep, with `doc.recovery` naming the cycle. (ibzo.2)
+
 ### Added
+
+- **`LoadLimits`, a resource policy for opening files you did not write, and
+  `ResourceLimitError`** — the vocabulary only: **nothing is enforced yet**, so
+  no existing call changes behaviour. `Document.Open(buf, { limits })` accepts
+  an immutable policy of sixteen bounds (input bytes, object count, `/Prev`
+  chain length, nesting depth, decoded stream size, expansion ratio, image and
+  canvas pixels, content tokens, …) and reads it back as `doc.loadLimits`.
+  Defaults are bounded, and opting out is explicit: `LoadLimits.unlimited()` for
+  trusted input, or `LoadLimits.defaults.with({ maxFileBytes: null })` to
+  disable one bound alone. `with` rejects an unknown field name rather than
+  ignoring it, because a typo that silently fails to lift a limit is the failure
+  this exists to prevent. `ResourceLimitError` is deliberately a sibling of
+  `PdfParseError`, not a subclass, so "too big" never triggers the recovery
+  ladder meant for "broken", and it names the field it refused. The default
+  expansion ratio is 2,000:1, not 1,000:1 — measured, zlib reaches 1028:1 on a
+  run of zeros, so the round number would refuse a legitimate stream. The parse,
+  filter and render boundaries start enforcing in follow-up releases. (ibzo.1)
 
 - **`ValidatePdfUa(2)` now answers ISO 14289-2 8.10.3.5-1** — a graphic forming
   part of a signature's appearance needs alternative text. A signature widget

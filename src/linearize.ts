@@ -2,7 +2,7 @@ import { deflateSync, inflateSync } from 'node:zlib';
 import {
   PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isArray, isStream, isName, ref, name,
 } from './types.js';
-import { UnsupportedFeatureError, PdfParseError } from './errors.js';
+import { UnsupportedFeatureError, PdfParseError, rethrowLimit } from './errors.js';
 import { enc, serializeObject, serializeValue } from './serialize.js';
 import type { Plan } from './serializer.js';
 
@@ -872,7 +872,7 @@ export function verifyLinearization(bytes: Uint8Array): LinearizationCheck {
       if (hintFlate) {
         try {
           data = new Uint8Array(inflateSync(Buffer.from(data)));
-        } catch {
+        } catch (caught) { rethrowLimit(caught);
           errors.push('hint stream FlateDecode inflate failed');
           data = undefined;
         }

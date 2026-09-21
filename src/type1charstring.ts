@@ -1,4 +1,6 @@
+import { LoadLimits } from './loadlimits.js';
 import type { Path, Seg } from './pagerender.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * One interpreted Type 1 charstring.
@@ -18,6 +20,9 @@ export interface Type1Env {
   /** Decrypted charstring for a StandardEncoding code, for `seac`. Absent when
    *  the caller cannot resolve one, which makes `seac` draw nothing. */
   seacGlyph?(stdCode: number): Uint8Array | undefined;
+  /** Bounds the operators one glyph may execute (`ibzo.12`). Default
+   *  {@link LoadLimits.defaults}. */
+  limits?: LoadLimits;
 }
 
 const MAX_DEPTH = 10;
@@ -37,6 +42,8 @@ interface T1Ctx {
   /** Set by `seac`, applied once the charstring has stopped. */
   seac?: { asb: number; adx: number; ady: number; bchar: number; achar: number };
   done: boolean;
+  /** Operators executed for this glyph, subroutines included (`ibzo.12`). */
+  ops: number;
 }
 
 function moveTo(c: T1Ctx, x: number, y: number): void {
@@ -59,9 +66,9 @@ function curveTo(c: T1Ctx, x1: number, y1: number, x2: number, y2: number, x: nu
 export function runType1Charstring(code: Uint8Array, env: Type1Env): Type1Glyph {
   const c: T1Ctx = {
     path: [], x: 0, y: 0, stack: [], ps: [], open: false,
-    width: 0, sbx: 0, sby: 0, env, depth: 0, done: false,
+    width: 0, sbx: 0, sby: 0, env, depth: 0, done: false, ops: 0,
   };
-  try { exec(code, c); } catch { /* keep whatever was drawn */ }
+  try { exec(code, c); } catch (caught) { rethrowLimit(caught); /* keep whatever was drawn */ }
   if (c.seac && env.seacGlyph) applySeac(c, env);
   if (c.open) { c.path.push({ op: 'Z' }); c.open = false; }
   return { path: c.path, width: c.width, sbx: c.sbx, sby: c.sby };
@@ -80,9 +87,9 @@ function applySeac(c: T1Ctx, env: Type1Env): void {
   const accent = env.seacGlyph!(achar);
   c.path = [];
   c.open = false;
-  if (base) c.path.push(...runType1Charstring(base, { subrs: env.subrs }).path);
+  if (base) c.path.push(...runType1Charstring(base, { subrs: env.subrs, limits: env.limits }).path);
   if (accent) {
-    const g = runType1Charstring(accent, { subrs: env.subrs });
+    const g = runType1Charstring(accent, { subrs: env.subrs, limits: env.limits });
     const dx = c.sbx - asb + adx, dy = ady;
     for (const s of g.path) {
       if (s.op === 'Z') c.path.push(s);
@@ -108,6 +115,7 @@ function exec(code: Uint8Array, c: T1Ctx): void {
       }
       continue;
     }
+    (c.env.limits ?? LoadLimits.defaults).enforce('maxGlyphOperations', ++c.ops, 'Type 1 charstring');
     const s = c.stack;
     switch (b) {
       case 1: case 3: s.length = 0; break;                                             // hstem / vstem

@@ -21,7 +21,7 @@ export function buildPages(doc: Document): PageTree {
   if (!isDict(pagesRoot)) throw new PdfParseError('catalog /Pages is not a dict');
   const rootPagesNum = isRef(pagesRef) ? pagesRef.num : undefined;
   const leaves: { dict: PdfDict; objNum: number }[] = [];
-  walk(doc, pagesRoot, rootPagesNum, new Set(), leaves);
+  walk(doc, pagesRoot, rootPagesNum, new Set(), leaves, 1);
   return {
     pages: leaves.map((leaf, i) => new Page(doc, leaf.dict, i + 1)),
     pageObjNums: leaves.map((leaf) => leaf.objNum),
@@ -31,7 +31,7 @@ export function buildPages(doc: Document): PageTree {
 
 function walk(
   doc: Document, node: PdfDict, objNum: number | undefined,
-  seen: Set<PdfDict>, out: { dict: PdfDict; objNum: number }[],
+  seen: Set<PdfDict>, out: { dict: PdfDict; objNum: number }[], depth: number,
 ): void {
   if (seen.has(node)) throw new PdfParseError('cycle in page tree');
   seen.add(node);
@@ -42,10 +42,15 @@ function walk(
     return;
   }
   if (isArray(kids)) {
+    // Counted on INTERMEDIATE nodes only, so the bound means "levels of /Pages"
+    // and a page tree of depth N is admitted at a limit of N. Every node is its
+    // own flat object, so nothing but this walk can see the depth — and the
+    // Document constructor runs it, which makes an unbounded one an Open crash.
+    doc.loadLimits.enforce('maxNestingDepth', depth, 'page tree');
     for (const kid of kids) {
       const childNum = isRef(kid) ? kid.num : undefined;
       const child = doc.resolve(kid);
-      if (isDict(child)) walk(doc, child, childNum, seen, out);
+      if (isDict(child)) walk(doc, child, childNum, seen, out, depth + 1);
     }
     return;
   }

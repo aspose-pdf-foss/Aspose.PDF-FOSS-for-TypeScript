@@ -4,6 +4,7 @@ import { decodePdfText, encodePdfText } from './metadata.js';
 import { encodeDest, parseDest, resolvePageDest, type OutlineView } from './outline.js';
 import { decodeStream } from './filters.js';
 import type { StructElement } from './struct.js';
+import { rethrowLimit } from './errors.js';
 
 /** A GoTo action: jump to a page in this document. */
 export type GoToAction = { type: 'goto'; page: number; view?: OutlineView };
@@ -237,7 +238,7 @@ function parseActionDict(
       if (isStream(js)) {
         try {
           return { type: 'javascript', script: decodePdfText(decodeStream(js)) };
-        } catch {
+        } catch (caught) { rethrowLimit(caught);
           return undefined;
         }
       }

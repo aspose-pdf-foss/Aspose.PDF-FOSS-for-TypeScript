@@ -1,3 +1,4 @@
+import { budgetFor } from './decodebudget.js';
 import type { Document } from './document.js';
 import {
   PdfObject, PdfDict, PdfRef, PdfStream, isDict, isName, isString, isArray, isStream, isRef,
@@ -13,6 +14,7 @@ import {
   enumerateFonts, descendantFont, hasFontProgram,
   type PageScan, pageScans, usesDeviceColor, extGStates, blendModeName, eachAnnotation,
 } from './validatectx.js';
+import { rethrowLimit } from './errors.js';
 
 export type { PageScan } from './validatectx.js';
 export { memo, filterNames, allObjects, pageScans } from './validatectx.js';
@@ -462,7 +464,7 @@ export function pdfaIntentColorSpace(ctx: BaseCtx): string | undefined {
       // producer wrote; refusing here would fail a document over damage the
       // rule has no opinion about.
       try { return parseIccProfile(inflateStream(dop)).header.dataColorSpace; }
-      catch { /* unreadable: fall through to the next intent */ }
+      catch (caught) { rethrowLimit(caught); /* unreadable: fall through to the next intent */ }
     }
     return undefined;
   });
@@ -864,8 +866,8 @@ const toUnicodeContentRule: Rule = (ctx) => {
     if (!isStream(tu)) continue;
     let entries: [number, string][];
     try {
-      entries = parseCMap(inflateStream(tu)).entries();
-    } catch {
+      entries = parseCMap(inflateStream(tu), budgetFor(tu).limits).entries();
+    } catch (caught) { rethrowLimit(caught);
       continue; // an unreadable CMap is not this rule's finding
     }
     for (const [code, value] of entries) {

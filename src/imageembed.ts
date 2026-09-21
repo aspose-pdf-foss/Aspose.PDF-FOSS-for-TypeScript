@@ -1,6 +1,8 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { inflateSync, deflateSync } from 'node:zlib';
+import { deflateSync } from 'node:zlib';
+import { LoadLimits } from './loadlimits.js';
+import { InputDecoder } from './inflatebound.js';
 import { PdfDict, PdfObject, PdfStream, name } from './types.js';
 import { enc } from './serialize.js';
 import { applyPredictor } from './predictor.js';
@@ -11,7 +13,7 @@ import {
   ensureOwnResources, ensureOwnSubdict, registerExtGState, appendContent, freshKey, num,
   wrapMarkedContent, wrapArtifact,
 } from './pagecontent.js';
-import { UnsupportedFeatureError, PdfParseError } from './errors.js';
+import { UnsupportedFeatureError, PdfParseError, rethrowLimit } from './errors.js';
 import { decodeBmp } from './bmp.js';
 import { decodeTiff, tiffPageCount } from './tiff.js';
 import type { RasterImage } from './rasterimage.js';
@@ -116,9 +118,9 @@ export function buildJpegXObject(data: Uint8Array): BuiltImage {
  *  picture come to embed differently. Every arm is machinery that already
  *  existed: `imageStream`, `flate`, and the colour-plus-`/SMask` shape
  *  `buildPngXObject` produces for colour type 6. */
-export function buildRasterXObject(img: RasterImage): BuiltImage {
+export function buildRasterXObject(img: RasterImage, limits: LoadLimits = LoadLimits.defaults): BuiltImage {
   if (img.kind === 'embedded')
-    return img.format === 'jpeg' ? buildJpegXObject(img.payload) : buildPngXObject(img.payload);
+    return img.format === 'jpeg' ? buildJpegXObject(img.payload) : buildPngXObject(img.payload, limits);
   if (img.kind === 'indexed') {
     const hival = Math.floor(img.palette.length / 3) - 1;
     const cs: PdfObject = [
@@ -152,16 +154,19 @@ export function imageFrameCount(
  *  auto-detecting JPEG/PNG/BMP/TIFF. Does not attach it to any page. */
 export function buildImageXObject(
   data: Uint8Array, format?: 'jpeg' | 'png' | 'bmp' | 'tiff', page = 0,
+  limits: LoadLimits = LoadLimits.defaults,
 ): BuiltImage {
   const fmt = format ?? sniff(data);
-  if (fmt === 'tiff') return buildRasterXObject(decodeTiff(data, page));
+  if (fmt === 'tiff') return buildRasterXObject(decodeTiff(data, page, limits), limits);
   // Accepting `page` and ignoring it is the trap textedit.ts's `region` is
   // documented against: a caller who thinks they selected page 3 and silently
   // got page 1 has no way to tell.
   if (page !== 0)
     throw new UnsupportedFeatureError(`AddImage: ${fmt} has no pages, so page ${page} is invalid`);
-  if (fmt === 'bmp') return buildRasterXObject(decodeBmp(data));
-  return fmt === 'jpeg' ? buildJpegXObject(data) : buildPngXObject(data);
+  if (fmt === 'bmp') return buildRasterXObject(decodeBmp(data, limits), limits);
+  // A JPEG is passed through undecoded, so embedding it costs nothing its size
+  // could amplify; decoding it later runs under the PDF-side bounds.
+  return fmt === 'jpeg' ? buildJpegXObject(data) : buildPngXObject(data, limits);
 }
 
 /** Embed `data` as an Image XObject and paint it into rect [x, y, w, h]. */
@@ -171,7 +176,7 @@ export function addImage(
 ): void {
   if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((n) => Number.isFinite(n)))
     throw new TypeError('rect must be [x, y, w, h] (4 finite numbers)');
-  const built = buildImageXObject(data, opts.format, opts.page ?? 0);
+  const built = buildImageXObject(data, opts.format, opts.page ?? 0, doc.loadLimits);
   const res = ensureOwnResources(doc, page);
   const xobjs = ensureOwnSubdict(doc, res, 'XObject');
   const key = freshKey(xobjs, 'Im');
@@ -216,7 +221,7 @@ export function imageSize(data: Uint8Array): { width: number; height: number } |
     const height = built.stream.dict.get('Height');
     return typeof width === 'number' && typeof height === 'number'
       ? { width, height } : undefined;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
 }
@@ -328,15 +333,17 @@ function deinterlaceAdam7(
   return full;
 }
 
-function buildPngXObject(data: Uint8Array): BuiltImage {
+function buildPngXObject(data: Uint8Array, limits: LoadLimits): BuiltImage {
   let width = 0, height = 0, bitDepth = 0, colorType = -1, interlace = 0;
   let palette: Uint8Array | undefined;
   let trns: Uint8Array | undefined;
   const idatParts: Uint8Array[] = [];
   for (const { type, data: cd } of pngChunks(data)) {
     if (type === 'IHDR') {
-      width = (cd[0] << 24) | (cd[1] << 16) | (cd[2] << 8) | cd[3];
-      height = (cd[4] << 24) | (cd[5] << 16) | (cd[6] << 8) | cd[7];
+      // Unsigned: `<< 24` makes a high bit negative, and a negative size
+      // passes a pixel bound it should fail.
+      width = ((cd[0] << 24) | (cd[1] << 16) | (cd[2] << 8) | cd[3]) >>> 0;
+      height = ((cd[4] << 24) | (cd[5] << 16) | (cd[6] << 8) | cd[7]) >>> 0;
       bitDepth = cd[8];
       colorType = cd[9];
       interlace = cd[12];
@@ -351,6 +358,9 @@ function buildPngXObject(data: Uint8Array): BuiltImage {
     }
   }
   if (colorType < 0) throw new PdfParseError('AddImage: PNG has no IHDR');
+  // (ibzo.11) From the DECLARED size, before a byte is inflated. A PNG claiming
+  // 2^31 x 2^31 was embedded as-is: a picture nobody can decode, written out.
+  limits.enforce('maxImagePixels', width * height, 'PNG image');
 
   const channels = colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 3 ? 1
     : colorType === 4 ? 2 : colorType === 6 ? 4 : 0;
@@ -364,7 +374,10 @@ function buildPngXObject(data: Uint8Array): BuiltImage {
   const idatLen = idatParts.reduce((n, p) => n + p.length, 0);
   const idat = new Uint8Array(idatLen);
   { let o = 0; for (const p of idatParts) { idat.set(p, o); o += p.length; } }
-  const inflated = new Uint8Array(inflateSync(Buffer.from(idat)));
+  // (ibzo.11) Bounded as a PDF stream is, with no declared length: trailing
+  // data past the rows the header needs is tolerated, as it was, up to the
+  // bounds — a bomb stops there instead of after inflating.
+  const inflated = new InputDecoder(limits, 'PNG image data').inflate(idat);
   const samples = interlace === 1
     ? deinterlaceAdam7(inflated, width, height, channels, bitDepth)
     : applyPredictor(inflated, { predictor: 15, colors: channels, bpc: bitDepth, columns: width });

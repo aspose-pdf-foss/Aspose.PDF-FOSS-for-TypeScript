@@ -11,9 +11,16 @@ import { PdfDict, PdfObject, isArray, isDict, isString } from './types.js';
 import { decodePdfText, encodePdfText } from './metadata.js';
 
 /** Look up `key` in a /Names name-tree node (honoring /Limits when present). */
-export function lookupNameTree(doc: Document, node: PdfObject, key: string): PdfObject | undefined {
+export function lookupNameTree(
+  doc: Document, node: PdfObject, key: string, depth = 1, seen = new Set<PdfDict>(),
+): PdfObject | undefined {
   const n = doc.resolve(node);
-  if (!isDict(n)) return undefined;
+  // A node already on this walk is a cycle: damage, which costs the subtree and
+  // never throws. Depth is a bound: it throws. The two differ on purpose, and a
+  // tree that names itself used to recurse until the stack gave out.
+  if (!isDict(n) || seen.has(n)) return undefined;
+  seen.add(n);
+  doc.loadLimits.enforce('maxNestingDepth', depth, 'name tree');
   const names = doc.resolve(n.get('Names'));
   if (isArray(names)) {
     for (let i = 0; i + 1 < names.length; i += 2) {
@@ -31,7 +38,7 @@ export function lookupNameTree(doc: Document, node: PdfObject, key: string): Pdf
         const lo = decodePdfText(limits[0].bytes), hi = decodePdfText(limits[1].bytes);
         if (key < lo || key > hi) continue;
       }
-      const found = lookupNameTree(doc, kd, key);
+      const found = lookupNameTree(doc, kd, key, depth + 1, seen);
       if (found !== undefined) return found;
     }
   }
@@ -40,9 +47,14 @@ export function lookupNameTree(doc: Document, node: PdfObject, key: string): Pdf
 
 /** Collect every (name → value) pair from a /Names name-tree node, flattening
  *  any /Kids recursion. Values are returned raw (undecoded). */
-export function collectNameTree(doc: Document, node: PdfObject | undefined, out: Array<[string, PdfObject]>): void {
+export function collectNameTree(
+  doc: Document, node: PdfObject | undefined, out: Array<[string, PdfObject]>,
+  depth = 1, seen = new Set<PdfDict>(),
+): void {
   const n = doc.resolve(node);
-  if (!isDict(n)) return;
+  if (!isDict(n) || seen.has(n)) return;
+  seen.add(n);
+  doc.loadLimits.enforce('maxNestingDepth', depth, 'name tree');
   const names = doc.resolve(n.get('Names'));
   if (isArray(names))
     for (let i = 0; i + 1 < names.length; i += 2) {
@@ -50,7 +62,7 @@ export function collectNameTree(doc: Document, node: PdfObject | undefined, out:
       if (isString(k)) out.push([decodePdfText(k.bytes), names[i + 1]]);
     }
   const kids = doc.resolve(n.get('Kids'));
-  if (isArray(kids)) for (const kid of kids) collectNameTree(doc, kid, out);
+  if (isArray(kids)) for (const kid of kids) collectNameTree(doc, kid, out, depth + 1, seen);
 }
 
 /** Build a single flat name-tree node (`<< /Names [(k) v ...] >>`) from a map,

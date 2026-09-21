@@ -56,18 +56,19 @@ export function lookupNumberTree(doc: Document, node: PdfDict, key: number): Pdf
 export function numsArrays(doc: Document, node: PdfDict): PdfObject[][] {
   const out: PdfObject[][] = [];
   const seen = new Set<PdfDict>();
-  const walk = (cur: PdfDict): void => {
+  const walk = (cur: PdfDict, depth: number): void => {
     if (seen.has(cur)) return;
     seen.add(cur);
+    doc.loadLimits.enforce('maxNestingDepth', depth, 'number tree');
     const nums = doc.resolve(cur.get('Nums'));
     if (isArray(nums)) out.push(nums);
     const kidsArr = doc.resolve(cur.get('Kids'));
     if (!isArray(kidsArr)) return;
     for (const k of kidsArr) {
       const kd = doc.resolve(k);
-      if (isDict(kd)) walk(kd);
+      if (isDict(kd)) walk(kd, depth + 1);
     }
   };
-  walk(node);
+  walk(node, 1);
   return out;
 }

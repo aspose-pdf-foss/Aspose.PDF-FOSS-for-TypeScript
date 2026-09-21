@@ -4,6 +4,7 @@
 // single-frame entropy/transform paths; only reconstruction (no level shift for
 // DCT, Psv=0 for lossless) and composition differ.
 import { PdfParseError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { idct, ZIGZAG, combinePlanes, parseSof, parseDQT, parseDHT, parseDAC, decodeScan } from './jpeg.js';
 import type { Frame, Plane, Huff, JpegImage } from './jpeg.js';
 import { decodeArithScan } from './jpegarith.js';
@@ -99,7 +100,7 @@ function combineFinal(frame: Frame, planes: Int32Array[], dims: Dim[], adobe: nu
   return combinePlanes(frame, out, adobe);
 }
 
-export function decodeHierarchical(data: Uint8Array): JpegImage {
+export function decodeHierarchical(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults): JpegImage {
   const u16 = (p: number) => (data[p] << 8) | data[p + 1];
   const qt: (Int32Array | undefined)[] = [];
   const huffDC: (Huff | undefined)[] = []; const huffAC: (Huff | undefined)[] = [];
@@ -141,7 +142,7 @@ export function decodeHierarchical(data: Uint8Array): JpegImage {
     else if (marker === 0xde) { /* DHP: geometry defined per-frame; presence already noted */ }
     else if (marker === 0xdf) { const b = data[seg]; expH = (b >> 4 & 1) === 1; expV = (b & 1) === 1; } // EXP (for the next frame)
     else if (marker === 0xee) { if (len >= 14 && data[seg] === 0x41 && data[seg + 1] === 0x64 && data[seg + 2] === 0x6f && data[seg + 3] === 0x62 && data[seg + 4] === 0x65) adobe = data[seg + 11]; }
-    else if ((marker >= 0xc0 && marker <= 0xcf) && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) { finalize(); pending = parseSof(data, seg, marker, qt); pendingExpH = expH; pendingExpV = expV; expH = expV = false; }
+    else if ((marker >= 0xc0 && marker <= 0xcf) && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) { finalize(); pending = parseSof(data, seg, marker, qt, limits); pendingExpH = expH; pendingExpV = expV; expH = expV = false; }
     else if (marker === 0xda) {
       if (!pending) throw new PdfParseError('JPEG: SOS before SOF');
       pos = pending.lossless

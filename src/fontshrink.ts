@@ -1,3 +1,4 @@
+import type { LoadLimits } from './loadlimits.js';
 import { SfntFont } from './sfnt.js';
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import { glyphClosure, assembleSfnt, cat, u16b, u32b } from './subset.js';
@@ -261,9 +262,9 @@ export function shrinkNameKeyedCff(cff: Uint8Array, keep: Set<number>): ShrinkRe
  * CFF has no composite glyphs (`seac` is legacy and already flattened by
  * flattenGlyph), so no closure pass is needed — unlike glyf.
  */
-export function shrinkCff(cff: Uint8Array, keep: Set<number>): ShrinkResult {
+export function shrinkCff(cff: Uint8Array, keep: Set<number>, limits?: LoadLimits): ShrinkResult {
   const prog = parseCffProgram(cff);
-  const font = new CffFont(cff);
+  const font = new CffFont(cff, limits);
   const globalBias = bias(prog.globalSubrs.length);
 
   const charStrings: Uint8Array[] = [];

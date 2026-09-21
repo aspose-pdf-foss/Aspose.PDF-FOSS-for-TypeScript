@@ -1,5 +1,6 @@
+import { LoadLimits } from './loadlimits.js';
 import type { Path, Seg } from './pagerender.js';
-import { PdfParseError } from './errors.js';
+import { PdfParseError, rethrowLimit } from './errors.js';
 import { sidToName } from './cffstrings.js';
 
 /**
@@ -34,7 +35,8 @@ export class CffFont {
   private readonly charsetOff: number;
   private readonly encodingOff: number;
 
-  constructor(bytes: Uint8Array) {
+  /** `limits.maxGlyphOperations` bounds each glyph's interpretation (`ibzo.12`). */
+  constructor(bytes: Uint8Array, private readonly limits: LoadLimits = LoadLimits.defaults) {
     this.raw = bytes;
     const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.view = v;
@@ -152,9 +154,9 @@ export class CffFont {
       localSubrs: this.fdLocalSubrs[fd] ?? [], localBias: this.fdBias[fd] ?? 107,
       globalSubrs: this.globalSubrs, globalBias: this.globalBias,
       width: this.fdWidths[fd]?.default ?? 0, nominalWidth: this.fdWidths[fd]?.nominal ?? 0,
-      depth: 0,
+      depth: 0, ops: 0, limits: this.limits,
     };
-    try { runCharString(this.charStrings[gid], ctx); } catch { /* degrade to whatever was drawn */ }
+    try { runCharString(this.charStrings[gid], ctx); } catch (caught) { rethrowLimit(caught); /* degrade to whatever was drawn */ }
     if (ctx.open) ctx.path.push({ op: 'Z' });
     return ctx.path;
   }
@@ -182,9 +184,9 @@ export class CffFont {
       localSubrs: this.fdLocalSubrs[fd] ?? [], localBias: this.fdBias[fd] ?? 107,
       globalSubrs: this.globalSubrs, globalBias: this.globalBias,
       width: this.fdWidths[fd]?.default ?? 0, nominalWidth: this.fdWidths[fd]?.nominal ?? 0,
-      depth: 0,
+      depth: 0, ops: 0, limits: this.limits,
     };
-    try { runCharString(this.charStrings[gid], ctx); } catch { /* keep what was resolved */ }
+    try { runCharString(this.charStrings[gid], ctx); } catch (caught) { rethrowLimit(caught); /* keep what was resolved */ }
     this.widthCache.set(gid, ctx.width);
     return ctx.width;
   }
@@ -387,6 +389,8 @@ interface T2Ctx {
   localSubrs: Uint8Array[]; localBias: number;
   globalSubrs: Uint8Array[]; globalBias: number;
   width: number; nominalWidth: number; depth: number;
+  /** Operators executed so far for this glyph, subroutines included (`ibzo.12`). */
+  ops: number; limits: LoadLimits;
 }
 
 function moveTo(c: T2Ctx, dx: number, dy: number): void {
@@ -426,6 +430,7 @@ function runCharString(code: Uint8Array, c: T2Ctx): void {
   let i = 0;
   while (i < code.length) {
     const b = code[i++];
+    if (b < 32 && b !== 28) c.limits.enforce('maxGlyphOperations', ++c.ops, 'CFF charstring');
     if (b >= 32 || b === 28) {                                   // operand
       if (b === 28) { c.stack.push(((code[i] << 8) | code[i + 1]) << 16 >> 16); i += 2; }
       else if (b < 247) c.stack.push(b - 139);

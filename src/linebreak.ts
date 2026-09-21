@@ -226,3 +226,43 @@ export function lineBreakOpportunities(codes: number[]): Uint8Array {
   }
   return out;
 }
+
+/** `lineBreakOpportunities` over a PREFIX of a longer text, plus how far into
+ *  its answer that answer is FINAL: `brk[k]` for every `k < final` is what the
+ *  full text would have given at `k`. Past `final` the answer is the best a
+ *  prefix can do and may move once more text arrives. `whole` says the codes
+ *  are the entire text, where everything is final.
+ *
+ *  It exists for `breakOverwideWord` (`lt63`), which analysed the whole
+ *  remaining word on every page a long word spanned — O(P*L) for L characters
+ *  over P pages. It analyses a growing prefix instead, which is sound only
+ *  because of the horizon below.
+ *
+ *  THE HORIZON IS `n - 1`, and it is worth recording WHY, because the obvious
+ *  reading says a numeric run straddling the cut must cost far more. Only three
+ *  things in this file read forward at all:
+ *
+ *    - LB15b reads `cls[i + 1]`, with `i + 1 >= n` standing for end-of-text;
+ *    - LB28a reads `cls[i + 1]`, guarded by `i + 1 < n`;
+ *    - LB25's numeric scan runs forward an unbounded distance.
+ *
+ *  The first two put index `n - 1` — and only `n - 1` — at risk. The third
+ *  looks worse and is not: its UNGUARDED reads are the three at the head of the
+ *  scan, `(PR|PO)? (OP|HY)? NU`, so `p` is at most `i + 2` when it can first see
+ *  the end, which means a scan only notices the end when `i >= n - 2`; and the
+ *  marks such a scan would differ on begin at `i + 1 >= n - 1`. Every later read
+ *  is behind a `p < n` guard, and a scan cut short by one marks a PREFIX of what
+ *  it would otherwise mark, never something different — so a truncated numeric
+ *  run keeps every interior prohibition it had room to write. The two reasons
+ *  converge on the same index.
+ *
+ *  Soundness and non-vacuity are BOTH asserted in `test/linebreak-prefix.test.ts`,
+ *  over every prefix of every UAX #14 corpus row and of generated 40-character
+ *  words whose numeric runs straddle each cut. Neither alone is enough: `final =
+ *  0` is perfectly sound and leaves the probe doubling forever. */
+export function lineBreakPrefix(
+  codes: number[], whole: boolean,
+): { brk: Uint8Array; final: number } {
+  const brk = lineBreakOpportunities(codes);
+  return { brk, final: whole ? codes.length : Math.max(0, codes.length - 1) };
+}

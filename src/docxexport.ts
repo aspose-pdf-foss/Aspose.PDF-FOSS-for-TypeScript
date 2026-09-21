@@ -12,6 +12,7 @@ import { visitContent, type GlyphEvent } from './text.js';
 import { renderPageGraphicsToPng } from './raster.js';
 import { groupGlyphs } from './docxgroup.js';
 import { docxTextboxBody, type ImagePlacement, type TextboxPage } from './docxtextbox.js';
+import { rethrowLimit } from './errors.js';
 
 /** Options for {@link Document.ToDocx} and {@link Page.ToDocx}.
  *
@@ -141,7 +142,7 @@ function renderFlow(doc: Document, pages: Page[]): Uint8Array {
   let nums: DocxNumbering[] = [];
   try {
     ({ xml, nums } = docxBody(buildDocModel(doc, pages), images, links));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: emit whatever was produced. Matches mdexport.ts's render and
     // renderPageToSvg, neither of which throws on a document we could not
     // fully reconstruct.
@@ -198,7 +199,7 @@ function collectPage(
       // textbox mode would still position hidden text that flow mode omits, and
       // one export would contradict itself across its two modes.
     }, { skipHidden: true });
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever was collected before the failure still positions.
   }
 
@@ -211,7 +212,7 @@ function collectPage(
       // this, since they are graphics rather than text.
       const png = renderPageGraphicsToPng(doc, page, { box: opts.box ?? 'crop' });
       backdrop = { rid: images.addBytes(png, 'image/png').rid };
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // A page we cannot rasterize keeps its text frames and loses its backdrop.
       // Safe here in a way it is not for HTML's 'page': the frames are visible
       // either way, so degrading costs the graphics, never the text.
@@ -239,7 +240,7 @@ function renderTextbox(doc: Document, pages: Page[], opts: DocxOptions): Uint8Ar
   let xml = '';
   try {
     xml = docxTextboxBody(pages.map((p) => collectPage(doc, p, opts, images)));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: emit whatever was produced. Matches renderFlow and
     // renderPageToSvg, neither of which throws on a page we could not walk.
   }

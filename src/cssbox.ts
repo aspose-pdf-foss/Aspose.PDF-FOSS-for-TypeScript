@@ -33,6 +33,7 @@
  *  produces well-formed `table > tbody > tr > td`, so real HTML needs almost
  *  none of it — what does need it is a div tree given table displays by CSS. */
 
+import type { LoadLimits } from './loadlimits.js';
 import type { HtmlDocument, HtmlElement, HtmlNode } from './htmldom.js';
 import type { ComputedStyle, UnsupportedDeclaration } from './cssprop.js';
 import type { TextRun } from './textdecor.js';
@@ -127,9 +128,9 @@ function contributesInline(n: HtmlNode, styles: Map<HtmlElement, ComputedStyle>)
 }
 
 export function buildBoxes(
-  root: HtmlDocument, resolveFamily: FamilyResolver,
+  root: HtmlDocument, resolveFamily: FamilyResolver, limits?: LoadLimits,
 ): { boxes: BoxNode[]; unsupported: UnsupportedDeclaration[]; report: NotRendered[] } {
-  const { styles, unsupported } = computeStyles(root);
+  const { styles, unsupported } = computeStyles(root, limits);
   const report: NotRendered[] = [];
 
   /** The `blocks | inline` content of an element, the same rule for a cell as

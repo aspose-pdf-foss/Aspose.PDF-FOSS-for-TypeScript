@@ -17,6 +17,7 @@ import type { Page } from './page.js';
 import { PdfDict, PdfObject, isArray, isName } from './types.js';
 import type { ContentAddr } from './editcontent.js';
 import { visitContent, type Rect } from './text.js';
+import { rethrowLimit } from './errors.js';
 
 /** Which edges of the page a pagination artifact is attached to (Table 331). */
 export type ArtifactEdge = 'Top' | 'Bottom' | 'Left' | 'Right';
@@ -163,7 +164,7 @@ export function extractArtifacts(doc: Document, page: Page): PageArtifact[] {
       image: (e) => grow(e.artifactScope, e.quad),
       path: (e) => grow(e.artifactScope, segmentBox(e.segments)),
     });
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return [];
   }
 

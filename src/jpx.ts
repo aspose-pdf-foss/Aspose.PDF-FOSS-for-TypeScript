@@ -3,6 +3,7 @@
 // and (below) orchestrates the full decode pipeline in decodeJpx.
 
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { decodeTier2 } from './jpxt2.js';
 import { decodeCodeBlock } from './jpxt1.js';
 import { inverseDwt, ResolutionSpec, Subband } from './jpxwavelet.js';
@@ -52,7 +53,7 @@ export function extractCodestream(buf: Uint8Array): Uint8Array {
 }
 
 /** Parse the codestream main header + single tile into a Codestream model. */
-export function parseCodestream(buf: Uint8Array): Codestream {
+export function parseCodestream(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults): Codestream {
   if (!(buf.length >= 2 && buf[0] === 0xff && buf[1] === 0x4f)) throw new PdfParseError('JPX: missing SOC marker');
   let p = 2;
   let siz: Partial<Codestream> | undefined;
@@ -83,6 +84,11 @@ export function parseCodestream(buf: Uint8Array): Codestream {
         const xsiz = u32(seg, 2), ysiz = u32(seg, 6), xosiz = u32(seg, 10), yosiz = u32(seg, 14);
         const xtsiz = u32(seg, 18), ytsiz = u32(seg, 22), xtosiz = u32(seg, 26), ytosiz = u32(seg, 30);
         const csiz = u16(seg, 34);
+        // (ibzo.3) The image area, from SIZ, before anything else is read. It
+        // bounds the tile grid too — every tile holds at least one pixel — and
+        // it must run BEFORE the tile count, or an absurd grid is reported as
+        // "multiple tiles unsupported", which names no limit at all.
+        limits.enforce('maxImagePixels', Math.max(0, xsiz - xosiz) * Math.max(0, ysiz - yosiz), 'JPX image');
         if (csiz > 3) throw new UnsupportedFeatureError(`JPX: ${csiz} components (>3) unsupported`);
         for (let i = 0; i < csiz; i++) {
           const ssiz = seg[36 + i * 3], xr = seg[37 + i * 3], yr = seg[38 + i * 3];
@@ -146,8 +152,8 @@ function subbandQcdIndex(level: number, type: string): number {
 }
 
 /** Decode a JPEG 2000 codestream (bare J2K or JP2 box) to interleaved 8-bit samples. */
-export function decodeJpx(bytes: Uint8Array): JpxImage {
-  const cs = parseCodestream(extractCodestream(bytes));
+export function decodeJpx(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): JpxImage {
+  const cs = parseCodestream(extractCodestream(bytes), limits);
   const width = cs.xsiz - cs.xosiz, height = cs.ysiz - cs.yosiz;
   const nc = cs.comps.length;
   const N = cs.cod.levels;

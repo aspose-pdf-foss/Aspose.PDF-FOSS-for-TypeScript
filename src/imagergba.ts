@@ -6,6 +6,7 @@ import { decodeImageStream, filterName, numOf } from './imagedecode.js';
 import { colorKeyAlpha } from './colorkey.js';
 import { inflateStream } from './flate.js';
 import { decodeJpeg, type JpegImage } from './jpeg.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * An image XObject (or inline image) decoded to straight-alpha RGBA.
@@ -61,7 +62,7 @@ function decodeSMaskAlpha(doc: Document, dict: PdfDict, w: number, h: number): U
   const filt = filterName(doc, sm.dict) ?? '';
   if (filt === 'DCTDecode' || filt === 'DCT') {
     let dec: JpegImage;
-    try { dec = decodeJpeg(decodeImageStream(doc, sm)); } catch { return undefined; } // progressive/arith/malformed → degrade
+    try { dec = decodeJpeg(decodeImageStream(doc, sm), doc.loadLimits); } catch (caught) { rethrowLimit(caught); return undefined; } // progressive/arith/malformed → degrade
     gw = dec.width; gh = dec.height;
     const nc = dec.comps;
     if (nc === 1) src = dec.data;
@@ -69,7 +70,7 @@ function decodeSMaskAlpha(doc: Document, dict: PdfDict, w: number, h: number): U
   } else {
     if (NO_RASTER_DECODER.has(filt)) return undefined;
     if ((resolveNum(doc, sm.dict.get('BitsPerComponent'), 8)) !== 8) return undefined;
-    try { src = decodeImageStream(doc, sm); } catch { return undefined; }
+    try { src = decodeImageStream(doc, sm); } catch (caught) { rethrowLimit(caught); return undefined; }
   }
 
   const out = new Uint8Array(w * h);
@@ -103,7 +104,7 @@ function decodeStencilMaskAlpha(
   const mw = numOf(doc, mk.dict, 'Width', 0), mh = numOf(doc, mk.dict, 'Height', 0);
   if (!mw || !mh) return undefined;
   let bits: Uint8Array;
-  try { bits = decodeImageStream(doc, mk); } catch { return undefined; } // JBIG2/CCITT/malformed → degrade
+  try { bits = decodeImageStream(doc, mk); } catch (caught) { rethrowLimit(caught); return undefined; } // JBIG2/CCITT/malformed → degrade
   const rowBytes = (mw + 7) >> 3;
   if (bits.length < rowBytes * mh) return undefined;
 
@@ -147,12 +148,16 @@ function colorKeyAlphaFor(
  *  (JPEG has a dedicated branch above, or unusual bit depths). */
 export function decodeImageRgba(doc: Document, stream: PdfStream, fill: Rgb): ImageRgba | undefined {
   const w = numOf(doc, stream.dict, 'Width', 0), h = numOf(doc, stream.dict, 'Height', 0);
-  if (!w || !h || w * h > 64 * 1024 * 1024) return undefined;
+  if (!w || !h) return undefined;
+  // (ibzo.4) Was a silent 64-megapixel skip: a large picture simply vanished
+  // from the render with nothing said. The policy bound refuses instead, naming
+  // itself, and a caller who wants the picture raises it.
+  doc.loadLimits.enforce('maxImagePixels', w * h, 'image');
 
   const filt = filterName(doc, stream.dict);
   if (filt === 'DCTDecode' || filt === 'DCT') {
     let dec: JpegImage;
-    try { dec = decodeJpeg(decodeImageStream(doc, stream)); } catch { return undefined; } // progressive/arith/malformed → degrade
+    try { dec = decodeJpeg(decodeImageStream(doc, stream), doc.loadLimits); } catch (caught) { rethrowLimit(caught); return undefined; } // progressive/arith/malformed → degrade
     const { width: jw, height: jh, comps, data: s } = dec;
     // /SMask, then either form of /Mask. The two /Mask forms are one entry so
     // only one can be present; /SMask outranks both, being the richer mask and
@@ -176,7 +181,7 @@ export function decodeImageRgba(doc: Document, stream: PdfStream, fill: Rgb): Im
 
   if (NO_RASTER_DECODER.has(filt ?? '')) return undefined;
   let samples: Uint8Array;
-  try { samples = decodeImageStream(doc, stream); } catch { return undefined; }
+  try { samples = decodeImageStream(doc, stream); } catch (caught) { rethrowLimit(caught); return undefined; }
 
   const dict = stream.dict;
   const data = new Uint8Array(w * h * 4);

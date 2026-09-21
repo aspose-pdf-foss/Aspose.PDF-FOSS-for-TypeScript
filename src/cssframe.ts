@@ -43,6 +43,7 @@
  *  non-destructive dry run must not touch. Its only consumer is
  *  keep-with-next. */
 
+import { insetScale, type Compromise } from './flowelement.js';
 import type {
   FlowClear, FlowElement, MeasureContext, PlaceContext, PlaceResult,
 } from './flowelement.js';
@@ -100,11 +101,11 @@ class BoxElement implements FlowElement {
    *  wrapped the content, which for any document is `<html>`. Reading through
    *  is also what lets cssflow.ts's `attribute` see that an inner box has
    *  already claimed the element and leave it alone. */
-  get onCompromise(): ((how: 'scaled' | 'overflow') => void) | undefined {
+  get onCompromise(): ((how: Compromise) => void) | undefined {
     return this.inner.onCompromise;
   }
 
-  set onCompromise(fn: ((how: 'scaled' | 'overflow') => void) | undefined) {
+  set onCompromise(fn: ((how: Compromise) => void) | undefined) {
     this.inner.onCompromise = fn;
   }
 
@@ -125,12 +126,30 @@ class BoxElement implements FlowElement {
   private get padTop(): number { return this.first ? this.frame.insetTop : 0; }
   private get padBottom(): number { return this.last ? this.frame.insetBottom : 0; }
 
+  /** The factor every horizontal amount of this frame is scaled by, and the
+   *  content width that leaves (`e1bp`).
+   *
+   *  A frame narrower than its own margins plus insets used to hand its child a
+   *  non-positive width, which `place` and `measure` both read as "nothing to
+   *  draw" — so nested `<blockquote>`s, which carry a 40px margin on BOTH
+   *  sides, rendered a BLANK PAGE from depth 8 with nothing reported. Every
+   *  amount scales by ONE factor so the left shift and the narrowing stay
+   *  consistent and the content stays inside the column rather than sliding off
+   *  its right edge. Placement-only: `cssresolve.ts` still computes CSS 2.1's
+   *  used widths, which is what the headless-Chrome corpus compares, and this
+   *  is 1 whenever there is room, so every document that fitted is unmoved. */
+  private geo(width: number): { k: number; width: number } {
+    const f = this.frame;
+    const total = f.marginLeft + f.marginRight + f.insetLeft + f.insetRight;
+    const k = insetScale(width, total);
+    return { k, width: width - total * k };
+  }
+
   /** The inner element's width, derived from the context rather than from the
    *  resolved contentWidth, so a caller that hands a different width degrades
    *  instead of overflowing. */
   private innerWidth(width: number): number {
-    const f = this.frame;
-    return width - f.marginLeft - f.marginRight - f.insetLeft - f.insetRight;
+    return this.geo(width).width;
   }
 
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
@@ -147,7 +166,7 @@ class BoxElement implements FlowElement {
 
   place(ctx: PlaceContext): PlaceResult {
     const f = this.frame;
-    const width = this.innerWidth(ctx.width);
+    const { k, width } = this.geo(ctx.width);
     let avail = ctx.availHeight - this.padTop - this.padBottom;
     if (width <= 0 || avail <= 0) return { usedHeight: 0, remainder: this, drew: false };
 
@@ -173,6 +192,12 @@ class BoxElement implements FlowElement {
       return { usedHeight: 0, remainder: probe.fits ? null : this, drew: false };
     }
 
+    // (rfba) The frame could not afford its own margins and insets, so this
+    // content lands narrower than the source asked for. Said HERE, once it is
+    // known to draw, and never from `measure`, which the engine asks
+    // speculatively. `onCompromise` reads through to the inner element, so
+    // every squeezed level of a nest fires the same one-shot callback.
+    if (k < 1) this.onCompromise?.('squeezed');
     const padBottom = probe.fits ? this.padBottom : 0;
     const pad = this.padFor(probe.usedHeight, probe.fits, avail);
     const used = this.padTop + probe.usedHeight + pad + padBottom;
@@ -180,7 +205,7 @@ class BoxElement implements FlowElement {
 
     const res = this.inner.place({
       ...ctx,
-      x: ctx.x + f.marginLeft + f.insetLeft,
+      x: ctx.x + (f.marginLeft + f.insetLeft) * k,
       width,
       top: ctx.top - this.padTop,
       availHeight: avail,
@@ -205,11 +230,18 @@ class BoxElement implements FlowElement {
     return Math.max(0, Math.min(this.frame.minHeight - total, avail - innerUsed));
   }
 
-  /** Background first, then the four edges, all as artifacted decoration. */
+  /** Background first, then the four edges, all as artifacted decoration.
+   *
+   *  The border box is built from the SCALED margins (`e1bp`), so a squeezed
+   *  frame paints around the content it actually handed its child rather than
+   *  around the box it asked for. The edge WIDTHS are not scaled — a border is
+   *  ink rather than reserved space — and `edge` already declines a
+   *  non-positive one. */
   private paint(ctx: PlaceContext, used: number): void {
     const f = this.frame;
-    const bx = ctx.x + f.marginLeft;
-    const bw = ctx.width - f.marginLeft - f.marginRight;
+    const { k } = this.geo(ctx.width);
+    const bx = ctx.x + f.marginLeft * k;
+    const bw = ctx.width - (f.marginLeft + f.marginRight) * k;
     const bottom = ctx.top - used;
     if (!(bw > 0) || !(used > 0)) return;
 

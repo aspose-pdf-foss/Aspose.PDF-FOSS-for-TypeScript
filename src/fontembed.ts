@@ -3,6 +3,7 @@ import { PdfDict, PdfObject, PdfRef, PdfStream, name, ref } from './types.js';
 import { SfntFont } from './sfnt.js';
 import { subsetGlyf } from './subset.js';
 import { subsetCff } from './cffsubset.js';
+import { rethrowLimit } from './errors.js';
 
 /** Allocate an object in the document and return an indirect reference to it.
  *  Structurally satisfied by `Document.allocObject` (kept structural to avoid a
@@ -139,7 +140,7 @@ export function buildEmbeddedFont(
       baseTag = subsetTag(bytes);
       descriptor.set('FontFile3', alloc(flateStream(bytes, { Subtype: name('CIDFontType0C') })));
       cids = [...gidMap.keys()].sort((a, b) => a - b);
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // Exotic/malformed CFF: preserve robustness by whole-embedding the OTTO
       // program, as before. Draw-time GIDs still resolve (identity).
       baseTag = subsetTag(font.raw);

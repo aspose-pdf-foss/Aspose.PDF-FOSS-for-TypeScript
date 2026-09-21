@@ -161,6 +161,27 @@ Source (`src/`):
   recognise, so damage costs them the bytes it touched instead of the page, the
   font's decoder or the appearance. A throw in the lexer took all four down at
   once and was reachable from any file we did not write.
+  **Invariant (`ibzo.2`):** `Lexer.maxTokenBytes` caps one string, name or
+  regular token WHILE it is read and flags the token `over` rather than
+  throwing, so the never-throws rule above survives — deciding what an
+  oversized token MEANS belongs to the caller, as a stray keyword already does.
+  It is off by default and only `ObjectParser` turns it on, which is what keeps
+  content streams, CMaps and `/DA` strings byte-identical. The check must run
+  during the read: a literal string accumulates into a `number[]`, eight bytes
+  a slot, so a span check after the fact runs on a heap that is already gone.
+  **Invariant (`ibzo.2`):** `ObjectParser` counts its own nesting depth rather
+  than leaving it to the call stack. A stack overflow is a `RangeError`, which
+  the build loop caught as damage — so a 10,000-deep array was reported as
+  `object-parse-failure`, a hostile file misdescribed as a broken one. A
+  dictionary counts toward `maxContainerItems` by ENTRY, not by token.
+  **Note, measured, and all three are REDUNDANT DEFENCES:** a stream is held by
+  both the payload check and the object-span check, and a long string by both
+  the span check and the token cap. Breaking any one alone reddens nothing;
+  only the pairs redden, at one case each. The token cap is kept for memory,
+  the payload check because it runs before the endstream scan, and the span
+  check because it is the only one that sees an oversized non-stream object
+  made of many small tokens. `test/lexer-token-cap.test.ts` is what holds the
+  cap on its own.
 - **xref.ts** — classic cross-reference tables, cross-reference streams, and
   hybrid `/XRefStm`.
   **Invariant:** a FREE entry is recorded as `{ type: 'free', gen }`, never
@@ -189,6 +210,17 @@ Source (`src/`):
   reddens NOTHING against classic-table fixtures — `Save({ incremental: true })`
   refuses `compressed`, so no test can append a stream section — and it is
   pinned only by asserting object 0 on a `Save({ compressed: true })` document.
+  **Invariant (`ibzo.2`):** a `/Prev` CYCLE throws `PdfParseError`, and `Open`
+  answers it with the recovery sweep — so the file still opens, now with
+  `doc.recovery` naming the cycle and `revisions` empty. It used to be skipped
+  silently. It is deliberately NOT a `ResourceLimitError`: a cycle is a broken
+  file rather than a large one. Only `/Prev` counts; a hybrid `/XRefStm` naming
+  a section already read is the ordinary shape and stays a silent skip.
+  **Invariant (`ibzo.2`):** `maxObjects` counts rows as they are PRODUCED,
+  never a declared `/Size` or subsection count. Nothing allocates from a
+  declared count, and a count that overstates what follows is damage the
+  ladder already opens — refusing it would turn a file that opens into one that
+  does not. A 10-million-row table killed the process before `ibzo.2`.
   It also reports the `/Prev` chain as `XrefResult.revisions`
   (`doc.Revisions`, `doc.hasIncrementalUpdates`), each carrying the byte length
   of the file as of that revision.
@@ -283,6 +315,23 @@ Source (`src/`):
   `no indirect objects found` (nothing in the file), `no /Type /Catalog object
   found` (objects but no catalog), then a catalog we can work from. Collapsing
   any two turns a diagnosis the caller can act on into "the file is broken".
+  **Invariant (`ibzo.2`):** a FOURTH refusal sits beside the three, and it is a
+  different kind: `ResourceLimitError`, naming the bound the sweep or the
+  rebuild reached. Every `catch` on the ladder calls `rethrowLimit` first —
+  those catches keep going past a BROKEN object, and a bound reached is not
+  one; swallowed, the ladder sweeps precisely the file the bound refused.
+  **Note, measured, and it is a CONJUNCTION:** the three rethrows in
+  `Document.build`'s loops and the one in `expandObjectStreams` each hold the
+  rule alone. A parse failure in the build always sends `Open` to the sweep,
+  whose rebuild re-parses every offset object through `expandObjectStreams`,
+  so removing all three build rethrows reddens nothing, and removing that one
+  reddens nothing; removing all four reddens nine cases. Likewise the sweep's
+  own header count and the rebuilt entry count cover each other. Do not
+  "simplify" either half away.
+  **Note:** `decodeObjStm`'s per-object rethrow is NOT redundant, and it is
+  the sharpest case here: an undecodable container never triggers the sweep,
+  so without it an over-deep object inside an `/ObjStm` was reported `lost`
+  and the document OPENED. Held by one case in `test/limits-parse.test.ts`.
 - **flate.ts**, **predictor.ts** — `FlateDecode` (via `node:zlib`) with PNG/TIFF
   predictors.
 - **crypto.ts** — standard security handler decryption on open (RC4, `AESV2`,
@@ -356,6 +405,54 @@ Source (`src/`):
   `content.ts` also owns **`imageCutSet`**, the `q … cm … Do … Q` group cut
   shared by redaction and image removal — pure `ContentOp[]` arithmetic, so it
   belongs in the leaf rather than in either consumer.
+  **Invariant (`ibzo.4`):** `parseContentStream` is the one parser nearly every
+  content walker uses — `visitContent`, the renderer, `EditableContent`, the
+  glyph-usage and image-usage scans, `paths.ts`, the conformance scanners — so
+  its lexer is where `maxContentTokens` and content `maxNestingDepth` are
+  counted. Callers holding a document pass `doc.loadLimits`; callers holding a
+  stream pass `budgetFor(stream).limits`; a `/DA` string takes the defaults.
+  **Invariant:** the count is of TOKENS, in a `Lexer` subclass, never of ops. An
+  operand list with no operator after it never becomes an op, and array and
+  dictionary members are read by helpers the op loop never sees; both hold a
+  slot per token. Measured: an ops-only count reddens the operand case.
+  **Invariant:** `readArray`/`readDict` recursed with no bound, so a
+  `[[[[…]]]]` operand overflowed the stack — which every walker catches as a
+  malformed stream and moves past.
+  **Note, measured:** a parsed token costs ~97 heap bytes for a bare operator
+  and ~42 inside a long operand list, which is why the default is 10 million
+  rather than the 50 million `ibzo.1` shipped (~4.8 GB). The counting costs
+  nothing measurable: 2.1 MB of ordinary page content parsed within ±3% of the
+  uncounted parser across three rounds.
+  **Invariant (`ibzo.8`):** in the two content WALKERS the budget is PER
+  WALK, not per parse. `visitContent`'s `Ctx` and `pagerender.ts`'s
+  `RenderCtx` each carry a `ContentTokenBudget` — a mutable holder passed BY
+  REFERENCE — so page content, every form, tiling pattern, Type 3 glyph
+  procedure, soft-mask group and annotation appearance charge one count. A form
+  is parsed on its own, so before this a page drawing many small forms was
+  bounded per form and never in total. `pagerender.ts` builds each child with
+  `{ ...ctx }`, which copies the REFERENCE, which is the whole reason it is a
+  holder rather than a number.
+  **Note, measured:** the two halves are independent — dropping the budget
+  argument from either walker alone reddens exactly the per-walk case in
+  `test/limits-content.test.ts`, the GetText half and the ToImage half
+  respectively. The fixture is five 4-token forms under a 10-token page, so
+  every parse fits a limit of 20 and the walk is 30.
+  **Invariant (`ibzo.9`):** EVERY walker that follows one page's content
+  graph shares a budget the same way — `paths.ts`, `glyphusage.ts`,
+  `imageusage.ts` (both resetting it in `walkPage`, since one call visits every
+  page), `validatectx.ts`'s `pageScans` and one `EditableContent`. The unit is
+  the PAGE, never the document: a document-wide total refuses a long legitimate
+  document whose every page is fine. **Measured:** reverting any one of the five
+  reddens exactly its own case in `test/limits-content.test.ts`, and dropping
+  either `walkPage` reset reddens the two-page case.
+  **Invariant (`ibzo.9`), and it is the other half of the rule:** the
+  DOCUMENT-WIDE rewrites keep the per-parse count on purpose —
+  `colorconvert.ts`, `ocflatten.ts`, `ocg.ts`'s form passes. Each dedupes its
+  scopes by object number, so every stream is parsed at most once and the total
+  is linear in bytes `maxTotalDecodedBytes` already caps. A per-walk budget
+  guards against REPEATED parsing, and there is none there to guard.
+  `drprune.ts` DID repeat itself, and got a memo rather than a budget — see its
+  entry.
   **Invariant (`5ttj`):** the group is cut only when EVERY op between the `q`
   and the `Do` MARKS NOTHING, and `NON_MARKING` is an ALLOWLIST rather than a
   denylist — that direction is the safety property. An operator nobody has
@@ -641,6 +738,91 @@ Source (`src/`):
   `layoutText` is a one-run wrapper over it. floatbox.ts and tableauthor.ts
   *measure* through it while stamp.ts *paints* through it, so a second wrapper
   lets a box measure one way and paint another.
+  **Invariant (`pl2h`):** `layoutRuns` WRAPS AND KEEPS IN ONE PASS, stopping
+  at the height budget — never "wrap it all, then keep a prefix". The engine
+  paginates by handing the overflow back as a remainder and flowing it again,
+  so an eager wrap measures every word of the tail ONCE PER PAGE, and twice
+  over at that (the over-wide test and the greedy pack). Measured on 100,000
+  words: 11.1 M characters through the function for 437 K of input, and
+  139,135 lines wrapped to keep 5,470 — each doubling of the text cost 4x, so
+  `AddHtml` took 26.4 s at 100,000 words and did not finish 400,000 in two
+  minutes.
+  **Invariant (`pl2h`):** the remainder is the RAW TAIL from where the first
+  unkept line begins, cut at run boundaries, never rebuilt line by line. A cut
+  is `String.prototype.slice`, so a single-run block's remainder costs nothing
+  whatever its length. It is also what the function's own contract says it
+  returns — "preserving spacing and newlines" — which the rebuild did NOT: it
+  collapsed runs of spaces, and since an empty paragraph has no unit to hang a
+  separator on it DROPPED blank lines, so `aaa\n\n\nbbb` came back as `bbb`
+  and a re-placed continuation lost the blank lines outright.
+  **Note, measured, and the whole suite could not see either:** all 668 files
+  stayed green across both changes, so the remainder's collapsed spaces and
+  lost blank paragraphs were covered by NOTHING. `test/layout.test.ts`'s
+  "remainder is the raw tail" cases are what hold them now.
+  **Invariant (`lqs1`), and it is the SAME RULE one level down — `pl2h` fixed
+  the word loop and did not reach here:** `breakOverwideWord` is a GENERATOR
+  and the pack loop pulls from it lazily, so `break para` stops the split where
+  it stands. An over-wide word may be longer than the page, and the remainder
+  is re-flowed, so materializing every piece re-split the whole word once per
+  page. Measured at 5 lines a page over an 8,000-character word: 506,103 driver
+  calls over 4,348,882 characters growing 4x per doubling, against 10,593 calls
+  over 88,890 characters growing 2x.
+  **Invariant (`lqs1`):** the measure inside that split is asked ONLY where
+  there is somewhere to break. It ran for every character and the answer was
+  then used only as `overflow && lastOpp > start`, so a word with NO break
+  opportunity — `'*'.repeat(n)` and `'['.repeat(n)` are each one, AL x AL and
+  OP x anything both being PROHIBITED — computed and discarded every one of
+  them, each O(i - start) because `spanWidth` re-walks the prefix. Exactly
+  n(n+1)/2 characters through the driver; 3.7 s to render 20,000 of them.
+  **Invariant (`lqs1`):** the OVER-WIDE TEST is `spanWiderThan`, a growing
+  PREFIX probe from 64, never `spanWidth(i, j) > boxWidth`. Width is monotonic
+  in the prefix, so a prefix already over the box settles it — and this runs
+  once per word per page, so measuring the word in full was the other half of
+  the same quadratic, and the half that survives making the split lazy.
+  **Note, measured, and a BOUND cannot see the probe's SIZE:** dropping its
+  start from 64 to 4 leaves ordinary text measuring 102 characters where it
+  measures 86, and dropping `spanWiderThan` altogether leaves it at 86 — so
+  `test/markdown-pathological-cost.test.ts` pins that one EXACTLY and pins the
+  other direction with a separate case. Do not turn it into a bound.
+  **Invariant (`lt63`), and it is what `lqs1` left behind:** everything BEFORE
+  the split is grown ON DEMAND too — the code point array, the offset table and
+  the UAX #14 analysis, which `lqs1` measured at 64% of the profile and left
+  running over the whole remaining word on every page it spanned.
+  `breakOverwideWord` walks `word.codePointAt` once instead of `[...word]` plus
+  `.map()`, hands out CODE UNIT offsets so `overwideUnits`' own `off` table is
+  gone, and asks `lineBreakPrefix` over a prefix that DOUBLES from 64. Measured
+  on `'[a]('.repeat(n)` through `AddMarkdown`: 0.29/0.81/2.4/8.5/32.1 s at
+  50 K-800 K characters climbing toward 4 per doubling, and 196 s at 2,000,000;
+  after, 0.24/0.38/0.82/1.55/3.21 and 8.8 s, a flat 2.
+  **Invariant (`lt63`):** a prefix's answer is believed only below
+  `lineBreakPrefix`'s own horizon; past it the answer can still move, and
+  believing it MOVES A LINE BREAK rather than throwing. `linebreak.ts` carries
+  why the horizon is `n - 1` — the short version is that LB25's forward scan
+  looks unbounded and can only NOTICE the end when it starts within two of it,
+  which lands it on the same index LB15b's and LB28a's lookahead already put at
+  risk. Asserted over every prefix of every UAX #14 corpus row in
+  `test/linebreak-prefix.test.ts`, SOUNDNESS and NON-VACUITY both: `final = 0`
+  is perfectly sound and leaves the probe doubling forever, and it is caught by
+  the second assertion alone — in `layout.ts` it HANGS rather than failing, the
+  shape `test/flow-overtall.test.ts` already records.
+  **Note, measured, and the obvious fence covers NOTHING:** pagination
+  independence and break legality over ordinary words both stay GREEN when the
+  horizon is ignored, because the risk is one index — the last of whichever
+  prefix was analysed — and no ordinary word breaks differently there. What
+  catches it is `'a'*62 + '$(' + '1'*n`, where the probe's first step ends
+  exactly on the `(`: the whole word admits NO break at all, and a build that
+  believes the prefix splits it in two. The same shape one doubling later is
+  DEAD and was removed — `atLeast(i + 1)` materializes one code point past `i`
+  before `brkAt(i)` is consulted, so from the second step on the prefix always
+  overshoots the index being asked about.
+  **Invariant (`pl2h`):** a character's owning run comes from a BOUNDARY table
+  plus a search, not a character-indexed `Uint32Array` of owners — that array
+  was allocated and filled at the full text length on every call, which is 1 GB
+  for a 200,000-word document. **And every walk over it takes
+  `Math.max(i + 1, …)`**: the character-by-character scan it replaced could not
+  fail to advance, a boundary lookup can, and a wrong run index then HANGS
+  rather than drawing wrongly. Measured — both mutations aimed at `owner` spin
+  instead of failing without it, which is how the guard came to be written.
   **Invariant:** a rich block's break opportunities are found on the
   CONCATENATED run text, never per run — `**bold**text` is one word and must not
   break at the style boundary. Widths are summed per segment, which agrees
@@ -886,7 +1068,7 @@ Source (`src/`):
   **Invariant (`zch2.16`):** `'overflow'` is its OWN construct, not a reuse of
   `'text'` — that name means a glyph the resolved face cannot draw and is
   shared with `svgdraw.ts`, while an overflowing block drew every character
-  perfectly. `CONSTRUCTS` is 21.
+  perfectly. `CONSTRUCTS` is 22 (`rfba` added `'squeezed'`, for the same reason).
   **Note (`zch2.16`), and it is what a fixture for the float degrade must get
   right:** since `zch2.15` a float that merely overflows a column SPLITS, and
   since this issue an over-tall image inside one simply SCALES — so reaching
@@ -1012,6 +1194,77 @@ Source (`src/`):
   quote lowers to a flat array of single-child decorators, each owning an indent
   and its own ink; a split quote therefore needs no special case, and nesting is
   the decorator wrapping itself.
+  **Invariant (`e1bp`):** a decorator NEVER narrows a positive width below
+  `MIN_CONTENT_WIDTH` (12pt, about one em of body text), and every horizontal
+  amount it applies scales by the ONE factor `insetScale` answers with — so
+  there are no separate clamps for the left shift and the narrowing, and the
+  content BOX stays INSIDE the column rather than sliding off its right edge —
+  the GLYPHS of a word wider than the floor still overflow it, as an over-wide
+  word does in any column, and that is asserted directly so the rule is not
+  read as more than it is. Six
+  sites, and every indent in the flow layer is one of them: `QuotedElement`,
+  `ListItemElement`, `ListBlockElement` (`flow.ts`), `CodeBlockElement`'s
+  horizontal padding, and `cssframe.ts`'s `BoxElement`, whose `measure`,
+  `place`, `shrinkToFit` and `paint` all read the same factor. `measure` and
+  `place` read one `indentFor` for the reason `bodyOptions` is one function.
+  **Note what an unfloored subtraction cost, because the two failures are
+  DIFFERENT and the silent one reached further:** Markdown THREW
+  `rect width and height must be positive` out of `stamp.ts` — quote depth 26,
+  list depth 49 on a default A4 flow — while HTML rendered a BLANK PAGE from
+  depth 8 and reported nothing, `BoxElement` reading a non-positive width as
+  "nothing to draw". So a does-not-throw assertion is worth nothing here: every
+  case in `test/flow-narrow-nesting.test.ts` asserts the text is EXTRACTABLE.
+  **Note the alternative, since the browser takes it:** a CSS content box
+  clamps at zero and lets its text overflow to the right. Rejected because ink
+  outside the region is ink nobody sees, which is the direction `svgdraw.ts`'s
+  visible-content rule and `zch2.16` both already settle — that issue chose to
+  render past the column BOTTOM rather than refuse the document, and this is
+  the same question turned sideways. The residue is recorded rather than fixed:
+  a quote nested past the point its indent runs out draws its gutter bar over
+  its own text.
+  **Invariant (`rfba`):** a squeeze IS reported — as its own construct,
+  `'squeezed'`/degraded, never as `'overflow'`, which means "drew past the column
+  bottom" and which `zch2.16` deliberately made its own. It rides the existing
+  `onCompromise` channel as a THIRD kind (`Compromise`), fired by
+  `BoxElement.place` when `insetScale` came back below 1 and the box is about to
+  draw — never from `measure`, which the engine asks speculatively. Because
+  `BoxElement` FORWARDS `onCompromise` to what it wraps, every squeezed level of
+  a nest fires the one callback `cssflow.ts`'s `attribute` gave the innermost
+  element, and its `once` makes twenty levels ONE record. **Measured:** dropping
+  the fire reddens 5, dropping the `once` reddens 3, and firing from `measure`
+  too reddens only the undrawable-Cyrillic case — the one shape that is
+  measured but never drawn. **Note, measured and NOT covered:** moving the fire
+  ahead of `place`'s own zero-height return reddens nothing, because the engine
+  never calls `place` on content that measures zero; held by the engine, not
+  by the suite.
+  **Invariant (`kk3q`):** the four FLOW-layer decorators report a squeeze too,
+  so Markdown and hand-built flows get it. `QuotedElement` and
+  `ListBlockElement` wrap one element and FORWARD `onCompromise` to it, exactly
+  as `BoxElement` does; `ListItemElement` and `CodeBlockElement` draw their own
+  text and hold it as a plain field. Each fires from `place()` once it has drawn
+  (the code block when its OWN horizontal padding was scaled). Markdown receives
+  it through `MarkdownFlowOptions.onSkipped`, the counterpart of HTML's
+  `onNotRendered`: `mdflow.ts`'s `reportCompromises` is `cssflow.ts`'s
+  `attribute` for a string report, a one-shot per mapped element and kind, and
+  it spells the three kinds as `describeNotRendered` does for HTML (`squeezed`,
+  `overflow`, `image:scaled-to-fit`) — so Markdown gained the two `zch2.16`
+  kinds for free, having reported neither. `doc.AddMarkdown` and
+  `page.AddMarkdown` fold them into `skipped` as a FRESH array, `AddHtml`'s
+  rule; both wrap the caller's sink, so `checkOnSkipped` runs in each wrapper
+  first — `markdownElements`' own check would otherwise never see the caller's
+  value, and a bad one would throw only after pages were allocated.
+  **Note, measured:** each fire site and the quote forwarding redden on their
+  own in `test/markdown-squeeze.test.ts`, the two list decorators only after
+  a loose two-paragraph item was added — the nested-list case asks for "at
+  least one", which either satisfies alone. `ListBlockElement`'s FORWARDING is
+  NOT pinned by any single case: without it the block fires on itself and the
+  nested items below stay silent, which still passes that same "at least one".
+  **Note, measured:** the full suite moved nothing, the HTML report tests
+  included, although an HTML list item's `ListBlockElement` now forwards — its
+  `onCompromise` was assigned by `attribute`, which now reads through and finds
+  the inner element already claimed. That shifts an HTML list block's
+  compromise to the innermost element, which is `attribute`'s own rule, and no
+  test observed the old attribution.
   **Invariant:** there is ONE builder per construct. `Flow.AddX`, a list item's
   `blocks` and the Markdown mapper all construct content, and three definitions
   of "a list" is three chances for them to disagree.
@@ -1618,9 +1871,19 @@ Source (`src/`):
   character. Note the direction against `svgcss.ts`, which is a much smaller
   CSS subset for SVG `<style>` elements and shares no code with this.
   Nothing here produces PDF and nothing is exported from `index.ts`.
-  **Invariant:** both are pure leaves and neither throws — no `Document`, no
-  PDF object, no `node:` import, and no `htmldom.js`. String in, structure
-  out. Collecting `<style>` element text is a walk over `HtmlElement` and so
+  **Invariant:** both are pure leaves and neither throws ON DAMAGE — no
+  `Document`, no PDF object, no `node:` import, and no `htmldom.js`. String
+  in, structure out.
+  **Invariant (`ibzo.11`), and it is the ONE throw:** `cssparse.ts`'s
+  `Cursor.nested` enforces `maxNestingDepth` on open blocks and functions,
+  since `consumeBlock`/`consumeFunction` recurse and a run of open parens
+  thousands deep overflowed the stack. A bound reached is a
+  `ResourceLimitError`, never a parse-error value, for the reason `lexer.ts`
+  records: what an over-deep input MEANS is not damage. `loadlimits.js` is its
+  one import beyond the tokenizer; `parseStylesheet` and
+  `parseComponentValueList` take the document's policy, threaded
+  `htmlflow.ts` → `lowerHtml` → `buildBoxes` → `computeStyles` → `collect`,
+  and every other entry takes the defaults. Collecting `<style>` element text is a walk over `HtmlElement` and so
   `zch2.2.3`'s, deliberately not here; the issue text originally put it in
   this module and was corrected before any code was written.
   **Invariant:** the tokenizer emits FLAT `function`, `open` and `close`
@@ -2319,8 +2582,9 @@ Source (`src/`):
   `describe`, `elementPolicy` and `selectedOptionText`. A pure leaf over
   `htmldom.js` that never throws and imports none of its four consumers
   (`cssbox.ts`, `cssinline.ts`, `csstable.ts`, `cssflow.ts`). `CONSTRUCTS` is
-  **21**, asserted by size, and `'overflow'` (`zch2.16`) is the newest — see
-  `flow.ts` for why it is not a reuse of `'text'`.
+  **22**, asserted by size, and `'squeezed'` (`rfba`) is the newest, after
+  `'overflow'` (`zch2.16`) — see `flow.ts` for why neither is a reuse of
+  `'text'` or of each other.
   **Invariant:** it is `html*` rather than `css*` despite the CSS stack being
   its only consumer. It is keyed on HTML element names and encodes HTML's own
   content models, and it sits beside `htmllang.ts` — the existing precedent
@@ -2509,6 +2773,31 @@ Source (`src/`):
   zero-height box AND again after gives 60px where 30px is right. The unit
   test asserted the same wrong pair, which is exactly why only an outside
   answer could catch it.
+  **Invariant (`bjov`), and the obvious shape is EXPONENTIAL:** the two
+  escaped edges descend SEPARATE chains and are computed by separate
+  functions, `escapedTop` and `escapedBottom`. Rule 2 reaches only first
+  children and rule 3 only last ones, so a walk returning `{top, bottom}` at
+  every level makes two recursive calls per level — and in a SINGLE-CHILD
+  chain, where the first and the last child are the SAME box, both calls are
+  on that one box and one answer costs 2^depth. Measured before the split: a
+  20-deep chain of divs took 2.6 s to BUILD and a 25-deep one 39 s, and
+  generated markup nests 20 levels routinely, so ordinary documents hit it.
+  After: 11 ms at 20 and 36 ms at the 256 `maxNestingDepth` allows.
+  **Note, measured, and the fence and the mutation are DIFFERENT cases:**
+  `test/fixtures/css-box/` pins that the collapsed margins did not move and
+  provably cannot see the cost. `test/cssmargin-nesting-cost.test.ts` counts
+  `resolveBoxes` calls through a module mock (`drprune-parse-once.test.ts`'s
+  arrangement) and asserts them EXACTLY — n² for a chain of n elements, 121 at
+  depth 8, where the doubling walk gives 2047. Its deep case HANGS rather than
+  failing under that mutation, as `test/flow-overtall.test.ts`'s own does,
+  since vitest's timeout cannot interrupt synchronous work; the depth-8 case
+  is the fast fence and reddens in 21 ms.
+  **Note, and it CORRECTS `bjov`'s own closing line:** this never masked
+  `cssselect.ts`'s `:has()` cost. `test/cssselect-has-cost.test.ts` times
+  `cascade` alone and provably never reaches `lowerHtml`, so margin collapsing
+  is not in its measurement — re-measured after the fix, its table reproduces
+  the recorded numbers (30/37/62/184/689/2581 ms at a fixed 4,000 elements,
+  and 106/987/7279 ms for a pure chain of 250/500/1,000 nested divs).
   **Invariant:** `collapseMargins` returns the gap BEFORE each box and always
   0 for the first, whose own top margin escapes its parent under rule 2 —
   counting it here as well would double the space above it. A box that does
@@ -2554,6 +2843,27 @@ Source (`src/`):
   own module because it PAINTS and so cannot be the pure leaf the four
   `zch2.3` modules are; it imports the protocol from `flowelement.ts`, never
   `flow.ts`, the split `flowblock.ts` already makes.
+  **Invariant (`e1bp`):** `BoxElement`'s margins and insets go through
+  `flowelement.ts`'s `insetScale` — see that entry for the rule — and its
+  `measure`, `place`, `shrinkToFit` and `paint` all read ONE factor, so the
+  border box is painted around the content the child was actually handed. It
+  is PLACEMENT-ONLY: `cssresolve.ts` still computes CSS 2.1's used widths,
+  clamped at 0 as the standard says, and that is what the headless-Chrome
+  `test/fixtures/css-box/` corpus compares — clamping there instead would move
+  the corpus, and clamping nowhere left a nested `<blockquote>` document
+  BLANK from depth 8, reported as `overflow` because the box drew nothing.
+  **Invariant (`ibzo.11`):** `lowerHtml` checks the tree's ELEMENT DEPTH
+  against `maxNestingDepth` ONCE, before `buildBoxes`, through `htmldom.ts`'s
+  iterative `elementDepth`. The cascade, the box builder, `cssinline.ts`'s
+  visit and the mapper below all recurse per element, and a 200,000-deep tree
+  overflowed the first of them (`csscascade.ts`'s `visit`) — `parseHtml`
+  itself is iterative and never failed. One check at the shared entry rather
+  than a counter per walk: four counters are four chances to disagree, and all
+  three `AddHtml` entry points already meet here. **Measured:** at exactly the
+  default 256, deep inline, inline-`<svg>` and CSS nesting each build in under
+  50 ms, so every stage behind the check has the stack to spare. Nested BLOCK
+  elements that deep used to be slow for a different reason — the exponential
+  margin collapse `bjov` fixed — and now build in 36 ms at exactly 256.
   **Invariant:** resolution happens at BUILD time, against a width the caller
   supplies — NOT at `place()` time, which `zch2.3`'s design proposed. Three
   call sites read `spaceBefore` before `place()` ever runs
@@ -3005,6 +3315,21 @@ Source (`src/`):
   reference definition's destination must parse identically to an inline
   link's. Two copies differ only on the balanced-parenthesis and pointy-bracket
   forms, which no HTML rendering reveals.
+  **Invariant (`lqs1`):** a BARE link destination's parentheses may nest no
+  more than `MAX_DEST_PARENS` (32) deep, which is cmark's
+  `manual_scan_link_url_2` transcribed — commonmark.js has no cap and is
+  quadratic here. It is a COST bound wearing a grammar's clothes: uncapped, the
+  scan runs to the end of the subject on every close bracket and then throws
+  the work away on `depth !== 0`, so `'[a]('.repeat(n)` scanned 200 M
+  characters for 40 KB of input, 6.1 s at n = 20,000. A destination nesting
+  past 32 is now literal text, which is what cmark already shows.
+  **Invariant (`lqs1`):** `spnl`, `parseLinkLabel` and `parseAutolink` match
+  with STICKY regexes and `lastIndex`, the way this file's own `match()` helper
+  always has, never `^` against `subject.slice(pos)`. **Note what that is and
+  is not:** those slices totalled 16.8 BILLION characters for 280 KB of input,
+  but V8 answers most of them in O(1) with a sliced-string view, so removing
+  them bought ~5% and NOT a quadratic — do not record it beside the two that
+  were. What it does remove is one string allocation per close bracket.
   **Invariant:** escapes and character references resolve in ONE pass, not two
   sequential ones. `\&copy;` must stay the literal text `&copy;`, so an `&` an
   escape produced must never be offered to the entity scanner.
@@ -3038,6 +3363,22 @@ Source (`src/`):
   changes no timing on seven adversarial inputs, including cmark's own
   "openers and closers multiple of 3". It is retained because the spec
   specifies it. Do not cite the green suite as evidence that it works.
+  **Note this note was CHALLENGED and then CONFIRMED (`lqs1`), which is worth
+  more than the original measurement:** that issue's own investigation recorded
+  it as "wrong at scale", on the reasoning that the bound stores a NODE
+  REFERENCE which a later match splices out of the delimiter list, so
+  `opener !== bottom` can never fire — and reported the opener walk at exactly
+  n(n+1)/2 steps, 8,002,000 at n = 4,000. Re-measured by COUNTING the walk in
+  an instrumented build: it is **4,000** steps at n = 4,000 and linear on every
+  shape tried — cmark #389, `'a**b***c**d*'`, one-sided runs, `'*_ '`, and
+  emphasis mixed with brackets. Dead bounds do occur (3,998 against 16,997 live
+  on `'a**b***c**d*'`) and cost nothing, for exactly the reason stated above:
+  a failed closer that cannot also open is removed outright, and a successful
+  match discards every delimiter between its two ends, so the long failing
+  chain the guard bounds never forms. The real quadratics `lqs1` fixed were
+  elsewhere — two in `layout.ts`, one in `scanLinkDestination`. Storing a
+  position instead of a node would make the bound fire; it would also make the
+  suite no greener and no faster, so it is NOT done.
   **Invariant:** `test/helpers/md-html.ts` is a test-only conformance oracle,
   not an output format — the suite's expectations are HTML, so conformance is
   unmeasurable without one, and nothing in `src/` may import it. It builds
@@ -3184,6 +3525,17 @@ Source (`src/`):
   sends an empty line to the painter and moves bytes.
   **Invariant:** `lost` is DISTINCT characters, capped at 32. A page of
   Cyrillic must not become a report field.
+  **Invariant (`pl2h`):** `drawsNothing` probes a 64-character PREFIX first
+  and the whole text only when that prefix drew nothing. PROBING ENCODES —
+  `probe` is `encodeWinAnsi(t).length` for a Standard-14 face, so asking about
+  a megabyte allocates a megabyte — and `nothingDrawable` asks it once per
+  page over a remainder that starts out as the whole text. The answer is still
+  exactly `probe(text) === 0`, since a driver that draws a prefix draws any
+  text containing it; the cut is taken at a code point boundary so a surrogate
+  pair is never probed as a lone half. **Note the fallback is load-bearing and
+  not decorative:** an all-Cyrillic block's prefix draws nothing, and
+  answering from it would report the block blank — `test/layout-pagination-cost.test.ts`
+  carries the 80-unencodable-then-one-encodable case for exactly that.
 - **textextents.ts** — max-content and min-content widths of a piece of text
   (`zch2.10`). A pure leaf, extracted from `tableauthor.ts` because a CSS
   float's shrink-to-fit asks the same question a table column's auto-fit does,
@@ -3471,7 +3823,27 @@ Source (`src/`):
   **svgtextstretch.ts**, **svgimage.ts**, **svgfilter.ts**, **svgfilterfx.ts**,
   **svgfilterlight.ts**, **svgfilternoise.ts** — SVG→PDF **import**
   (`page.AddSVGObject`). Direction matters: this stack is the opposite of
-  `svgrender.ts` (PDF→SVG) and shares no code with it. `svgdraw.ts` is the
+  `svgrender.ts` (PDF→SVG) and shares no code with it.
+  **Invariant (`ibzo.11`):** an import counts the content TOKENS it emits
+  against `maxContentTokens` — the bound the page walk later parses the result
+  under, so refusing at import is the same answer given before the work.
+  `Emitter.tokens` is ONE counter shared by `child()` and `subdoc()`, so a
+  pattern tile, marker, mask and nested document count with the page; it is
+  charged per ELEMENT in `walk`, not per push, so the hot path pays nothing.
+  Before, ten-way `<use>` fan-out cost ~8x a level with no bound; under the
+  defaults a 10^9 expansion is now refused after 4.1 s and 459 MB.
+  **Note, measured, and the obvious fixture cannot see the sharing:** a single
+  tile over the limit refuses under a per-emitter count too. The case uses
+  three tiles of 2,000 tokens under a limit of 5,000, which only a SHARED count
+  refuses. Dropping the per-element charge reddens only that case — a
+  top-level expansion is still refused by the final charge, merely AFTER
+  expanding in full, which no assertion observes.
+  **Invariant (`ibzo.11`):** `xml.ts`'s `parseXml` bounds element nesting by
+  `maxNestingDepth` (`svgembed.ts` passes `doc.loadLimits`; XFA, XFDF, XMP
+  and rich text take the defaults), which also bounds the walker's own
+  recursion. Past it is `ResourceLimitError`, not `PdfParseError`: the markup
+  is well formed, merely too deep.
+  `svgdraw.ts` is the
   walker over the `xml.ts` node tree, emitting operators and maintaining the
   `q`/`Q` stack; `svgembed.ts` wraps its stream as a Form XObject placed into
   the target rect and is **the only module in the stack that touches a
@@ -3982,16 +4354,31 @@ Source (`src/`):
   `visitContent` did not track, and four of ISO 14289-2's five glyph rules
   exempt mode 3, which is the OCR layer of every scanned PDF — so without it
   those rules fire on exactly the population they exist to excuse.
-  **Invariant, and it is a DELIBERATE INCONSISTENCY inside `TextState`:**
-  `renderMode` IS saved and restored across `q`/`Q`; its five siblings
-  (`Tc`, `Tw`, `Tz`, `TL`, `Ts`) are NOT. The `q` stack held
-  `{ ctm, fill, conv }` alone, so those five persist across a `Q` contrary to
-  32000-2 9.3.1; fixing all six moves glyph POSITIONS for any document using
-  `q`/`Q` around them, which reaches `GetTextFragments`, table detection and
-  every export — filed as `g5x6`. Scoping only this one correctly is not
-  tidiness: an OCR tool that wraps its invisible layer in `q` … `Q` would
-  otherwise leave the mode stuck at 3 and silently EXEMPT the visible text
-  after it, a false negative on exactly the population mode 3 excuses.
+  **Invariant (`g5x6`):** the WHOLE text state but the two matrices is saved
+  at `q` and restored at `Q` — `Tc`, `Tw`, `Tz`, `TL`, `Ts`, `Tf` and `Tr` —
+  because 32000-2 9.3.1 makes every one graphics state; `tm`/`tlm` belong to
+  one text object and `BT` resets them instead. The saved shape is
+  `TextGState = Omit<TextState, 'tm' | 'tlm'>`, derived rather than listed, so
+  a parameter added later is scoped without anyone remembering to. Until
+  `g5x6` only `renderMode` was (`q7hc.4.3` scoped it alone, for its OCR-layer
+  reason: a mode stuck at 3 silently exempts the visible text after it), and a
+  `Tz` or `Ts` set inside a `q` misplaced every later quad on the page.
+  **Note, measured, and the fence moved NOTHING:** the full suite stayed green
+  across the fix — no fixture set text state inside a `q` and showed text after
+  the `Q` — so `test/text-state-q.test.ts` is the only thing holding the rule.
+  Each of its six cases carries a companion asserting the setting, UNSCOPED,
+  does move a glyph, since two identical wrong answers would otherwise satisfy
+  it. `Tf` counts: set OUTSIDE a text object it is text state too.
+  **Invariant (`mih4`):** a Form XObject INHERITS that same `TextGState` at
+  `Do` — 8.10.1 draws a form in the graphics state in force there — as a COPY
+  (`saveTextState` spread over `newState()`), so a `Ts` the form sets cannot
+  raise what the page shows after the `Do`. It started from a fresh state until
+  `mih4`, so text in a form relying on an outer `Tf`/`Tz`/`Ts` was extracted
+  where `pagerender.ts`, which clones its state into the child, did not draw it.
+  An annotation appearance (`visitFormContent`) passes NOTHING: it is not drawn
+  inside the page's graphics state. **Measured:** the full suite again moved
+  nothing; sharing the object instead of copying reddens only the no-leak case
+  in `test/text-state-q.test.ts`.
   **Invariant (`q7hc.4.3`):** `GlyphEvent` also carries `code` and `cid`, and
   they are REQUIRED rather than absent-by-default — there is no initial value
   to mean "unset", and measured, nothing in the suite compares a whole glyph
@@ -4674,6 +5061,36 @@ Source (`src/`):
   **Note:** CCITT G4 is absent. `ccitt.ts` is decode-only, so it is a T.6
   encoder from scratch rather than wiring — tracked as its own issue, and it is
   what a bilevel scan needs to be small.
+- **inflatebound.ts** — decompression for input FILES that are not PDF (PNG
+  IDAT, TIFF strips, WOFF tables, the WOFF2 block) under a PDF stream's bounds
+  (`ibzo.11`): `InputDecoder`, one per decoded file.
+  **Invariant:** it reuses `DecodeBudget` and adds NO field. One decode is
+  capped by `maxDecodedStreamBytes` and, past the 1 MiB floor,
+  `maxExpansionRatio`; every decode one `InputDecoder` performs is charged to
+  `maxTotalDecodedBytes` through `DecodeBudget.chargeBytes`, since such a
+  decode has no `PdfStream` to be charged once by. So a TIFF's strips and a
+  WOFF's tables are bounded TOGETHER — measured: a fresh decoder per strip, or
+  dropping the charge, reddens the total case in
+  `test/limits-inputs.test.ts`.
+  **Invariant:** the cap goes INTO zlib and brotli as `maxOutputLength`, and
+  into the LZW and PackBits loops, as `filters.ts` does for a PDF stream.
+  Probed before the fix: a PNG IDAT bomb reached 4.5 GB and a WOFF table bomb
+  2.3 GB, both through `inflateSync` with no cap.
+  **Invariant:** where a format DECLARES a block's length — a WOFF table's
+  `origLength`, the sum of WOFF2's table lengths — the declaration is checked
+  against the bounds FIRST, so a header claiming 2 GiB is refused before a byte
+  is inflated, and output past a smaller declaration is DAMAGE
+  (`PdfParseError`), not a limit. PNG and TIFF pass no declaration on purpose:
+  data past the rows the header needs was tolerated before and still is, up to
+  the bounds.
+  **Note, measured, and it covers NOTHING:** narrowing the cap to the
+  declaration is a MEMORY rule and reddens no case. Past a smaller declaration
+  the damage refusal fires either way — at byte 1,001 with the narrowing, at
+  the stream bound without — and the error, its type and its message are
+  identical. Held by reasoning; do not cite the WOFF damage cases as covering it.
+  **Note:** a JPEG is not decoded at embed, so nothing here bounds it — its
+  header is read, the bytes are passed through, and decoding it later runs
+  under the PDF-side bounds `ibzo.3` put on `DCTDecode`.
 - **rasterimage.ts**, **bmp.ts**, **tiff.ts** — raster image INPUT, the decoders
   behind embedding a `.bmp` or `.tif`. Note the direction: `jpeg.ts`, `jpx.ts`
   and `jbig2.ts` decode streams already inside a PDF, and these turn a file on
@@ -8186,6 +8603,76 @@ Source (`src/`):
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
   **encoders** (`encodeStream`, `ascii85Encode`/`asciiHexEncode`/`lzwEncode`/
   `runLengthEncode`) and the `Save({ streamFilter })` re-filter pass.
+  **Invariant (`ibzo.3`):** every stage of a decode chain is bounded against
+  the ENCODED input of the WHOLE chain, never its own input. Per stage, a nested
+  bomb passes: two Flate layers each sit under DEFLATE's ~1032:1 and multiply to
+  a million. The cap is handed INTO the decoder — zlib's `maxOutputLength`,
+  the LZW and RunLength loops — which stops one byte past it; a check after the
+  decoder returned bounds nothing, the allocation having happened.
+  **Invariant:** a salvage probe that reaches the output cap is a REFUSAL, not
+  "this prefix does not decode". Read as a failure it steers the binary search
+  toward a shorter prefix, so a damaged bomb would open as a quietly truncated
+  stream. Measured: removing that one line reddens exactly one case.
+  **Note, measured:** the LZW and RunLength early stops are MEMORY bounds that
+  `decodeStream` cannot observe — the stage check after them refuses either
+  way — so they are pinned on the decoders' own output length, in
+  `test/limits-filters.test.ts`.
+- **decodebudget.ts** — what decoding one document's streams may cost
+  (`ibzo.3`): `DecodeBudget` (the per-stream cap, the ratio, the running
+  total) and the stream REGISTRY `filters.ts` consults.
+  **Invariant, and it is the plumbing decision:** a stream finds its document's
+  policy through a `WeakMap` rather than an argument. About ninety call sites
+  decode a stream, most of them pure modules handed an `inflate` callback that
+  never see a `Document`, and threading a policy through each is a diff where
+  a missed site fails silently. `Document` registers every stream it holds in
+  three places — at PARSE time inside `build` (an `/ObjStm` container is
+  decoded there, before any `Document` exists), in the constructor (`New`,
+  `fromObjects` and so `Split`/`ExtractPages`), and in `Document.install`.
+  An unregistered stream decodes under the defaults with no running total.
+  **Invariant (`ibzo.7`):** `install(num, obj)` is the ONE place an object
+  enters a document's live map after construction — `allocObject`,
+  `replaceObject`, page import (`AddPage`/`InsertPage` from another
+  document), `Merge` and every other insertion. Eleven sites called
+  `this.objects.set` directly until `ibzo.7`, so an imported page decoded under
+  the defaults and was never charged to the target's total.
+  `test/limits-acquired.test.ts` scans `document.ts` and fails naming any direct
+  `this.objects.set` outside `install`.
+  **Invariant (`ibzo.7`):** an INLINE image's synthetic stream is registered at
+  each of the three places one is built — the renderer, `page.InlineImages` and
+  redaction — against the document's budget. `inlinedict.ts` stays a leaf with
+  no `Document`, which is why the call sites register rather than the builder.
+  **Note, measured:** the constructor's loop and the other registrations overlap
+  for a parsed or merged document, but NOT for `Split`/`ExtractPages`, whose
+  result is built from an object map and passes through the constructor alone;
+  that case is what pins the loop on its own.
+  **Invariant:** the running total charges each DISTINCT stream once, the first
+  time it decodes (the user's decision). A lifetime total refuses a long-lived
+  document that renders its pages twice; per stream it bounds what one FILE can
+  make us decompress, which is the attack.
+  **Invariant:** the expansion ratio applies only past `RATIO_FLOOR` (1 MiB). A
+  Flate stream of a blank scanline or an empty object stream is a few bytes
+  decoding to kilobytes, legitimately and far past any ratio; a stream decoding
+  to under a mebibyte cannot be a bomb whatever its ratio. For a small bomb the
+  floor is therefore what sets the cap, not `ratio × input`.
+  **Invariant (`ibzo.4`):** page CONTENT carries a fourth cap,
+  `maxContentBytes` less what the page has already decoded, passed as
+  `DecodeOptions.contentSoFar` by the two helpers that assemble `/Contents` —
+  `Page.Contents` and `text.ts`'s `contentStreamBytes` — decoding one stream at
+  a time against a running total. So a content bomb is stopped at 256 MiB, not
+  at the 512 MiB per-stream bound, and a `/Contents` ARRAY is bounded as a
+  whole. An UNFILTERED stream is checked too: it costs no decode, but a plain
+  array is exactly what the bound exists for, and `decodeStream` returned its
+  raw bytes before any check ran. Measured: each of the three redden.
+  **Invariant:** codec geometry is checked from what the file DECLARES, before
+  the allocation it sizes: the JPEG SOF, the JPX SIZ (ahead of the tile count,
+  or an absurd grid is reported as "multiple tiles unsupported" and names no
+  limit), CCITT columns × rows (and per row when `/Rows` is absent), the JBIG2
+  page, every region through `parseRegionInfo`, the halftone grid, and a type 0
+  function's grid × outputs. A JBIG2 SYMBOL's size is DECODED rather than
+  declared, so its check sits in `heightClassWalk` after the widths are summed
+  and before the producer allocates. `jbig2halftone.ts` and `jbig2symbol.ts`
+  keep their older `1 << 26` DAMAGE guards, which are `PdfParseError`s about a
+  desynchronised stream rather than resource bounds, and fire first.
 - **optimize.ts**, **glyphusage.ts**, **fontshrink.ts**, **dedup.ts**,
   **recompress.ts**, **drprune.ts**, **imageopt.ts**, **imageusage.ts**, **resample.ts** —
   `doc.Optimize()`, which shrinks the live model in place so the next `Save()`
@@ -8209,6 +8696,16 @@ Source (`src/`):
   object map for `Save()`'s mark-sweep, so scanning every object reads the `/DA`
   of the very field whose removal this pass exists to clean up after — and the
   pass silently becomes a no-op on its own motivating case.
+  **Invariant (`ibzo.9`):** each distinct stream is PARSED ONCE per pass,
+  through `opsOf`'s memo, shared by `collectDrReferences` and
+  `chargeKeptDrStreams`. The pass re-reads by construction — every widget
+  sharing an `/AP` scans it again, and the fixpoint re-parses every kept `/DR`
+  stream each round — so its cost was (sharers × stream) plus (rounds ×
+  streams). A document-wide `maxContentTokens` total is the wrong fix: this pass
+  sees every appearance in the document, and would refuse a large form whose
+  appearances each render fine. **Measured:** `test/drprune-parse-once.test.ts`
+  counts 4 parses with the memo and 9 without, through a module mock of
+  `content.js`, since the function is a direct ESM import binding.
 - **jpegencode.ts**, **jpegfdct.ts**, **jpeghuffenc.ts**, **jpegcoef.ts** — the
   baseline JPEG **encoder** behind Optimize's image pass (gray/RGB/CMYK):
   forward DCT and quantization (**jpegfdct.ts**), Huffman tables and bit writing
@@ -8665,6 +9162,174 @@ Source (`src/`):
   three nearest it in order of distance, but of a magnitude the affine
   fixture's Lab agreement does not account for.
 - **linearize.ts** — linearized (Fast Web View) output + `verifyLinearization`.
+- **loadlimits.ts** — `LoadLimits`, the resource policy for untrusted input
+  (`ibzo.1`), read back as `doc.loadLimits`, with `ResourceLimitError` in
+  `errors.ts` beside it. Seventeen fields over four boundaries — parse
+  (`ibzo.2`), filter and codec (`ibzo.3`), content and render (`ibzo.4`),
+  font programs (`ibzo.12`) — each a positive integer or `null`.
+  **Invariant (`ibzo.12`):** `maxGlyphOperations` bounds the WORK of one glyph,
+  because every font-program gap probed was work hiding behind a bound that
+  already existed. Charstring subroutines were capped at 10 levels and TrueType
+  composites at 6, but a subroutine calling the next ten times per level is
+  10^9 leaves: a CFF and a Type 1 under a kilobyte each exhausted the heap and
+  killed the process (exit 134), and a 16-way composite did not finish in 60 s.
+  It counts OPERATORS executed in `cff.ts` and `type1charstring.ts`,
+  subroutine calls and `return` included — a leaf that draws nothing still
+  costs its call, and a bound on path SEGMENTS (`maxContainerItems`, the
+  alternative considered) would let a fan-out of empty subroutines spin — and
+  COMPONENTS visited in `SfntFont.glyphOutline`, reset per top-level call.
+  **Invariant:** the count is per GLYPH, never per font: a font asked for many
+  glyphs must not run out, and a glyph asked twice is two runs.
+  **Note, measured, and it is where the default came from:** every glyph of 283
+  real faces — the vendored fonts and all of `C:/Windows/Fonts`, CJK
+  collections included — needed at most 274 CFF operators, 105 Type 1 and 27
+  composite components. 100,000 is ~365x that. Charstring fan-outs refuse in
+  milliseconds; a composite one takes ~2.5 s to reach the bound, because each
+  visit copies its contours.
+  **Invariant (`ibzo.12`):** a character map counts entries WRITTEN against
+  `maxContainerItems`, not the map's size — `sfnt.ts`'s `parseCmapSubtable`
+  and `cmap.ts`'s `parseCMap`. Overlapping format 4 segments rewrite the same
+  codes, so a map that never grew ran 2.1 billion iterations (52 s); a format 12
+  group to 0xFFFFFFFF asked for 2^32 entries and died on V8's map size; one
+  `bfrange` line expanded ~1,600 entries a byte. The largest real `cmap`
+  measured wrote 60,446 (SimSun-ExtB). Both parsers also stop at U+10FFFF: past
+  it there is no character, and `bfrange` used to throw `RangeError` there.
+  **Invariant:** a font program finds its document's policy through its OWN
+  stream's registration (`budgetFor(stream).limits`, `ibzo.3`'s registry) —
+  `glyphprogram.ts`, `font.ts`, `fontsubst.ts`, `pdfavalidate.ts`,
+  `glyphusage.ts` — so `TextFont` and `loadEmbeddedProgram`, which see only
+  `resolve`/`inflate`, needed no new parameter. `AddFont` and `Optimize`
+  hold a document and pass `doc.loadLimits` directly. **Measured:** dropping
+  the registry lookup at the `/FontFile` or the `/ToUnicode` site each
+  reddens its own end-to-end case in `test/limits-fonts.test.ts`.
+  **Note:** removing the CFF or Type 1 operator count cannot redden a test in
+  the ordinary way — the default-limit fan-out case brings the heap exhaustion
+  back and the worker dies. That is the failure the bound prevents, observed.
+  **Invariant:** the PARSE boundary (`ibzo.2`) and the FILTER AND CODEC
+  boundary (`ibzo.3`) and the CONTENT AND RENDER boundary (`ibzo.4`) are all
+  enforced, and README documents them (`ibzo.5`) — the defaults table under
+  *Open Untrusted PDFs Under Resource Limits* and, in *Scope and Limitations*, what
+  is NOT covered. **Invariant:** those two README passages are claims about this
+  code; a change to a default, a new bound or a newly covered path updates them in
+  the same commit, since a documented limit that is not enforced is worse than
+  one that is neither.
+  **Invariant (`ibzo.4`):** an image is refused from its DECLARED `/Width` ×
+  `/Height` at the top of `decodeImageStream`, before a filter runs — every
+  image path decodes through it. `decodeImageRgba` checks the same bound, and
+  it REPLACES a silent 64-megapixel skip there: a large picture used to vanish
+  from a render with nothing said, and now it renders up to the bound and is
+  refused past it. **Note, measured, a REDUNDANT PAIR:** every branch of
+  `decodeImageRgba` reaches `decodeImageStream`, so removing either check alone
+  reddens nothing and removing both reddens one case.
+  **Invariant (`ibzo.4`):** `maxCanvasPixels` bounds the page canvas only when
+  the DOCUMENT sized it — a page box times a scale. A `width` and `height` the
+  caller states outright are theirs to get wrong and are exempt. The fixture
+  for the exemption must be OVER the bound: a small explicit canvas passes an
+  exempting build and a checking one alike, and the first version measured
+  nothing. Offscreen group canvases need no check of their own — they are
+  clipped to the page canvas and already capped at 4096² by `raster.ts`.
+  **Invariant:** `LoadLimits.enforce(field, reached)` is the ONE comparison, so
+  "over" means strictly MORE than allowed at every site — a limit of 10 admits
+  ten. Every test here asserts both sides of the boundary for that reason.
+  **Invariant:** a LEAF importing `errors.js` alone; `errors.ts` imports its
+  `LimitField` as a TYPE only, so the pair closes no value cycle.
+  **Invariant (`ibzo.2`):** `doc.loadLimits` is set in the Document
+  CONSTRUCTOR, before the page tree is walked. Assigned after construction, as
+  `ibzo.1` shipped it, the one graph `Open` itself walks ran under the
+  defaults whatever the caller asked for. Measured: reverting it reddens six
+  cases.
+  **Invariant (`ibzo.2`):** graph walks bound DEPTH and treat a CYCLE as
+  damage — the page tree, outlines, form fields, name trees, Form XObject
+  resources behind `page.Images`, annotation reference inlining and
+  `parseFunction`. Each node in such a graph is its own flat object, so the COS
+  grammar sees no depth at all. Two of them had no cycle guard whatever: a name
+  tree naming itself and a type 3 function stitching itself each recursed until
+  the stack gave out. `parseFunction` takes the policy as an argument, since it
+  is a pure leaf; its three render callers pass `doc.loadLimits` and the colour
+  modules take the defaults.
+  **Invariant (`ibzo.6`):** the STRUCTURE TREE is bounded in ONE place.
+  `StructElement` carries its `Depth` and the handle it was descended from, and
+  every descent in the class — `Children`, `Nodes`, `GetText`, `GetBBox` —
+  goes through its private `child()`, which enforces the depth and drops a
+  child that is its own ancestor. So validation, table extraction and the whole
+  document model behind the Markdown, HTML, DOCX and EPUB exports are bounded
+  without a counter of their own, and so is any walker added later. The lineage
+  check is O(depth) per child, and depth is bounded by the same policy.
+  **Note, measured, and it is why this issue mattered more than it looked:**
+  the recursion did not always CRASH. A catch on the export path swallowed the
+  `RangeError`, so a 200,000-deep tree exported as an EMPTY Markdown string
+  where the shallow file gives "Hello" — and a deep `/VE` rendered with its
+  section silently left out. Found by instrumenting `rethrowLimit` to log every
+  `RangeError` it saw, not by the crash probe, which reported both as "OK".
+  **Invariant (`ibzo.6`):** a structure-tree CYCLE is damage: the back edge is
+  dropped and the walk goes on. It recursed forever before, and reading it as a
+  depth limit would misdescribe a broken file as a large one.
+  **Invariant (`ibzo.6`):** the walks that do NOT go through `StructElement` keep
+  their own counters — `structpreserve.ts`'s clone (Split, ExtractPages, Merge),
+  `numbertree.ts`'s `numsArrays`, `ocg.ts`'s three `/VE` walks (evaluation,
+  `veReferencesLayer`, `pruneVE`), `compose.ts`'s cross-document graph copy
+  (StampWith, Overlay, NUp) and `validatectx.ts`'s font enumeration. The copy
+  counts through `rewriteRefs`, one level per reference followed, against the
+  SOURCE document's policy, the source being the hostile one.
+  **Invariant (`ibzo.6`):** a `/VE` cycle is a MALFORMED expression, which
+  `evaluateVE` already reads as true. It is read where the cycle CLOSES, so
+  `/Not` levels around it still apply. `pruneVE` leaves a cycle as written.
+  **Note, measured, a REDUNDANT PAIR and a fixture trap:** `RemoveLayer` runs
+  `veReferencesLayer` and then `pruneVE` over the same expression, so either
+  depth bound alone refuses — only removing both reddens. And a cyclic fixture
+  must loop back BEFORE it names the layer: `veReferencesLayer` returns at the
+  first reference, so `[/And L <back edge>]` never reaches its cycle guard and
+  leaves it unmeasured, where `[/And <back edge> L]` does.
+  **Note:** these were found by PROBING, not by reading. Every public operation
+  was run over flat-object fixtures 20,000 and 200,000 levels deep; thirteen
+  crashed and two degraded silently. Walks the probe did not reach may remain,
+  which is what README's limitation says.
+  **Note:** `OpenFile` and `node.ts`'s wrappers check `maxFileBytes` from a
+  STAT before reading. The wrappers take no `limits` option and so are always
+  bounded by the defaults.
+  **Invariant:** the defaults are BOUNDED and opting out is EXPLICIT —
+  `LoadLimits.unlimited()` for trusted input, a `null` field to disable that
+  field alone. `Open` stores the caller's `LoadLimits` by identity and never
+  a patch: `LoadLimits.defaults.with({ ... })` is the one way to tweak a field.
+  **Invariant:** `ResourceLimitError` is a SIBLING of `PdfParseError`, never a
+  subclass. A caller branching on `PdfParseError` to run the recovery ladder
+  must not catch "too big", since a brute-force sweep over a hostile file is
+  exactly the scan the bound refused.
+  **Invariant:** `maxExpansionRatio` stays above 1032. Measured rather than
+  cited: zlib deflates a 16 MiB run of zeros to 1028.3:1 and approaches
+  DEFLATE's 1032:1 ceiling, so the round 1000 refuses a legitimate stream.
+  `maxImagePixels` is the ONE pixel bound: `bmp.ts`, `tiff.ts` and the PNG
+  reader take the caller's `LoadLimits` and refuse with `ResourceLimitError`
+  (`ibzo.10`, `ibzo.11`) rather than keeping a constant of their own, so one
+  number answers "how many pixels is too many".
+  **Invariant (`ibzo.10`):** there is NO combined memory bound, and that is a
+  decision. Nothing in a garbage-collected runtime reports a release, so a
+  running charge is a LIFETIME total — the shape `decodebudget.ts` already
+  rejected for a long-lived document. What the gap needed instead was defaults
+  retuned against MEASURED costs, published as a table in README:
+  ~670 B an object, ~97 B a token, 7.6–9.7 B a rendered image pixel, ~25 B a
+  PNG-encoded canvas pixel.
+  **Note, measured, and the canvas was the whole problem:** it is a
+  `Float32Array` of RGBA, 16 bytes a pixel before any encode, so the shipped
+  `maxCanvasPixels` of 2^28 admitted a ~6 GB render — half of the ~12 GiB the
+  defaults summed to. Now 2^26 (~1.6 GiB through PNG) and `maxImagePixels`
+  2^27 (~1.2 GiB); the sum is about 6 GiB. The old image comment's "4 bytes a
+  pixel" missed that rendering holds the decoded samples AND the composited RGBA.
+  `test/loadlimits.test.ts` bounds both defaults by those costs, and asserts
+  BMP and TIFF refuse an 11,586-pixel square — over 2^27, under the 2^28 each
+  reader used to hold — so reverting either reader's constant reddens it.
+  **Invariant:** `LIMIT_FIELDS` and `LoadLimitValues` are checked against each
+  other by the COMPILER in both directions, and the list is asserted by size, so
+  a field added to one and not the other is a red build.
+  **Note, and it covers NOTHING:** "validates the whole patch before assigning
+  any of it" cannot fail by construction — `with` writes into a fresh object
+  and the receiver is frozen, so no ordering of the checks can leave the
+  receiver changed. Retained as the stated contract; do not cite it as covering
+  a rule.
+  **Note:** the constructor's cast goes through `unknown`. A class with
+  declared fields is not comparable to `Record<string, …>` and `tsc` rejects
+  the direct cast (TS2352) — vitest strips types and stays green, which is how
+  it reached a commit with `npm run typecheck` red.
 - **node.ts** — file-based convenience wrappers, and the only module that
   reaches `node:fs` on behalf of a caller. Every wrapper but one is PDF-in;
   `htmlFileToPdf` (`zch2.8`) is the exception and the only entry point in the
@@ -8776,8 +9441,19 @@ Two rules apply to these, both learned the hard way:
 - **TDD** — land features with vitest tests and a fixture builder in
   `test/helpers/`; mirror existing builder/test style. Reach for a real-world
   fixture (above) only to validate a format against bytes we did not produce.
-- **Errors** — throw `PdfParseError`, `UnsupportedFeatureError`, or
-  `InvalidPasswordError` (see `errors.ts`); these are the public error types.
+- **Errors** — throw `PdfParseError`, `UnsupportedFeatureError`,
+  `InvalidPasswordError` or `ResourceLimitError` (see `errors.ts`); these are the
+  public error types. A `ResourceLimitError` is for a `LoadLimits` bound only,
+  never for damage.
+  EVERY `catch` in `src/` calls `rethrowLimit(e)` as its first statement
+  (`ibzo.3`), and `test/limits-catch.test.ts` fails the build naming any that
+  does not. A catch that keeps going past damage — a per-object parse, a
+  salvage, an image that degrades to nothing — is exactly where a bound would be
+  swallowed, and which catches a decode can reach is not something anyone can
+  keep in their head; swallowed, a refused bomb renders as a blank picture and
+  nobody is told. A bindingless `catch {` becomes `catch (caught) {`. The scan
+  also asserts it FOUND over 150 catches, so a broken pattern cannot pass by
+  matching nothing — `k738`'s lesson.
 - **Docs** — keep `README.md` (user-facing: **Key Capabilities**, **Quick
   Start**, **Additional Examples**, **API Reference**, **Scope and
   Limitations**) in sync when adding or changing a public API. Per-feature
@@ -8791,6 +9467,24 @@ Two rules apply to these, both learned the hard way:
   plus a types table whose rows are several ALPHABETICAL RUNS concatenated,
   not one sorted list; inserting a row by scanning for the first name that
   sorts higher lands it in the wrong table.
+  **Invariant (`clik`):** every name `index.ts` exports has a README API
+  Reference ROW, the intro sentence states the true counts, and every name a
+  README example imports from `@asposefoss/pdf` is exported —
+  `test/readme-api.test.ts` asserts all three, asking the TypeScript compiler
+  (`test/helpers/public-exports.ts`) rather than a regex, per `k738`. So a new
+  export is a red build until its row exists, and the counts are the
+  compiler's to set: run the test and copy them. A row "documents" a name when
+  its FIRST cell opens a backticked span with it — `` `Name` ``,
+  `` `name(args)` `` or `` `Name<T>` ``, several per cell allowed — while
+  `` `doc.PageMode` `` documents a member and not the type `PageMode`.
+  **Note what the test found, and it was worse than stale counts:**
+  `saveImagesFile` and `htmlFileToPdf` were imported by README's own example
+  and exported by NOTHING, and so were `saveMarkdownFile` and `saveDocxFile`.
+  Their tests import `src/node.js` directly, so the suite could not see it.
+  **Note:** a union in a table cell needs `\|`, never a bare `|`, or the row
+  splits into extra cells; and a generator once emitted module-SUFFIXED rows
+  (`Rect-text`, `RGB-annotdraw`) for same-named declarations — importable by
+  nobody, while the real export went rowless. The test refuses both shapes.
   A new `src/*.ts` module earns an entry in the Source list above **when it
   lands**, not when someone next happens to touch that area — which is how eight
   of them came to have none at all (`2qkk`). The sweep that finds the gap:

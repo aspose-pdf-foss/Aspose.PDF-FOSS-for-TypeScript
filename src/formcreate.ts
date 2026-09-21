@@ -674,7 +674,7 @@ export function addPushButton(doc: Document, init: PushButtonInit): ButtonField 
 
   // Both of these validate without mutating the document.
   const aDict = init.action === undefined ? undefined : encodeAction(doc, init.action);
-  const icon = hasIcon ? buildImageXObject(init.icon!) : undefined;
+  const icon = hasIcon ? buildImageXObject(init.icon!, undefined, 0, doc.loadLimits) : undefined;
 
   const rollover = init.rolloverCaption ?? caption;
   const down = init.downCaption ?? caption;

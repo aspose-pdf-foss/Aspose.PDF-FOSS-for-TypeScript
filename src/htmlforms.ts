@@ -8,6 +8,7 @@ import { parseOptions, displayOf } from './choiceopt.js';
 import { escapeHtml } from './html.js';
 import { parseAction } from './actions.js';
 import { decodePdfText, parsePdfDate } from './metadata.js';
+import { rethrowLimit } from './errors.js';
 
 /** AcroForm fields as real HTML controls, for `ToHtml({ mode: 'fixed',
  *  forms: true })`.
@@ -274,7 +275,7 @@ export function pageFormControls(
         out.push(emitted.html);
         converted.add(w);
         if (emitted.submits) submits = true;
-      } catch {
+      } catch (caught) { rethrowLimit(caught);
         // **Invariant:** a field that will not convert is NOT claimed, so its
         // /AP still renders. Never leave a hole where content used to be.
       }

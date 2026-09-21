@@ -18,6 +18,7 @@ import { isArray, isDict } from './types.js';
 import { readRichTextMarkup } from './formfield.js';
 import { richTextToPlain } from './richtext.js';
 import type { PdfDict } from './types.js';
+import { rethrowLimit } from './errors.js';
 
 /** A match in the text one annotation's appearance stream draws.
  *
@@ -77,7 +78,7 @@ export function searchAnnotations(
           runs.push(runFromGlyph(g, g));
         },
       });
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // Degrade exactly as pagerender.ts's drawAnnots does: a malformed
       // appearance costs only itself and must not drop the ones after it.
       continue;

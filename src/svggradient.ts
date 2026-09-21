@@ -12,6 +12,7 @@ import { name, type PdfDict, type PdfObject } from './types.js';
 import { IDENTITY, apply, invert, mul, type Matrix } from './text.js';
 import { parseTransform, type ViewBox } from './svgtransform.js';
 import type { SegBBox } from './svgpath.js';
+import { rethrowLimit } from './errors.js';
 
 export type { GradientStop } from './gradient.js';
 
@@ -306,7 +307,7 @@ export function gradientPaint(
 function gradientSpaceCorners(m: Matrix, bbox: SegBBox | null): [number, number][] | null {
   if (!bbox) return null;
   let inv: Matrix;
-  try { inv = invert(m); } catch { return null; }
+  try { inv = invert(m); } catch (caught) { rethrowLimit(caught); return null; }
   return ([
     [bbox.x, bbox.y], [bbox.x + bbox.w, bbox.y],
     [bbox.x, bbox.y + bbox.h], [bbox.x + bbox.w, bbox.y + bbox.h],

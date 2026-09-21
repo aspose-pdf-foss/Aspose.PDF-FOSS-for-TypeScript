@@ -23,7 +23,7 @@ import {
   type ActiveFloat,
 } from './floatstack.js';
 import {
-  nonNegative, normalizeClear, normalizeSpacing,
+  insetScale, nonNegative, normalizeClear, normalizeSpacing, type Compromise,
   type FlowClear, type FlowElement, type FloatContent, type MeasureContext, type PlaceContext, type PlaceResult,
 } from './flowelement.js';
 
@@ -623,6 +623,9 @@ function bodyOptions(o: NormalizedListOptions): TextBlockOptions {
 class ListItemElement implements FlowElement {
   /** Set on the list's first element only; a continuation never copies it. */
   clear?: FlowClear;
+  /** See {@link FlowElement.onCompromise}. This element draws its own body, so
+   *  it is the end of a forwarding chain rather than a link in one. */
+  onCompromise?: (how: Compromise) => void;
 
   constructor(
     private readonly text: FlowText,
@@ -655,10 +658,20 @@ class ListItemElement implements FlowElement {
       && (this.atomics === undefined || this.atomics.length === 0);
   }
 
+  /** The indent this width can afford (`e1bp`), read through `insetScale` so a
+   *  list nested past the column width squeezes rather than driving the body to
+   *  zero — where `stamp.ts` refuses the rect. ONE definition: `measure`,
+   *  `place` AND the marker all read it, and a marker drawn against the full
+   *  indent lands outside the body it belongs to. */
+  private indentFor(width: number): number {
+    return this.indent * insetScale(width, this.indent);
+  }
+
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
+    const indent = this.indentFor(ctx.width);
     const { usedHeight, remainder } =
-      measureFlowText(this.text, ctx.width - this.indent, ctx.availHeight, this.bodyOpts());
+      measureFlowText(this.text, ctx.width - indent, ctx.availHeight, this.bodyOpts());
     return { usedHeight, fits: remainder === null };
   }
 
@@ -677,9 +690,10 @@ class ListItemElement implements FlowElement {
       ...this.bodyOpts(),
       ...(this.state.lbody ? { tag: this.state.lbody } : {}),
     };
+    const indent = this.indentFor(ctx.width);
     const rect: [number, number, number, number] = [
-      ctx.x + this.indent, ctx.top - ctx.availHeight,
-      ctx.width - this.indent, ctx.availHeight,
+      ctx.x + indent, ctx.top - ctx.availHeight,
+      ctx.width - indent, ctx.availHeight,
     ];
     const { remainder, remainderAtomics, usedHeight } =
       drawFlowText(ctx.doc, ctx.page, this.text, rect, bodyOpts);
@@ -690,7 +704,9 @@ class ListItemElement implements FlowElement {
       return { usedHeight: 0, remainder: remainder === null ? null : this, drew: false };
     }
 
-    drawMarkerOnce(ctx, this.marker, this.indent, this.opts, this.state);
+    drawMarkerOnce(ctx, this.marker, indent, this.opts, this.state);
+    // (kk3q) The item body drew narrower than its indent asked for.
+    if (indent < this.indent) this.onCompromise?.('squeezed');
 
     if (remainder === null) return { usedHeight, remainder: null, drew: true };
     // Continuation: body-only remainder sharing the same ItemState, so the marker
@@ -729,23 +745,44 @@ class ListBlockElement implements FlowElement {
     public spaceAfter: number,
   ) {}
 
+  /** Forwarded to the element inside, as `cssframe.ts`'s `BoxElement` does
+   *  (`kk3q`): a nest of decorators is then ONE callback, owned by the element
+   *  that actually draws, so the `'squeezed'` every scaled level fires is one
+   *  record rather than one per level. */
+  get onCompromise(): ((how: Compromise) => void) | undefined {
+    return this.inner.onCompromise;
+  }
+
+  set onCompromise(fn: ((how: Compromise) => void) | undefined) {
+    this.inner.onCompromise = fn;
+  }
+
+  /** As {@link ListItemElement.indentFor} (`e1bp`), and for its reason: a
+   *  nested list's further blocks carry the same cumulative indent. */
+  private indentFor(width: number): number {
+    return this.indent * insetScale(width, this.indent);
+  }
+
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
-    return this.inner.measure?.({ width: ctx.width - this.indent, availHeight: ctx.availHeight })
+    const indent = this.indentFor(ctx.width);
+    return this.inner.measure?.({ width: ctx.width - indent, availHeight: ctx.availHeight })
       ?? { usedHeight: 0, fits: false };
   }
 
   place(ctx: PlaceContext): PlaceResult {
     if (ctx.availHeight <= 0) return { usedHeight: 0, remainder: this, drew: false };
     ensureItemStruct(ctx, this.marker, this.holder, this.state);
+    const indent = this.indentFor(ctx.width);
     const res = this.inner.place({
       ...ctx,
-      x: ctx.x + this.indent,
-      width: ctx.width - this.indent,
+      x: ctx.x + indent,
+      width: ctx.width - indent,
       // A block inside an item nests under /LBody, so a multi-paragraph item
       // reads as LI > LBody > P, P rather than as loose content.
       structParent: this.state.lbody ?? ctx.structParent,
     });
-    if (res.drew) drawMarkerOnce(ctx, this.marker, this.indent, this.opts, this.state);
+    if (res.drew) drawMarkerOnce(ctx, this.marker, indent, this.opts, this.state);
+    if (res.drew && indent < this.indent) this.onCompromise?.('squeezed');
     return {
       usedHeight: res.usedHeight,
       drew: res.drew,

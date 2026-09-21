@@ -1,3 +1,5 @@
+import { LoadLimits } from './loadlimits.js';
+
 // Brute-force recovery scan: find every `N G obj` header in a buffer, without
 // trusting (or reading) the cross-reference structure. Pure byte work — no
 // object parsing, so it stays testable on hand-built buffers.
@@ -67,8 +69,11 @@ function matches(buf: Uint8Array, at: number, kw: number[]): boolean {
 }
 
 /** Scan the whole buffer for object headers and `trailer` keywords. O(n). */
-export function sweepObjects(buf: Uint8Array): SweepResult {
+export function sweepObjects(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults): SweepResult {
   const candidates = new Map<number, ObjCandidate[]>();
+  // Every header found counts, duplicates across revisions included: each is
+  // an allocation here and a parse attempt later, which is the cost bounded.
+  let found = 0;
   const trailerOffsets: number[] = [];
   for (let i = 0; i < buf.length; i++) {
     const b = buf[i];
@@ -77,6 +82,7 @@ export function sweepObjects(buf: Uint8Array): SweepResult {
       if (after < buf.length && !isWs(buf[after]) && !isDelim(buf[after])) continue;
       const hit = matchHeader(buf, i);
       if (!hit) continue;
+      limits.enforce('maxObjects', ++found, 'recovery sweep');
       let list = candidates.get(hit.num);
       if (!list) { list = []; candidates.set(hit.num, list); }
       list.push({ offset: hit.offset, gen: hit.gen });

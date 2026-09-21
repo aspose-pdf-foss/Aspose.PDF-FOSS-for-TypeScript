@@ -1,3 +1,4 @@
+import { rethrowLimit } from './errors.js';
 /** What encoding a sequence of HTML bytes is in — the part of HTML Standard
  *  §13.2.3 that a whole-buffer parser needs.
  *
@@ -54,7 +55,7 @@ export function bomEncoding(bytes: Uint8Array): string | undefined {
 export function encodingFromLabel(label: string): string | undefined {
   try {
     return new TextDecoder(label).encoding;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
 }
@@ -92,7 +93,7 @@ export function metaEncoding(attrs: Map<string, string>): string | undefined {
 export function decodeHtmlBytes(bytes: Uint8Array, encoding: string): string {
   try {
     return new TextDecoder(encoding).decode(bytes);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return new TextDecoder('utf-8').decode(bytes);
   }
 }

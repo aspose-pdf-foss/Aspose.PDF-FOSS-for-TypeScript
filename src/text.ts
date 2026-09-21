@@ -5,7 +5,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { ContentAddr } from './editcontent.js';
 import { PdfDict, PdfObject, PdfStream, isDict, isName, isArray, isString, isStream } from './types.js';
-import { parseContentStream } from './content.js';
+import { parseContentStream, type ContentTokenBudget } from './content.js';
 import { inflateStream } from './flate.js';
 import { TextFont, glyphDisplacement, tjShift } from './font.js';
 import {
@@ -17,6 +17,7 @@ import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisi
 // The one owner of the PDFDocEncoding/UTF-16 rule; `metadata.ts` imports only
 // `types.js`, so this closes no cycle.
 import { decodePdfText } from './metadata.js';
+import { rethrowLimit } from './errors.js';
 
 /** 2x3 affine matrix [a b c d e f] with row-vector convention:
  *  x' = a*x + c*y + e ; y' = b*x + d*y + f. */
@@ -431,22 +432,24 @@ interface TextState {
   tm: Matrix; tlm: Matrix;
   font?: TextFont; fontSize: number;
   charSp: number; wordSp: number; hscale: number; leading: number; rise: number;
-  /** /Tr, the text rendering mode (32000-2 9.3.6). 0 is the initial value.
-   *
-   *  **Invariant, and it is a DELIBERATE INCONSISTENCY inside this struct:**
-   *  this field IS saved and restored across `q`/`Q`; its five siblings above
-   *  are NOT. `TextState` is built once per walk and the `q` stack held
-   *  `{ ctm, fill, conv }` alone, so `Tc`/`Tw`/`Tz`/`TL`/`Ts` persist across a
-   *  `Q` contrary to 9.3.1. Fixing all six moves glyph POSITIONS for any
-   *  document using `q`/`Q` around them, which reaches `GetTextFragments`,
-   *  table detection and every export — filed as `g5x6`.
-   *
-   *  Scoping only this one correctly is not tidiness: ISO 14289-2's glyph rules
-   *  exempt mode 3, and an OCR tool that wraps its invisible layer in `q` … `Q`
-   *  would otherwise leave the mode stuck at 3 and silently EXEMPT the visible
-   *  text after it — a false negative on exactly the population mode 3 exists
-   *  to excuse. */
+  /** /Tr, the text rendering mode (32000-2 9.3.6). 0 is the initial value. */
   renderMode: number;
+}
+
+/** The part of `TextState` that is GRAPHICS STATE (32000-2 9.3.1) — every
+ *  field but the two matrices, which belong to one text object and are reset
+ *  by `BT` instead. `q` saves exactly this and `Q` restores it.
+ *
+ *  **Invariant (`g5x6`):** it is derived by `Omit`, never listed, so a text
+ *  state parameter added to `TextState` later is scoped by `q`/`Q` without
+ *  anyone remembering to. Until `g5x6` the stack held `renderMode` alone and
+ *  `Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tf` persisted across a `Q`, which moved glyphs:
+ *  a `Tz` or `Ts` set inside a `q` misplaced every later quad on the page. */
+type TextGState = Omit<TextState, 'tm' | 'tlm'>;
+
+function saveTextState(st: TextState): TextGState {
+  const { tm: _tm, tlm: _tlm, ...rest } = st;
+  return rest;
 }
 
 function newState(): TextState {
@@ -457,6 +460,9 @@ interface Ctx {
   doc: Document;
   visitor: ContentVisitor;
   fontCache: Map<PdfDict, TextFont>;
+  /** The `maxContentTokens` count for this WHOLE walk — page content and every
+   *  form it reaches — rather than for each stream parsed (`ibzo.8`). */
+  tokens: ContentTokenBudget;
   /** Optional-content visibility, present only when the caller asked to skip
    *  hidden content AND the document declares an `/OCProperties`. */
   oc?: OcVisibility;
@@ -503,7 +509,7 @@ export function visitContent(
   doc: Document, page: Page, visitor: ContentVisitor, opts: ContentWalkOptions = {},
 ): void {
   const ctx: Ctx = {
-    doc, visitor, fontCache: new Map(),
+    doc, visitor, fontCache: new Map(), tokens: { tokens: 0 },
     oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined,
   };
   const streams = contentStreamBytes(doc, page).map((bytes, i) => ({ bytes, streamIndex: i }));
@@ -532,7 +538,7 @@ export function visitFormContent(
   doc: Document, stream: PdfStream, fallbackResources: PdfDict | undefined,
   base: Matrix, visitor: ContentVisitor,
 ): void {
-  const ctx: Ctx = { doc, visitor, fontCache: new Map() };
+  const ctx: Ctx = { doc, visitor, fontCache: new Map(), tokens: { tokens: 0 } };
   const mat = nums(doc.resolve(stream.dict.get('Matrix')) as PdfObject[] | undefined);
   const ctm = mat.length === 6 ? mul(mat as Matrix, base) : base;
   const res = resolveDict(doc, stream.dict.get('Resources')) ?? fallbackResources;
@@ -540,8 +546,9 @@ export function visitFormContent(
 }
 
 /** The subset of the graphics state this walker threads: the CTM, the fill
- *  colour, and the converter that resolves that colour's operands. */
-interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; renderMode: number }
+ *  colour, the converter that resolves that colour's operands, and the text
+ *  state parameters (`TextGState`). */
+interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; text: TextGState }
 
 const cl255 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
 
@@ -570,7 +577,7 @@ function lookupFillCs(
       (o) => doc.resolve(o),
       (s) => inflateStream(s as Parameters<typeof inflateStream>[0]),
     );
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // A damaged colourspace costs a colour, not the page's text.
     return deviceGray();
   }
@@ -619,15 +626,21 @@ function inheritMcProps(
  *  within one stream, but the form's content is still drawn inside the caller's
  *  sequence, so it inherits that tagging — without this, everything inside a
  *  correctly tagged form reads as untagged. `inheritedFill` carries the fill
- *  colour for the same reason: a form drawn under a red fill draws red. */
+ *  colour for the same reason: a form drawn under a red fill draws red, and
+ *  `inheritedText` the text state (`mih4`) — 8.10.1 draws a form in the
+ *  graphics state at its `Do`, and 9.3.1 makes `Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tf`/
+ *  `Tr` part of it. An annotation appearance passes none: it is not drawn
+ *  inside the page's graphics state. */
 function walkScope(
   ctx: Ctx, streams: { bytes: Uint8Array; streamIndex: number }[],
   resources: PdfDict | undefined, path: string[], baseCtm: Matrix,
   depth: number, seen: Set<PdfDict>,
   inheritedMcid?: number, inheritedArtifact?: ContentAddr,
-  inheritedFill?: Rgb, inheritedMcProps?: McProps,
+  inheritedFill?: Rgb, inheritedMcProps?: McProps, inheritedText?: TextGState,
 ): void {
-  const st = newState();
+  // (mih4) A form starts from the text state in force at its Do, COPIED, so
+  // nothing it sets reaches back out to the caller.
+  const st: TextState = { ...newState(), ...inheritedText };
   const gsStack: GState[] = [];
   let curCtm = baseCtm;
   let fill: Rgb | undefined = inheritedFill;
@@ -670,15 +683,15 @@ function walkScope(
   };
 
   for (const { bytes, streamIndex } of streams) {
-    const ops = parseContentStream(bytes);
+    const ops = parseContentStream(bytes, ctx.doc.loadLimits, ctx.tokens);
     for (let opIndex = 0; opIndex < ops.length; opIndex++) {
       const op = ops[opIndex];
       const addr: ContentAddr = { path, streamIndex, opIndex };
       switch (op.operator) {
-        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, renderMode: st.renderMode }); break;
+        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, text: saveTextState(st) }); break;
         case 'Q': {
           const g = gsStack.pop();
-          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; st.renderMode = g.renderMode; }
+          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; Object.assign(st, g.text); }
           break;
         }
         case 'cm': { const m = nums(op.operands); if (m.length === 6) curCtm = mul(m as Matrix, curCtm); break; }
@@ -822,7 +835,7 @@ function walkScope(
             const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
             walkScope(ctx, [{ bytes: inflateStream(xo), streamIndex: 0 }],
               childRes, [...path, xn.name], childCtm, depth + 1, seen,
-              activeMcid, artScope, fill, mcProps);
+              activeMcid, artScope, fill, mcProps, saveTextState(st));
             seen.delete(xo.dict);
           }
           break;
@@ -839,8 +852,12 @@ type PdfStreamLike = Parameters<typeof inflateStream>[0];
 export function contentStreamBytes(doc: Document, page: Page): Uint8Array[] {
   const c = doc.resolve(page.Dict.get('Contents'));
   const out: Uint8Array[] = [];
-  if (isStream(c)) out.push(inflateStream(c));
-  else if (isArray(c)) for (const e of c) { const s = doc.resolve(e); if (isStream(s)) out.push(inflateStream(s)); }
+  // (ibzo.4) A running total, as Page.Contents keeps: the array is bounded as a
+  // whole, and the crossing stream is stopped at the cap.
+  let soFar = 0;
+  const take = (s: PdfStreamLike) => { const b = inflateStream(s, { contentSoFar: soFar }); soFar += b.length; out.push(b); };
+  if (isStream(c)) take(c);
+  else if (isArray(c)) for (const e of c) { const s = doc.resolve(e); if (isStream(s)) take(s); }
   return out;
 }
 

@@ -1,5 +1,6 @@
-import { inflateSync, brotliDecompressSync } from 'node:zlib';
-import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { PdfParseError, UnsupportedFeatureError, rethrowLimit } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
+import { InputDecoder } from './inflatebound.js';
 
 const SIG_WOFF1 = 0x774f4646; // 'wOFF'
 const SIG_WOFF2 = 0x774f4632; // 'wOF2'
@@ -65,15 +66,19 @@ function writeSfnt(version: number, tables: { tag: string; data: Uint8Array }[])
 }
 
 /** Unwrap WOFF (per-table zlib) or WOFF2 (brotli + transforms) to raw sfnt. */
-export function sfntFromWoff(bytes: Uint8Array): Uint8Array {
+export function sfntFromWoff(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): Uint8Array {
   const sig = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
-  if (sig === SIG_WOFF1) return decodeWoff1(bytes);
-  if (sig === SIG_WOFF2) return decodeWoff2(bytes);
+  if (sig === SIG_WOFF1) return decodeWoff1(bytes, limits);
+  if (sig === SIG_WOFF2) return decodeWoff2(bytes, limits);
   throw new PdfParseError('not a WOFF/WOFF2 font', 0);
 }
 
-function decodeWoff1(bytes: Uint8Array): Uint8Array {
+function decodeWoff1(bytes: Uint8Array, limits: LoadLimits): Uint8Array {
   const r = new Reader(bytes);
+  // (ibzo.11) One decoder for every table, so they are bounded in total; each
+  // is capped at the `origLength` its directory entry DECLARES, which is
+  // refused against the bounds before anything is inflated.
+  const dec = new InputDecoder(limits, 'WOFF table');
   r.u32();                       // signature
   const flavor = r.u32();
   r.u32();                       // length
@@ -94,8 +99,8 @@ function decodeWoff1(bytes: Uint8Array): Uint8Array {
     const comp = bytes.subarray(offset, offset + compLength);
     let data: Uint8Array;
     if (compLength < origLength) {
-      try { data = new Uint8Array(inflateSync(Buffer.from(comp))); }
-      catch { throw new PdfParseError('WOFF table inflate failed', offset); }
+      try { data = dec.inflate(comp, origLength); }
+      catch (caught) { rethrowLimit(caught); throw new PdfParseError('WOFF table inflate failed', offset); }
       if (data.length !== origLength) throw new PdfParseError('WOFF table length mismatch', offset);
     } else {
       data = comp;               // stored uncompressed (compLength == origLength)
@@ -357,7 +362,7 @@ function reconstructComposite(
   return concat(parts);
 }
 
-function decodeWoff2(bytes: Uint8Array): Uint8Array {
+function decodeWoff2(bytes: Uint8Array, limits: LoadLimits): Uint8Array {
   const r = new Reader(bytes);
   r.u32();                       // signature
   const flavor = r.u32();
@@ -387,8 +392,15 @@ function decodeWoff2(bytes: Uint8Array): Uint8Array {
   const compStart = r.pos;
   if (compStart + totalCompressedSize > bytes.length) throw new PdfParseError('WOFF2 compressed block out of bounds', compStart);
   let stream: Uint8Array;
-  try { stream = new Uint8Array(brotliDecompressSync(Buffer.from(bytes.subarray(compStart, compStart + totalCompressedSize)))); }
-  catch { throw new PdfParseError('WOFF2 brotli decompress failed', compStart); }
+  // (ibzo.11) The block holds exactly the table lengths the directory
+  // declares, so brotli is capped there and the sum is refused against the
+  // bounds first.
+  const declared = dir.reduce((n, e) => n + (e.transformed ? e.transformLength : e.origLength), 0);
+  try {
+    stream = new InputDecoder(limits, 'WOFF2 table data')
+      .brotli(bytes.subarray(compStart, compStart + totalCompressedSize), declared);
+  }
+  catch (caught) { rethrowLimit(caught); throw new PdfParseError('WOFF2 brotli decompress failed', compStart); }
 
   const raw = new Map<string, Uint8Array>();
   let off = 0;

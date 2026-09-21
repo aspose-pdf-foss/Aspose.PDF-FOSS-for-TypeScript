@@ -19,7 +19,8 @@ import { PageGraphics } from './graphics.js';
 import { searchText } from './textedit.js';
 import { removeCoveredAnnotations } from './redactannots.js';
 import { sanitizeResources } from './resprune.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
+import { registerStream } from './decodebudget.js';
 
 /** Options for {@link redactPage} / `page.Redact` / `doc.Redact`. */
 export interface RedactOptions {
@@ -348,7 +349,7 @@ function reencodeRedactedImage(
     // Sample-preserving path: blank covered samples, keep colorspace/bit-depth.
     let samples: Uint8Array;
     try { samples = new ImageInfo(doc, '', stream).Decode(); }
-    catch { throw new UnsupportedFeatureError('image codec cannot be decoded for partial redaction'); }
+    catch (caught) { rethrowLimit(caught); throw new UnsupportedFeatureError('image codec cannot be decoded for partial redaction'); }
     const wv = doc.resolve(stream.dict.get('Width')), hv = doc.resolve(stream.dict.get('Height'));
     const w = typeof wv === 'number' ? wv : 0, h = typeof hv === 'number' ? hv : 0;
     const boxes: PixelBox[] = [];
@@ -412,12 +413,13 @@ function reflatedInlineDict(src: PdfDict): PdfDict {
 function reencodeRedactedInline(doc: Document, op: ContentOp, ctm: Matrix, rects: Rect[]): ContentOp {
   const inline = op.inlineImage!;
   const stream = inlineImageToStream(inline);
+  registerStream(stream, doc.decodeBudget);    // ibzo.7
   const plan = sampleRedactPlan(doc, stream);
 
   if (plan) {
     let samples: Uint8Array;
     try { samples = new ImageInfo(doc, '', stream).Decode(); }
-    catch { throw new UnsupportedFeatureError('inline image codec cannot be decoded for partial redaction'); }
+    catch (caught) { rethrowLimit(caught); throw new UnsupportedFeatureError('inline image codec cannot be decoded for partial redaction'); }
     const wv = doc.resolve(stream.dict.get('Width')), hv = doc.resolve(stream.dict.get('Height'));
     const w = typeof wv === 'number' ? wv : 0, h = typeof hv === 'number' ? hv : 0;
     const boxes: PixelBox[] = [];
@@ -434,7 +436,7 @@ function reencodeRedactedInline(doc: Document, op: ContentOp, ctm: Matrix, rects
   if (doc.resolve(stream.dict.get('ImageMask')) === true) {
     let samples: Uint8Array;
     try { samples = new ImageInfo(doc, '', stream).Decode(); }
-    catch { throw new UnsupportedFeatureError('inline image codec cannot be decoded for partial redaction'); }
+    catch (caught) { rethrowLimit(caught); throw new UnsupportedFeatureError('inline image codec cannot be decoded for partial redaction'); }
     const wv = doc.resolve(stream.dict.get('Width')), hv = doc.resolve(stream.dict.get('Height'));
     const w = typeof wv === 'number' ? wv : 0, h = typeof hv === 'number' ? hv : 0;
     const boxes: PixelBox[] = [];

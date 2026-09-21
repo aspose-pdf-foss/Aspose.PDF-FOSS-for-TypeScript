@@ -7,6 +7,7 @@ import { semanticBody, type HtmlImageSink } from './htmlsemantic.js';
 import { encodeImage, imageExtension } from './imagehref.js';
 import { writeEpub, type EpubPart, type EpubMetadata } from './epub.js';
 import { splitChapters } from './epubsplit.js';
+import { rethrowLimit } from './errors.js';
 
 /** Options for {@link Document.ToEpub}. */
 export interface EpubOptions {
@@ -91,7 +92,7 @@ export function renderEpub(
   let chapters = [{ title: title || 'Start', nodes: [] as DocNode[] }];
   try {
     chapters = splitChapters(buildDocModel(doc, pages), title || 'Start');
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: one empty chapter, as ToDocx and ToHtml degrade to what they
     // produced. A half-written EPUB that opens beats an exception, and the
     // shape that makes a reader reject the file outright — a manifest naming a
@@ -106,7 +107,7 @@ export function renderEpub(
     let body = '';
     try {
       body = semanticBody(doc, c.nodes, images);
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       // One unrenderable chapter costs its own content, not the whole book.
     }
     return xhtml(c.title, language, body);

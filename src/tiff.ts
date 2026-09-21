@@ -1,8 +1,7 @@
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import type { RasterImage } from './rasterimage.js';
-import { inflateSync } from 'node:zlib';
-import { lzwDecode } from './lzw.js';
-import { runLengthDecode } from './ascii.js';
+import { InputDecoder } from './inflatebound.js';
 import { applyPredictor } from './predictor.js';
 import { decodeCcitt } from './ccitt.js';
 import { decodeJpeg } from './jpeg.js';
@@ -21,8 +20,6 @@ const TYPE_SIZE: Record<number, number> = {
   1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8,
 };
 
-/** Refuse a raster whose pixel count cannot plausibly be allocated. */
-const MAX_PIXELS = 1 << 28;
 /** A file with more images than this is damage, not a document. */
 const MAX_PAGES = 4096;
 
@@ -122,13 +119,16 @@ export function tiffPageCount(data: Uint8Array): number {
   return ifdOffsets(openTiff(data)).length;
 }
 
-export function decodeTiff(data: Uint8Array, page = 0): RasterImage {
+/** Decode one image of a TIFF under `limits` (`ibzo.11`): its declared size
+ *  against `maxImagePixels`, and its strips or tiles through ONE
+ *  `InputDecoder`, so they are bounded in total as well as one by one. */
+export function decodeTiff(data: Uint8Array, page = 0, limits: LoadLimits = LoadLimits.defaults): RasterImage {
   const r = openTiff(data);
   const offsets = ifdOffsets(r);
   if (!Number.isInteger(page) || page < 0 || page >= offsets.length)
     throw new UnsupportedFeatureError(
       `TIFF: page ${page} out of range (file has ${offsets.length})`);
-  return decodeIfd(r, readIfd(r, offsets[page]));
+  return decodeIfd(r, readIfd(r, offsets[page]), limits);
 }
 
 /** Bytes per row for `width` pixels of `bits` total bits each, byte-padded. */
@@ -149,6 +149,8 @@ export interface TiffPlan {
   tiled: boolean;
   /** JPEGTables (tag 347) for the abbreviated JPEG form, when present. */
   jpegTables?: Uint8Array;
+  /** Every block of this image decodes through it (`ibzo.11`). */
+  dec: InputDecoder;
 }
 
 /**
@@ -294,16 +296,16 @@ function decodeBlock(src: Uint8Array, p: TiffPlan, b: Block, srcStride: number):
   let out: Uint8Array;
   switch (p.compression) {
     case 1: out = data; break;
-    case 5: out = lzwDecode(data, 1); break;
-    case 8: case 32946: out = new Uint8Array(inflateSync(Buffer.from(data))); break;
+    case 5: out = p.dec.lzw(data); break;
+    case 8: case 32946: out = p.dec.inflate(data); break;
     // PDF's RunLengthDecode stops at byte 128, which TIFF PackBits reserves and
     // real encoders do not emit. The length check in `assemble` turns a silent
     // early stop into an error rather than a half-black strip.
-    case 32773: out = runLengthDecode(data); break;
+    case 32773: out = p.dec.packBits(data); break;
     // The abbreviated form: shared tables live in JPEGTables and each block
     // carries only its scan. The whole-image single-block case never reaches
     // here -- `decodeIfd` returns it as an `embedded` passthrough.
-    case 7: out = decodeJpeg(p.jpegTables ? spliceJpeg(p.jpegTables, data) : data).data; break;
+    case 7: out = decodeJpeg(p.jpegTables ? spliceJpeg(p.jpegTables, data) : data, p.dec.limits).data; break;
     // CCITT. `rows` is the BLOCK's height, not the image's, and `decodeCcitt`
     // reads `k` only for its SIGN -- negative is pure 2D, 0 is pure 1D,
     // anything positive is mixed -- so 1 is passed rather than T.4's
@@ -316,7 +318,7 @@ function decodeBlock(src: Uint8Array, p: TiffPlan, b: Block, srcStride: number):
       out = decodeCcitt(data, {
         k, columns: p.blockW, rows: b.h, blackIs1: false,
         byteAlign, endOfLine: false, endOfBlock: true,
-      });
+      }, p.dec.limits);
       break;
     }
     default:
@@ -335,13 +337,12 @@ function decodeBlock(src: Uint8Array, p: TiffPlan, b: Block, srcStride: number):
   return out;
 }
 
-function decodeIfd(r: TiffReader, ifd: Ifd): RasterImage {
+function decodeIfd(r: TiffReader, ifd: Ifd, limits: LoadLimits): RasterImage {
   const width = tag1(ifd, T_WIDTH, 0);
   const height = tag1(ifd, T_HEIGHT, 0);
   if (width <= 0 || height <= 0)
     throw new PdfParseError(`TIFF: bad dimensions ${width}x${height}`);
-  if (width * height > MAX_PIXELS)
-    throw new PdfParseError(`TIFF: ${width}x${height} exceeds the pixel bound`);
+  limits.enforce('maxImagePixels', width * height, 'TIFF image');
   if (!ifd.has(T_PHOTOMETRIC))
     throw new PdfParseError('TIFF: no PhotometricInterpretation');
   const photometric = tag1(ifd, T_PHOTOMETRIC, 0);
@@ -378,6 +379,7 @@ function decodeIfd(r: TiffReader, ifd: Ifd): RasterImage {
     blocks, blockW, tiled,
     jpegTables: ifd.has(T_JPEG_TABLES)
       ? Uint8Array.from(tagNums(ifd, T_JPEG_TABLES, [])) : undefined,
+    dec: new InputDecoder(limits, 'TIFF strip'),
   });
 }
 

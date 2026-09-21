@@ -117,7 +117,7 @@ export function buildSignatureAppearance(
   let imgKey: string | undefined;
 
   if (app.image) {
-    const built = buildImageXObject(app.image);
+    const built = buildImageXObject(app.image, undefined, 0, doc.loadLimits);
     if (built.smask) built.stream.dict.set('SMask', doc.allocObject(built.smask));
     imgRef = doc.allocObject(built.stream);
     imgKey = 'Im0';

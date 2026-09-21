@@ -18,13 +18,23 @@ import { enc } from './serialize.js';
  *  distinct source object and never mutates the source. */
 function importGraphInto(target: Document, srcDoc: Document, root: PdfObject): PdfObject {
   const seen = new Map<number, PdfRef>(); // source obj num -> target ref
+  // (ibzo.6) The recursion runs through rewriteRefs, one level per reference
+  // followed, so a chain of Form XObjects each naming the next is a stack as
+  // deep as the chain. `seen` already makes a cycle a reuse; the source
+  // document's policy bounds the depth.
+  let depth = 0;
   const visit = (r: PdfRef): PdfRef => {
     const existing = seen.get(r.num);
     if (existing) return existing;
     const clone = cloneShallow(srcDoc.getObject(r.num));
     const newRef = target.allocObject(clone);
     seen.set(r.num, newRef);
-    rewriteRefs(clone, visit); // recurse into the stored clone (mutates the copy)
+    srcDoc.loadLimits.enforce('maxNestingDepth', ++depth, 'copied object graph');
+    try {
+      rewriteRefs(clone, visit); // recurse into the stored clone (mutates the copy)
+    } finally {
+      depth--;
+    }
     return newRef;
   };
   const rootClone = cloneShallow(root);

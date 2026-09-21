@@ -14,6 +14,7 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfStream, isDict, isStream, isName, isArray } from './types.js';
 import { applyDecodeFilters } from './filters.js';
+import { budgetFor } from './decodebudget.js';
 import { decodeCcitt } from './ccitt.js';
 import { decodeJpx } from './jpx.js';
 import { decodeJbig2 } from './jbig2.js';
@@ -59,8 +60,15 @@ function resolvedFilters(
  *  The body of `ImageInfo.Decode`, which delegates here. */
 export function decodeImageStream(doc: Document, stream: PdfStream): Uint8Array {
   const dict = stream.dict;
+  // (ibzo.4) The DECLARED size, before a single filter runs. Every image path —
+  // rendering, SVG and HTML export, extraction, colour conversion — decodes
+  // through here, so this is the one place a picture claiming more pixels than
+  // the policy allows is refused, whatever its codec and however small its
+  // payload. The codecs still check their own headers, which may disagree.
+  doc.loadLimits.enforce('maxImagePixels',
+    numOf(doc, dict, 'Width', 0) * numOf(doc, dict, 'Height', 0), 'image');
   const { names, parms } = resolvedFilters(doc, dict);
-  const { bytes, terminal } = applyDecodeFilters(stream.raw, names, parms);
+  const { bytes, terminal } = applyDecodeFilters(stream.raw, names, parms, { budget: budgetFor(stream), stream });
   if (!terminal) return bytes;
   if (terminal.name === 'DCTDecode' || terminal.name === 'DCT') return bytes;
   if (terminal.name === 'CCITTFaxDecode' || terminal.name === 'CCF') {
@@ -81,16 +89,16 @@ export function decodeImageStream(doc: Document, stream: PdfStream): Uint8Array 
       byteAlign: b('EncodedByteAlign', false),
       endOfLine: b('EndOfLine', false),
       endOfBlock: b('EndOfBlock', true),
-    });
+    }, doc.loadLimits);
   }
-  if (terminal.name === 'JPXDecode') return decodeJpx(bytes).data;
+  if (terminal.name === 'JPXDecode') return decodeJpx(bytes, doc.loadLimits).data;
   if (terminal.name === 'JBIG2Decode') {
     const dp = terminal.parms;
     let globals: Uint8Array | undefined;
     const g = dp ? doc.resolve(dp.get('JBIG2Globals')) : undefined;
     // Handles a Flate-wrapped globals stream.
     if (isStream(g)) globals = decodeImageStream(doc, g);
-    return decodeJbig2(bytes, globals, numOf(doc, dict, 'Width', 0), numOf(doc, dict, 'Height', 0));
+    return decodeJbig2(bytes, globals, numOf(doc, dict, 'Width', 0), numOf(doc, dict, 'Height', 0), doc.loadLimits);
   }
   throw new UnsupportedFeatureError(`Image.Decode: unsupported filter ${terminal.name}`);
 }

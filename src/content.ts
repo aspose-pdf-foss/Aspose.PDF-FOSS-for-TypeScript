@@ -1,6 +1,48 @@
 import { Lexer, Token } from './lexer.js';
 import { PdfObject, PdfDict } from './types.js';
 import { serializeValue, escapeName, enc } from './serialize.js';
+import { LoadLimits } from './loadlimits.js';
+
+/** The lexer a content walk reads through: it counts every token and every
+ *  container level against the document's policy (`ibzo.4`).
+ *
+ *  **Invariant:** the count lives in the LEXER, not in the op loop. An operand
+ *  list with no operator after it never becomes an op, and an array's or a
+ *  dictionary's members are read by helpers the op loop never sees — so an op
+ *  count lets both grow without bound, and both hold a slot per token.
+ *
+ *  **Invariant:** depth is counted too, because `readArray` and `readDict`
+ *  recurse. A `[[[[…]]]]` operand overflowed the stack, and every walker
+ *  catches that as a malformed stream and moves on. */
+class ContentLexer extends Lexer {
+  depth = 0;
+  constructor(buf: Uint8Array, readonly limits: LoadLimits, private readonly budget: ContentTokenBudget) {
+    super(buf);
+  }
+  override next(): Token {
+    const t = super.next();
+    if (t.t !== 'eof') this.limits.enforce('maxContentTokens', ++this.budget.tokens, 'content stream');
+    return t;
+  }
+}
+
+/** A `maxContentTokens` count SHARED by every parse of one content walk
+ *  (`ibzo.8`). Without one each `parseContentStream` call counts from zero, so
+ *  a page drawing many Form XObjects, Type 3 glyph procedures or tiling
+ *  patterns is bounded per stream rather than in total.
+ *
+ *  **Invariant:** it is a mutable holder passed BY REFERENCE, so a walker's
+ *  child context — `pagerender.ts` spreads its `RenderCtx` per form — charges
+ *  the same count as its parent. Copying the number instead gives each form a
+ *  fresh budget again, which is the defect this exists to close. */
+export interface ContentTokenBudget { tokens: number }
+
+/** Run a container reader one level deeper, when the lexer counts levels. */
+function nested<T>(lx: Lexer, body: () => T): T {
+  if (!(lx instanceof ContentLexer)) return body();
+  lx.limits.enforce('maxNestingDepth', ++lx.depth, 'content operand');
+  try { return body(); } finally { lx.depth--; }
+}
 
 export interface ContentOp {
   readonly operator: string;
@@ -12,8 +54,10 @@ export interface ContentOp {
 const WS = new Set([0, 9, 10, 12, 13, 32]);
 
 /** Tokenize decoded content-stream bytes into an op stream. */
-export function parseContentStream(buf: Uint8Array): ContentOp[] {
-  const lx = new Lexer(buf);
+export function parseContentStream(
+  buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults, budget: ContentTokenBudget = { tokens: 0 },
+): ContentOp[] {
+  const lx = new ContentLexer(buf, limits, budget);
   const ops: ContentOp[] = [];
   let operands: PdfObject[] = [];
   for (;;) {
@@ -54,26 +98,30 @@ function valueFromToken(lx: Lexer, tok: Token): PdfObject {
 }
 
 function readArray(lx: Lexer): PdfObject[] {
-  const arr: PdfObject[] = [];
-  for (;;) {
-    const tok = lx.next();
-    if (tok.t === 'eof') break;
-    if (tok.t === 'delim' && tok.v === ']') break;
-    arr.push(valueFromToken(lx, tok));
-  }
-  return arr;
+  return nested(lx, () => {
+    const arr: PdfObject[] = [];
+    for (;;) {
+      const tok = lx.next();
+      if (tok.t === 'eof') break;
+      if (tok.t === 'delim' && tok.v === ']') break;
+      arr.push(valueFromToken(lx, tok));
+    }
+    return arr;
+  });
 }
 
 function readDict(lx: Lexer): PdfDict {
-  const d: PdfDict = new Map();
-  for (;;) {
-    const k = lx.next();
-    if (k.t === 'eof') break;
-    if (k.t === 'delim' && k.v === '>>') break;
-    if (k.t !== 'name') continue; // skip malformed
-    d.set(k.v, valueFromToken(lx, lx.next()));
-  }
-  return d;
+  return nested(lx, () => {
+    const d: PdfDict = new Map();
+    for (;;) {
+      const k = lx.next();
+      if (k.t === 'eof') break;
+      if (k.t === 'delim' && k.v === '>>') break;
+      if (k.t !== 'name') continue; // skip malformed
+      d.set(k.v, valueFromToken(lx, lx.next()));
+    }
+    return d;
+  });
 }
 
 function matches(buf: Uint8Array, p: number, s: string): boolean {

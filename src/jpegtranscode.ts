@@ -12,12 +12,16 @@
 import { ZIGZAG, decodeJpegFrame, jpegTransform } from './jpeg.js';
 import { isHierarchical } from './jpeghier.js';
 import { encodeJpegFromBlocks } from './jpegcoef.js';
+import { LoadLimits } from './loadlimits.js';
+import { rethrowLimit } from './errors.js';
 
 export type TranscodeResult =
   | { kind: 'ok'; data: Uint8Array; width: number; height: number }
   | { kind: 'decline'; reason: string };
 
-export function greyJpegFromCoefficients(data: Uint8Array): TranscodeResult {
+export function greyJpegFromCoefficients(
+  data: Uint8Array, limits: LoadLimits = LoadLimits.defaults,
+): TranscodeResult {
   const no = (reason: string): TranscodeResult => ({ kind: 'decline', reason });
 
   // A hierarchical JPEG has no single frame to take coefficients from, and
@@ -25,8 +29,8 @@ export function greyJpegFromCoefficients(data: Uint8Array): TranscodeResult {
   if (isHierarchical(data)) return no('hierarchical JPEG has no single DCT frame');
 
   let parsed;
-  try { parsed = decodeJpegFrame(data); }
-  catch (e) { return no(`parse failed: ${(e as Error).message}`); }
+  try { parsed = decodeJpegFrame(data, limits); }
+  catch (e) { rethrowLimit(e); return no(`parse failed: ${(e as Error).message}`); }
   const { frame, adobe } = parsed;
 
   if (frame.lossless) return no('lossless JPEG carries no DCT coefficients');

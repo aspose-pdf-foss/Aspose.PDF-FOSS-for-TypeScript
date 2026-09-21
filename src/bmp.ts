@@ -1,4 +1,5 @@
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import type { RasterImage } from './rasterimage.js';
 
 /** Compression values from the BMP header (wingdi.h BI_* constants). */
@@ -10,8 +11,6 @@ const DIB_CORE = 12, DIB_INFO = 40, DIB_V2 = 52, DIB_V3 = 56;
 const DIB_OS22 = 64, DIB_V4 = 108, DIB_V5 = 124;
 const KNOWN_DIB = new Set([DIB_CORE, DIB_INFO, DIB_V2, DIB_V3, DIB_OS22, DIB_V4, DIB_V5]);
 
-/** Refuse a raster whose pixel count cannot plausibly be allocated. */
-const MAX_PIXELS = 1 << 28;   // 268M pixels; 4 bytes each is already 1 GB
 
 const u16 = (d: Uint8Array, o: number): number => d[o] | (d[o + 1] << 8);
 const u32 = (d: Uint8Array, o: number): number =>
@@ -36,7 +35,10 @@ export interface BmpHeader {
   afterHeader: number;
 }
 
-export function parseBmpHeader(d: Uint8Array): BmpHeader {
+/** `limits.maxImagePixels` refuses a raster whose DECLARED size is too large to
+ *  allocate — the same field, and the same `ResourceLimitError`, a PDF image
+ *  gets (`ibzo.10`, `ibzo.11`). */
+export function parseBmpHeader(d: Uint8Array, limits: LoadLimits = LoadLimits.defaults): BmpHeader {
   if (d.length < 26 || d[0] !== 0x42 || d[1] !== 0x4d)
     throw new PdfParseError('BMP: missing "BM" file header');
   const offBits = u32(d, 0x0a);
@@ -63,8 +65,7 @@ export function parseBmpHeader(d: Uint8Array): BmpHeader {
   if (width <= 0 || rawHeight === 0)
     throw new PdfParseError(`BMP: bad dimensions ${width}x${rawHeight}`);
   const height = Math.abs(rawHeight);
-  if (width * height > MAX_PIXELS)
-    throw new PdfParseError(`BMP: ${width}x${height} exceeds the pixel bound`);
+  limits.enforce('maxImagePixels', width * height, 'BMP image');
   if (offBits < 14 + dibSize || offBits > d.length)
     throw new PdfParseError(`BMP: pixel offset ${offBits} outside the file`);
 
@@ -293,8 +294,8 @@ function decodeRle(d: Uint8Array, h: BmpHeader): Uint8Array {
   return out;
 }
 
-export function decodeBmp(data: Uint8Array): RasterImage {
-  const h = parseBmpHeader(data);
+export function decodeBmp(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults): RasterImage {
+  const h = parseBmpHeader(data, limits);
   if (h.compression === BI_RLE8 || h.compression === BI_RLE4) {
     const want = h.compression === BI_RLE8 ? 8 : 4;
     if (h.bpp !== want)

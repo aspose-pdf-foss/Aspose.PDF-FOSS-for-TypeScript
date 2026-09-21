@@ -20,6 +20,7 @@ import { EditableContent } from './editcontent.js';
 import { ContentOp, imageCutSet } from './content.js';
 import { inlineImageToStream } from './imageredact.js';
 import { ImageInfo } from './image.js';
+import { registerStream } from './decodebudget.js';
 
 /** A single `BI … EI` image drawn on a page, addressed by its position in the
  *  content stream that draws it.
@@ -47,6 +48,7 @@ export class InlineImageInfo {
     private readonly inline: { dict: PdfDict; data: Uint8Array },
   ) {
     const stream: PdfStream = inlineImageToStream(inline);
+    registerStream(stream, doc.decodeBudget);    // ibzo.7: the document's policy, not the defaults
     this.view = new ImageInfo(doc, '', stream);
   }
 

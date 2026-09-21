@@ -58,7 +58,7 @@ import {
 } from './formcreate.js';
 import type { TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
 import { untagObjects } from './structwrite.js';
-import { markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
+import { checkOnSkipped, markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { HtmlDocument } from './htmldom.js';
@@ -255,7 +255,16 @@ export class Page {
       }
     }
     if (streams.length === 0) return new Uint8Array(0);
-    const parts = streams.map((s) => inflateStream(s));
+    // (ibzo.4) Decoded one at a time against a RUNNING total, so a /Contents
+    // array is bounded as a whole and the stream that crosses the bound is
+    // stopped at the cap rather than decoded and then refused.
+    const parts: Uint8Array[] = [];
+    let soFar = 0;
+    for (const s of streams) {
+      const p = inflateStream(s, { contentSoFar: soFar });
+      parts.push(p);
+      soFar += p.length;
+    }
     const total = parts.reduce((n, p) => n + p.length, 0) + (parts.length - 1);
     const out = new Uint8Array(total);
     let off = 0;
@@ -637,12 +646,16 @@ export class Page {
       structParent?: StructElement;
     } = {},
   ): AddMarkdownResult {
-    const { elements, skipped } = markdownElements(src, options);
+    // See Document.AddMarkdown: a fresh array on the way out (kk3q).
+    checkOnSkipped(options);
+    const late: string[] = [];
+    const onSkipped = (s: string): void => { late.push(s); options.onSkipped?.(s); };
+    const { elements, skipped } = markdownElements(src, { ...options, onSkipped });
     const { usedHeight, remainder } = placeElements(this.doc, this, elements, rect, {
       paragraphSpacing: options.paragraphSpacing,
       structParent: options.structParent,
     });
-    return { usedHeight, remainder, skipped };
+    return { usedHeight, remainder, skipped: [...skipped, ...late] };
   }
 
   /** Lay an HTML document into the rectangle [x, y, w, h] (PDF user space,

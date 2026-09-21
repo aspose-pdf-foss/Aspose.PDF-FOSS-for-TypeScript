@@ -44,6 +44,8 @@
  *  the first element anyway. Consistent with Flow, a divergence from a
  *  browser. */
 
+import { LoadLimits } from './loadlimits.js';
+import { elementDepth } from './htmldom.js';
 import type { HtmlDocument, HtmlElement } from './htmldom.js';
 import type { ComputedStyle, UnsupportedDeclaration } from './cssprop.js';
 import type { BoxNode } from './cssbox.js';
@@ -72,6 +74,7 @@ import {
 import { frameBoxes, type BoxFrame, type FrameEdge } from './cssframe.js';
 import { buildTable } from './csstable.js';
 import { table } from './flowtable.js';
+import { rethrowLimit } from './errors.js';
 
 /** A CSS px is 1/96 in and a point 1/72, so a px is 0.75pt. */
 export const PT_PER_PX = 0.75;
@@ -80,6 +83,9 @@ export const PT_PER_PX = 0.75;
 const pt = (px: number): number => px * PT_PER_PX;
 
 export interface CssFlowOptions {
+  /** The document's policy (`ibzo.11`): the tree's element depth and its CSS
+   *  block depth against `maxNestingDepth`. Default {@link LoadLimits.defaults}. */
+  limits?: LoadLimits;
   /** The containing-block width, IN POINTS — what the caller will place into.
    *  Divided by PT_PER_PX on the way into resolveBoxes, which works in px. */
   width: number;
@@ -167,7 +173,7 @@ function imageElement(
       alt: alt !== '' ? alt : undefined,
       spaceBefore,
     }), a.el, c);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // buildImageXObject rejects anything that is not JPEG or PNG. The report
     // has to survive that rather than letting the throw escape a mapper whose
     // whole contract is that damage is a value.
@@ -464,9 +470,12 @@ function attribute(
     el, kind: 'degraded', construct: 'image', detail: 'scaled-to-fit',
   });
   const overflowed = once(c, { el, kind: 'degraded', construct: 'overflow' });
+  const squeezed = once(c, { el, kind: 'degraded', construct: 'squeezed' });
   for (const el of els) {
     if (el.onCompromise !== undefined) continue;
-    el.onCompromise = (how) => { (how === 'scaled' ? scaled : overflowed)(); };
+    el.onCompromise = (how) => {
+      (how === 'scaled' ? scaled : how === 'squeezed' ? squeezed : overflowed)();
+    };
   }
   return els;
 }
@@ -709,7 +718,13 @@ export function lowerHtml(
   if (typeof options.resolveFamily !== 'function')
     throw new TypeError('resolveFamily must be a function');
 
-  const { boxes, unsupported, report } = buildBoxes(root, options.resolveFamily);
+  // (ibzo.11) ONE depth check before every recursive stage — the cascade, the
+  // box builder, the inline walk and the mapper below all recurse per element,
+  // and a 200,000-deep tree overflowed the first of them. Checked once here
+  // rather than in each, because a bound per walk is four chances to disagree.
+  const limits = options.limits ?? LoadLimits.defaults;
+  limits.enforce('maxNestingDepth', elementDepth(root), 'HTML element');
+  const { boxes, unsupported, report } = buildBoxes(root, options.resolveFamily, limits);
   // The SAME array, so the flow phase appends to what the box phase produced
   // — one list rather than a merge step that could reorder or lose a record.
   // It is `report` in the two pure leaves and `skipped` here, because that is

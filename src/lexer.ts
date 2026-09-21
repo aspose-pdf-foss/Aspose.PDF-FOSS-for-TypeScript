@@ -1,10 +1,15 @@
-export type Token =
+export type Token = (
   | { t: 'num'; v: number; pos: number }
   | { t: 'name'; v: string; pos: number }
   | { t: 'str'; v: Uint8Array; pos: number }
   | { t: 'delim'; v: '[' | ']' | '<<' | '>>'; pos: number }
   | { t: 'kw'; v: string; pos: number }
-  | { t: 'eof'; pos: number };
+  | { t: 'eof'; pos: number }
+) & {
+  /** Set only when the token passed {@link Lexer.maxTokenBytes}: the byte count
+   *  reached when reading STOPPED. The value is then a truncated prefix. */
+  over?: number;
+};
 
 const WS = new Set([0, 9, 10, 12, 13, 32]);
 const DELIM = new Set([40, 41, 60, 62, 91, 93, 123, 125, 47, 37]); // ()<>[]{}/%
@@ -14,7 +19,28 @@ const isReg = (b: number) => !isWs(b) && !isDelim(b);
 
 export class Lexer {
   pos = 0;
+  /** A cap on one string, name or regular token's bytes (`ibzo.2`). Past it the
+   *  token STOPS being read and comes back flagged with `over`.
+   *
+   *  **Invariant:** it does not throw, which keeps `next()`'s never-throws rule —
+   *  deciding what an oversized token MEANS belongs to the caller, as deciding
+   *  what a stray keyword means already does. `ObjectParser` turns it into
+   *  `ResourceLimitError`; nothing else sets it, so content streams, CMaps and
+   *  `/DA` strings are byte-identical.
+   *
+   *  **Invariant:** the check runs WHILE reading, not after. A literal string
+   *  accumulates into a `number[]`, eight bytes a slot, so a 900 MB string has
+   *  exhausted the heap before any span check afterwards could run. */
+  maxTokenBytes = Infinity;
+  private overflow = 0;
   constructor(readonly buf: Uint8Array, start = 0) { this.pos = start; }
+
+  next(): Token {
+    this.overflow = 0;
+    const tok = this.scan();
+    if (this.overflow > 0) tok.over = this.overflow;
+    return tok;
+  }
 
   private skipWsAndComments() {
     while (this.pos < this.buf.length) {
@@ -28,7 +54,7 @@ export class Lexer {
     }
   }
 
-  next(): Token {
+  private scan(): Token {
     this.skipWsAndComments();
     const pos = this.pos;
     if (this.pos >= this.buf.length) return { t: 'eof', pos };
@@ -72,7 +98,10 @@ export class Lexer {
 
   private readRegular(): string {
     const start = this.pos;
-    while (this.pos < this.buf.length && isReg(this.buf[this.pos])) this.pos++;
+    while (this.pos < this.buf.length && isReg(this.buf[this.pos])) {
+      if (this.pos - start >= this.maxTokenBytes) { this.overflow = this.pos - start + 1; break; }
+      this.pos++;
+    }
     return new TextDecoder('latin1').decode(this.buf.subarray(start, this.pos));
   }
 
@@ -80,6 +109,7 @@ export class Lexer {
     this.pos++; // skip '/'
     const out: number[] = [];
     while (this.pos < this.buf.length && isReg(this.buf[this.pos])) {
+      if (out.length >= this.maxTokenBytes) { this.overflow = out.length + 1; break; }
       let b = this.buf[this.pos++];
       if (b === 35 && this.pos + 1 < this.buf.length) { // # hex escape
         b = parseInt(new TextDecoder('latin1').decode(this.buf.subarray(this.pos, this.pos + 2)), 16);
@@ -99,6 +129,7 @@ export class Lexer {
     const out: number[] = [];
     let depth = 1;
     while (this.pos < this.buf.length) {
+      if (out.length >= this.maxTokenBytes) { this.overflow = out.length + 1; break; }
       let b = this.buf[this.pos++];
       if (b === 92) { // backslash escape
         const e = this.buf[this.pos++];
@@ -134,6 +165,7 @@ export class Lexer {
     this.pos++; // skip '<'
     const digits: number[] = [];
     while (this.pos < this.buf.length && this.buf[this.pos] !== 62) {
+      if (digits.length >= 2 * this.maxTokenBytes) { this.overflow = (digits.length >> 1) + 1; break; }
       const b = this.buf[this.pos++];
       if (isWs(b)) continue;
       digits.push(b);

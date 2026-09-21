@@ -175,10 +175,15 @@ export function readNamedDestinations(doc: Document, pageOf: PageOf): NamedDesti
 }
 
 /** Walk a sibling list from `container`'s /First, following /Next, into items. */
-export function readOutlineTree(doc: Document, container: PdfDict, pageOf: PageOf): OutlineItem[] {
+export function readOutlineTree(
+  doc: Document, container: PdfDict, pageOf: PageOf, depth = 1,
+): OutlineItem[] {
   const out: OutlineItem[] = [];
   const seen = new Set<PdfDict>();
   let node = doc.resolve(container.get('First'));
+  // Only a level that HAS items counts, so an outline N items deep is admitted
+  // at a limit of N; the leaf's empty child list costs nothing to ask for.
+  if (isDict(node)) doc.loadLimits.enforce('maxNestingDepth', depth, 'outline');
   while (isDict(node) && !seen.has(node)) {
     seen.add(node);
     const title = doc.resolve(node.get('Title'));
@@ -196,7 +201,7 @@ export function readOutlineTree(doc: Document, container: PdfDict, pageOf: PageO
       if (f & 1) item.Italic = true;   // bit position 1 (PDF 32000-1 12.3.3)
       if (f & 2) item.Bold = true;     // bit position 2
     }
-    const children = readOutlineTree(doc, node, pageOf);
+    const children = readOutlineTree(doc, node, pageOf, depth + 1);
     if (children.length) {
       item.Children = children;
       const count = doc.resolve(node.get('Count'));

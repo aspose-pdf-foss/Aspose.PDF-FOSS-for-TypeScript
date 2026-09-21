@@ -9,6 +9,7 @@ import type { GlyphPoint, SfntFont } from './sfnt.js';
 import type { Path } from './pagerender.js';
 import { CffFont } from './cff.js';
 import { Type1Font } from './type1.js';
+import { rethrowLimit } from './errors.js';
 
 /** Flatten a quadratic Bézier to `out` by adaptive subdivision. */
 function flattenQuad(
@@ -124,7 +125,7 @@ export function faceOutline(
         let cff: CffFont | undefined;
         // A malformed CFF is a broken font, not a broken document: report no
         // outline and let the caller degrade, exactly as a missing glyph does.
-        if (raw) { try { cff = new CffFont(raw); } catch { cff = undefined; } }
+        if (raw) { try { cff = new CffFont(raw, sfnt.limits); } catch (caught) { rethrowLimit(caught); cff = undefined; } }
         src = { cff };
       } else {
         src = { sfnt };

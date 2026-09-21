@@ -7,6 +7,7 @@ import {
   convertComps, targetName, targetComponents,
   type TargetSpace, type CmykTransform,
 } from './colorrule.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * Repointing a Separation or DeviceN over a device alternate (`ixxw.4`).
@@ -108,7 +109,7 @@ export function repointSpotSpace(
   try {
     tint = parseFunction(arr[3] as PdfObject, resolve, inflate);
     alt = resolveColorSpace(altObj, resolve, inflate);
-  } catch { return undefined; }
+  } catch (caught) { rethrowLimit(caught); return undefined; }
 
   const grid = gridFor(n);
   const total = grid.reduce((a, b) => a * b, 1);
@@ -141,7 +142,7 @@ export function repointSpotSpace(
         out[s * comps + c] = Math.round(clamp01(vals[c] ?? 0) * 255);
       }
     }
-  } catch { return undefined; }
+  } catch (caught) { rethrowLimit(caught); return undefined; }
 
   const dict: PdfDict = new Map<string, PdfObject>([
     ['FunctionType', 0],

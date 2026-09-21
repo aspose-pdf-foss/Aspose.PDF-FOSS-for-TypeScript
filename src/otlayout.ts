@@ -4,6 +4,7 @@
 // convention.
 
 import type { SfntFont } from './sfnt.js';
+import { rethrowLimit } from './errors.js';
 
 /** The mutable shaping buffer element. GSUB rewrites gid/cluster; GPOS fills advances/offsets. */
 export interface ShapedGlyph {
@@ -172,7 +173,7 @@ export function parseOtTable(bytes: Uint8Array): OtTable | undefined {
       features: parseFeatureList(r, featureOff),
       lookups: parseLookupList(r, lookupOff),
     };
-  } catch { return undefined; }
+  } catch (caught) { rethrowLimit(caught); return undefined; }
 }
 
 /** Enabled lookup indices for (script, lang, features), in lookup-list order. */
@@ -212,7 +213,7 @@ export function parseGdef(bytes: Uint8Array): Gdef | undefined {
       }
     }
     return g;
-  } catch { return undefined; }
+  } catch (caught) { rethrowLimit(caught); return undefined; }
 }
 
 /** "Should this lookup ignore glyph `gid`?" per LookupFlag + GDEF. */
@@ -933,6 +934,6 @@ export function applyFeatures(sfnt: SfntFont, gids: { gid: number; cluster: numb
     // Re-seed advances from final gids (GSUB may have rewritten/inserted glyphs), then GPOS adds deltas.
     for (const g of buf) g.xAdvance = sfnt.advanceWidth(g.gid);
     if (layout.gpos) applyGpos(layout.gpos, buf, layout.gdef, opts.script, opts.lang, features, opts.rtl ?? false);
-  } catch { /* degrade: return the buffer as-is without throwing */ }
+  } catch (caught) { rethrowLimit(caught); /* degrade: return the buffer as-is without throwing */ }
   return buf;
 }

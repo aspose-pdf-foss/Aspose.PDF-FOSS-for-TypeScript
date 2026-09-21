@@ -1,10 +1,34 @@
 import type { Document } from './document.js';
 import { ContentOp, parseContentStream } from './content.js';
 import {
-  PdfDict, PdfObject, PdfRef, isDict, isStream, isArray, isName, isString, isRef,
+  PdfDict, PdfObject, PdfRef, PdfStream, isDict, isStream, isArray, isName, isString, isRef,
 } from './types.js';
 import { decodeStream } from './filters.js';
 import { refsIn } from './serializer.js';
+import { rethrowLimit } from './errors.js';
+import { budgetFor } from './decodebudget.js';
+
+/** A stream's parsed ops, memoized for ONE pass (`ibzo.9`); `undefined` records
+ *  a stream that would not decode or parse.
+ *
+ *  **Invariant:** this pass re-reads the same stream by construction — every
+ *  widget sharing an `/AP` scans it again, and `chargeKeptDrStreams` re-parses
+ *  every kept `/DR` stream on every round of its fixpoint — so without the memo
+ *  its cost is (sharers × stream) and (rounds × streams). A document-wide
+ *  `maxContentTokens` total is the WRONG bound here: it would refuse a large
+ *  legitimate form whose appearances each render fine. Parsing each distinct
+ *  stream once makes the pass linear in bytes `maxTotalDecodedBytes` already
+ *  caps, and each parse keeps its own per-stream token bound. */
+type OpsMemo = Map<PdfStream, ContentOp[] | undefined>;
+
+function opsOf(memo: OpsMemo, stream: PdfStream): ContentOp[] | undefined {
+  if (memo.has(stream)) return memo.get(stream);
+  let ops: ContentOp[] | undefined;
+  try { ops = parseContentStream(decodeStream(stream), budgetFor(stream).limits); }
+  catch (caught) { rethrowLimit(caught); ops = undefined; }
+  memo.set(stream, ops);
+  return ops;
+}
 
 /** The /DR categories this pass prunes. /ProcSet is an array of names rather
  *  than a resource dict, and is left alone. */
@@ -92,16 +116,15 @@ function chargeUnresolved(doc: Document, local: Set<string>, res: PdfObject, out
  * object would read the /DA of the very field whose removal this pass exists to
  * clean up after, and the pass would never remove anything.
  */
-function collectDrReferences(doc: Document): { refs: Set<string> } | { veto: string } {
+function collectDrReferences(doc: Document, memo: OpsMemo): { refs: Set<string> } | { veto: string } {
   const refs = new Set<string>();
   const seen = new Set<PdfObject>();
   let veto: string | undefined;
 
   const scan = (stream: PdfObject): void => {
     if (!isStream(stream)) return;
-    let ops: ContentOp[];
-    try { ops = parseContentStream(decodeStream(stream)); }
-    catch { veto ??= 'an appearance stream could not be read'; return; }
+    const ops = opsOf(memo, stream);
+    if (ops === undefined) { veto ??= 'an appearance stream could not be read'; return; }
     const local = new Set<string>();
     collectResourceRefs(ops, local);
     chargeUnresolved(doc, local, doc.resolve(stream.dict.get('Resources')), refs);
@@ -132,7 +155,7 @@ function collectDrReferences(doc: Document): { refs: Set<string> } | { veto: str
     const da = doc.resolve(d.get('DA'));
     if (isString(da)) {
       try { collectResourceRefs(parseContentStream(da.bytes), refs); }
-      catch { veto ??= 'a /DA string could not be read'; }
+      catch (caught) { rethrowLimit(caught); veto ??= 'a /DA string could not be read'; }
     }
     const ap = d.get('AP');
     if (ap !== undefined) visitAP(ap);
@@ -175,7 +198,7 @@ function reachableSet(doc: Document): Set<number> {
  * let an entry that this same run deletes keep a resource alive, and the next
  * Optimize would then remove more than this one did.
  */
-function chargeKeptDrStreams(doc: Document, dr: PdfDict, refs: Set<string>): string | undefined {
+function chargeKeptDrStreams(doc: Document, dr: PdfDict, refs: Set<string>, memo: OpsMemo): string | undefined {
   for (;;) {
     let grew = false;
     for (const category of DR_CATEGORIES) {
@@ -185,9 +208,8 @@ function chargeKeptDrStreams(doc: Document, dr: PdfDict, refs: Set<string>): str
         if (!refs.has(refKey(category, nm))) continue;
         const entry = doc.resolve(table.get(nm));
         if (!isStream(entry)) continue;
-        let ops: ContentOp[];
-        try { ops = parseContentStream(decodeStream(entry)); }
-        catch { return 'a /DR resource stream could not be read'; }
+        const ops = opsOf(memo, entry);
+        if (ops === undefined) return 'a /DR resource stream could not be read';
         const local = new Set<string>();
         collectResourceRefs(ops, local);
         const before = refs.size;
@@ -225,10 +247,11 @@ export function pruneDefaultResources(doc: Document): DrPruneResult {
   const dr = doc.resolve(acro.get('DR'));
   if (!isDict(dr)) return { removed: [], bytesSaved: 0 };
 
-  const found = collectDrReferences(doc);
+  const memo: OpsMemo = new Map();
+  const found = collectDrReferences(doc, memo);
   if ('veto' in found) return { removed: [], bytesSaved: 0, skipped: found.veto };
   const refs = found.refs;
-  const streamVeto = chargeKeptDrStreams(doc, dr, refs);
+  const streamVeto = chargeKeptDrStreams(doc, dr, refs, memo);
   if (streamVeto !== undefined) return { removed: [], bytesSaved: 0, skipped: streamVeto };
 
   const before = reachableSet(doc);

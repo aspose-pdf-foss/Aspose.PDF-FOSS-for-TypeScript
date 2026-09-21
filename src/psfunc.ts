@@ -1,4 +1,5 @@
 import { Lexer } from './lexer.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * One node of a parsed type 4 program: a numeric or boolean literal, an
@@ -93,7 +94,7 @@ export function evalPostScript(
   const st: Val[] = input.slice();
   try {
     exec(prog, st, 0);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
   if (st.length < nOut) return undefined;

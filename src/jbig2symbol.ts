@@ -9,6 +9,7 @@ import { decodeRefinement } from './jbig2refine.js';
 import { decodeTextRegion, huffmanRefinement } from './jbig2text.js';
 import { newBitmap, type Bitmap } from './jbig2.js';
 import { PdfParseError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 
 export interface SymbolDictParams {
   huffman: boolean; refAgg: boolean; template: number; at: Array<{ x: number; y: number }>;
@@ -19,6 +20,8 @@ export interface SymbolDictParams {
    *  two T.88 fixes outright (export runs are always B.1, refinement deltas
    *  always B.15). Selection is header work and lives in jbig2.ts. */
   tables?: HuffmanTables;
+  /** The policy a decoded symbol's size is checked against (`ibzo.3`). */
+  limits?: LoadLimits;
 }
 
 /** One driver: the entropy source and the bitmap production for one dictionary.
@@ -34,7 +37,7 @@ export function decodeSymbolDict(data: Uint8Array, start: number, end: number, p
   const { int, producer } = p.huffman
     ? huffmanDriver(data, start, end, p, symCodeLen, newSyms)
     : arithDriver(data, start, end, p, symCodeLen, newSyms);
-  heightClassWalk(int, p.numNewSyms, producer, newSyms);
+  heightClassWalk(int, p.numNewSyms, producer, newSyms, p.limits);
   return exportSymbols(int, [...p.inputSymbols, ...newSyms]);
 }
 
@@ -247,7 +250,13 @@ function collectiveBitmap(
  *  symbols this same dictionary has already produced, so it must see the array
  *  grow — a returned array would still be in its temporal dead zone at the
  *  moment the producer closure runs. */
-function heightClassWalk(int: IntSource, numNewSyms: number, producer: SymbolProducer, newSyms: Bitmap[]): void {
+/** @internal Exported for `test/limits-codecs.test.ts`, which drives it with a
+ *  hand-built integer source — no symbol dictionary can be encoded cheaply
+ *  enough to declare a symbol past the pixel bound. */
+export function heightClassWalk(
+  int: IntSource, numNewSyms: number, producer: SymbolProducer, newSyms: Bitmap[],
+  limits: LoadLimits = LoadLimits.defaults,
+): void {
   let hcHeight = 0;
   while (newSyms.length < numNewSyms) {
     const dh = int.dh();
@@ -261,6 +270,9 @@ function heightClassWalk(int: IntSource, numNewSyms: number, producer: SymbolPro
       if (dw === null) break; // OOB ends the height class
       symWidth += dw;
       if (hcHeight <= 0 || symWidth <= 0) throw new PdfParseError('JBIG2: bad symbol dimensions');
+      // (ibzo.3) A symbol's size is DECODED, not declared, so no header check
+      // can see it: here, after it is summed and before the producer allocates.
+      limits.enforce('maxImagePixels', symWidth * hcHeight, 'JBIG2 symbol');
       if (newSyms.length + widths.length >= numNewSyms) throw new PdfParseError('JBIG2: too many symbols in dictionary');
       if (producer.kind === 'perSymbol') newSyms.push(producer.produce(symWidth, hcHeight, newSyms.length));
       else widths.push(symWidth);

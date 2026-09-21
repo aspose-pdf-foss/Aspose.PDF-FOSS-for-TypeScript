@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import {
   PdfDict, PdfObject, PdfStream, isDict, isStream, isName, isArray,
 } from './types.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { collectGlyphUsage, UsageMap } from './glyphusage.js';
 import { shrinkGlyf, shrinkCff, shrinkNameKeyedCff, ShrinkResult } from './fontshrink.js';
 import { dedupStreams } from './dedup.js';
@@ -155,27 +155,27 @@ function shrinkOne(
 ): { result: ShrinkResult; bytesSaved: number } | { reason: string } {
   let plain: Uint8Array;
   try { plain = decodeStream(prog.stream); }
-  catch { return { reason: 'font program failed to decode' }; }
+  catch (caught) { rethrowLimit(caught); return { reason: 'font program failed to decode' }; }
 
   let result: ShrinkResult;
   try {
     if (prog.key === 'FontFile2') {
-      result = shrinkGlyf(parseSfnt(plain), gids, { dropGlyphNames });
+      result = shrinkGlyf(parseSfnt(plain, 0, doc.loadLimits), gids, { dropGlyphNames });
     } else {
       const sub = nameOf(doc, prog.stream.dict.get('Subtype'));
       // CID-keyed and name-keyed CFFs resolve in opposite directions, and each
       // needs the shrink that preserves its own chain: shrinkCff re-assembles
       // CID-keyed, which would leave a simple font dict with no names to resolve
       // against. See shrinkNameKeyedCff.
-      if (sub === 'CIDFontType0C') result = shrinkCff(plain, gids);
+      if (sub === 'CIDFontType0C') result = shrinkCff(plain, gids, doc.loadLimits);
       else if (sub === 'Type1C') result = shrinkNameKeyedCff(plain, gids);
       else if (sub === 'OpenType') {
-        const f = parseSfnt(plain);
+        const f = parseSfnt(plain, 0, doc.loadLimits);
         if (f.outlines !== 'glyf') return { reason: 'OpenType FontFile3 is CFF-outlined' };
         result = shrinkGlyf(f, gids, { dropGlyphNames });
       } else return { reason: `unsupported FontFile3 subtype: ${sub ?? 'none'}` };
     }
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     return { reason: `shrink failed: ${(e as Error).message}` };
   }
 

@@ -17,7 +17,7 @@ import {
   type TilingPattern, type TilingPatternOptions,
   type ColoredTilingPattern, type UncoloredTilingPattern,
 } from './tiling.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import type { Layer } from './ocg.js';
 
 function checkNum(label: string, n: number): number {
@@ -284,7 +284,7 @@ export abstract class VectorGraphics {
       // invert() hands back -0 for the off-diagonal of an axis-aligned CTM;
       // fold it to 0 so the emitted /Matrix reads as one.
       return invert(this.ctm).map((v) => (v === 0 ? 0 : v)) as Matrix;
-    } catch {
+    } catch (caught) { rethrowLimit(caught);
       return [...IDENTITY];
     }
   }

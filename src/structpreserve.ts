@@ -209,10 +209,13 @@ function markKeep(srcDoc: Document, num: number, keep: Set<number>): void {
 function cloneElem(
   outDoc: Document, srcDoc: Document, srcNum: number,
   pageMap: Map<number, number>, keep: Set<number>, cache: Map<number, PdfRef>,
-  objSurv: Map<number, ObjSurv>, parentRef: PdfRef,
+  objSurv: Map<number, ObjSurv>, parentRef: PdfRef, depth = 1,
 ): PdfRef {
   const hit = cache.get(srcNum);
   if (hit) return hit;
+  // (ibzo.6) The source tree is the hostile one; `cache` already turns a cycle
+  // into a reuse, so depth is the only thing left unbounded.
+  srcDoc.loadLimits.enforce('maxNestingDepth', depth, 'structure tree');
   const src = srcDoc.getObject(srcNum) as PdfDict;
   const clone: PdfDict = new Map();
   const newRef = outDoc.allocObject(clone);
@@ -229,7 +232,7 @@ function cloneElem(
   const newK: PdfObject[] = [];
   for (const entry of childEntries(srcDoc, src)) {
     if (isRef(entry) && isStructElemNum(srcDoc, entry.num)) {
-      if (keep.has(entry.num)) newK.push(cloneElem(outDoc, srcDoc, entry.num, pageMap, keep, cache, objSurv, newRef));
+      if (keep.has(entry.num)) newK.push(cloneElem(outDoc, srcDoc, entry.num, pageMap, keep, cache, objSurv, newRef, depth + 1));
     } else {
       const item = remapContentItem(srcDoc, entry, pageMap, objSurv, srcNum);
       if (item !== undefined) newK.push(item);

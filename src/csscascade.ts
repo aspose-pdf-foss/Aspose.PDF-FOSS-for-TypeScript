@@ -3,8 +3,10 @@
  *
  *  Invariant: a PURE LEAF. It imports the two parser modules, cssselect.js,
  *  cssprop.js, cssshorthand.js, cssua.js and htmldom.js for types. No
- *  Document, no PDF object, no `node:` import. It never throws: everything it
- *  cannot use is recorded on `unsupported` for zch2.7.
+ *  Document, no PDF object, no `node:` import. It never throws on damage:
+ *  everything it cannot use is recorded on `unsupported` for zch2.7. The one
+ *  exception is a bound — CSS nested past `maxNestingDepth` is refused by the
+ *  parser as a `ResourceLimitError` (ibzo.11).
  *
  *  Invariant: it is PROPERTY-AGNOSTIC in the sense that matters — it consults
  *  PROPERTIES and SHORTHANDS for one question only, "is this name something we
@@ -37,6 +39,7 @@ import { SHORTHANDS, expandShorthand } from './cssshorthand.js';
 import { hasVar, isCustomProperty, longhandsOf } from './cssvar.js';
 import type { DeclValue } from './cssvar.js';
 import { UA_CSS } from './cssua.js';
+import type { LoadLimits } from './loadlimits.js';
 
 /** The six cascade tiers, low to high. See `bySortKey` for why flattening
  *  origin, importance and element-attachment into one ordinal is the point
@@ -248,7 +251,7 @@ function styleText(el: HtmlElement): string {
     .join('');
 }
 
-export function collect(root: HtmlDocument): Collected {
+export function collect(root: HtmlDocument, limits?: LoadLimits): Collected {
   const w: Walk = { rules: [...uaRules()], unsupported: [], order: { n: 0 } };
   const inline = new Map<HtmlElement, InlineDeclarations>();
   const sheets: string[] = [];
@@ -271,7 +274,7 @@ export function collect(root: HtmlDocument): Collected {
       if (style !== undefined && style.trim() !== '') {
         const normal: [string, DeclValue][] = [];
         const important: [string, DeclValue][] = [];
-        for (const d of parseDeclarationsFromValues(parseComponentValueList(style))) {
+        for (const d of parseDeclarationsFromValues(parseComponentValueList(style, limits))) {
           if (d.kind !== 'declaration') continue;
           (d.important ? important : normal).push(...toLonghands(d, n, w.unsupported));
         }
@@ -291,7 +294,7 @@ export function collect(root: HtmlDocument): Collected {
   // Author sheets are compiled AFTER the walk, because a <style> may appear
   // after what it styles — the same reason svgcss.ts makes a whole-tree
   // pre-pass. Order across sheets is document order, which `sheets` preserves.
-  compileRules(parseStylesheet(sheets.join('\n')), 2, 4, w);
+  compileRules(parseStylesheet(sheets.join('\n'), limits), 2, 4, w);
 
   return { rules: w.rules, inline, unsupported: w.unsupported };
 }

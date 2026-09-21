@@ -6,12 +6,13 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { ContentAddr } from './editcontent.js';
 import { PdfDict, PdfObject, isName, isArray, isDict, isStream } from './types.js';
-import { parseContentStream } from './content.js';
+import { parseContentStream, type ContentTokenBudget } from './content.js';
 import { Matrix, IDENTITY, mul, apply, vscale, contentStreamBytes } from './text.js';
 import { Rgb, cmykToRgb, resolveColorSpace, deviceGray, ColorConverter } from './colorspace.js';
 import { inflateStream } from './flate.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 import type { ContentWalkOptions } from './text.js';
+import { rethrowLimit } from './errors.js';
 
 export type PathSegment =
   | { op: 'move'; pt: [number, number] }
@@ -123,7 +124,12 @@ function deviceBbox(subpaths: PathSubpath[], ctm: Matrix): [number, number, numb
   return x0 === Infinity ? [0, 0, 0, 0] : [x0, y0, x1, y1];
 }
 
-interface Ctx { doc: Document; out: PagePath[]; oc?: OcVisibility; }
+interface Ctx {
+  doc: Document; out: PagePath[]; oc?: OcVisibility;
+  /** The `maxContentTokens` count for this page walk, shared by every stream it
+   *  parses rather than counted afresh per stream (`ibzo.8`, `ibzo.9`). */
+  tokens: ContentTokenBudget;
+}
 interface Stream { bytes: Uint8Array; streamIndex: number; }
 
 function walk(
@@ -195,7 +201,7 @@ function walk(
 
   for (const { bytes, streamIndex } of streams) {
     let ops;
-    try { ops = parseContentStream(bytes); } catch { continue; }
+    try { ops = parseContentStream(bytes, ctx.doc.loadLimits, ctx.tokens); } catch (caught) { rethrowLimit(caught); continue; }
     for (let opIndex = 0; opIndex < ops.length; opIndex++) {
       const op = ops[opIndex];
       const addr: ContentAddr = { path: [...path], streamIndex, opIndex };
@@ -273,7 +279,7 @@ function walk(
           const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
           let childBytes: Uint8Array;
           try { childBytes = inflateStream(xo as Parameters<typeof inflateStream>[0]); }
-          catch { seen.delete(xo.dict); break; }
+          catch (caught) { rethrowLimit(caught); seen.delete(xo.dict); break; }
           walk(ctx, [{ bytes: childBytes, streamIndex: 0 }], childRes, [...path, xn.name], childCtm, depth + 1, seen);
           seen.delete(xo.dict);
           break;
@@ -287,9 +293,9 @@ function walk(
 /** Extract painted vector paths from a page (top-level content and nested Form
  *  XObjects). Never throws; returns [] on decode failure. */
 export function extractPaths(doc: Document, page: Page, opts: ContentWalkOptions = {}): PagePath[] {
-  const ctx: Ctx = { doc, out: [], oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined };
+  const ctx: Ctx = { doc, out: [], tokens: { tokens: 0 }, oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined };
   let bytes: Uint8Array[];
-  try { bytes = contentStreamBytes(doc, page); } catch { return []; }
+  try { bytes = contentStreamBytes(doc, page); } catch (caught) { rethrowLimit(caught); return []; }
   walk(ctx, bytes.map((b, i) => ({ bytes: b, streamIndex: i })), page.Resources, [], IDENTITY, 0, new Set());
   return ctx.out;
 }

@@ -259,6 +259,8 @@ suite('the inventory sweep (zch2.7)', () => {
     ['link', 'degraded', '<p><a href="#f">j</a></p>'],
     // Only a Flow overflows (zch2.16); a rect hands the element back instead.
     ['overflow', 'degraded', '<p style="font-size:900px">W</p>', 'flow'],
+    // Nested past the point its indents fit, so a decorator scaled them (rfba).
+    ['squeezed', 'degraded', '<blockquote>'.repeat(20) + 'q' + '</blockquote>'.repeat(20)],
     ['text', 'dropped', '<p>При</p>'],
   ];
 

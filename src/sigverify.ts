@@ -6,6 +6,7 @@ import { verifyCertChain } from './chain.js';
 import { readXref } from './xref.js';
 import { digestByteRange, byteRangeContent } from './signature.js';
 import type { SignatureField } from './signature.js';
+import { rethrowLimit } from './errors.js';
 
 /** A fetcher for revocation material: given the target and its issuer (DER),
  *  return the OCSP response / CRL bytes, or undefined when none is available. */
@@ -127,7 +128,7 @@ export function verifySignature(
     // RFC 3161 signature timestamp, when embedded as an unsigned attribute.
     if (parsed.timestampToken) {
       try { base.timestamp = verifyTimestampToken(parsed.timestampToken, parsed.signature); }
-      catch { /* malformed token: omit the timestamp verdict */ }
+      catch (caught) { rethrowLimit(caught); /* malformed token: omit the timestamp verdict */ }
     }
     // Certificate-path validation to the caller's trust anchors (V2).
     if (chain.trustAnchors && chain.trustAnchors.length) {
@@ -135,7 +136,7 @@ export function verifySignature(
       const pool = [...parsed.certificates, ...(chain.extraCerts ?? [])];
       base.chain = verifyCertChain(parsed.signerCertificate, pool, { trustAnchors: chain.trustAnchors, at }).status;
     }
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return base; // unparseable CMS -> invalid/tampered
   }
 
@@ -178,12 +179,12 @@ export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField):
   const token = sig.cmsLength !== undefined ? sig.contents.subarray(0, sig.cmsLength) : sig.contents;
   try {
     report.timestamp = verifyTimestampToken(token, byteRangeContent(bytes, sig.byteRange));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // malformed token: keep the failed verdict
   }
   try {
     report.signerCert = certInfo(parseSignedData(token).signerCertificate);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // no signer cert available
   }
 
@@ -200,7 +201,7 @@ function revisionChanges(bytes: Uint8Array, signedEnd: number): Change[] {
   let revivable: Map<number, unknown>;
   try {
     revivable = readXref(bytes.subarray(0, signedEnd)).entries;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     revivable = new Map();
   }
   const changes: Change[] = [];
@@ -226,7 +227,7 @@ export async function checkSignatureRevocation(
     const parsed = parseSignedData(cms);
     signer = parsed.signerCertificate;
     issuer = findIssuer(signer, parsed.certificates);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return 'unchecked';
   }
 

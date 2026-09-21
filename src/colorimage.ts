@@ -9,8 +9,10 @@ import {
 import { decodeJpeg } from './jpeg.js';
 import { encodeJpeg, type JpegKind } from './jpegencode.js';
 import { greyJpegFromCoefficients } from './jpegtranscode.js';
+import { budgetFor } from './decodebudget.js';
 import { encodeStream } from './filters.js';
 import { colorKeyStencil } from './colorkey.js';
+import { rethrowLimit } from './errors.js';
 
 export type Resolve = (o: PdfObject | undefined) => PdfObject;
 
@@ -338,7 +340,7 @@ export function convertImageSpace(
   // for rgb or cmyk, so for any other target it must not run at all.
   if (to === 'gray' && isDct && CHANNELS[kind] === 3) {
     try {
-      const t = greyJpegFromCoefficients(inflate(stream));
+      const t = greyJpegFromCoefficients(inflate(stream), budgetFor(stream).limits);
       // A geometry disagreement falls through on purpose, so the code below
       // produces its own `JPEG geometry ... disagrees with the dict ...` skip
       // rather than a second message saying the same thing.
@@ -348,17 +350,17 @@ export function convertImageSpace(
         // keeps the exact route for the image itself, which is independent of
         // it. Forcing such an image down the sample route would be simpler and
         // strictly worse.
-        const mask = keyRanges && stencilFor(decodeJpeg(inflate(stream)).data);
+        const mask = keyRanges && stencilFor(decodeJpeg(inflate(stream), budgetFor(stream).limits).data);
         return { kind: 'converted', stream: rebuild(stream, t.data, 'DCTDecode', to),
           from: head, route: 'jpeg-exact', mask };
       }
-    } catch { /* fall through; the sample route reports the failure properly */ }
+    } catch (caught) { rethrowLimit(caught); /* fall through; the sample route reports the failure properly */ }
   }
 
   let src: Uint8Array;
   try {
     if (isDct) {
-      const j = decodeJpeg(inflate(stream));
+      const j = decodeJpeg(inflate(stream), budgetFor(stream).limits);
       if (j.width !== w || j.height !== h) {
         return { kind: 'skip',
           reason: `JPEG geometry ${j.width}x${j.height} disagrees with the dict ${w}x${h}` };
@@ -375,7 +377,7 @@ export function convertImageSpace(
         return { kind: 'skip', reason: `decoded ${src.length} bytes, expected ${want}` };
       }
     }
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     return { kind: 'skip', reason: `decode failed: ${(e as Error).message}` };
   }
 
@@ -389,7 +391,7 @@ export function convertImageSpace(
     }
     const flate = encodeStream(out, 'FlateDecode');
     return { kind: 'converted', stream: rebuild(stream, flate.raw, 'FlateDecode', to), from, route: 'flate', mask };
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     return { kind: 'skip', reason: `re-encode failed: ${(e as Error).message}` };
   }
 }

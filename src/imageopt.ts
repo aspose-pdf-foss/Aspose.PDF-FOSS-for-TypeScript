@@ -7,6 +7,7 @@ import { decodeJpeg } from './jpeg.js';
 import { encodeJpeg, JpegKind } from './jpegencode.js';
 import { resampleBox } from './resample.js';
 import { collectImageUsage } from './imageusage.js';
+import { rethrowLimit } from './errors.js';
 
 /** Target for the lossy image pass. Presence in OptimizeOptions is the opt-in.
  *  Named for the concern, not the subject: `ImageOptions` is already taken by
@@ -111,7 +112,7 @@ function samplesOf(
       // Decode() is a *passthrough* for DCT: it unwraps any preceding filters
       // (e.g. [ASCII85Decode, DCTDecode]) and hands back the JPEG bytes, which
       // is exactly what decodeJpeg wants.
-      const j = decodeJpeg(img.Decode());
+      const j = decodeJpeg(img.Decode(), doc.loadLimits);
       if (j.width !== w || j.height !== h)
         return { reason: `JPEG geometry ${j.width}x${j.height} disagrees with the dict ${w}x${h}` };
       if (j.comps !== CHANNELS[kind])
@@ -122,7 +123,7 @@ function samplesOf(
     if (bytes.length !== want)
       return { reason: `decoded ${bytes.length} bytes, expected ${want}` };
     return bytes;
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     return { reason: `decode failed: ${(e as Error).message}` };
   }
 }
@@ -203,7 +204,7 @@ export function optimizeImages(
     try {
       const resized = resampleBox(src, w, h, CHANNELS[kind], dw, dh);
       jpeg = encodeJpeg(dw, dh, resized, kind, { quality });
-    } catch (e) {
+    } catch (e) { rethrowLimit(e);
       skip(`re-encode failed: ${(e as Error).message}`); continue;
     }
 

@@ -10,6 +10,7 @@ import { parseXml, type XmlNode } from './xml.js';
 import { num } from './pagecontent.js';
 import { name, type PdfDict, type PdfObject } from './types.js';
 import { IDENTITY, mul, invert, apply, type Matrix } from './text.js';
+import { LoadLimits } from './loadlimits.js';
 import {
   attrNum, parsePath, segsBBox, shapeSegs, subtreeBBox,
   type SvgSeg, type SegBBox, type TextMeasure,
@@ -46,6 +47,7 @@ import {
 } from './svgfilterfx.js';
 import { ctmScale, FLATTEN_TOL } from './strokegeom.js';
 import type { ImageRgba } from './raster.js';
+import { rethrowLimit } from './errors.js';
 
 /** Allocates a content stream and returns its reference. svgembed.ts implements
  *  it, because a stream MUST be an indirect object — which this module,
@@ -87,6 +89,8 @@ export interface SvgDrawOptions {
   /** Caller-supplied bytes for an href the walker cannot decode itself. See
    *  decodeImage in svgimage.ts. */
   resolveImage?: (href: string) => Uint8Array | undefined;
+  /** The document's policy, for decoding `<image>` payloads (`ibzo.11`). */
+  limits?: LoadLimits;
 }
 
 /** What the walker produces: a content stream, the resources it needs, and the
@@ -147,8 +151,43 @@ export function __canon(v: PdfObject): string {
   return String(v);
 }
 
+/** Content tokens in one emitted operator string: its whitespace-separated
+ *  runs. A string operand holding spaces counts high, which only ever refuses
+ *  sooner than the page walk would. */
+function tokensIn(op: string): number {
+  let n = 0, inRun = false;
+  for (let i = 0; i < op.length; i++) {
+    const ws = op.charCodeAt(i) <= 32;
+    if (!ws && !inRun) n++;
+    inRun = !ws;
+  }
+  return n;
+}
+
 class Emitter {
   readonly out: string[] = [];
+  /** Content tokens emitted by the WHOLE import, every tile, marker, mask and
+   *  nested document included — shared by `child()` and `subdoc()` for the
+   *  reason `skipped` is (`ibzo.11`). */
+  tokens = { n: 0 };
+  /** How far into `out` this emitter has charged `tokens`. */
+  private charged = 0;
+
+  /** Charge what this emitter pushed since the last charge against
+   *  `maxContentTokens`, and refuse past it.
+   *
+   *  **Invariant:** the bound is the one the page walk parses under. An import
+   *  emitting more tokens than that produces a page this library then refuses
+   *  to render, so refusing at import is the same answer, given before the
+   *  work — which for `<use>`, where ten references per level expand 10^n
+   *  times, is the difference between a refusal and an unbounded expansion.
+   *  Charged per ELEMENT rather than per push, so the hot path pays nothing;
+   *  the count lags by one element's operators at most. */
+  chargeTokens(): void {
+    if (this.charged > this.out.length) this.charged = this.out.length;   // a pop
+    for (; this.charged < this.out.length; this.charged++) this.tokens.n += tokensIn(this.out[this.charged]);
+    (this.limits ?? LoadLimits.defaults).enforce('maxContentTokens', this.tokens.n, 'SVG content');
+  }
   skipped = new Set<string>();
   readonly extg: PdfDict = new Map<string, PdfObject>();
   /** id -> element, for use/clipPath resolution. */
@@ -176,6 +215,9 @@ class Emitter {
   filterPx = 2;
   /** Supplied by the caller through AddSVGOptions; see decodeImage. */
   resolveImage?: (href: string) => Uint8Array | undefined;
+  /** The document's LoadLimits, carried to every child for the same reason
+   *  `resolveImage` is: a pattern tile's `<image>` decodes like any other. */
+  limits?: LoadLimits;
   /** `${id}|${strokeWidth}` -> the marker form's ref. The stroke scale is baked
    *  into the placement, not the form, so one form serves every vertex of one
    *  element — but an element with a different stroke width needs its own. */
@@ -276,6 +318,8 @@ class Emitter {
     // Without this copy the resolver works at the top level and is silently
     // absent in all four.
     c.resolveImage = this.resolveImage;
+    c.limits = this.limits;
+    c.tokens = this.tokens;
     c.svgDepth = this.svgDepth;
     c.svgForms = this.svgForms;
     return c;
@@ -302,6 +346,8 @@ class Emitter {
     c.raster = this.raster;
     c.filterPx = this.filterPx;
     c.resolveImage = this.resolveImage;
+    c.limits = this.limits;
+    c.tokens = this.tokens;
     c.viewport = viewport;
     c.svgDepth = this.svgDepth + 1;
     return c;
@@ -592,7 +638,7 @@ function groupForm(e: Emitter, box: SegBBox, body: (sub: Emitter) => void): PdfO
  *  caller folds and nothing is visible either way. */
 function viewportBox(e: Emitter, ctm: Matrix): SegBBox | null {
   let inv: Matrix;
-  try { inv = invert(ctm); } catch { return null; }
+  try { inv = invert(ctm); } catch (caught) { rethrowLimit(caught); return null; }
   const vb = e.viewport;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const x of [vb.minX, vb.minX + vb.w]) for (const y of [vb.minY, vb.minY + vb.h]) {
@@ -1031,8 +1077,8 @@ function drawNestedSvg(
   if (e.svgDepth >= MAX_SVG_NESTING) { e.skipped.add('image'); return; }
   let root: XmlNode;
   try {
-    root = parseXml(bytes);
-  } catch {
+    root = parseXml(bytes, e.limits);
+  } catch (caught) { rethrowLimit(caught);
     // parseXml throws PdfParseError on malformed XML. One bad payload must not
     // abort a whole placement — the same rule tryBuild's broad catch encodes for
     // corrupt raster bytes.
@@ -1074,7 +1120,7 @@ function drawImage(
   if (href === '') { e.skipped.add('image'); return; }
   let hit = e.images.get(href);
   if (hit === undefined) {
-    const payload = decodePayload(href, e.resolveImage);
+    const payload = decodePayload(href, e.resolveImage, e.limits);
     if (payload === undefined) { e.skipped.add('image'); return; }
     // A vector payload never enters `images`, which holds raster refs plus their
     // pixel size. It is re-decoded per element; `svgForms` is what stops the
@@ -1149,7 +1195,7 @@ function rasterizeFeImage(
     walk(g, target, INITIAL, false, [...IDENTITY]);
     e.active.delete(id);
   } else {
-    const built = decodeImage(href, e.resolveImage);
+    const built = decodeImage(href, e.resolveImage, e.limits);
     if (built === undefined) return null;
     const { w: iw, h: ih } = imageSize(built);
     if (!(iw > 0) || !(ih > 0)) return null;
@@ -1405,6 +1451,7 @@ function applyTextPaths(
 /** Walk one element. `inDefs` suppresses painting, so defs/symbol contents are
  *  indexed for later `use` but never drawn where they sit. */
 function walk(e: Emitter, n: XmlNode, parent: Paint, inDefs: boolean, ctm: Matrix): void {
+  e.chargeTokens();
   if (NON_RENDERING.has(n.name)) return;
 
   if (!STRUCTURAL.has(n.name) && !SHAPES.has(n.name)) {
@@ -1699,12 +1746,13 @@ export function drawSvg(
   e.imageSink = images;
   e.raster = opts.raster;
   e.resolveImage = opts.resolveImage;
+  e.limits = opts.limits;
   e.filterPx = (opts.deviceScale ?? 1) * (opts.filterScale ?? 2);
   indexIds(root, e.ids);
   if (applyStylesheet(e, root)) e.skipped.add('style');
   walk(e, root, INITIAL, false, [...IDENTITY]);
   return {
-    content: e.out.join('\n'),
+    content: (e.chargeTokens(), e.out.join('\n')),
     resources: buildResources(e),
     skipped: [...e.skipped].sort(),
     rasterized: [...e.rasterized].sort(),

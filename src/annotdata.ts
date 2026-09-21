@@ -19,6 +19,9 @@ export function inlineRefs(doc: Document, o: PdfObject): PdfObject {
       const num = (v as PdfRef).num;
       if (path.has(num)) return null;
       path.add(num);
+      // The path IS the reference depth, so the cycle guard's own set measures
+      // it: a chain of distinct objects is no cycle and was unbounded.
+      doc.loadLimits.enforce('maxNestingDepth', path.size, 'annotation reference chain');
       const out = walk(doc.resolve(v));
       path.delete(num);
       return out;

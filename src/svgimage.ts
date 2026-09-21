@@ -6,6 +6,8 @@ import { buildImageXObject, type BuiltImage } from './imageembed.js';
 import type { SegBBox } from './svgpath.js';
 import { fitBox } from './svgtransform.js';
 import type { Matrix } from './text.js';
+import { rethrowLimit } from './errors.js';
+import type { LoadLimits } from './loadlimits.js';
 
 /** The payload of a `data:` URI, or undefined for anything else — another
  *  scheme, or a URI with no comma. Both base64 and percent-encoded bodies are
@@ -42,11 +44,11 @@ export function dataUriBytes(href: string): Uint8Array | undefined {
  *  page.AddImage and wrong here: one bad icon in a 200-element illustration must
  *  not abort the whole placement. The catch is deliberately broad — the only
  *  distinction a caller can act on is "this image did not render". */
-function tryBuild(bytes: Uint8Array | undefined): BuiltImage | undefined {
+function tryBuild(bytes: Uint8Array | undefined, limits?: LoadLimits): BuiltImage | undefined {
   if (bytes === undefined || bytes.length === 0) return undefined;
   try {
-    return buildImageXObject(bytes);
-  } catch {
+    return buildImageXObject(bytes, undefined, 0, limits);
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
 }
@@ -64,12 +66,12 @@ function tryBuild(bytes: Uint8Array | undefined): BuiltImage | undefined {
  *  it becomes a silently missing image and a vague skipped: ['image']. The broad
  *  catch is for corrupt image BYTES, a different failure with a different cause. */
 export function decodeImage(
-  href: string, resolve?: (href: string) => Uint8Array | undefined,
+  href: string, resolve?: (href: string) => Uint8Array | undefined, limits?: LoadLimits,
 ): BuiltImage | undefined {
-  const built = tryBuild(dataUriBytes(href));
+  const built = tryBuild(dataUriBytes(href), limits);
   if (built !== undefined) return built;
   if (resolve === undefined) return undefined;
-  return tryBuild(resolve(href));
+  return tryBuild(resolve(href), limits);
 }
 
 /** A decoded `<image>` payload: a raster ready to embed, or SVG bytes for the
@@ -93,10 +95,10 @@ function looksLikeXml(bytes: Uint8Array): boolean {
 }
 
 /** One source's bytes as a payload, or undefined when they are neither. */
-function classify(bytes: Uint8Array | undefined): ImagePayload | undefined {
+function classify(bytes: Uint8Array | undefined, limits?: LoadLimits): ImagePayload | undefined {
   if (bytes === undefined || bytes.length === 0) return undefined;
   if (looksLikeXml(bytes)) return { kind: 'svg', bytes };
-  const built = tryBuild(bytes);
+  const built = tryBuild(bytes, limits);
   return built === undefined ? undefined : { kind: 'raster', built };
 }
 
@@ -114,12 +116,12 @@ function classify(bytes: Uint8Array | undefined): ImagePayload | undefined {
  *  what feImage calls: a filter primitive rasterizes its input, so nesting a
  *  vector document there is a separate feature. */
 export function decodePayload(
-  href: string, resolve?: (href: string) => Uint8Array | undefined,
+  href: string, resolve?: (href: string) => Uint8Array | undefined, limits?: LoadLimits,
 ): ImagePayload | undefined {
-  const direct = classify(dataUriBytes(href));
+  const direct = classify(dataUriBytes(href), limits);
   if (direct !== undefined) return direct;
   if (resolve === undefined) return undefined;
-  return classify(resolve(href));
+  return classify(resolve(href), limits);
 }
 
 /** The image's intrinsic pixel size, off the XObject dict the build produced. */

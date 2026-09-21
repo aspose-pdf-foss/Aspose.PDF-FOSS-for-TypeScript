@@ -8,6 +8,7 @@
 
 import { X509Certificate } from 'node:crypto';
 import { parse, readOid, Asn1Node } from './asn1.js';
+import { rethrowLimit } from './errors.js';
 
 export interface ChainOptions {
   /** Trusted root/intermediate certificates (DER). */
@@ -75,7 +76,7 @@ function withinValidity(cert: X509Certificate, at: Date): boolean {
 function issued(certDer: Uint8Array, issuerDer: Uint8Array): boolean {
   if (!bytesEqual(issuerRaw(certDer), subjectRaw(issuerDer))) return false;
   try { return x509(certDer).verify(x509(issuerDer).publicKey); }
-  catch { return false; }
+  catch (caught) { rethrowLimit(caught); return false; }
 }
 
 /** Two certificates identify the same trust anchor (same subject + same key). */

@@ -4,6 +4,7 @@
 
 import { sign as cryptoSign, verify as cryptoVerify, KeyObject, constants } from 'node:crypto';
 import { der, OID } from './asn1.js';
+import { rethrowLimit } from './errors.js';
 
 export type SignatureScheme = 'rsa' | 'rsa-pss' | 'ecdsa' | 'ed25519';
 export type DigestAlgorithm = 'sha256' | 'sha384' | 'sha512';
@@ -52,7 +53,7 @@ export function verifyData(data: Uint8Array, key: KeyObject, signature: Uint8Arr
         { key, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: constants.RSA_PSS_SALTLEN_DIGEST }, signature);
       case 'ed25519': return cryptoVerify(null, data, key, signature);
     }
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return false; // malformed signature bytes
   }
 }

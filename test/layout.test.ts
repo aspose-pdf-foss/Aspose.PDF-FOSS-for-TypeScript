@@ -82,6 +82,35 @@ describe('layoutText vertical fit', () => {
   });
 });
 
+describe('layoutText remainder is the raw tail (pl2h)', () => {
+  // It is cut from the input rather than rebuilt line by line, which is what
+  // this function's own contract says it returns — "preserving spacing and
+  // newlines". The rebuild did neither.
+  it('keeps a blank paragraph that the rebuilt remainder dropped', () => {
+    // An empty paragraph has no unit to hang a separator on, so the rebuild
+    // emitted nothing at all for it AND suppressed the separator after it:
+    // 'aaa\n\n\nbbb' came back as 'bbb', silently merging three paragraphs
+    // into one. Re-placed by the flow engine, the blank lines vanished.
+    const r = layoutText('aaa\n\n\nbbb', CR, SIZE, 60, LEADING, LEADING);
+    expect(texts(r)).toEqual(['aaa']);
+    expect(r.remainder).toBe('\n\nbbb');
+  });
+
+  it('keeps a run of spaces rather than collapsing it', () => {
+    const r = layoutText('aaa  bbb  ccc', CR, SIZE, 30, LEADING, LEADING);
+    expect(texts(r)).toEqual(['aaa']);
+    expect(r.remainder).toBe('bbb  ccc');
+  });
+
+  it('starts at the first unplaced WORD, so the separator before it is gone', () => {
+    // The space between the last placed line and the remainder is consumed by
+    // the break, exactly as the rebuild consumed it — a remainder that opened
+    // with a space would indent the continuation.
+    const r = layoutText('aaa   bbb', CR, SIZE, 30, LEADING, LEADING);
+    expect(r.remainder).toBe('bbb');
+  });
+});
+
 describe('layoutText remainder re-flow', () => {
   it('re-flowing the remainder reconstructs the full set of lines', () => {
     const text = 'one two three four five\nsecond paragraph here';

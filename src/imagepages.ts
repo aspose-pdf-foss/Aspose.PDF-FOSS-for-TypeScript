@@ -30,6 +30,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PageFormat } from './pageformat.js';
 import { buildImageXObject, drawBuiltImage, imageFrameCount } from './imageembed.js';
+import { rethrowLimit } from './errors.js';
 
 export interface AddImagePagesOptions {
   /** Which frames, 0-based. Default every frame. Normalized ascending and
@@ -90,8 +91,8 @@ export function addImagePages(
   for (const frame of wanted) {
     let built;
     try {
-      built = buildImageXObject(data, opts.format, frame);
-    } catch (e) {
+      built = buildImageXObject(data, opts.format, frame, doc.loadLimits);
+    } catch (e) { rethrowLimit(e);
       skipped.push({ frame, reason: e instanceof Error ? e.message : String(e) });
       continue;
     }

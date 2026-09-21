@@ -2,6 +2,7 @@ import { deflateSync, inflateSync } from 'node:zlib';
 import type { Document } from './document.js';
 import { PdfDict, PdfStream, isStream, isName, name } from './types.js';
 import { filterList, IMAGE_CODECS } from './filters.js';
+import { rethrowLimit } from './errors.js';
 
 export interface RecompressResult {
   streams: number;
@@ -48,7 +49,7 @@ function recompressOne(s: PdfStream): PdfStream | undefined {
   let plain: Uint8Array;
   // Deliberately raw inflate, NOT decodeStream: any /DecodeParms predictor must
   // stay applied to these bytes and untouched in the dict.
-  try { plain = new Uint8Array(inflateSync(Buffer.from(s.raw))); } catch { return undefined; }
+  try { plain = new Uint8Array(inflateSync(Buffer.from(s.raw))); } catch (caught) { rethrowLimit(caught); return undefined; }
   const raw = deflateMax(plain);
   if (raw.length >= s.raw.length) return undefined;
   const dict: PdfDict = new Map(s.dict);

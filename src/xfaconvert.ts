@@ -36,7 +36,7 @@ import { buildButtonAP } from './appearance.js';
 import { resolveDA } from './da.js';
 import { encodePdfText } from './metadata.js';
 import { hasSignatureField } from './signature.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { decodeXfaPackets } from './xfapacket.js';
 import { parseXfaTemplate, type XfaField } from './xfatemplate.js';
 import { parseXfaDatasets, bindFieldValue, type XfaValues } from './xfadata.js';
@@ -404,7 +404,7 @@ function applyBare(doc: Document, acro: PdfDict, e: PlanEntry): boolean {
   // allocates, and a fused pass strands orphan nodes on a conflict found deeper.
   try {
     resolvePath(doc, acro, e.name, false);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return false;
   }
   const path = resolvePath(doc, acro, e.name, true);
@@ -472,7 +472,7 @@ function applyPositioned(doc: Document, e: PlanEntry): boolean {
       required: (e.ff & FF_REQUIRED) !== 0,
     }, specFor(e));
     return true;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return false;
   }
 }
@@ -502,7 +502,7 @@ function applyGroup(doc: Document, g: GroupPlan, report: XfaConvertReport): bool
       required: g.required,
     });
     return true;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return false;
   }
 }

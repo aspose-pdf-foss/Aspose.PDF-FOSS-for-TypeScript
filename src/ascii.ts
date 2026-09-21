@@ -64,10 +64,11 @@ export function ascii85Decode(input: Uint8Array): Uint8Array {
 
 /** RunLengthDecode (PackBits): length 0..127 => copy len+1 literals;
  *  129..255 => repeat next byte 257-len times; 128 => EOD. */
-export function runLengthDecode(input: Uint8Array): Uint8Array {
+export function runLengthDecode(input: Uint8Array, maxOut = Infinity): Uint8Array {
   const out: number[] = [];
   let i = 0;
-  while (i < input.length) {
+  // Stops once past `maxOut` (`ibzo.3`); two input bytes expand to 128.
+  while (i < input.length && out.length <= maxOut) {
     const len = input[i++];
     if (len === 128) break;
     if (len < 128) {

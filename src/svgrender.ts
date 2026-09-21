@@ -13,6 +13,7 @@ import {
 import { BlendMode } from './blend.js';
 import { strokeOutlinePolys } from './strokegeom.js';
 import { glyphDisplacement, glyphOrigin } from './font.js';
+import { rethrowLimit } from './errors.js';
 
 export interface SvgOptions {
   /** Which page box defines the viewport. Default 'crop'. */
@@ -426,7 +427,7 @@ export class SvgSink implements RenderSink {
     const cs = csObj !== undefined ? resolveColorSpace(csObj, r, infl) : deviceGray();
     const coords = arrNums(doc, dict.get('Coords'));
     const fnObj = dict.get('Function');
-    const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl) : (x: number[]) => x;
+    const fn = fnObj !== undefined ? parseFunction(fnObj, r, infl, doc.loadLimits) : (x: number[]) => x;
     const stops = this.sampleStops(fn, cs, 8);
 
     // The covering rect is device-space (identity) so its clip lands correctly;
@@ -479,7 +480,7 @@ export function renderPageToSvg(doc: Document, page: Page, opts: SvgOptions = {}
   const sink = new SvgSink(doc);
   try {
     interpret(doc, page, matrix, sink, { annotations: opts.annotations });
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever was emitted before the failure still renders.
   }
   return sink.finish(width, height);

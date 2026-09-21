@@ -91,7 +91,7 @@ export function replaceImage(
 ): void {
   if (data.length === 0)
     throw new UnsupportedFeatureError('ImageInfo.Replace: empty image data');
-  const built = buildImageXObject(data, opts.format, opts.page ?? 0);
+  const built = buildImageXObject(data, opts.format, opts.page ?? 0, doc.loadLimits);
 
   const scopes = imageScopes(doc, page, target);
   if (scopes.length === 0)

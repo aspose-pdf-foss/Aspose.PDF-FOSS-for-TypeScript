@@ -181,8 +181,21 @@ export function scanHtmlTag(s: string, i: number): number {
   }
 }
 
+/** How deep a bare destination's parentheses may nest before it stops being a
+ *  destination at all. cmark's `manual_scan_link_url_2` caps at 32 and returns
+ *  -1 past it; commonmark.js has no cap and is quadratic here, so this is a
+ *  transcription of the reference implementation rather than an invention.
+ *
+ *  It is a COST bound wearing a grammar's clothes (`lqs1`). Uncapped, the scan
+ *  runs to the end of the subject on every close bracket and then throws the
+ *  work away on `depth !== 0` — so `'[a]('.repeat(n)` scanned 200 M characters
+ *  for 40 KB of input, 6.1 s at n = 20,000. No real destination nests past 32;
+ *  one that does is now literal text, which is what cmark already shows. */
+const MAX_DEST_PARENS = 32;
+
 /** A link destination: `<...>` with no unescaped '<', '>' or newline, or a bare
- *  run of non-space, non-control characters in which parentheses balance. */
+ *  run of non-space, non-control characters in which parentheses balance no
+ *  more than `MAX_DEST_PARENS` deep. */
 export function scanLinkDestination(s: string, i: number): { dest: string; end: number } | undefined {
   if (s[i] === '<') {
     let j = i + 1;
@@ -205,7 +218,7 @@ export function scanLinkDestination(s: string, i: number): { dest: string; end: 
     const code = s.charCodeAt(j);
     if (code < 0x20 || code === 0x7f || c === ' ') break;
     if (c === '\\' && j + 1 < s.length && ASCII_PUNCT_SET.has(s[j + 1])) { raw += c + s[j + 1]; j += 2; continue; }
-    if (c === '(') depth++;
+    if (c === '(') { if (++depth > MAX_DEST_PARENS) return undefined; }
     else if (c === ')') { if (depth === 0) break; depth--; }
     raw += c;
     j++;

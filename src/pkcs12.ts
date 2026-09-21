@@ -10,7 +10,7 @@ import {
   createHash, createHmac,
 } from 'node:crypto';
 import { parse, readInteger, readOid, Asn1Node } from './asn1.js';
-import { InvalidPasswordError, UnsupportedFeatureError, PdfParseError } from './errors.js';
+import { InvalidPasswordError, UnsupportedFeatureError, PdfParseError, rethrowLimit } from './errors.js';
 
 export interface Pkcs12Result {
   /** The recovered private key. */
@@ -171,12 +171,12 @@ function runDecipher(cipher: string, key: Buffer, iv: Buffer, ciphertext: Buffer
   let d;
   try {
     d = createDecipheriv(cipher, key, iv);
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     throw new UnsupportedFeatureError(`PKCS#12: cipher ${cipher} unavailable in this runtime`);
   }
   try {
     return Buffer.concat([d.update(ciphertext), d.final()]);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     // Bad padding ⇒ wrong password (on files without a MAC to catch it earlier).
     throw new InvalidPasswordError('PKCS#12: wrong passphrase');
   }
@@ -208,7 +208,7 @@ export function parsePkcs12(data: Uint8Array, passphrase = ''): Pkcs12Result {
   let pfx: Asn1Node;
   try {
     pfx = parse(data);
-  } catch (e) {
+  } catch (e) { rethrowLimit(e);
     throw new PdfParseError(`PKCS#12: not valid DER (${(e as Error).message})`);
   }
   if (pfx.tag !== 0x10 || pfx.children.length < 2)
@@ -278,9 +278,9 @@ function orderLeafFirst(certs: Uint8Array[], privateKey: KeyObject): void {
   let pub: Buffer;
   try {
     pub = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }) as Buffer;
-  } catch { return; }
+  } catch (caught) { rethrowLimit(caught); return; }
   const idx = certs.findIndex((c) => {
-    try { return certSpki(c).equals(pub); } catch { return false; }
+    try { return certSpki(c).equals(pub); } catch (caught) { rethrowLimit(caught); return false; }
   });
   if (idx > 0) { const [leaf] = certs.splice(idx, 1); certs.unshift(leaf); }
 }

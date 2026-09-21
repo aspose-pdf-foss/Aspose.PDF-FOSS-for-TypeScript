@@ -5,7 +5,7 @@ import { resolveColorSpace, deviceGray, Rgb } from './colorspace.js';
 import { decodeImageStream, filterName, numOf } from './imagedecode.js';
 import { encodeJpeg } from './jpegencode.js';
 import { createHash } from 'node:crypto';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { encodePng, pngDataUri } from './pngencode.js';
 import { decodeImageRgba } from './imagergba.js';
 
@@ -226,7 +226,7 @@ function encodeFaithfully(doc: Document, stream: PdfStream, fill: Rgb): EncodedI
       return { bytes: maskPng(samples, width, height, fill), mediaType: 'image/png' };
     const png = samplesToPng(doc, dict, samples, width, height);
     return png ? { bytes: png, mediaType: 'image/png' } : undefined;
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   }
 }

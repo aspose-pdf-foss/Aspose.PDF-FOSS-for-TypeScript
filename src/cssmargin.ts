@@ -83,35 +83,54 @@ function isEmpty(r: ResolvedBox): boolean {
   return c.children.length === 0;
 }
 
+/** The last in-flow child, without the copy `[...kids].reverse()` makes. */
+function lastCollapsing(kids: ResolvedBox[]): ResolvedBox | undefined {
+  for (let i = kids.length - 1; i >= 0; i -= 1) {
+    if (collapses(kids[i])) return kids[i];
+  }
+  return undefined;
+}
+
+/** The margin escaping a box's TOP edge, after rules 2 and 4 have run down
+ *  its first-child chain.
+ *
+ *  Its own function rather than half of `outerMargins` because the two edges
+ *  descend SEPARATE chains — rule 2 reaches only first children and rule 3
+ *  only last ones — and computing both at every level costs 2^depth.
+ *  Measured before `bjov` split them: a 20-deep chain of divs took 2.6 s to
+ *  build and a 25-deep one 39 s, on ordinary generated markup. Each half now
+ *  walks one chain, so a box's escaped margins cost O(depth) rather than
+ *  O(2^depth) — and in a SINGLE-CHILD chain, where the first and last child
+ *  are the same box, the old code made two calls per level for one answer. */
+function escapedTop(r: ResolvedBox): number {
+  if (!collapses(r)) return r.marginTop;
+  // Rule 4: a wholly empty block's own margins collapse together, and the
+  // result escapes both edges as one margin.
+  if (isEmpty(r)) return combineMargins(r.marginTop, r.marginBottom);
+  // A closed top edge stops the child's margin, so its subtree is never
+  // resolved — which is what makes the guard cheaper here than at the join.
+  if (!openTop(r)) return r.marginTop;
+  // Rule 2: the first in-flow child's top margin joins ours.
+  const first = childrenOf(r).find(collapses);
+  return first === undefined ? r.marginTop : combineMargins(r.marginTop, escapedTop(first));
+}
+
+/** The margin escaping a box's BOTTOM edge, after rules 3 and 4 have run down
+ *  its last-child chain. The mirror of `escapedTop`; see its note. */
+function escapedBottom(r: ResolvedBox): number {
+  if (!collapses(r)) return r.marginBottom;
+  if (isEmpty(r)) return combineMargins(r.marginTop, r.marginBottom);
+  // A stated height gives the box a bottom edge of its own to stop at.
+  if (!openBottom(r)) return r.marginBottom;
+  // Rule 3: the last in-flow child's bottom margin joins ours.
+  const last = lastCollapsing(childrenOf(r));
+  return last === undefined ? r.marginBottom : combineMargins(r.marginBottom, escapedBottom(last));
+}
+
 /** The margins that escape a box's top and bottom edges, after rules 2, 3 and
  *  4 have run over its own subtree. */
 export function outerMargins(r: ResolvedBox): { top: number; bottom: number } {
-  if (!collapses(r)) return { top: r.marginTop, bottom: r.marginBottom };
-
-  // Rule 4: a wholly empty block's own margins collapse together, and the
-  // result escapes both edges as one margin.
-  if (isEmpty(r)) {
-    const m = combineMargins(r.marginTop, r.marginBottom);
-    return { top: m, bottom: m };
-  }
-
-  const kids = childrenOf(r);
-  let top = r.marginTop;
-  let bottom = r.marginBottom;
-
-  // Rule 2: the first in-flow child's top margin joins ours, if our top edge
-  // is open.
-  const first = kids.find(collapses);
-  if (first !== undefined && openTop(r)) {
-    top = combineMargins(top, outerMargins(first).top);
-  }
-  // Rule 3: the last in-flow child's bottom margin joins ours, if our bottom
-  // edge is open — which a stated height closes.
-  const last = [...kids].reverse().find(collapses);
-  if (last !== undefined && openBottom(r)) {
-    bottom = combineMargins(bottom, outerMargins(last).bottom);
-  }
-  return { top, bottom };
+  return { top: escapedTop(r), bottom: escapedBottom(r) };
 }
 
 /** The gap BEFORE each box in a sibling list, after collapsing. The first

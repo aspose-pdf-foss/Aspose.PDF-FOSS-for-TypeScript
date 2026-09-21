@@ -2,6 +2,7 @@ import { brotliDecompressSync } from 'node:zlib';
 import { CidCMap, CMapParts } from './cidcmap.js';
 import { decodeCMapGeometry } from './cmapcodec.js';
 import { CMAP_DATA, CMAP_META, CMAP_ORDERINGS } from './cmapdata.js';
+import { rethrowLimit } from './errors.js';
 
 /**
  * The predefined Adobe CMaps, bundled (cmapdata.ts) and served on demand.
@@ -103,7 +104,7 @@ function load(name: string, pending: Set<string>): CidCMap | undefined {
       supplement: info.supplement,
     };
     cmap = new CidCMap(parts, parent);
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     cmap = null;
   }
 

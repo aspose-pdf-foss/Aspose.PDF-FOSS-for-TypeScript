@@ -84,10 +84,19 @@ const TEXT_RUN = /[^\n`[\]\\!<&*_]+/y;
 /** `~` is a delimiter only under GFM, so the run regex forks rather than
  *  breaking every ordinary text run on a tilde. */
 const TEXT_RUN_GFM = /[^\n`[\]\\!<&*_~]+/y;
-const AUTOLINK = /^<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/;
-const EMAIL_AUTOLINK = /^<([a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/;
+// Sticky rather than `^`-anchored against `subject.slice(pos)`: the slice is
+// what `match()` below already avoids, and it allocates one string object per
+// call at every close bracket and every '<'. Measured on `'[a](b) '.repeat(n)`
+// before the change: 16.8 BILLION characters handed to `slice` for 280 KB of
+// input. V8 answers most of those in O(1) with a sliced-string view, so the
+// cost is allocation and GC rather than the copy that figure suggests — do not
+// read it as the quadratic `lqs1`'s other two sites were (`lqs1`).
+const AUTOLINK = /<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^<>\x00-\x20]*>/y;
+const EMAIL_AUTOLINK = /<([a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)>/y;
 const INITIAL_SPACE = /[ \t]*/y;
-const LINK_LABEL = /^\[(?:[^\\[\]]|\\.){0,1000}\]/;
+const LINK_LABEL = /\[(?:[^\\[\]]|\\.){0,1000}\]/y;
+/** Spaces and tabs, then at most one newline, then spaces and tabs. */
+const SPNL = /[ \t]*(?:\n[ \t]*)?/y;
 
 interface Bracket {
   node: LNode;
@@ -271,14 +280,16 @@ class InlineParser {
 
   /** Spaces and tabs, then at most one newline, then spaces and tabs. */
   spnl(): void {
-    const m = /^[ \t]*(?:\n[ \t]*)?/.exec(this.subject.slice(this.pos));
-    if (m !== null) this.pos += m[0].length;
+    SPNL.lastIndex = this.pos;
+    const m = SPNL.exec(this.subject);
+    if (m !== null && m.index === this.pos) this.pos = SPNL.lastIndex;
   }
 
   /** A bracketed label at `pos`; its length, or 0. */
   parseLinkLabel(): number {
-    const m = LINK_LABEL.exec(this.subject.slice(this.pos));
-    if (m === null || m[0].length > 1001) return 0;
+    LINK_LABEL.lastIndex = this.pos;
+    const m = LINK_LABEL.exec(this.subject);
+    if (m === null || m.index !== this.pos || m[0].length > 1001) return 0;
     this.pos += m[0].length;
     return m[0].length;
   }
@@ -542,9 +553,9 @@ class InlineParser {
   }
 
   parseAutolink(): boolean {
-    const rest = this.subject.slice(this.pos);
-    const email = EMAIL_AUTOLINK.exec(rest);
-    if (email !== null) {
+    EMAIL_AUTOLINK.lastIndex = this.pos;
+    const email = EMAIL_AUTOLINK.exec(this.subject);
+    if (email !== null && email.index === this.pos) {
       const addr = email[0].slice(1, -1);
       this.list.push({
         type: 'link', destination: `mailto:${addr}`, title: '',
@@ -553,8 +564,9 @@ class InlineParser {
       this.pos += email[0].length;
       return true;
     }
-    const uri = AUTOLINK.exec(rest);
-    if (uri !== null) {
+    AUTOLINK.lastIndex = this.pos;
+    const uri = AUTOLINK.exec(this.subject);
+    if (uri !== null && uri.index === this.pos) {
       const dest = uri[0].slice(1, -1);
       this.list.push({
         type: 'link', destination: dest, title: '',

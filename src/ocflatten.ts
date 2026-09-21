@@ -44,7 +44,8 @@ import { ContentOp, parseContentStream, serializeContentStream } from './content
 import { inflateStream } from './flate.js';
 import { ocVisibilityFor, ocVisible } from './ocvisible.js';
 import { hasSignatureField } from './signature.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
+import { budgetFor } from './decodebudget.js';
 
 /** What {@link Document.FlattenLayers} did. */
 export interface FlattenLayersReport {
@@ -409,8 +410,8 @@ export function flattenLayers(doc: Document): FlattenLayersReport {
       };
       let parsed: ContentOp[][];
       try {
-        parsed = group.streams.map((s) => parseContentStream(inflateStream(s)));
-      } catch {
+        parsed = group.streams.map((s) => parseContentStream(inflateStream(s), budgetFor(s).limits));
+      } catch (caught) { rethrowLimit(caught);
         continue;   // a stream we cannot read is one we must not rewrite
       }
       const r = flattenOcOps(parsed, {

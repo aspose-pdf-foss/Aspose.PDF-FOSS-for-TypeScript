@@ -136,6 +136,27 @@ export function createDoctype(name: string, publicId: string, systemId: string):
   return { kind: 'doctype', name, publicId, systemId, parent: null };
 }
 
+/** The deepest ELEMENT nesting under `root` — 1 for an element directly under
+ *  it — found WITHOUT recursion (`ibzo.11`).
+ *
+ *  **Invariant:** iterative, because it exists to be asked before every walk
+ *  that recurses per element; a recursive depth count overflows on exactly the
+ *  tree it is measuring. It does not enter a template's `content`, which the
+ *  cascade and the box builder do not walk either. */
+export function elementDepth(root: HtmlParent): number {
+  let max = 0;
+  const stack: [HtmlParent, number][] = [[root, 0]];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop()!;
+    for (const c of node.children) {
+      if (c.kind !== 'element') continue;
+      if (depth + 1 > max) max = depth + 1;
+      stack.push([c, depth + 1]);
+    }
+  }
+  return max;
+}
+
 /** Remove a node from its parent, if it has one. An unparented node is a
  *  no-op rather than an error: the adoption agency reaches this with nodes it
  *  has already detached. */

@@ -3,8 +3,9 @@ import {
   PdfObject, PdfDict, PdfRef, isDict, isName, isArray, isStream, isRef,
 } from './types.js';
 import { inflateStream } from './flate.js';
-import { parseContentStream } from './content.js';
+import { parseContentStream, type ContentTokenBudget } from './content.js';
 import type { Page } from './page.js';
+import { rethrowLimit } from './errors.js';
 
 /** Per-run context shared (read-only) across the rules of any validator.
  *  PDF/A and PDF/X each extend this with their conformance target. */
@@ -60,10 +61,11 @@ export function enumerateFonts(ctx: Ctx): { ref?: PdfRef; dict: PdfDict }[] {
     const out: { ref?: PdfRef; dict: PdfDict }[] = [];
     const seen = new Set<PdfDict>();
     const seenRes = new Set<PdfDict>();
-    const visitRes = (resObj: PdfObject | undefined): void => {
+    const visitRes = (resObj: PdfObject | undefined, depth: number): void => {
       const res = ctx.R(resObj);
       if (!isDict(res) || seenRes.has(res)) return;
       seenRes.add(res);
+      ctx.doc.loadLimits.enforce('maxNestingDepth', depth, 'Form XObject resources');
       const fonts = ctx.R(res.get('Font'));
       if (isDict(fonts)) {
         for (const v of fonts.values()) {
@@ -75,11 +77,11 @@ export function enumerateFonts(ctx: Ctx): { ref?: PdfRef; dict: PdfDict }[] {
       if (isDict(xobjs)) {
         for (const v of xobjs.values()) {
           const x = ctx.R(v);
-          if (isStream(x)) visitRes(x.dict.get('Resources'));
+          if (isStream(x)) visitRes(x.dict.get('Resources'), depth + 1);
         }
       }
     };
-    for (const page of ctx.doc.Pages) visitRes(page.Resources);
+    for (const page of ctx.doc.Pages) visitRes(page.Resources, 1);
     return out;
   });
 }
@@ -205,12 +207,15 @@ export function pageScans(ctx: Ctx): PageScan[] {
       page, colorSpaces: new Set<string>(), inlineImageFilters: [], renderingIntents: [],
     };
     const seen = new Set<PdfDict>();
+    // One `maxContentTokens` count for the page and every form it reaches
+    // (`ibzo.9`), not one per stream.
+    const tokens: ContentTokenBudget = { tokens: 0 };
     const walk = (resObj: PdfObject | undefined, contentBytes: Uint8Array, depth: number): void => {
       if (depth > 8) return;
       const res = ctx.R(resObj);
       const resDict = isDict(res) ? res : undefined;
       let ops;
-      try { ops = parseContentStream(contentBytes); } catch { return; }
+      try { ops = parseContentStream(contentBytes, ctx.doc.loadLimits, tokens); } catch (caught) { rethrowLimit(caught); return; }
       for (const op of ops) {
         const deviceOp = DEVICE_COLOR_OPS[op.operator];
         if (deviceOp !== undefined) scan.colorSpaces.add(deviceOp);
@@ -251,7 +256,7 @@ export function pageScans(ctx: Ctx): PageScan[] {
             }
             if (isStream(xo) && nameOf(ctx, xo.dict, 'Subtype') === 'Form' && !seen.has(xo.dict)) {
               seen.add(xo.dict);
-              try { walk(xo.dict.get('Resources'), inflateStream(xo), depth + 1); } catch { /* skip */ }
+              try { walk(xo.dict.get('Resources'), inflateStream(xo), depth + 1); } catch (caught) { rethrowLimit(caught); /* skip */ }
             }
           }
         }
@@ -267,7 +272,7 @@ export function pageScans(ctx: Ctx): PageScan[] {
 /** Concatenate a page's content stream(s) into one decoded buffer. */
 function concatContents(ctx: Ctx, contents: PdfObject): Uint8Array {
   const parts: Uint8Array[] = [];
-  const push = (o: PdfObject): void => { if (isStream(o)) { try { parts.push(inflateStream(o)); } catch { /* skip */ } } };
+  const push = (o: PdfObject): void => { if (isStream(o)) { try { parts.push(inflateStream(o)); } catch (caught) { rethrowLimit(caught); /* skip */ } } };
   if (isStream(contents)) push(contents);
   else if (isArray(contents)) for (const e of contents) { const s = ctx.R(e); if (isStream(s)) { push(s); parts.push(new TextEncoder().encode('\n')); } }
   const total = parts.reduce((n, p) => n + p.length, 0);

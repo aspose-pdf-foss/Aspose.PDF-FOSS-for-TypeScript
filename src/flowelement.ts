@@ -92,14 +92,21 @@ export interface FlowElement {
   shrinkToFit?(width: number, availHeight: number): FlowElement | undefined;
   /** The engine had to compromise to place this element at all (`zch2.16`):
    *  `'scaled'` when it was shrunk to fit, `'overflow'` when it was drawn past
-   *  the column bottom.
+   *  the column bottom, `'squeezed'` when a decorator around it could not
+   *  afford its own indents and scaled them down (`rfba`).
+   *
+   *  `'squeezed'` is fired by the DECORATOR, from `place()` and never from
+   *  `measure()` — the engine measures speculatively, many times per element.
+   *  A decorator forwards `onCompromise` to what it wraps, so every level of a
+   *  deep nest fires the same callback and the consumer's one-shot turns them
+   *  into one record.
    *
    *  NOT readonly, and that is deliberate: `cssflow.ts` assigns it after
    *  construction, because the builders are shared with Markdown and
    *  hand-built flows and must not grow an HTML-shaped option. The engine
    *  fires it on the ORIGINAL element before swapping in a replacement, so a
    *  replacement need not carry it. */
-  onCompromise?: (how: 'scaled' | 'overflow') => void;
+  onCompromise?: (how: Compromise) => void;
 }
 
 /** What the flow engine needs of a floated thing: how wide a band it excludes,
@@ -169,4 +176,63 @@ export function normalizeSpacing(
     spaceBefore: nonNegative(o.spaceBefore, 0, 'spaceBefore'),
     spaceAfter: nonNegative(o.spaceAfter, 0, 'spaceAfter'),
   };
+}
+
+/** How the engine compromised to place an element — see
+ *  {@link FlowElement.onCompromise}. */
+export type Compromise = 'scaled' | 'overflow' | 'squeezed';
+
+/** The narrowest content column a decorator may leave behind (points).
+ *
+ *  About one em of body text at the 11pt default: narrower than this and a
+ *  column cannot carry a glyph, so there is nothing to be gained by indenting
+ *  further. See {@link insetScale}. */
+export const MIN_CONTENT_WIDTH = 12;
+
+/** How much of a `total` horizontal inset a `width` can afford, as a factor to
+ *  scale every horizontal component by: 1 when there is room, 0 when there is
+ *  none (`e1bp`).
+ *
+ *  **Invariant, and it is the whole of the fix:** a decorator NEVER narrows a
+ *  positive width to less than {@link MIN_CONTENT_WIDTH}, and never shifts its
+ *  content right without narrowing it by the same amount. Every indent in the
+ *  flow layer — a quote, a list item, a list item's further blocks, a code
+ *  block's padding, a CSS box's margins and insets — used to subtract with no
+ *  floor, and deep nesting then drove the width to zero. That failed TWO ways
+ *  from one cause: Markdown threw `rect width and height must be positive`
+ *  from inside `stamp.ts` (quote depth 26, list depth 49 on a default A4
+ *  flow), and HTML, whose `BoxElement` reads a non-positive width as "nothing
+ *  to draw", rendered a BLANK PAGE from depth 8 and said nothing.
+ *
+ *  **Invariant:** every horizontal component scales by the SAME factor, which
+ *  is why this answers with a factor rather than a width. Clamp the width
+ *  alone and the content keeps sliding right — off the column, and for a CSS
+ *  box off the page — which is the browser's answer (a content box clamps at
+ *  zero and its text overflows) and the wrong one here, where ink outside the
+ *  region is ink nobody sees. `zch2.16` settled the same question in the
+ *  vertical direction: content that cannot fit renders rather than refusing
+ *  the document.
+ *
+ *  Note the scope of that, since the obvious reading overstates it: what stays
+ *  inside the column is the BOX. A word wider than the floor still draws past
+ *  its right edge, exactly as an over-wide word does in any column — a floored
+ *  box only makes it likelier.
+ *
+ *  Note what the caller is owed: with `width > 0` the result leaves
+ *  `width - total * k >= min(width, MIN_CONTENT_WIDTH) > 0`, so a chain of
+ *  decorators converges on a narrow column instead of reaching zero. At or
+ *  below the floor the factor is 0 — an already-narrow box is never made
+ *  narrower, which is what makes that bound hold at every depth rather than
+ *  only at the first.
+ *
+ *  Note, measured, and it covers NOTHING: the first line is a REDUNDANT
+ *  DEFENCE and provably cannot be otherwise. `room` is non-negative, so any
+ *  `total <= 0` — a zero inset, or the negative margin CSS allows — already
+ *  satisfies `total <= room` and takes the same branch, and the division is
+ *  never reached with a zero divisor. It stays as the honest spelling of "no
+ *  inset, no scaling"; do not cite the suite as covering it. @internal */
+export function insetScale(width: number, total: number): number {
+  if (!(total > 0)) return 1;
+  const room = Math.max(0, width - MIN_CONTENT_WIDTH);
+  return total <= room ? 1 : room / total;
 }

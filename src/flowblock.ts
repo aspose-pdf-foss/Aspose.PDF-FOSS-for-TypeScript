@@ -7,7 +7,7 @@
  *  builders back closes no cycle. */
 
 import {
-  nonNegative, normalizeClear, normalizeSpacing,
+  insetScale, nonNegative, normalizeClear, normalizeSpacing, type Compromise,
   type FlowClear, type FlowElement, type MeasureContext, type PlaceContext, type PlaceResult,
 } from './flowelement.js';
 import type { StructElement } from './struct.js';
@@ -166,6 +166,9 @@ const CODE_BACKGROUND: [number, number, number] = [0.96, 0.96, 0.96];
  *  fill. An ordinary text element underneath, so it inherits pagination,
  *  measurement and tagging rather than growing a second layout path. @internal */
 class CodeBlockElement implements FlowElement {
+  /** See {@link FlowElement.onCompromise}. */
+  onCompromise?: (how: Compromise) => void;
+
   constructor(
     /** Already through {@link preformat}. */
     private readonly text: string,
@@ -180,9 +183,18 @@ class CodeBlockElement implements FlowElement {
     private code?: StructElement,
   ) {}
 
-  /** The text box inside the padding, for a given region. */
-  private inner(width: number, availHeight: number): { w: number; h: number } {
-    return { w: width - 2 * this.padding, h: availHeight - 2 * this.padding };
+  /** The text box inside the padding, for a given region, plus the HORIZONTAL
+   *  padding it actually got.
+   *
+   *  That padding is scaled down for a region too narrow to carry it (`e1bp`) —
+   *  a code block inside quotes that have exhausted the column is the one
+   *  element two rules can squeeze at once, and unscaled it took the last of
+   *  the width and drew nothing. The VERTICAL padding is untouched: a short
+   *  column is not a narrow one, and the engine already answers it by moving
+   *  the block to the next column. */
+  private inner(width: number, availHeight: number): { w: number; h: number; padX: number } {
+    const padX = this.padding * insetScale(width, 2 * this.padding);
+    return { w: width - 2 * padX, h: availHeight - 2 * this.padding, padX };
   }
 
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
@@ -196,7 +208,7 @@ class CodeBlockElement implements FlowElement {
   }
 
   place(ctx: PlaceContext): PlaceResult {
-    const { w, h } = this.inner(ctx.width, ctx.availHeight);
+    const { w, h, padX } = this.inner(ctx.width, ctx.availHeight);
     if (w <= 0 || h <= 0) return { usedHeight: 0, remainder: this, drew: false };
     // Measure first so the fill can be painted at the right height BEFORE the
     // text, which is what puts the glyphs on top of it. measureTextBlock runs
@@ -205,10 +217,13 @@ class CodeBlockElement implements FlowElement {
     if (probe.usedHeight === 0)
       return { usedHeight: 0, remainder: probe.remainder === null ? null : this, drew: false };
     const used = probe.usedHeight + 2 * this.padding;
+    // (kk3q) Its OWN horizontal padding scaled down; reported only now that
+    // the block is known to draw.
+    if (padX < this.padding) this.onCompromise?.('squeezed');
     if (this.background)
       paintDecoration(ctx, fillRect(ctx.x, ctx.top - used, ctx.width, used, this.background));
     const rect: [number, number, number, number] =
-      [ctx.x + this.padding, ctx.top - used + this.padding, w, probe.usedHeight];
+      [ctx.x + padX, ctx.top - used + this.padding, w, probe.usedHeight];
     // Created on the first draw, never at construction: a code block that draws
     // nothing must leave no orphan element behind — the rule TextElement and
     // TableTagger both follow. /P is block level and /Code is inline level
@@ -333,10 +348,32 @@ class QuotedElement implements FlowElement {
   get keepWithNextEligible(): boolean | undefined { return this.inner.keepWithNextEligible; }
   get keepWithNext(): boolean | undefined { return this.inner.keepWithNext; }
 
+  /** Forwarded to the element inside, as `cssframe.ts`'s `BoxElement` does
+   *  (`kk3q`): a nest of decorators is then ONE callback, owned by the element
+   *  that actually draws, so the `'squeezed'` every scaled level fires is one
+   *  record rather than one per level. */
+  get onCompromise(): ((how: Compromise) => void) | undefined {
+    return this.inner.onCompromise;
+  }
+
+  set onCompromise(fn: ((how: Compromise) => void) | undefined) {
+    this.inner.onCompromise = fn;
+  }
+
+  /** The indent this width can afford (`e1bp`). Read through `insetScale` and
+   *  never as `this.indent`, or a quote nested past the column width drives the
+   *  content to zero and `stamp.ts` refuses the rect. ONE definition, because
+   *  `measure` and `place` disagreeing about an indent is how a quote comes to
+   *  be measured one way and painted another. */
+  private indentFor(width: number): number {
+    return this.indent * insetScale(width, this.indent);
+  }
+
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
     // Every element in this repo implements measure; the fallback is unreachable
     // and exists only because the protocol declares it optional.
-    return this.inner.measure?.({ width: ctx.width - this.indent, availHeight: ctx.availHeight })
+    const indent = this.indentFor(ctx.width);
+    return this.inner.measure?.({ width: ctx.width - indent, availHeight: ctx.availHeight })
       ?? { usedHeight: 0, fits: false };
   }
 
@@ -345,13 +382,16 @@ class QuotedElement implements FlowElement {
     // leaves no orphan element.
     if (this.st.elem === undefined && ctx.structParent !== undefined)
       this.st.elem = ctx.structParent.Append('BlockQuote');
+    const indent = this.indentFor(ctx.width);
     const res = this.inner.place({
       ...ctx,
       structParent: this.st.elem ?? ctx.structParent,
-      x: ctx.x + this.indent,
-      width: ctx.width - this.indent,
+      x: ctx.x + indent,
+      width: ctx.width - indent,
     });
     if (res.drew && this.bar) this.paintBar(ctx, res.usedHeight, res.remainder !== null);
+    // (kk3q) Reported once something drew, never from `measure`.
+    if (res.drew && indent < this.indent) this.onCompromise?.('squeezed');
     return {
       usedHeight: res.usedHeight,
       drew: res.drew,

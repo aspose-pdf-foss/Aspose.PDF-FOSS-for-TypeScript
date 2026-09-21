@@ -4,6 +4,7 @@ import { readRichTextValue } from './formfield.js';
 import { applyAnnots, collectAnnots, type AnnotData } from './annotdata.js';
 import { isArray, isDict, isString } from './types.js';
 import { encodePdfText } from './metadata.js';
+import { rethrowLimit } from './errors.js';
 
 /** One field's data, format-neutral. Values are always strings — XFDF has no
  *  boolean type, so a checkbox travels as its appearance-state name. */
@@ -178,7 +179,7 @@ export function applyFormData(
       }
       try {
         field.Value = typedValue(field.Type, e.values);
-      } catch (err) {
+      } catch (err) { rethrowLimit(err);
         report.skipped.push({ name: e.name, reason: (err as Error).message });
         continue;
       }

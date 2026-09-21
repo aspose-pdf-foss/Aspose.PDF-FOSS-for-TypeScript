@@ -57,10 +57,13 @@ export class Form {
     if (!isArray(fields)) return;
 
     const seen = new Set<PdfDict>();
-    const walk = (node: PdfObject, path: string, ft: string | undefined, ff: number, v: PdfObject): void => {
+    const walk = (
+      node: PdfObject, path: string, ft: string | undefined, ff: number, v: PdfObject, depth: number,
+    ): void => {
       const d = doc.resolve(node);
       if (!isDict(d) || seen.has(d)) return;
       seen.add(d);
+      doc.loadLimits.enforce('maxNestingDepth', depth, 'form field tree');
       const t = doc.resolve(d.get('T'));
       const part = isString(t) ? decodePdfText(t.bytes) : '';
       const full = part === '' ? path : path === '' ? part : `${path}.${part}`;
@@ -78,14 +81,14 @@ export class Form {
           const kd = doc.resolve(k);
           if (isDict(kd) && kd.has('T')) {
             hasFieldKids = true;
-            walk(k, full, ftHere, ffHere, vHere);
+            walk(k, full, ftHere, ffHere, vHere, depth + 1);
           }
         }
       }
       if (!hasFieldKids)
         this.fields.push(wrapField(doc, acro, d, part, full, classify(ftHere, ffHere), ffHere, vHere));
     };
-    for (const f of fields) walk(f, '', undefined, 0, null);
+    for (const f of fields) walk(f, '', undefined, 0, null, 1);
   }
 
   /** The field whose FullName matches exactly, or undefined. */

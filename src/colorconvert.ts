@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import {
   PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isRef, isStream, isString, name,
 } from './types.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { hasSignatureField } from './signature.js';
 import { parseContentStream, serializeContentStream } from './content.js';
 import { inflateStream } from './flate.js';
@@ -16,6 +16,7 @@ import { convertImageSpace } from './colorimage.js';
 import { repointSpotSpace, spotSpaceArray } from './colorsep.js';
 import { convertShadingSpace } from './colorshading.js';
 import { ImageInfo } from './image.js';
+import { budgetFor } from './decodebudget.js';
 
 /**
  * Document-wide colour conversion.
@@ -156,7 +157,7 @@ export interface ColorSkipped {
    *
    * Together with `objNum` this is exact: a stream may draw several inline
    * images, and the stream alone cannot say which one was left in colour.
-   * Resolve it with `parseContentStream(inflateStream(obj))[opIndex]`.
+   * Resolve it with `parseContentStream(inflateStream(obj), budgetFor(obj).limits)[opIndex]`.
    */
   opIndex?: number;
   reason: string;
@@ -418,8 +419,8 @@ function convertContent(
   for (const scope of collectScopes(doc)) {
     let ops;
     try {
-      ops = parseContentStream(inflateStream(scope.stream));
-    } catch (e) {
+      ops = parseContentStream(inflateStream(scope.stream), budgetFor(scope.stream).limits);
+    } catch (e) { rethrowLimit(e);
       report.skipped.push({
         objNum: scope.objNum, what: 'content',
         reason: `content stream would not parse: ${(e as Error).message}`,
@@ -644,7 +645,7 @@ function greyDA(
   const da = doc.resolve(holder.get('DA'));
   if (!isString(da)) return false;
   let ops;
-  try { ops = parseContentStream(da.bytes); } catch { return false; }
+  try { ops = parseContentStream(da.bytes); } catch (caught) { rethrowLimit(caught); return false; }
   const r = colorOps(ops, () => undefined, to, toCmyk);
   if (r.changed === 0) return false;
   // serializeContentStream ends each operator with a newline; a /DA is a

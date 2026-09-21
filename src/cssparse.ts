@@ -18,6 +18,7 @@
 
 import { tokenize } from './csstoken.js';
 import type { CssToken } from './csstoken.js';
+import { LoadLimits } from './loadlimits.js';
 
 export type CssValue =
   | CssToken
@@ -65,9 +66,20 @@ function isWs(t: CssToken | undefined): boolean {
 class Cursor {
   private readonly t: CssToken[];
   private i = 0;
+  /** Open blocks and functions (`ibzo.11`). `consumeBlock` and
+   *  `consumeFunction` recurse, so `(((((…` overflowed the stack. */
+  private depth = 0;
 
-  constructor(tokens: CssToken[]) {
+  constructor(tokens: CssToken[], private readonly limits: LoadLimits = LoadLimits.defaults) {
     this.t = tokens;
+  }
+
+  /** Run `body` one block or function deeper, against `maxNestingDepth`.
+   *  The one throw this parser makes, and it is a BOUND rather than damage:
+   *  damage is still a value, as it always was. */
+  nested<T>(body: () => T): T {
+    this.limits.enforce('maxNestingDepth', ++this.depth, 'CSS block');
+    try { return body(); } finally { this.depth--; }
   }
 
   peek(): CssToken | undefined {
@@ -94,8 +106,8 @@ class Cursor {
  *  pure string -> token[] function with no recursion. */
 function consumeComponentValue(c: Cursor): CssValue {
   const t = c.next() as CssToken;
-  if (t.kind === 'open') return consumeBlock(c, t.open);
-  if (t.kind === 'function') return consumeFunction(c, t.name);
+  if (t.kind === 'open') return c.nested(() => consumeBlock(c, t.open));
+  if (t.kind === 'function') return c.nested(() => consumeFunction(c, t.name));
   if (t.kind === 'close') return err(t.close);
   return t;
 }
@@ -227,8 +239,8 @@ function consumeRuleList(c: Cursor, topLevel: boolean): Rule[] {
 
 // ---- entry points ---------------------------------------------------------
 
-export function parseComponentValueList(css: string): CssValue[] {
-  const c = new Cursor(tokenize(css));
+export function parseComponentValueList(css: string, limits?: LoadLimits): CssValue[] {
+  const c = new Cursor(tokenize(css), limits);
   const out: CssValue[] = [];
   while (!c.done()) out.push(consumeComponentValue(c));
   return out;
@@ -272,8 +284,8 @@ export function parseRuleList(css: string): Rule[] {
   return consumeRuleList(new Cursor(tokenize(css)), false);
 }
 
-export function parseStylesheet(css: string): Rule[] {
-  return consumeRuleList(new Cursor(tokenize(css)), true);
+export function parseStylesheet(css: string, limits?: LoadLimits): Rule[] {
+  return consumeRuleList(new Cursor(tokenize(css), limits), true);
 }
 
 /** §5.4.4. Declarations and at-rules, `;`-separated; a run that is not a

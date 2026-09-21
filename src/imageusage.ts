@@ -1,9 +1,11 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfObject, PdfStream, isDict, isName, isStream, isArray } from './types.js';
-import { parseContentStream, ContentOp } from './content.js';
+import { parseContentStream, ContentOp, type ContentTokenBudget } from './content.js';
 import { contentStreamBytes, Matrix, mul, IDENTITY } from './text.js';
 import { decodeStream } from './filters.js';
+import { rethrowLimit } from './errors.js';
+import { budgetFor } from './decodebudget.js';
 
 /** How large an image is actually painted, and whether that is trustworthy. */
 export interface ImageUsage {
@@ -20,7 +22,14 @@ export type ImageUsageMap = Map<PdfStream, ImageUsage>;
 
 const MAX_XOBJECT_DEPTH = 8;
 
-interface Ctx { doc: Document; usage: ImageUsageMap }
+interface Ctx {
+  doc: Document; usage: ImageUsageMap;
+  /** The `maxContentTokens` count for the page being walked — reset by `walkPage`. It matters MORE here
+   *  than anywhere: `walkStream` releases a form from `seen` once walked, so a
+   *  form drawn many times is parsed once per placement, shared by every stream it
+   *  parses rather than counted afresh per stream (`ibzo.8`, `ibzo.9`). */
+  tokens: ContentTokenBudget;
+}
 
 function nameOf(doc: Document, o: PdfObject | undefined): string | undefined {
   const r = doc.resolve(o);
@@ -180,8 +189,8 @@ function walkStream(
   seen.add(stream.dict);
   try {
     let ops: ContentOp[];
-    try { ops = parseContentStream(decodeStream(stream)); }
-    catch { markScopeIncomplete(ctx, resources, 'content stream failed to parse'); return; }
+    try { ops = parseContentStream(decodeStream(stream), budgetFor(stream).limits, ctx.tokens); }
+    catch (caught) { rethrowLimit(caught); markScopeIncomplete(ctx, resources, 'content stream failed to parse'); return; }
     walkOps(ctx, ops, resources, baseCtm, depth, seen, measurable);
   } finally {
     seen.delete(stream.dict);
@@ -191,9 +200,10 @@ function walkStream(
 function walkPage(ctx: Ctx, page: Page): void {
   const resources = page.Resources;
   const seen = new Set<PdfDict>();
+  ctx.tokens = { tokens: 0 };
   let streams: Uint8Array[];
   try { streams = contentStreamBytes(ctx.doc, page); }
-  catch { markScopeIncomplete(ctx, resources, 'page contents failed to decode'); return; }
+  catch (caught) { rethrowLimit(caught); markScopeIncomplete(ctx, resources, 'page contents failed to decode'); return; }
 
   // PDF 32000 7.8.2: a /Contents array is *one* stream divided at token
   // boundaries. Concatenating before parsing is what the spec describes, and it
@@ -203,8 +213,8 @@ function walkPage(ctx: Ctx, page: Page): void {
   for (const s of streams) { joined.set(s, off); off += s.length; joined[off++] = 0x0a; }
 
   let ops: ContentOp[];
-  try { ops = parseContentStream(joined); }
-  catch { markScopeIncomplete(ctx, resources, 'content stream failed to parse'); return; }
+  try { ops = parseContentStream(joined, ctx.doc.loadLimits, ctx.tokens); }
+  catch (caught) { rethrowLimit(caught); markScopeIncomplete(ctx, resources, 'content stream failed to parse'); return; }
   walkOps(ctx, ops, resources, IDENTITY, 0, seen, true);
 
   walkAnnotations(ctx, page, seen);
@@ -309,7 +319,7 @@ function walkType3(ctx: Ctx, fonts: PdfDict | undefined, seen: Set<PdfDict>): vo
  * image and never drawn by a `Do`.
  */
 export function collectImageUsage(doc: Document): ImageUsageMap {
-  const ctx: Ctx = { doc, usage: new Map() };
+  const ctx: Ctx = { doc, usage: new Map(), tokens: { tokens: 0 } };
   for (const page of doc.Pages) walkPage(ctx, page);
 
   for (const [, obj] of doc.objectEntries()) {

@@ -27,9 +27,9 @@ describe('GlyphEvent.renderMode', () => {
     }
   });
 
-  it('is RESTORED by Q, unlike its five siblings', () => {
-    // The whole reason this field is scoped and Tc/Tw/Tz/TL/Ts are not (g5x6).
-    // An OCR tool that wraps its invisible layer in q...Q would otherwise leave
+  it('is RESTORED by Q', () => {
+    // Scoped before its siblings were (q7hc.4.3; the rest followed in g5x6,
+    // see text-state-q.test.ts). An OCR tool that wraps its invisible layer in q...Q would otherwise leave
     // the mode stuck at 3 and silently EXEMPT the visible text after it — a
     // false negative on exactly the population mode 3 exists to excuse.
     const out = glyphs(buildRenderModePdf([

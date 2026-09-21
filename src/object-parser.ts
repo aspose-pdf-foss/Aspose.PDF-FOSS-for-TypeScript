@@ -1,35 +1,68 @@
 import { Lexer, Token } from './lexer.js';
 import { PdfParseError } from './errors.js';
 import { PdfObject, PdfDict, ref } from './types.js';
+import { LoadLimits } from './loadlimits.js';
 
 export type LengthResolver = (numOrValue: PdfObject) => number | undefined;
 
+/** The COS object grammar.
+ *
+ *  **Invariant (`ibzo.2`):** it bounds what it builds — nesting depth, items per
+ *  container, and one object's encoded bytes — and a bound reached is a
+ *  `ResourceLimitError`, never a `PdfParseError`. The difference is what stops
+ *  `Document.Open`'s build loop, which catches a parse failure per object and
+ *  retries through the recovery ladder, from sweeping a hostile file.
+ *
+ *  **Invariant:** depth is counted HERE rather than left to the call stack. A
+ *  stack overflow is a `RangeError`, which the build loop caught and reported
+ *  as `object-parse-failure` — so a 10,000-deep array read as a broken file. */
 export class ObjectParser {
-  constructor(private readonly lx: Lexer, private readonly resolveLength?: LengthResolver) {}
+  private depth = 0;
+
+  constructor(
+    private readonly lx: Lexer,
+    private readonly resolveLength?: LengthResolver,
+    private readonly limits: LoadLimits = LoadLimits.defaults,
+  ) {
+    // The one site that turns the lexer's cap on. Object parsing owns this lexer
+    // for as long as it runs, and no token can be larger than the object holding
+    // it, so the object bound is also a sound token bound.
+    if (limits.maxObjectBytes !== null) lx.maxTokenBytes = limits.maxObjectBytes;
+  }
+
+  /** The next token, refusing one the lexer stopped reading. */
+  private take(): Token {
+    const tok = this.lx.next();
+    if (tok.over !== undefined)
+      this.limits.enforce('maxObjectBytes', tok.over, `token at byte ${tok.pos}`);
+    return tok;
+  }
 
   /** Parse a single object starting at the lexer's current position. */
   parseObject(): PdfObject {
-    return this.parseValue(this.lx.next());
+    return this.parseValue(this.take());
   }
 
   /** Parse an indirect object: `n g obj <value> endobj`. Returns the value. */
   parseIndirectObject(): { num: number; gen: number; value: PdfObject } {
+    const start = this.lx.pos;
     const a = this.expectNum();
     const b = this.expectNum();
-    const kw = this.lx.next();
+    const kw = this.take();
     if (kw.t !== 'kw' || kw.v !== 'obj') throw new PdfParseError('expected obj', kw.pos);
-    const value = this.parseValue(this.lx.next());
+    const value = this.parseValue(this.take());
+    this.limits.enforce('maxObjectBytes', this.lx.pos - start, `object ${a} ${b}`);
     return { num: a, gen: b, value };
   }
 
   private expect(t: Token['t']): Token {
-    const tok = this.lx.next();
+    const tok = this.take();
     if (tok.t !== t) throw new PdfParseError(`expected ${t} got ${tok.t}`, tok.pos);
     return tok;
   }
 
   private expectNum(): number {
-    const tok = this.lx.next();
+    const tok = this.take();
     if (tok.t !== 'num') throw new PdfParseError(`expected num got ${tok.t}`, tok.pos);
     return tok.v;
   }
@@ -55,36 +88,52 @@ export class ObjectParser {
   // After reading a number, peek for `g R` (reference). Otherwise it's just a number.
   private maybeRef(first: number): PdfObject {
     const save = this.lx.pos;
-    const t2 = this.lx.next();
+    const t2 = this.take();
     if (t2.t === 'num') {
-      const t3 = this.lx.next();
+      const t3 = this.take();
       if (t3.t === 'kw' && t3.v === 'R') return ref(first, t2.v as number);
     }
     this.lx.pos = save; // rewind: it was a plain number
     return first;
   }
 
+  /** Run `body` one container level deeper. */
+  private nested<T>(at: number, body: () => T): T {
+    this.limits.enforce('maxNestingDepth', ++this.depth, `container at byte ${at}`);
+    try { return body(); } finally { this.depth--; }
+  }
+
   private parseArray(): PdfObject[] {
-    const arr: PdfObject[] = [];
-    for (;;) {
-      const tok = this.lx.next();
-      if (tok.t === 'delim' && tok.v === ']') return arr;
-      if (tok.t === 'eof') throw new PdfParseError('unterminated array', tok.pos);
-      arr.push(this.parseValue(tok));
-    }
+    const at = this.lx.pos;
+    return this.nested(at, () => {
+      const arr: PdfObject[] = [];
+      for (;;) {
+        const tok = this.take();
+        if (tok.t === 'delim' && tok.v === ']') return arr;
+        if (tok.t === 'eof') throw new PdfParseError('unterminated array', tok.pos);
+        this.limits.enforce('maxContainerItems', arr.length + 1, `array at byte ${at}`);
+        arr.push(this.parseValue(tok));
+      }
+    });
   }
 
   private parseDictOrStream(): PdfObject {
-    const dict: PdfDict = new Map();
-    for (;;) {
-      const k = this.lx.next();
-      if (k.t === 'delim' && k.v === '>>') break;
-      if (k.t !== 'name') throw new PdfParseError('expected dict key', k.pos);
-      dict.set(k.v as string, this.parseValue(this.lx.next()));
-    }
+    const at = this.lx.pos;
+    const dict: PdfDict = this.nested(at, () => {
+      const d: PdfDict = new Map();
+      for (;;) {
+        const k = this.take();
+        if (k.t === 'delim' && k.v === '>>') return d;
+        if (k.t !== 'name') throw new PdfParseError('expected dict key', k.pos);
+        // By ENTRY, which is what a dictionary holds; counting tokens would
+        // halve the bound for every dictionary and for no array.
+        this.limits.enforce('maxContainerItems', d.size + 1, `dictionary at byte ${at}`);
+        d.set(k.v as string, this.parseValue(this.take()));
+      }
+    });
     // Is a stream following?
     const save = this.lx.pos;
-    const maybe = this.lx.next();
+    const maybe = this.take();
     if (maybe.t === 'kw' && maybe.v === 'stream') {
       return this.readStream(dict);
     }
@@ -107,6 +156,7 @@ export class ObjectParser {
     } else {
       end = this.scanEndstream(buf, start);
     }
+    this.limits.enforce('maxObjectBytes', end - start, `stream at byte ${start}`);
     const raw = buf.subarray(start, end);
     // advance lexer past endstream
     this.lx.pos = this.skipToAfterEndstream(buf, end);

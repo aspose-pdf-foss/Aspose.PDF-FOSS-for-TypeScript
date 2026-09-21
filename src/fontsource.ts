@@ -15,6 +15,7 @@ import { readCmap } from './sfnt.js';
 import { ttcFaceOffsets } from './ttc.js';
 import { isType1, readType1Header } from './type1header.js';
 import { dfontSfntRanges } from './dfont.js';
+import { rethrowLimit } from './errors.js';
 
 /** A face found on disk. */
 export interface FaceRecord {
@@ -126,10 +127,10 @@ function peekNames(path: string): { faceIndex: number; names: FontNames }[] {
     return eachFace(fd, (table) =>
       namesFromTables({ name: table('name'), head: table('head'), os2: table('OS/2') }))
       .map(({ faceIndex, value }) => ({ faceIndex, names: value }));
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return [];
   } finally {
-    if (fd !== undefined) { try { closeSync(fd); } catch { /* already gone */ } }
+    if (fd !== undefined) { try { closeSync(fd); } catch (caught) { rethrowLimit(caught); /* already gone */ } }
   }
 }
 
@@ -211,7 +212,7 @@ function eachFace<T>(
 function* walk(dir: string, depth: number, sniff: boolean): Generator<string> {
   if (depth > MAX_DEPTH) return;
   let entries;
-  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch (caught) { rethrowLimit(caught); return; }
   for (const e of entries) {
     const full = join(dir, e.name);
     if (e.isDirectory()) { yield* walk(full, depth + 1, sniff); continue; }
@@ -286,9 +287,9 @@ export function peekCmap(path: string, faceIndex = 0): Set<number> | undefined {
     // code point through its own parsed SfntFont at draw time. Coverage alone
     // is the honest contract.
     return new Set(readCmap(hit.value).keys());
-  } catch {
+  } catch (caught) { rethrowLimit(caught);
     return undefined;
   } finally {
-    if (fd !== undefined) { try { closeSync(fd); } catch { /* already gone */ } }
+    if (fd !== undefined) { try { closeSync(fd); } catch (caught) { rethrowLimit(caught); /* already gone */ } }
   }
 }

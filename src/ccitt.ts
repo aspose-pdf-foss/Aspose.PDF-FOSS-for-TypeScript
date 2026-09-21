@@ -1,4 +1,5 @@
 import { PdfParseError } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
 import { WHITE_CODES, BLACK_CODES, EXT_MAKEUP, MODE_CODES, RunCode } from './ccitt-tables.js';
 
 export interface CcittParams {
@@ -183,8 +184,13 @@ export interface CcittResult {
  *  in as many words — it says only that the decoder must skip the EOFB — and no
  *  real-world fixture is available to settle it, so that is an assumption
  *  rather than a fact. Everything our own encoder produces is byte-aligned. */
-export function decodeCcittConsumed(data: Uint8Array, p: CcittParams): CcittResult {
+export function decodeCcittConsumed(
+  data: Uint8Array, p: CcittParams, limits: LoadLimits = LoadLimits.defaults,
+): CcittResult {
   const { k, columns, blackIs1, byteAlign, endOfBlock } = p;
+  // (ibzo.3) Declared geometry up front; an undeclared row count is bounded as
+  // rows are produced instead, since "until the data ends" says nothing.
+  if (p.rows > 0) limits.enforce('maxImagePixels', columns * p.rows, 'CCITT image');
   const rowBytes = (columns + 7) >> 3;
   const out: Uint8Array[] = [];
   const br = new BitReader(data);
@@ -218,6 +224,7 @@ export function decodeCcittConsumed(data: Uint8Array, p: CcittParams): CcittResu
       col ^= 1;
     }
     if (blackIs1) for (let b = 0; b < rowBytes; b++) row[b] ^= 0xff;
+    limits.enforce('maxImagePixels', columns * (out.length + 1), 'CCITT image');
     out.push(row);
 
     ref = cur;
@@ -235,6 +242,6 @@ export function decodeCcittConsumed(data: Uint8Array, p: CcittParams): CcittResu
 
 /** Decode CCITT Group 4 (k<0) fax data into packed 1-bpp rows (MSB-first).
  *  Output bit 0 = white unless `blackIs1`. */
-export function decodeCcitt(data: Uint8Array, p: CcittParams): Uint8Array {
-  return decodeCcittConsumed(data, p).data;
+export function decodeCcitt(data: Uint8Array, p: CcittParams, limits: LoadLimits = LoadLimits.defaults): Uint8Array {
+  return decodeCcittConsumed(data, p, limits).data;
 }
