@@ -1,4 +1,5 @@
 import type { LimitField } from './loadlimits.js';
+import type { SeedRequirement } from './sigseed.js';
 
 export class PdfParseError extends Error {
   constructor(message: string, readonly offset?: number) {
@@ -41,6 +42,15 @@ export class ResourceLimitError extends Error {
  *  site, so a new catch has one thing to remember. */
 export function rethrowLimit(e: unknown): void {
   if (e instanceof ResourceLimitError) throw e;
+}
+/** A signature field's seed value (`/SV`) makes a demand this signing call
+ *  cannot meet (`puep.3`). A REFUSAL, not damage: signing around a constraint
+ *  the document states is worse than declining. `entry` names the seed-value
+ *  entry at fault, so a caller reacts by name rather than by parsing a message. */
+export class SeedValueError extends Error {
+  constructor(readonly entry: SeedRequirement | 'mdp' | 'timestamp', message: string) {
+    super(message); this.name = 'SeedValueError';
+  }
 }
 export class InvalidPasswordError extends Error {
   constructor(message = 'PDF is password-protected: wrong or missing password') {

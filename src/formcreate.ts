@@ -7,7 +7,9 @@ import { decodePdfText, encodePdfText } from './metadata.js';
 import type { StdFont } from './metrics.js';
 import type { Page } from './page.js';
 import { checkNums, ownAnnots } from './annotation.js';
-import { generateFieldAppearance, buildButtonAP } from './appearance.js';
+import {
+  generateFieldAppearance, buildButtonAP, widgetGeom, mkOps, buildAppearanceXObject, installAP,
+} from './appearance.js';
 import { resolveDA } from './da.js';
 import {
   encodeAction, encodeFieldActions, type FieldActions, type PdfAction,
@@ -17,7 +19,7 @@ import {
   buildPushButtonAP, BUTTON_POSITIONS, TP_FOR, type ButtonIconPosition,
 } from './buttonap.js';
 import {
-  classify, TextField, CheckboxField, RadioField, ChoiceField, ButtonField,
+  classify, Field, TextField, CheckboxField, RadioField, ChoiceField, ButtonField,
   type FieldType,
 } from './formfield.js';
 import {
@@ -30,6 +32,8 @@ import {
   applyWidgetStyle, type FieldStyle, type WidgetStyle,
 } from './fieldstyle.js';
 import { normalizeOptions, optArray, type ChoiceOption } from './choiceopt.js';
+import { encodeSeedValue, type SeedValue } from './sigseed.js';
+import { encodeFieldLock, type FieldLock } from './siglock.js';
 
 // Re-exported so existing import sites (test/form-create.test.ts, index.ts) keep
 // working after the move to fieldstyle.ts and choiceopt.ts.
@@ -707,4 +711,63 @@ export function addPushButton(doc: Document, init: PushButtonInit): ButtonField 
   return new ButtonField(
     doc, c.acro, c.dict, c.partial, c.fullName, 'pushbutton', c.ff, null,
   );
+}
+
+/** Options for Form.AddSignatureField / Page.AddSignatureField. The border and
+ *  background keys come from FieldStyle; with neither colour stated the box
+ *  gets a thin grey border so an empty field is visible on the page. */
+export interface SignatureFieldInit extends FieldInit {
+  /** The seed value (`/SV`): what a signature in this field should — or,
+   *  for entries named in `required`, must — look like. Written as an
+   *  indirect object, as the specification requires. */
+  seedValue?: SeedValue;
+  /** The fields a signature in this field freezes (`/Lock`). Carried into the
+   *  signature as a FieldMDP transform when the field is signed, and checked
+   *  by `VerifySignatures` (`fieldMDP`). */
+  lock?: FieldLock;
+}
+
+/** /SigFlags SignaturesExist (bit 1). AppendOnly (bit 2) is deliberately NOT
+ *  set here: it belongs to a document that carries a signature, and an empty
+ *  field is not one. Signing sets it. */
+const SIGFLAGS_SIGNATURES_EXIST = 1;
+
+/** Create an empty signature field (`/FT /Sig`, no /V) and return its handle.
+ *
+ *  The field is a place for a signature, not a signature: it carries no value
+ *  until {@link Document.Sign} is called with its full name, which fills it
+ *  rather than creating a second field. Field.Value on it still throws,
+ *  because filling one IS signing it.
+ *
+ *  /SigFlags gains SignaturesExist OR-ed into whatever bits were already there,
+ *  after createField has validated and allocated — so a rejected call leaves
+ *  the document byte-identical, flags included. */
+export function addSignatureField(doc: Document, init: SignatureFieldInit): Field {
+  // Encoded before createField allocates anything: encodeSeedValue is where a
+  // malformed seed value is rejected.
+  const sv = init.seedValue === undefined ? undefined : encodeSeedValue(init.seedValue);
+  const lock = init.lock === undefined ? undefined : encodeFieldLock(init.lock);
+  // A null is a deliberate suppression and applyWidgetStyle honours it; only a
+  // caller who said nothing about either colour gets the default border.
+  const entries: Array<[string, PdfObject]> = [];
+  if (init.backgroundColor === undefined && init.borderColor === undefined)
+    entries.push(['MK', new Map<string, PdfObject>([['BC', [0.5, 0.5, 0.5]]])]);
+
+  const c = createField(doc, init, {
+    ft: 'Sig',
+    entries,
+    buildAP: (d, dict, acro) => {
+      const g = widgetGeom(d, dict);
+      if (!g) return;
+      const key = ensureDRFont(d, acro, init.font ?? 'Helvetica');
+      installAP(d, dict, buildAppearanceXObject(
+        d, g, init.font ?? 'Helvetica', key, mkOps(d, dict, g).ops,
+      ));
+    },
+  });
+  if (sv) c.dict.set('SV', doc.allocObject(sv));
+  if (lock) c.dict.set('Lock', doc.allocObject(lock));
+  const flags = c.acro.get('SigFlags');
+  c.acro.set('SigFlags', (typeof flags === 'number' ? flags : 0) | SIGFLAGS_SIGNATURES_EXIST);
+  return new Field(doc, c.acro, c.dict, c.partial, c.fullName, 'signature', c.ff, null);
 }

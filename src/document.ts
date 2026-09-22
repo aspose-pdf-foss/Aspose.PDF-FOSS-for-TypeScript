@@ -99,6 +99,12 @@ import {
 import { serializeDocument, serializeSignedDocument, SerializeOptions } from './serializer.js';
 import { appendSignatureUpdate, appendIncrementalUpdate } from './incremental.js';
 import { diffObjects } from './incrementaldelta.js';
+import { readSeedValue, planSeedValue, type SeedValue } from './sigseed.js';
+import { httpTimestampProvider } from './tsahttp.js';
+import {
+  readFieldLock, readFieldMdpLock, fieldMdpReference, isLocked, lockLevelP, encodeFieldLock, readLockLevel,
+  type FieldLock,
+} from './siglock.js';
 import { DEFAULT_PLACEHOLDER_BYTES, fillSignature } from './sigplaceholder.js';
 import { buildTimeStampRequest, extractTimeStampToken, type TimestampProvider } from './rfc3161.js';
 import { Flow, type FlowOptions } from './flow.js';
@@ -339,6 +345,20 @@ function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject {
     node = doc.resolve(node.get('Parent'));
   }
   return null;
+}
+
+/** A prepared signature field Sign fills instead of creating a new one. */
+interface SignTarget {
+  /** The terminal field dict (/FT /Sig), which receives /V. */
+  field: PdfDict;
+  /** Its one widget — the field itself when the two are merged. */
+  widget: PdfDict;
+  /** 0-based page carrying the widget. */
+  pageIndex: number;
+  /** The field's seed value (`/SV`), when it states one. */
+  seed?: SeedValue;
+  /** The field's lock (`/Lock`), when it states one. */
+  lock?: FieldLock;
 }
 
 export class Document {
@@ -2259,7 +2279,7 @@ export class Document {
    *  `subFilter` selects `adbe.pkcs7.detached` (CMS, default) or
    *  `ETSI.CAdES.detached` (PAdES — adds the ESS signing-certificate-v2 attr). */
   async Sign(signer: Signer, opts: SignOptions = {}): Promise<void> {
-    await this.signCore(signer, opts);
+    await this.signCore(signer, opts, undefined);
   }
 
   /** Add a *certification* (author) signature with a DocMDP transform: the
@@ -2277,7 +2297,9 @@ export class Document {
       throw new UnsupportedFeatureError('cannot certify: the document is already signed (certification must be the first signature)');
     if (Document.permsHasDocMdp(probe))
       throw new UnsupportedFeatureError('cannot certify: the document is already certified (DocMDP allows one certification)');
-    await this.signCore(signer, opts, opts.permissions ?? 'no-changes');
+    // The level is passed as STATED, not defaulted: a prepared field's seed
+    // value may supply it, and only an unstated level can take one.
+    await this.signCore(signer, opts, { permissions: opts.permissions });
   }
 
   /** Shared signing pipeline for {@link Sign} and {@link Certify}: validate,
@@ -2297,11 +2319,58 @@ export class Document {
   }
 
 
-  private async signCore(signer: Signer, opts: SignOptions, docMdp?: DocMdpPermission): Promise<void> {
+  /** `certify` is undefined for an approval signature ({@link Sign}); for
+   *  {@link Certify} it carries the DocMDP level the caller STATED, if any. */
+  private async signCore(
+    signer: Signer, stated: SignOptions, certify: { permissions?: DocMdpPermission } | undefined,
+  ): Promise<void> {
     this.assertNotRecovered('sign');
     if (this.Pages.length === 0)
       throw new UnsupportedFeatureError('cannot sign a document with no pages');
-    subFilterName(opts); // validate subfilter early
+    subFilterName(stated); // validate subfilter early
+
+    // Resolve credentials up front so a bad key/passphrase fails before the
+    // document object map is mutated below.
+    const resolved = await resolveSigner(signer);
+
+    // Validate any visible-appearance request before mutating the object map.
+    if (stated.appearance) {
+      const { page, rect } = stated.appearance;
+      if (!Number.isInteger(page) || page < 0 || page >= this.Pages.length)
+        throw new UnsupportedFeatureError(`signature appearance: page ${page} is out of range`);
+      const w = Math.abs(rect[2] - rect[0]), h = Math.abs(rect[3] - rect[1]);
+      if (!(w > 1e-3) || !(h > 1e-3))
+        throw new TypeError('signature appearance: rect must have a positive area');
+    }
+
+    // A fieldName naming an existing, unsigned signature field is FILLED rather
+    // than duplicated. Decided here, before anything is allocated, so each
+    // refusal leaves the document byte-identical.
+    const target = this.signTarget(stated);
+
+    // A prepared field's seed value is honoured here — every refusal is a
+    // SeedValueError thrown before anything is allocated. The plan supplies
+    // only what the caller left open; `opts` is what signing actually uses.
+    const plan = target?.seed === undefined ? {} : planSeedValue(target.seed, {
+      certify: certify !== undefined,
+      permissions: certify?.permissions,
+      subFilter: stated.subFilter,
+      digest: resolved.digestAlgorithm,
+      reason: stated.reason,
+      hasTimestamp: stated.timestamp !== undefined,
+      lockPermissions: target.lock?.permissions,
+    });
+    const opts: SignOptions = {
+      ...stated,
+      ...(plan.subFilter !== undefined ? { subFilter: plan.subFilter } : {}),
+      ...(plan.timestampUrl !== undefined ? { timestamp: httpTimestampProvider(plan.timestampUrl) } : {}),
+    };
+    // A field whose /Lock sets a level binds a certification to the STRICTER
+    // of that level and its own (pyHanko: "choose the stricter option").
+    const lockLevel = target?.lock?.permissions;
+    const wanted = plan.permissions ?? certify?.permissions ?? 'no-changes';
+    const docMdp = certify === undefined ? undefined
+      : lockLevel !== undefined && lockLevelP(lockLevel) < lockLevelP(wanted) ? lockLevel : wanted;
     if (opts.cades) {
       const c = opts.cades;
       const emitsLocation = !!c.signerLocation && (
@@ -2311,20 +2380,6 @@ export class Document {
       if (emits && opts.subFilter !== 'PAdES')
         throw new UnsupportedFeatureError('CAdES signed attributes require subFilter: "PAdES"');
       if (c.commitmentType !== undefined) commitmentTypeOid(c.commitmentType); // validate early (throws)
-    }
-
-    // Resolve credentials up front so a bad key/passphrase fails before the
-    // document object map is mutated below.
-    const resolved = await resolveSigner(signer);
-
-    // Validate any visible-appearance request before mutating the object map.
-    if (opts.appearance) {
-      const { page, rect } = opts.appearance;
-      if (!Number.isInteger(page) || page < 0 || page >= this.Pages.length)
-        throw new UnsupportedFeatureError(`signature appearance: page ${page} is out of range`);
-      const w = Math.abs(rect[2] - rect[0]), h = Math.abs(rect[3] - rect[1]);
-      if (!(w > 1e-3) || !(h > 1e-3))
-        throw new TypeError('signature appearance: rect must have a positive area');
     }
 
     // Materialize any pending fonts before the byte image is frozen.
@@ -2338,17 +2393,49 @@ export class Document {
     // wired into the AcroForm and the first page's /Annots.
     const sigValueDict = buildSigValueDict(opts, signingTime);
     const sigRef = this.allocObject(sigValueDict);
-    const touched = this.installSignatureField(sigRef, opts, resolved.certificate, signingTime);
+    const touched = target
+      ? this.fillSignatureField(target, sigRef, opts, resolved.certificate, signingTime)
+      : this.installSignatureField(sigRef, opts, resolved.certificate, signingTime);
 
     // Certification: attach the DocMDP transform to the value dict and point the
     // catalog's /Perms /DocMDP at this signature (the catalog joins the delta).
+    const references: PdfObject[] = [];
     if (docMdp) {
-      sigValueDict.set('Reference', [buildDocMdpReference(docMdp)]);
+      references.push(buildDocMdpReference(docMdp));
       const catalog = this.catalog();
       catalog.set('Perms', new Map<string, PdfObject>([['DocMDP', sigRef]]));
       const catRef = this.trailer.get('Root');
       if (isRef(catRef)) touched.add(catRef.num);
     }
+    // A prepared field's /Lock is carried INTO the signature as a FieldMDP
+    // transform (puep.4): the signature is what the signer's digest covers, so
+    // that is where the lock binds. /Data names the catalog, as pyHanko writes.
+    // An APPROVAL signature locks the document through the field's /Lock /P
+    // (puep.7). When a required /LockDocument asks for a level the field does
+    // not set, it is written into the field now — onto its /Lock when it has
+    // one, else a new one listing no fields, pyHanko's shape — so the level is
+    // part of the revision this signature covers.
+    let lock = target?.lock;
+    if (target !== undefined && certify === undefined && plan.lockPermissions !== undefined) {
+      const raw = target.field.get('Lock');
+      const existing = this.resolve(raw ?? null);
+      const p = lockLevelP(plan.lockPermissions);
+      if (isDict(existing)) {
+        existing.set('P', p);
+        if (isRef(raw)) touched.add(raw.num);
+        lock = { ...(lock ?? { action: 'include', fields: [] }), permissions: plan.lockPermissions };
+      } else {
+        lock = { action: 'include', fields: [], permissions: plan.lockPermissions };
+        const lockRef = this.allocObject(encodeFieldLock(lock));
+        target.field.set('Lock', lockRef);
+        touched.add(lockRef.num);
+      }
+    }
+    const root = this.trailer.get('Root');
+    // A certification's FieldMDP carries its FINAL level, as pyHanko writes it.
+    if (lock !== undefined && isRef(root))
+      references.push(fieldMdpReference(docMdp !== undefined ? { ...lock, permissions: docMdp } : lock, root));
+    if (references.length > 0) sigValueDict.set('Reference', references);
 
     // Produce the placeholder byte image via the chosen writer.
     const layout = useIncremental
@@ -2364,6 +2451,7 @@ export class Document {
     // Digest the /ByteRange, build the detached CMS, drop it into /Contents.
     const cmsSigner: CmsSigner = {
       ...resolved,
+      digestAlgorithm: plan.digest ?? resolved.digestAlgorithm,
       signingTime: resolved.signingTime ?? signingTime,
       timestamp: opts.timestamp,
       timestampDigest: opts.timestampDigest,
@@ -2445,25 +2533,42 @@ export class Document {
 
     const hashAlg: DigestAlgorithm = opts.digest ?? 'sha256';
     const placeholderBytes = opts.placeholderBytes ?? 16384;
-    const fieldName = opts.fieldName ?? `Timestamp${this.nextDocTimestampIndex()}`;
 
-    // Build the /DocTimeStamp value dict + an invisible widget wired into the
-    // AcroForm and the first page's /Annots.
+    // A fieldName naming a prepared, unsigned signature field is FILLED rather
+    // than duplicated (puep.5) — the same lookup and refusals Sign applies,
+    // decided before anything is allocated. A field prepared with a seed value
+    // or a lock was prepared for a SIGNATURE: a document timestamp has no
+    // signer, no /Reference and always the ETSI.RFC3161 subfilter, so it can
+    // honour neither, and filling it anyway would ignore constraints the
+    // document states.
+    const target = this.signTarget({ fieldName: opts.fieldName });
+    if (target !== undefined && (target.field.has('SV') || target.field.has('Lock')))
+      throw new UnsupportedFeatureError(
+        `signature field '${opts.fieldName}' is prepared for a signature with constraints `
+        + '(/SV or /Lock); a document timestamp cannot honour them');
+
+    // Build the /DocTimeStamp value dict, then fill the prepared field or wire
+    // a new invisible widget into the AcroForm and the first page's /Annots.
     const dtsDict = buildDocTimeStampDict();
     const dtsRef = this.allocObject(dtsDict);
-    const touched = new Set<number>();
-    const pageNum = this.pageObjNums[0];
-    const widget: PdfDict = new Map<string, PdfObject>([
-      ['Type', name('Annot')],
-      ['Subtype', name('Widget')],
-      ['FT', name('Sig')],
-      ['T', pdfString(fieldName)],
-      ['Rect', [0, 0, 0, 0]],
-      ['F', 132],
-      ['V', dtsRef],
-      ['P', ref(pageNum)],
-    ]);
-    this.attachSigWidget(widget, 0, touched);
+    let touched: Set<number>;
+    if (target !== undefined) {
+      touched = this.fillFieldValue(target, dtsRef);
+    } else {
+      touched = new Set<number>();
+      const fieldName = opts.fieldName ?? `Timestamp${this.nextDocTimestampIndex()}`;
+      const widget: PdfDict = new Map<string, PdfObject>([
+        ['Type', name('Annot')],
+        ['Subtype', name('Widget')],
+        ['FT', name('Sig')],
+        ['T', pdfString(fieldName)],
+        ['Rect', [0, 0, 0, 0]],
+        ['F', 132],
+        ['V', dtsRef],
+        ['P', ref(this.pageObjNums[0])],
+      ]);
+      this.attachSigWidget(widget, 0, touched);
+    }
 
     // Serialize with a /Contents placeholder + /ByteRange, then digest the range,
     // request a token, and drop the token in.
@@ -2527,7 +2632,92 @@ export class Document {
     // DocMDP enforcement (V4): when the document is certified, evaluate the
     // changes appended after the certification signature against its level.
     Document.applyDocMdp(src, bytes, signed, reports);
+    // An APPROVAL signature whose lock sets a level (/Lock /P, PDF 2.0) is
+    // judged against that level exactly as a certification is (puep.7).
+    Document.applyApprovalLockLevel(src, bytes, signed, reports);
+    // Field locks (puep.4): a signature carrying a FieldMDP transform freezes
+    // the fields its lock names; report a later change to any of them.
+    Document.applyFieldMdp(src, bytes, signed, reports);
     return reports;
+  }
+
+  /** Set the `docMDP` verdict of each APPROVAL signature whose lock sets a
+   *  level (`/Lock /P`, `puep.7`), through the same classifier a certification
+   *  uses. The level comes from what the SIGNER signed — the FieldMDP
+   *  `/TransformParams /P` — else from the field's `/Lock /P` AS IT WAS in the
+   *  signed revision, never the current field: a lock rewritten afterwards must
+   *  not loosen anything, the rule `applyFieldMdp` already follows. pyHanko reads
+   *  the current field here; this is the one place the two differ. */
+  private static applyApprovalLockLevel(
+    src: Document, bytes: Uint8Array, signed: SignatureField[], reports: SignatureReport[],
+  ): void {
+    for (let i = 0; i < signed.length; i++) {
+      const sig = signed[i];
+      const report = reports[i];
+      if (report.docMDP !== 'n/a' || !sig.byteRange) continue;   // a certification: applyDocMdp's
+      const signedEnd = sig.byteRange[2] + sig.byteRange[3];
+      const prevDoc = signedEnd < bytes.length ? Document.Open(bytes.subarray(0, signedEnd)) : src;
+      const carried = readFieldMdpLock(sig.valueDict, (o) => src.resolve(o ?? null))?.permissions;
+      const fieldThen = prevDoc.Form.Get(sig.name);
+      const level = carried
+        ?? (fieldThen === undefined ? undefined
+          : readLockLevel((o) => prevDoc.resolve(o ?? null), fieldThen.Dict.get('Lock')));
+      if (level === undefined) continue;
+      if (sig.coversWholeFile || signedEnd >= bytes.length) { report.docMDP = 'ok'; continue; }
+      const view = (d: Document): DocMdpDoc => ({ getObject: (n) => d.getObject(n), resolve: (o) => d.resolve(o ?? null) });
+      const rootRef = src.trailer.get('Root');
+      const acroRef = src.catalog().get('AcroForm');
+      const env: DocMdpEnv = {
+        prev: view(prevDoc), cur: view(src),
+        catalogNum: isRef(rootRef) ? rootRef.num : -1,
+        acroFormNum: isRef(acroRef) ? acroRef.num : undefined,
+      };
+      report.docMDP = docMdpVerdict(lockLevelP(level), report.modifications, env);
+    }
+  }
+
+  /** Set each FieldMDP-carrying signature's `fieldMDP` verdict. A locked field
+   *  counts as changed when, after that signature's revision, its field dict or
+   *  one of its widgets was modified, it was newly added, or it disappeared from
+   *  the field tree. Filling an UNSIGNED signature field — or adding a new one —
+   *  is exempt: a lock must not forbid the signatures that follow it.
+   *
+   *  Field identity comes from {@link Form}, the one owner of the tree walk; an
+   *  identity map from dict to object number joins it to the change list. */
+  private static applyFieldMdp(
+    src: Document, bytes: Uint8Array, signed: SignatureField[], reports: SignatureReport[],
+  ): void {
+    let numOf: Map<PdfObject, number> | undefined;
+    for (let i = 0; i < signed.length; i++) {
+      const sig = signed[i];
+      const lock = readFieldMdpLock(sig.valueDict, (o) => src.resolve(o ?? null));
+      if (lock === undefined) continue;
+      const report = reports[i];
+      if (sig.coversWholeFile || !sig.byteRange) {
+        report.fieldMDP = 'ok'; report.lockedFieldsChanged = []; continue;
+      }
+      const signedEnd = sig.byteRange[2] + sig.byteRange[3];
+      if (signedEnd >= bytes.length) { report.fieldMDP = 'ok'; report.lockedFieldsChanged = []; continue; }
+
+      numOf ??= new Map([...src.objects].map(([n, o]) => [o, n] as [PdfObject, number]));
+      const prev = Document.Open(bytes.subarray(0, signedEnd)).Form;
+      const touched = new Set(report.modifications.map((m) => m.object));
+      const changed = new Set<string>();
+      const curNames = new Set<string>();
+      for (const f of src.Form.Fields) {
+        curNames.add(f.FullName);
+        const before = prev.Get(f.FullName);
+        // Signing an unsigned (or brand-new) signature field is the next
+        // signature, not an edit to a frozen one.
+        if (f.Type === 'signature' && (before === undefined || !before.Dict.has('V'))) continue;
+        const nums = [f.Dict, ...f.Widgets].map((d) => numOf!.get(d));
+        if (before === undefined || nums.some((n) => n !== undefined && touched.has(n))) changed.add(f.FullName);
+      }
+      for (const f of prev.Fields) if (!curNames.has(f.FullName)) changed.add(f.FullName);
+      const locked = [...changed].filter((n) => isLocked(lock, n)).sort();
+      report.fieldMDP = locked.length > 0 ? 'violated' : 'ok';
+      report.lockedFieldsChanged = locked;
+    }
   }
 
   /** Verify every document timestamp (`/DocTimeStamp`) in the document: check
@@ -2664,6 +2854,117 @@ export class Document {
     return touched;
   }
 
+  /** The prepared signature field `opts.fieldName` names, when there is one.
+   *
+   *  Undefined means "create a new field" — no fieldName, or one no field in the
+   *  document carries. A name that IS taken must be an unsigned signature field
+   *  with exactly one widget on a page of this document; anything else throws,
+   *  since creating a second field under a taken name is the defect this path
+   *  exists to prevent. A visible appearance must sit where the prepared widget
+   *  already is — moving it silently would redraw a box the preparer placed. */
+  private signTarget(opts: SignOptions): SignTarget | undefined {
+    if (opts.fieldName === undefined) return undefined;
+    const field = this.Form.Get(opts.fieldName);
+    if (field === undefined) return undefined;
+    if (field.Type !== 'signature')
+      throw new TypeError(`field '${opts.fieldName}' is not a signature field (it is ${field.Type})`);
+    if (field.Dict.has('V'))
+      throw new UnsupportedFeatureError(`signature field '${opts.fieldName}' is already signed`);
+    const widgets = field.Widgets;
+    if (widgets.length !== 1)
+      throw new UnsupportedFeatureError(
+        `signature field '${opts.fieldName}' has ${widgets.length} widgets; exactly one is supported`);
+    const widget = widgets[0];
+    const pageIndex = this.widgetPageIndex(widget);
+    if (pageIndex === undefined)
+      throw new UnsupportedFeatureError(`signature field '${opts.fieldName}' has no widget on any page`);
+    const r = this.resolve(widget.get('Rect'));
+    const rect = isArray(r) && r.length === 4 && r.every((x) => typeof x === 'number')
+      ? r as number[] : undefined;
+    if (opts.appearance) {
+      const a = opts.appearance;
+      // Compare normalized boxes: a /Rect may name its corners in either order.
+      const norm = (q: readonly number[]) => [
+        Math.min(q[0], q[2]), Math.min(q[1], q[3]), Math.max(q[0], q[2]), Math.max(q[1], q[3]),
+      ];
+      const want = rect && norm(rect), got = norm(a.rect);
+      const same = want !== undefined && a.page === pageIndex
+        && got.every((v, i) => Math.abs(v - want[i]) < 1e-3);
+      if (!same)
+        throw new RangeError(
+          `signature appearance: field '${opts.fieldName}' is prepared at page ${pageIndex} `
+          + `[${rect?.join(' ') ?? ''}]; the appearance must match it`);
+    }
+    const seed = field.Dict.has('SV')
+      ? readSeedValue((o) => this.resolve(o), field.Dict.get('SV')!) : undefined;
+    const lock = readFieldLock((o) => this.resolve(o ?? null), field.Dict.get('Lock'));
+    return {
+      field: field.Dict, widget, pageIndex,
+      ...(seed === undefined ? {} : { seed }), ...(lock === undefined ? {} : { lock }),
+    };
+  }
+
+  /** 0-based index of the page carrying `widget`: its /P when that names a
+   *  page, else the page whose /Annots holds it. */
+  private widgetPageIndex(widget: PdfDict): number | undefined {
+    const p = widget.get('P');
+    if (isRef(p)) {
+      const i = this.pageObjNums.indexOf(p.num);
+      if (i >= 0) return i;
+    }
+    for (let i = 0; i < this.Pages.length; i++) {
+      const annots = this.resolve(this.Pages[i].Dict.get('Annots'));
+      if (isArray(annots) && annots.some((a) => this.resolve(a) === widget)) return i;
+    }
+    return undefined;
+  }
+
+  /** The object number holding `dict` as a top-level object, by identity. */
+  private objNumOf(dict: PdfDict): number | undefined {
+    for (const [n, o] of this.objects) if (o === dict) return n;
+    return undefined;
+  }
+
+  /** Fill a prepared signature field: point its /V at the value dict, draw a
+   *  visible appearance into its widget when asked, and raise /SigFlags to
+   *  SignaturesExist | AppendOnly. Records every changed object for the
+   *  incremental delta — the field, its widget (when separate), /AcroForm and
+   *  whatever the appearance allocated. */
+  private fillSignatureField(
+    target: SignTarget, sigRef: PdfRef, opts: SignOptions, certificate: Uint8Array, signingTime: Date,
+  ): Set<number> {
+    const touched = this.fillFieldValue(target, sigRef);
+    const { widget } = target;
+    if (opts.appearance) {
+      const displayName = signerDisplayName(opts, certificate);
+      const text = opts.appearance.text ?? defaultAppearanceText(opts, signingTime, displayName);
+      const before = new Set(this.objects.keys());
+      const stream = buildSignatureAppearance(this, opts.appearance, text);
+      const apRef = this.allocObject(stream);
+      widget.set('AP', new Map<string, PdfObject>([['N', apRef]]));
+      for (const k of this.objects.keys()) if (!before.has(k)) touched.add(k);
+    }
+    return touched;
+  }
+
+  /** The half of filling a prepared field that a signature and a document
+   *  timestamp share (`puep.5`): point `/V` at the value dict and raise
+   *  `/SigFlags` to SignaturesExist | AppendOnly, recording the field, its
+   *  widget (when separate) and `/AcroForm` for the incremental delta. One
+   *  helper, so the two fill paths cannot come to disagree about either. */
+  private fillFieldValue(target: SignTarget, valueRef: PdfRef): Set<number> {
+    const touched = new Set<number>();
+    target.field.set('V', valueRef);
+    for (const d of [target.field, target.widget]) {
+      const n = this.objNumOf(d);
+      if (n !== undefined) touched.add(n);
+    }
+    const acro = ensureAcroForm(this, touched);
+    const flags = acro.get('SigFlags');
+    acro.set('SigFlags', (typeof flags === 'number' ? flags : 0) | 3);
+    return touched;
+  }
+
   /** 1-based index for the next auto-named signature field. */
   private nextSignatureIndex(): number {
     return this.Signatures.length + 1;
@@ -2677,38 +2978,12 @@ export class Document {
   /** Every approval/certification signature field (read-side; always available).
    *  Document timestamps are excluded — see {@link DocumentTimestamps}. */
   get Signatures(): SignatureField[] {
-    const out: SignatureField[] = [];
-    const acro = this.resolve(this.catalog().get('AcroForm'));
-    if (!isDict(acro)) return out;
-    const fields = this.resolve(acro.get('Fields'));
-    if (!isArray(fields)) return out;
-    for (const f of fields) {
-      const field = this.resolve(f);
-      if (!isDict(field)) continue;
-      const ft = field.get('FT');
-      if (!isName(ft) || ft.name !== 'Sig') continue;
-      const sig = this.readSignatureField(field);
-      if (!sig.isDocTimeStamp) out.push(sig);
-    }
-    return out;
+    return this.signatureFields().filter((s) => !s.isDocTimeStamp);
   }
 
   /** Every document-timestamp field (`/DocTimeStamp`), read-side. */
   get DocumentTimestamps(): SignatureField[] {
-    const out: SignatureField[] = [];
-    const acro = this.resolve(this.catalog().get('AcroForm'));
-    if (!isDict(acro)) return out;
-    const fields = this.resolve(acro.get('Fields'));
-    if (!isArray(fields)) return out;
-    for (const f of fields) {
-      const field = this.resolve(f);
-      if (!isDict(field)) continue;
-      const ft = field.get('FT');
-      if (!isName(ft) || ft.name !== 'Sig') continue;
-      const sig = this.readSignatureField(field);
-      if (sig.isDocTimeStamp) out.push(sig);
-    }
-    return out;
+    return this.signatureFields().filter((s) => s.isDocTimeStamp);
   }
 
   /** 1-based index for the next auto-named document-timestamp field. */
@@ -2716,12 +2991,22 @@ export class Document {
     return this.DocumentTimestamps.length + 1;
   }
 
-  private readSignatureField(field: PdfDict): SignatureField {
-    const nameObj = field.get('T');
-    const fieldName = isString(nameObj) ? new TextDecoder().decode(nameObj.bytes) : '';
+  /** Every signature field in the /AcroForm tree, nested ones included, named
+   *  by FULL name. Walks through {@link Form}, the one owner of the tree walk —
+   *  a top-level-only loop here missed every field under a dotted name. */
+  private signatureFields(): SignatureField[] {
+    return this.Form.Fields
+      .filter((f) => f.Type === 'signature')
+      .map((f) => this.readSignatureField(f.Dict, f.FullName));
+  }
+
+  private readSignatureField(field: PdfDict, fieldName: string): SignatureField {
+    const seedValue = field.has('SV') ? readSeedValue((o) => this.resolve(o), field.get('SV')!) : undefined;
+    const lock = readFieldLock((o) => this.resolve(o ?? null), field.get('Lock'));
+    const seed = { ...(seedValue === undefined ? {} : { seedValue }), ...(lock === undefined ? {} : { lock }) };
     const value = this.resolve(field.get('V'));
     if (!isDict(value)) {
-      return { name: fieldName, subFilter: '', isSigned: false, valueDict: new Map(), coversWholeFile: false, isDocTimeStamp: false };
+      return { name: fieldName, subFilter: '', isSigned: false, valueDict: new Map(), coversWholeFile: false, isDocTimeStamp: false, ...seed };
     }
     const sf = value.get('SubFilter');
     const subFilter = isName(sf) ? sf.name : '';
@@ -2737,7 +3022,7 @@ export class Document {
       this.originalBytes !== undefined && byteRange[2] + byteRange[3] === this.originalBytes.length;
     return {
       name: fieldName, subFilter, isSigned: contents !== undefined, valueDict: value,
-      byteRange, contents, cmsLength, coversWholeFile, isDocTimeStamp,
+      byteRange, contents, cmsLength, coversWholeFile, isDocTimeStamp, ...seed,
     };
   }
 

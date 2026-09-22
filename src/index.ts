@@ -1,6 +1,6 @@
 export { defaultPrunePolicy } from './extractor.js';
 export type { PrunePolicy } from './extractor.js';
-export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError } from './errors.js';
+export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, SeedValueError } from './errors.js';
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile, saveMarkdownFile, saveDocxFile,
@@ -28,7 +28,7 @@ export {
 export type { FieldType } from './formfield.js';
 export type {
   FieldInit, TextFieldInit, CheckboxInit, RadioOption, RadioGroupInit,
-  ChoiceOption, ChoiceInit, ComboBoxInit, ListBoxInit, PushButtonInit,
+  ChoiceOption, ChoiceInit, ComboBoxInit, ListBoxInit, PushButtonInit, SignatureFieldInit,
 } from './formcreate.js';
 export type { FieldStyle, WidgetStyle, FieldBorderStyle } from './fieldstyle.js';
 export type { ButtonIconPosition } from './buttonap.js';
@@ -212,6 +212,13 @@ export type {
   DocumentTimestampOptions,
   CadesAttributes, CommitmentType, SignerLocation,
 } from './signature.js';
+export type {
+  SeedValue, SeedRequirement, SeedDigestMethod, SeedLockDocument,
+  SeedCertValue, SeedCertRequirement, KeyUsageName,
+} from './sigseed.js';
+export type { FieldLock } from './siglock.js';
+export { httpTimestampProvider } from './tsahttp.js';
+export type { HttpTimestampOptions } from './tsahttp.js';
 export type { Signer, PemSigner, Pkcs12Signer, ExternalSigner, SignerOptions } from './signer.js';
 export type { SigAlg, SignatureScheme, DigestAlgorithm } from './sigalg.js';
 export type {

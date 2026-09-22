@@ -52,11 +52,11 @@ import {
   addCaret, CaretAnnotation, CaretOptions,
 } from './annotation.js';
 import {
-  addTextField, addCheckbox, addComboBox, addListBox, addPushButton,
+  addTextField, addCheckbox, addComboBox, addListBox, addPushButton, addSignatureField,
   type TextFieldInit, type CheckboxInit, type ComboBoxInit, type ListBoxInit,
-  type PushButtonInit,
+  type PushButtonInit, type SignatureFieldInit,
 } from './formcreate.js';
-import type { TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
+import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
 import { untagObjects } from './structwrite.js';
 import { checkOnSkipped, markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
@@ -372,6 +372,12 @@ export class Page {
    *  A thin forwarder to Form.AddPushButton with `page` bound to this page. */
   AddPushButton(init: Omit<PushButtonInit, 'page'>): ButtonField {
     return addPushButton(this.doc, { ...init, page: this.Number });
+  }
+
+  /** Create an empty AcroForm signature field whose widget lands on this page.
+   *  A thin forwarder to Form.AddSignatureField with `page` bound to this page. */
+  AddSignatureField(init: Omit<SignatureFieldInit, 'page'>): Field {
+    return addSignatureField(this.doc, { ...init, page: this.Number });
   }
 
   /** Embed a file and place a /FileAttachment icon annotation on this page. */

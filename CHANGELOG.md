@@ -354,6 +354,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Empty signature fields, so a document can be prepared to be signed.**
+  `doc.Form.AddSignatureField(init)` and `page.AddSignatureField(init)` create
+  a `/FT /Sig` field with a widget and no `/V`: a place for a signature that
+  someone else fills later, which is how approval workflows hand a document
+  round. `doc.Sign` and `doc.Certify` with `fieldName` set to that field's
+  full name now FILL it instead of adding a second field under the same name —
+  which is what they did before, leaving the prepared box empty beside an
+  invisible signature. Filling works on both write paths, so a prepared file
+  that has been saved and reopened, or already carries a signature, is signed
+  as an incremental append that keeps earlier signatures valid. A name that
+  belongs to a field that is already signed, or is not a signature field, is
+  refused, and so is an `opts.appearance` placed anywhere but the prepared
+  widget, rather than silently redrawing the box elsewhere. The field draws as
+  an empty box — a thin grey border unless a border or background colour is
+  given — and sets `/SigFlags` SignaturesExist without disturbing bits already
+  there; AppendOnly is left to signing, since an empty field is not a
+  signature. Every argument and the whole field path are validated before
+  anything is allocated, so a rejected call leaves the document
+  byte-identical. `Field.Value` on a signature field still throws: filling one
+  IS signing it. `doc.Signatures` now also reports signature fields nested
+  under a dotted name, by full name; it read top-level fields only, and that
+  shape is now one call away. (puep.1)
+
+- **Seed values on signature fields, written and read back typed.**
+  `AddSignatureField({ seedValue })` records what a signature in the field
+  should look like — `filter`, `subFilter`, `digestMethod`, `v`, `reasons`,
+  `legalAttestation`, `appearanceFilter`, `addRevInfo`, `lockDocument`,
+  `mdp` and `timestamp` — and `doc.Signatures[i].seedValue` reads a field's
+  `/SV` back, from our own files or anyone else's. `required` names the entries
+  that BIND rather than advise, written as the `/Ff` bits; the distinction is
+  what the whole feature turns on, so it is part of the API rather than
+  implied. `mdp` and `timestamp` have no place in it: `/MDP` has no `/Ff` bit
+  and always binds, and a timestamp's requirement flag lives in its own
+  dictionary. The signature type is spelled as a word — `'approval'` or a
+  DocMDP level — because implementations disagree about `/MDP /P 0`: Adobe and
+  pyHanko read it as an ordinary approval signature, PDFBox's documentation as
+  an author signature, and we follow the two that agree. The flag bits are
+  transcribed from PDFBox and pyHanko rather than recalled, and each is pinned
+  to its value alone, since a transposed pair round-trips perfectly. Writing is
+  strict — a `required` entry the seed value does not state, an unknown digest
+  method or a malformed value is refused before anything is allocated —
+  and reading is lenient: a wrong-typed entry reads as absent, and a
+  `/DigestMethod` written as strings, as pyHanko writes it, is accepted. `/SV`
+  is written as an indirect object, as the specification requires. Signing
+  honours it, and the certificate seed value (`/Cert`) is modelled too — see
+  the entries that follow. (puep.2)
+
+- **Signing a prepared field honours its seed value.** `Sign` and `Certify`
+  filling a field that carries `/SV` now check every REQUIRED entry and refuse
+  with the new `SeedValueError`, whose `entry` names the one at fault, before
+  anything is written — signing around a constraint the document states is
+  worse than declining. A field requiring SHA-384 refuses a signer that states
+  SHA-256 and signs with SHA-384 when the signer states nothing; SHA-1 is
+  never substituted. A required subfilter must be the first one we support, a
+  required reason must be one listed (and `[]` or `['.']` forbids giving one),
+  and a required named appearance or Adobe-style revocation info — neither of
+  which this library produces — is refused. `/MDP` always binds: `Sign` on a
+  field meant for a certification is refused rather than silently turned into
+  one, `Certify` on an approval field likewise, and `Certify` takes the
+  field's DocMDP level when the caller states none. A required `/LockDocument`
+  sets or checks a certification's level, and (since puep.7) an
+  approval signature's `/Lock /P` too. Advisory
+  entries never refuse, and supply the digest, subfilter and level the caller
+  left open. A required timestamp with no caller TSA is fetched from the
+  field's `/TimeStamp` URL through the new `httpTimestampProvider` — only over
+  http(s), never for a merely suggested URL, and with a timeout and a response
+  cap, because that URL is chosen by the document. `/LegalAttestation` is met
+  vacuously, as this signer attests nothing, and `/Cert` is not evaluated: the
+  caller supplies the credentials. The rules follow pyHanko's seed-value
+  enforcement. Signing a field with no seed value, or a new field, is
+  unchanged. (puep.3)
+
+- **Field locks: a signature can freeze named form fields, and verification
+  reports when one changes.** `AddSignatureField({ lock })` writes a `/Lock`
+  — every field, the listed ones, or all but the listed ones, a listed name
+  also covering the subtree beneath it — and signing that field carries it into
+  the signature's `/Reference` as a FieldMDP transform, beside the DocMDP one
+  a certification already writes; a `/Lock` written by another tool is honoured
+  the same way. `VerifySignatures` then reports `fieldMDP` — `violated`, with
+  the names in `lockedFieldsChanged`, when a locked field's dictionary or one
+  of its widgets changed, or the field was added or removed, in a revision
+  after that signature — the way it already reports a DocMDP violation. The
+  verdict reads the lock the SIGNATURE carries, so a `/Lock` rewritten after
+  signing cannot unfreeze anything. Filling a still-unsigned signature field is
+  exempt, so locking every field does not turn the next signer's signature into
+  a violation; changing a field that is already signed is not exempt. The
+  shapes and the matching rule — a prefix such as `ab` is not covered by `a` —
+  follow pyHanko. A lock's level, PDF 2.0's `/Lock /P`, is covered below. (puep.4)
+
+- **`AddDocumentTimestamp` fills a prepared signature field.** Given a
+  `fieldName` naming an empty signature field — one made with
+  `AddSignatureField` or by another tool — the document timestamp now goes
+  into that field instead of a new invisible `Timestamp<n>` beside it, which
+  left the prepared box empty; like `Sign`, it refuses a field that is already
+  signed or is not a signature field, before anything is written. A field
+  prepared with a seed value or a lock is refused too: those constrain a
+  SIGNATURE, and a document timestamp — with no signer, no `/Reference` and
+  always the `ETSI.RFC3161` subfilter — can honour neither, so filling it
+  would ignore what the document states. With no `fieldName`, or a new one,
+  nothing changes. (puep.5)
+
+- **The certificate seed value (`/Cert`) is written and read back typed.**
+  `seedValue.cert` records which certificate a signer should use — the
+  allowed certificates, the issuers it must chain to, subject DN attributes
+  such as `{ CN, O }`, key-usage profiles, and a URL where one can be
+  obtained — with its own `required` set, written as the `/Cert /Ff` bits
+  transcribed from pyHanko and pinned one at a time. A key-usage profile is
+  typed as the usages a certificate must have and must not have, and is
+  written as Table 235's nine-character `1`/`0`/`X` string in RFC 5280 bit
+  order, so no caller hand-builds `'1X0XXXXXX'`. Certificates stay raw DER
+  byte strings. Writing is strict — a `required` entry that is not set, a
+  usage both required and forbidden, an empty certificate — and refused before
+  anything is allocated; a foreign `/Cert` reads leniently. `/OID` is not
+  modelled, because the specification does not say how an OID is encoded in
+  its byte string and pyHanko does not support it either. The certificate
+  constraint is recorded, not enforced when signing: the caller supplies the
+  credentials directly. (puep.6)
+
+- **An approval signature can lock the document: PDF 2.0's `/Lock /P`.** A
+  `lock` may now carry `permissions` — `'no-changes'`, `'form-fill'` or
+  `'form-fill-and-annotate'` — and an APPROVAL signature in that field then
+  imposes that DocMDP level on the whole document, as only a certification
+  could before. A lock that exists only for its level lists no fields
+  (`{ action: 'include', fields: [], permissions }`, pyHanko's shape). Signing
+  carries the level into the FieldMDP transform as well, which pyHanko does to
+  match Acrobat. `VerifySignatures` now gives such a signature a real `docMDP`
+  verdict instead of `n/a`, through the same classifier a certification uses:
+  a later form fill passes at level 2 and fails at level 1. The level is read
+  from what the signature carries, else from the field's `/Lock /P` as it was
+  when signed — never from the current field, so a lock added or loosened
+  afterwards changes nothing; pyHanko reads the current field, and this is the
+  one place the two differ. `Sign` on a field whose seed value REQUIRES
+  `/LockDocument true` is now honoured rather than refused, writing `/Lock /P
+  1` into the field if it has none; an advisory `/LockDocument` imposes
+  nothing, where pyHanko would apply it. A required lock the field's own
+  `/Lock /P` contradicts is refused, and `Certify` on a field whose lock sets a
+  level takes the stricter of that level and its own. (puep.7)
+
 - **`LoadLimits`, a resource policy for opening files you did not write, and
   `ResourceLimitError`** — the vocabulary only: **nothing is enforced yet**, so
   no existing call changes behaviour. `Document.Open(buf, { limits })` accepts

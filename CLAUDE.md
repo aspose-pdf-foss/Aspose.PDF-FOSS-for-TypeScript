@@ -625,8 +625,10 @@ Source (`src/`):
   `Form` facade (tree walk, `Get`, `GenerateAppearances`, the `Add*` entry
   points); `formfield.ts` holds the `Field` base class and its typed subclasses
   (`TextField`, `CheckboxField`, `RadioField`, `ChoiceField`, `ButtonField`)
-  behind a `wrapField` dispatcher — there is no `SignatureField`, since that name
-  belongs to signature.ts and a signature field is not creatable;
+  behind a `wrapField` dispatcher — there is no `SignatureField` class, since that
+  name belongs to signature.ts's read-side type, so `AddSignatureField` (`puep.1`)
+  returns a base `Field` of type `'signature'` whose `Value` setter still throws —
+  filling one IS signing it;
   `formcreate.ts` owns field *creation* — `/AcroForm` bootstrap, `/DR`+`/DA`
   defaults, hierarchical field-tree wiring and widget construction;
   `fieldstyle.ts` owns the style vocabulary (`WidgetStyle`/`FieldStyle`, their
@@ -8312,8 +8314,10 @@ Source (`src/`):
   **Note on scope, each deliberate:** no dynamic layout engine, no approximate
   geometry, no XFA scripting (`<validate nullTest>` is read as a FLAG, never
   run), no writing XFA back, and `<signature>`/`<imageEdit>`/`<barcode>` are
-  refused and reported rather than synthesized — the signature refusal matching
-  `formfield.ts`'s existing rule that a signature field is not creatable.
+  refused and reported rather than synthesized. That signature refusal once
+  cited a rule that a signature field is not creatable; since `puep.1` one is
+  (`AddSignatureField`), and converting `<signature>` is left as a decision
+  nobody has asked for rather than an impossibility.
   **Note:** `pdfaconvert.ts` is untouched. It deletes `/XFA` outright today
   (`pdfaconvert.ts:452`), so the useful order is `ConvertXfaToAcroForm` THEN
   `ConvertToPdfA` — the fields survive as a real AcroForm and the PDF/A rule is
@@ -8589,6 +8593,146 @@ Source (`src/`):
   Tracked as `72nc.7`, being catalog work.
   **Note, measured:** all seven mutations aimed at this module redden, the
   `/Di` one only after the case above was added.
+- **sigseed.ts** — the signature field seed value (`/SV`, 32000-1 12.7.4.5):
+  `encodeSeedValue` and `readSeedValue` over the typed `SeedValue` (`puep.2`).
+  A pure LEAF over `types.js` and `metadata.js`'s text codec, `resolve` as an
+  argument, so every rule is drivable from hand-built dicts. It WRITES, READS
+  and — through `planSeedValue` (`puep.3`) — decides how a signing call
+  honours one, still with no document and no signer in sight.
+  **Invariant:** the `/Ff` bits are TRANSCRIBED, from PDFBox's
+  `PDSeedValue.FLAG_*` (bits 1-7) and pyHanko's `SigSeedValFlags` (the same
+  seven plus LockDocument 128 and AppearanceFilter 256). A transposed pair
+  round-trips PERFECTLY, so a round-trip test cannot see one — each bit is
+  pinned to its value alone. Measured: swapping 8 and 16 reddens exactly those
+  two cases.
+  **Invariant, and the anchors DISAGREE:** `/MDP /P 0` is an ordinary APPROVAL
+  signature. Adobe's seed-value documentation and pyHanko say so; PDFBox's
+  javadoc says "author signature". The public type spells it `'approval'`, and
+  P 1-3 reuse `DocMdpPermission`'s names, so no caller carries a bare 0 whose
+  reading is in dispute.
+  **Invariant:** `required` holds only the nine entries with an `/Ff` bit.
+  `mdp` always binds and has none; `timestamp`'s flag lives in its own
+  dictionary. Requiring an entry the seed value does not STATE is refused —
+  it binds nothing — and `required` reads back in BIT order, being a set.
+  **Invariant:** write strictly, read leniently. Every argument is validated in
+  `encodeSeedValue`, which allocates nothing, and `addSignatureField` calls it
+  BEFORE `createField` — measured, encoding after allocation reddens 16 of
+  the refusal cases. The reader drops a wrong-typed entry, a name outside its
+  set and unknown `/Ff` bits rather than throwing, and reports only what is
+  stated: no `/V` is computed and no `/Ff` is written when nothing binds.
+  **Invariant:** `/SV` is an INDIRECT object (pyHanko: "/SV must be an
+  indirect reference as per the spec").
+  **Note:** `/DigestMethod` is read as names OR strings, case-folded — the spec
+  says names, pyHanko writes strings. We always write names.
+  **Note (`puep.6`):** `/Cert`, the certificate seed value, IS modelled as
+  `seedValue.cert` (`/Type /SVCert`, written direct inside `/SV` as pyHanko
+  does) with its OWN `required` set over its own `/Ff`: subject 1, issuer 2,
+  subjectDN 8, keyUsage 32, URL 64 — pyHanko's `SigCertConstraintFlags`, each
+  pinned alone. It is recorded and read, never evaluated: `planSeedValue`
+  ignores it, since the caller supplies the credentials.
+  **Invariant:** a key-usage profile is TYPED (`required`/`forbidden` usage
+  names) and written as Table 235's nine-character string in RFC 5280 bit
+  order — `1` must have, `0` must not, `X` either. Reversing the order or the
+  polarity each reddens 2. The reader takes the first NINE characters and a
+  missing position means `X` (pyHanko's `read_from_sv_string`); any other
+  character drops that profile.
+  **Invariant:** `/Subject` and `/Issuer` are raw DER in BYTE strings, never
+  run through the text codec, which would re-encode any byte above 0x7F.
+  **Invariant, a refusal to guess:** `/OID` (bit 4) is NOT modelled. The spec
+  says "byte strings containing OIDs" without saying whether that means DER or
+  dotted text, pyHanko marks it unsupported, and a wrong guess fails to
+  interoperate silently. The reader drops the entry and its bit; the writer
+  refuses `required: ['oid']`.
+  **Note, measured:** `/URLType` is reported only when STATED — not defaulted
+  to the spec's `Browser` — and that took a case of its own: the round trip
+  stated one, so defaulting reddened nothing until a URL-only read existed.
+  **Invariant (`puep.3`):** `planSeedValue` is PURE — a `SeedValue` and a
+  `SeedRequest` of what the caller STATED in, a `SeedPlan` of what the seed
+  value DECIDED out, or a `SeedValueError`. `signCore` only applies the plan.
+  An unstated choice is `undefined`, which is the whole mechanism: only an
+  unstated digest, subfilter or DocMDP level may be supplied by the field,
+  which is why `Certify` now passes its level UNDEFAULTED. The plan sets only
+  what it decided — a stated digest leaves `plan.digest` unset.
+  **Invariant:** a REQUIRED entry the call cannot meet refuses; an ADVISORY one
+  never does. The rules are pyHanko's `_enforce_seed_value_constraints`, with
+  three DECISIONS recorded because the issue text said otherwise: `/MDP` on
+  the wrong call is REFUSED rather than converting `Sign` into a
+  certification; a required `/LegalAttestation` is met VACUOUSLY (the flag
+  restricts which may be supplied, and we supply none); and a
+  `/LockDocument` on `Sign` takes effect only when REQUIRED — an advisory one
+  imposes no lock, where pyHanko applies it. `puep.3` refused a required lock
+  on `Sign`; `puep.7` reversed that, planning `lockPermissions: 'no-changes'`
+  for `signCore` to write into the field's `/Lock /P`. A required lock that the
+  field's OWN `/Lock /P` contradicts is refused for either kind of signature.
+  **Invariant, and it is the SECURITY property:** the `/TimeStamp /URL` is
+  CALLED only when the timestamp is REQUIRED and the caller brought no TSA, and
+  only over http(s). The URL is chosen by the DOCUMENT, so a merely suggested
+  one must never make this library contact a host. Measured: calling an
+  advisory URL reddens 2, dropping the scheme check reddens 2.
+  **Note, measured:** all 12 mutations aimed at `puep.3` redden; ignoring the
+  plan outright reddens 18.
+- **siglock.ts** — a signature field's lock (`/Lock`) and the FieldMDP
+  transform it becomes (`puep.4`): `encodeFieldLock`, `readFieldLock`,
+  `fieldMdpReference`, `readFieldMdpLock`, `isLocked`. A pure LEAF over
+  `types.js` and `metadata.js`, `resolve` as an argument. The shapes are
+  pyHanko's `FieldMDPSpec` and `fieldmdp_reference_dictionary` (`/Data` names
+  the catalog); the rule is its `is_locked`.
+  **Note the false friend:** `docmdp.ts` lists `/Lock` among the keys a
+  DocMDP level-2 signature may CHANGE. That is whether writing a lock is
+  permitted, not what a lock freezes, and the two share no code.
+  **Invariant:** a listed name covers ITSELF and its SUBTREE (`grp` locks
+  `grp.x`) but never a mere PREFIX (`a` does not lock `ab`) — the bug pyHanko's
+  own changelog records fixing. Measured: a bare `startsWith` reddens 3.
+  **Invariant (`document.ts`'s `applyFieldMdp`):** the verdict reads the lock
+  the SIGNATURE carries (its `/Reference`), never the field's current `/Lock` —
+  the signature is what the digest covers, so a `/Lock` rewritten afterwards
+  cannot unfreeze a field. The two agree in every ordinary fixture, so this is
+  held by one case that rewrites the `/Lock` after signing.
+  **Invariant:** filling a still-UNSIGNED signature field (or adding a new one)
+  is EXEMPT, so an `all` lock does not make every later signature a violation;
+  a change to an already-signed one is not exempt. A decision, taken from
+  pyHanko treating signature-field filling as its own case.
+  **Invariant:** a field counts as changed through its dict OR any of its
+  WIDGETS, found through `Form` — the one owner of the tree walk — plus an
+  identity map to object numbers. **Note, measured:** every `Add*Field` makes
+  a MERGED field/widget dict, where the two cannot differ, so the widget half
+  reddened NOTHING until a radio-group fixture (parent plus kid widgets) moved
+  a kid alone.
+  **Note:** a change to an ANCESTOR node (an inherited `/V` on a parent) is
+  not attributed to its descendants — attributing it would flag every sibling
+  added under a shared parent.
+  **Invariant (`puep.7`):** `FieldLock.permissions` is PDF 2.0's `/Lock /P`, a
+  DocMDP level an APPROVAL signature imposes on the whole document. It rides in
+  BOTH places pyHanko writes it — the field's `/Lock` and the FieldMDP
+  `/TransformParams /P`, the second flagged in pyHanko's own source as "NOT
+  spec-compatible, but emulates Acrobat". A lock that exists only for its level
+  lists no fields; an empty list is refused without a level, since then it
+  locks nothing.
+  **Invariant (`document.ts`'s `applyApprovalLockLevel`):** the level is read
+  from what the SIGNATURE carries, else from the field's `/Lock /P` AS IT WAS
+  in the signed revision — read ON ITS OWN by `readLockLevel`, whatever
+  `/Action` says, as pyHanko reads `lock_dict['/P']`. Never the current field:
+  pyHanko reads that, and this is the one place the two differ.
+  **Note, measured, and it is a REDUNDANT DEFENCE:** dropping the carried read
+  reddens NOTHING. This library writes the level into both places, so for our
+  own documents the two sources always agree; the carried read matters only
+  for a foreign signer that puts `/P` in the signature and not the field. The
+  fallback IS pinned, by a `/Lock` holding `/P` and no `/Action` — a lock our
+  reader does not recognise, so no FieldMDP is written and only the field says
+  the level. Do not "simplify" either away.
+  **Invariant:** `Certify` on a field whose lock sets a level takes the
+  STRICTER of that level and its own (pyHanko's "choose the stricter option").
+- **tsahttp.ts** — `httpTimestampProvider(url, opts?)` (`puep.3`): an RFC 3161
+  authority over HTTP(S) through the runtime's built-in `fetch` (Node >= 22,
+  per `engines`), so no dependency. The first network client in `src/`.
+  **Invariant:** it BOUNDS the remote party — a timeout (`AbortSignal.timeout`,
+  default 30 s) and a response cap (default 1 MiB) checked against
+  `Content-Length` AND while streaming, so a lying or absent length is bounded
+  too. Signing calls it with a URL the DOCUMENT chose, and a file we did not
+  write must not exhaust memory or hang the call. Measured: dropping the
+  streaming check reddens the chunked-response case.
+  **Note:** the tests run a local `node:http` authority built on
+  `buildTimeStampToken`, so the suite never touches the network.
 - **signature.ts**, **signer.ts**, **sigalg.ts**, **sigappearance.ts**,
   **sigplaceholder.ts**, **incremental.ts**, **pkcs12.ts**, **docmdp.ts** —
   digital signing (`Sign`/`Certify`): CMS/PAdES build, credential sources,
@@ -9442,8 +9586,10 @@ Two rules apply to these, both learned the hard way:
   `test/helpers/`; mirror existing builder/test style. Reach for a real-world
   fixture (above) only to validate a format against bytes we did not produce.
 - **Errors** — throw `PdfParseError`, `UnsupportedFeatureError`,
-  `InvalidPasswordError` or `ResourceLimitError` (see `errors.ts`); these are the
-  public error types. A `ResourceLimitError` is for a `LoadLimits` bound only,
+  `InvalidPasswordError`, `ResourceLimitError` or `SeedValueError` (see
+  `errors.ts`); these are the public error types. A `SeedValueError` is for a
+  signature field's seed value the signing call cannot honour (`puep.3`), and
+  names the entry. A `ResourceLimitError` is for a `LoadLimits` bound only,
   never for damage.
   EVERY `catch` in `src/` calls `rethrowLimit(e)` as its first statement
   (`ibzo.3`), and `test/limits-catch.test.ts` fails the build naming any that

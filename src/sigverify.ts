@@ -81,6 +81,15 @@ export interface SignatureReport {
    *  every post-signing change stays within the certified level, `violated` when
    *  one exceeds it, `n/a` for non-certified documents / non-cert signatures. */
   docMDP: 'ok' | 'violated' | 'n/a';
+  /** Field-lock (`/FieldMDP`) verdict for a signature whose field carried a
+   *  `/Lock`: `violated` when a field the lock freezes was changed or removed in
+   *  a revision appended after this signature, `ok` when none was, `n/a` when
+   *  the signature carries no FieldMDP transform. Filling an UNSIGNED signature
+   *  field is exempt, so a lock does not forbid the signatures that follow it. */
+  fieldMDP: 'ok' | 'violated' | 'n/a';
+  /** The full names of the locked fields that changed, when `fieldMDP` was
+   *  evaluated. */
+  lockedFieldsChanged?: string[];
   /** RFC 3161 signature-timestamp verdict (time + imprint/TSA-signature checks),
    *  present only when the signature carries an `id-aa-timeStampToken`. */
   timestamp?: TimestampInfo;
@@ -112,6 +121,7 @@ export function verifySignature(
     chain: 'unchecked',
     revocation: 'unchecked',
     docMDP: 'n/a',
+    fieldMDP: 'n/a',
   };
   if (!sig.byteRange || !sig.contents) return base;
 

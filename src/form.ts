@@ -6,9 +6,9 @@ import type {
   TextField, CheckboxField, RadioField, ChoiceField, ButtonField,
 } from './formfield.js';
 import {
-  addTextField, addCheckbox, addRadioGroup, addComboBox, addListBox, addPushButton,
+  addTextField, addCheckbox, addRadioGroup, addComboBox, addListBox, addPushButton, addSignatureField,
   type TextFieldInit, type CheckboxInit, type RadioGroupInit,
-  type ComboBoxInit, type ListBoxInit, type PushButtonInit,
+  type ComboBoxInit, type ListBoxInit, type PushButtonInit, type SignatureFieldInit,
 } from './formcreate.js';
 import { removeField } from './formremove.js';
 
@@ -155,6 +155,20 @@ export class Form {
    *  malformed action. */
   AddPushButton(init: PushButtonInit): ButtonField {
     const field = addPushButton(this.doc, init);
+    this.build();
+    return field;
+  }
+
+  /** Create an empty signature field (/FT /Sig, no /V) on `init.page` and return
+   *  its handle: a place for a signature that someone else fills later.
+   *  {@link Document.Sign} with `fieldName` set to its full name fills it rather
+   *  than creating a second field. Sets /SigFlags SignaturesExist without
+   *  disturbing the bits already there. The widget draws an empty box — a thin
+   *  grey border unless a border or background colour is given. Throws without
+   *  mutating the document on a malformed argument, an out-of-range page, a
+   *  duplicate name, or a name routed through an existing terminal field. */
+  AddSignatureField(init: SignatureFieldInit): Field {
+    const field = addSignatureField(this.doc, init);
     this.build();
     return field;
   }

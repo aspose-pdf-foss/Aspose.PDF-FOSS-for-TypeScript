@@ -5,6 +5,8 @@ import { CmsSigner, CadesAttributes } from './cms.js';
 import { parse } from './asn1.js';
 import type { DigestAlgorithm } from './sigalg.js';
 import type { TimestampProvider } from './rfc3161.js';
+import type { SeedValue } from './sigseed.js';
+import type { FieldLock } from './siglock.js';
 
 /** Digital-signature field/value-dict model and signing orchestration helpers
  *  shared by {@link Document.Sign}. The byte-level placeholder mechanics live in
@@ -137,6 +139,10 @@ export interface SignatureField {
   /** Whether this is a document timestamp (`/DocTimeStamp` / `ETSI.RFC3161`)
    *  rather than an approval/certification signature. */
   isDocTimeStamp: boolean;
+  /** The field's seed value (`/SV`), typed, when it states one. */
+  seedValue?: SeedValue;
+  /** The fields a signature in this field freezes (`/Lock`), when it states one. */
+  lock?: FieldLock;
 }
 
 /** Map the public `subFilter` option to its PDF `/SubFilter` name. */
