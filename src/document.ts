@@ -56,6 +56,8 @@ import { readFdf, writeFdf } from './fdf.js';
 import { readXfdf, writeXfdf } from './xfdf.js';
 import { OptionalContent } from './ocg.js';
 import { buildPages, PageTree } from './pagetree.js';
+import { checkPageTree } from './pagecheck.js';
+import type { ValidationIssue } from './validation.js';
 import {
   OutlineItem, PageDest, readOutlineTree, buildOutlineObjects, validateOutlineItems,
   NamedDestination, readNamedDestinations, encodeDest,
@@ -333,6 +335,9 @@ function offsetRefs(o: PdfObject, offset: number): void {
   }
 }
 
+/** The page attributes 7.7.3.4 makes inheritable. */
+const INHERITABLE_PAGE_KEYS = ['MediaBox', 'CropBox', 'Resources', 'Rotate'] as const;
+
 /** First ancestor value of `key` up `src`'s /Parent chain in `doc` (raw, not
  *  resolved); null if none. Cycle-guarded. Does not read `src` itself. */
 function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject {
@@ -590,6 +595,7 @@ export class Document {
     for (const num of this.pageObjNums)
       if (num === 0) throw new UnsupportedFeatureError('cannot reorder: a page is not an indirect object');
 
+    this.flattenToRoot();
     const srcNums = this.pageObjNums.slice();
     const kids: PdfObject[] = [];
     const used = new Set<number>();
@@ -1289,6 +1295,44 @@ export class Document {
    *  PDF/A (ISO 19005, parts 1-3, levels b/u/a). Read-only; never mutates. */
   ValidatePdfA(level: PdfALevel): ValidationReport {
     return validatePdfA(this, this.catalog(), level);
+  }
+
+  /** Check the document's structural integrity (`dmin.4`): the catalog
+   *  resolves to a `/Type /Catalog` whose `/Pages` is a `/Type /Pages` node,
+   *  every page-tree node is reached once, every intermediate node's `/Count`
+   *  agrees with the pages under it, every kid's `/Parent` is the node listing
+   *  it, and every page has a `/MediaBox` on itself or above it.
+   *
+   *  Reads the raw object graph, so damage made through a live `Dict` after
+   *  Open is visible. Two things are deliberately NOT failures: a
+   *  back-reference (`/Parent`, `/P`, `/Prev` — the format requires them),
+   *  and a reference to an object the file does not have, which 7.3.10 makes
+   *  null. Never throws on a broken structure; see {@link Repair}. */
+  Validate(): ValidationReport {
+    return new ValidationReport(checkPageTree(this, false));
+  }
+
+  /** Fix, in place, what {@link Validate} reports about the page tree
+   *  (`dmin.4`), keeping the file's tree shape: a shared node is copied, a
+   *  `/Kids` cycle loses its back edge, a wrong `/Count` is recounted (and only
+   *  there are `/Kids` entries naming nothing dropped), a stale `/Parent` is
+   *  repointed, and a page with no `/MediaBox` anywhere gets US Letter — the
+   *  size `Page.MediaBox` already reported for it. Returns the issues it
+   *  fixed; afterwards `Validate().Passed` is true unless the catalog itself is
+   *  invalid, which is not repairable.
+   *
+   *  On a sound document it returns `[]` and touches NOTHING, including the
+   *  modified flag — a no-op that marked the document modified would turn a
+   *  following sign into a full rewrite of bytes an earlier signature covered. */
+  Repair(): ValidationIssue[] {
+    const fixed = checkPageTree(this, true).filter((i) => i.rule !== 'CatalogInvalid');
+    if (fixed.length === 0) return fixed;
+    this.markModified();
+    const tree = buildPages(this);
+    this.Pages.length = 0;
+    this.Pages.push(...tree.pages);
+    this.pageObjNums = tree.pageObjNums;
+    return fixed;
   }
 
   /** Validate the document against a curated, machine-decidable subset of
@@ -3044,11 +3088,39 @@ export class Document {
 
   /** Refs for the current pages in order; throws if any page is an inline leaf. */
   private currentKids(): PdfObject[] {
-    return this.pageObjNums.map((num) => {
+    const kids = this.pageObjNums.map((num) => {
       if (num === 0)
         throw new UnsupportedFeatureError('cannot modify pages: a page is not an indirect object');
       return ref(num);
     });
+    this.flattenToRoot();
+    return kids;
+  }
+
+  /** Before an edit re-lists this document's existing pages directly under the
+   *  root, copy each page's inherited attributes from the intermediate nodes
+   *  between it and the root onto its own dict, and point its `/Parent` at the
+   *  root (`dmin.4`). Without it the pages kept `/Parent` naming an
+   *  intermediate node that still listed them with its old `/Count` — a tree
+   *  `Validate()` fails — and `Reorder`, which repoints `/Parent` itself, lost
+   *  the intermediate node's `/MediaBox` outright. The ROOT's own values are
+   *  not copied: the page still inherits them from the root. A value the page
+   *  states itself is never overwritten. */
+  private flattenToRoot(): void {
+    const rootNum = this.requireIndirectPagesRoot();
+    const root = this.objects.get(rootNum);
+    for (const page of this.Pages) {
+      const dict = page.Dict;
+      let node = this.resolve(dict.get('Parent'));
+      const seen = new Set<PdfDict>();
+      while (isDict(node) && node !== root && !seen.has(node)) {
+        seen.add(node);
+        for (const key of INHERITABLE_PAGE_KEYS)
+          if (!dict.has(key) && node.has(key)) dict.set(key, node.get(key)!);
+        node = this.resolve(node.get('Parent'));
+      }
+      dict.set('Parent', ref(rootNum));
+    }
   }
 
   /** Write Kids/Count into the root /Pages node and rebuild Pages + pageObjNums. */
@@ -3293,7 +3365,7 @@ export class Document {
    *  in `pages` order. Does not mutate `other`. */
   private importPages(other: Document, rootNum: number, pages: Page[] = other.Pages): number[] {
     const policy = defaultPrunePolicy();
-    const inheritable = ['MediaBox', 'CropBox', 'Resources', 'Rotate'];
+    const inheritable = INHERITABLE_PAGE_KEYS;
     let next = this.maxObjNum();
     const map = new Map<number, number>(); // other old-num -> this new-num (dedup)
     const queue: PdfObject[] = [];

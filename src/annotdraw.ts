@@ -1,10 +1,13 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isString, name } from './types.js';
-import { buildAppearanceXObject, installAP, widgetGeom, wrapTextBody, type WidgetGeom } from './appearance.js';
+import { PAD, buildAppearanceXObject, installAP, widgetGeom, wrapTextBody, type WidgetGeom } from './appearance.js';
 import { num } from './pagecontent.js';
+import { cloudPath, type CloudPath } from './cloudborder.js';
 import { decodePdfText } from './metadata.js';
 import { parseDA } from './da.js';
-import { measure } from './metrics.js';
+import { measure, normalizeFont, type StdFont } from './metrics.js';
+import { parseRichText, richTextBody, styleFromFace, type RichAlign, type RichParagraph } from './richlayout.js';
+import { readRichTextMarkup } from './richtext.js';
 import { encodeWinAnsi } from './encoding.js';
 import { serializeString } from './serialize.js';
 import type { LineEnding } from './annotation.js';
@@ -137,6 +140,17 @@ export function freeTextBoxBody(
   textColor: [number, number, number], align: 'left' | 'center' | 'right',
   color: [number, number, number], fill: [number, number, number] | undefined, width: number,
 ): string {
+  return freeTextFrame(w, h, color, fill, width)
+    + wrapTextBody(contents, 'Helvetica', fontSize, textColor, w, h, width, align, AP_FONT_KEY);
+}
+
+/** Fill and inset border of a text box of size w×h at the origin — the part of
+ *  a FreeText appearance that does not depend on its text, shared by the plain
+ *  and the rich (`v0tz.3`) text paths. */
+export function freeTextFrame(
+  w: number, h: number, color: [number, number, number],
+  fill: [number, number, number] | undefined, width: number,
+): string {
   let s = '';
   if (fill) s += `${num(fill[0])} ${num(fill[1])} ${num(fill[2])} rg\n0 0 ${num(w)} ${num(h)} re f\n`;
   if (width > 0) {
@@ -144,24 +158,35 @@ export function freeTextBoxBody(
     s += `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width)} w\n` +
       `${num(half)} ${num(half)} ${num(w - width)} ${num(h - width)} re S\n`;
   }
-  s += wrapTextBody(contents, 'Helvetica', fontSize, textColor, w, h, width, align, AP_FONT_KEY);
   return s;
 }
 
 /** Install `body` as the annotation's /AP /N, wrapping in a /GS0 ExtGState when
  *  opacity < 1 (matching the markup opacity path). */
-export function installShapeAP(doc: Document, dict: PdfDict, g: WidgetGeom, body: string, opacity: number): void {
+export function installShapeAP(
+  doc: Document, dict: PdfDict, g: WidgetGeom, body: string, opacity: number,
+  faces: ReadonlyMap<string, StdFont> = new Map([[AP_FONT_KEY, 'Helvetica']]),
+): void {
   let full = '';
   if (opacity < 1) full += '/GS0 gs\n';
   full += body;
-  const stream = buildAppearanceXObject(doc, g, 'Helvetica', AP_FONT_KEY, full);
+  // The default reproduces the single-font call every caller made before
+  // v0tz.3, so only a rich FreeText, which names several faces, moves bytes.
+  const [[firstKey, firstFace], ...rest] = [...faces];
+  const stream = buildAppearanceXObject(doc, g, firstFace, firstKey, full);
+  const resources = stream.dict.get('Resources') as PdfDict;
+  const fonts = resources.get('Font') as PdfDict;
+  for (const [key, face] of rest) {
+    fonts.set(key, doc.allocObject(new Map<string, PdfObject>([
+      ['Type', name('Font')], ['Subtype', name('Type1')],
+      ['BaseFont', name(face)], ['Encoding', name('WinAnsiEncoding')],
+    ])));
+  }
   if (opacity < 1) {
     const gsDict: PdfDict = new Map<string, PdfObject>([
       ['Type', name('ExtGState')], ['ca', opacity], ['CA', opacity],
     ]);
-    (stream.dict.get('Resources') as PdfDict).set(
-      'ExtGState', new Map<string, PdfObject>([['GS0', doc.allocObject(gsDict)]]),
-    );
+    resources.set('ExtGState', new Map<string, PdfObject>([['GS0', doc.allocObject(gsDict)]]));
   }
   installAP(doc, dict, stream);
 }
@@ -182,6 +207,65 @@ export function drawRect(g: WidgetGeom, color: [number, number, number], fill: [
   s += `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width)} w\n`;
   s += `${num(x)} ${num(y)} ${num(w)} ${num(h)} re\n`;
   return s + paintOp(width > 0, fill !== undefined) + '\n';
+}
+
+/** Bulge height, in points, per unit of /BE /I. A heuristic: 32000-1 12.5.4
+ *  names the cloud effect and prescribes no drawing, so this is a uniform
+ *  approximation of what a viewer shows rather than a match — the posture the
+ *  /LE line endings already take. /I 1 gives 4.5pt bulges on 9pt scallops. */
+const CLOUD_UNIT = 4.5;
+
+/** The scallop bulge height a /BE asks for, or undefined for a straight border.
+ *
+ *  An absent /BE, a style that is not /C, and an intensity of 0 all leave the
+ *  border unchanged. An absent /I beside /S /C defaults to 1 rather than 0:
+ *  /S /C IS the request for a cloud, and 0 would make the dictionary mean
+ *  nothing. /I is clamped to the 0..2 the spec states it ranges over. */
+export function cloudBulge(doc: Document, dict: PdfDict): number | undefined {
+  const be = doc.resolve(dict.get('BE'));
+  if (!isDict(be)) return undefined;
+  const s = doc.resolve(be.get('S'));
+  if (!isName(s) || s.name !== 'C') return undefined;
+  const i = doc.resolve(be.get('I'));
+  const intensity = typeof i === 'number' && Number.isFinite(i)
+    ? Math.min(2, Math.max(0, i))
+    : 1;
+  return intensity > 0 ? intensity * CLOUD_UNIT : undefined;
+}
+
+/** Paint a closed cloud outline, with the same colour/width/paint rules every
+ *  other shape body here uses. */
+export function cloudBodyFrom(
+  path: CloudPath, color: [number, number, number],
+  fill: [number, number, number] | undefined, width: number,
+): string {
+  let s = '';
+  if (fill) s += `${num(fill[0])} ${num(fill[1])} ${num(fill[2])} rg\n`;
+  s += `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width)} w\n`;
+  s += `${num(path.x)} ${num(path.y)} m\n`;
+  for (const g of path.segments) {
+    s += `${num(g.c1x)} ${num(g.c1y)} ${num(g.c2x)} ${num(g.c2y)} ${num(g.x)} ${num(g.y)} c\n`;
+  }
+  s += 'h\n';
+  return s + paintOp(width > 0, fill !== undefined) + '\n';
+}
+
+/** A cloudy square. The drawn boundary is DERIVED from /Rect, so it is inset by
+ *  the bulge as well as the border half-width: the scallops then reach exactly
+ *  where the straight border would have been, and nothing is clipped by the
+ *  form's /BBox. Too little room left and the straight rect is drawn instead —
+ *  a degrade rather than nothing. */
+export function drawCloudRect(
+  g: WidgetGeom, color: [number, number, number],
+  fill: [number, number, number] | undefined, width: number, bulge: number,
+): string {
+  const inset = width / 2 + bulge;
+  const w = g.w - 2 * inset, h = g.h - 2 * inset;
+  if (!(w > 0 && h > 0)) return drawRect(g, color, fill, width);
+  const x1 = inset + w, y1 = inset + h;
+  // Counter-clockwise, so the cloud bulges out of the box rather than into it.
+  const pts = [inset, inset, x1, inset, x1, y1, inset, y1];
+  return cloudBodyFrom(cloudPath(pts, bulge), color, fill, width);
 }
 
 /** Ellipse inscribed in the inset rect via 4 Bézier quarter-arcs. */
@@ -402,7 +486,15 @@ function polyBody(
   const v = numsOf(doc, dict.get('Vertices'));
   if (v.length < 4 || v.length % 2 !== 0) return undefined;
   const pts = toFormSpace(v, minX, minY);
-  if (closed) return polyPathBody(pts, true, color, fill, width);
+  if (closed) {
+    // A polygon's boundary is STATED by /Vertices, so the scallops bulge out
+    // of where the document put them and the room comes from its /Rect —
+    // deliberately unlike a square, whose boundary is derived from /Rect and
+    // so is ours to inset. A producer that wrote /BE padded /Rect for it.
+    const bulge = cloudBulge(doc, dict);
+    if (bulge !== undefined) return cloudBodyFrom(cloudPath(pts, bulge), color, fill, width);
+    return polyPathBody(pts, true, color, fill, width);
+  }
 
   let body = polyPathBody(pts, false, color, undefined, width);
   const [start, end] = endingsOf(doc, dict);
@@ -433,15 +525,35 @@ function inkBody(doc: Document, dict: PdfDict, minX: number, minY: number, color
   return drew ? body : undefined;
 }
 
-/** Body for /FreeText, from /Contents, /DA, /Q and /RD (plus /CL when present). */
+/** A FreeText's appearance, ready to wrap: its geometry, content body, the
+ *  faces the body's `Tf` operators name (key → Standard-14 face) and its
+ *  constant opacity (`v0tz.3`). */
+export interface FreeTextParts {
+  g: WidgetGeom; body: string; faces: Map<string, StdFont>; opacity: number;
+}
+
+/** The styled paragraphs a FreeText's /RC describes, over its /DA and /DS —
+ *  or undefined when there is no /RC, it will not parse, or it holds no text,
+ *  in which case the caller draws plain /Contents. A comment is never drawn
+ *  emptier than its plain text (`v0tz.3`). */
+function richParagraphs(
+  doc: Document, dict: PdfDict, face: StdFont, size: number,
+  color: [number, number, number], align: RichAlign,
+): RichParagraph[] | undefined {
+  const rc = readRichTextMarkup(doc, dict, 'RC');
+  if (rc === undefined) return undefined;
+  const dsRaw = doc.resolve(dict.get('DS'));
+  const ds = isString(dsRaw) ? decodePdfText(dsRaw.bytes) : undefined;
+  const paras = parseRichText(rc, ds, styleFromFace(face, size, color, align));
+  return paras !== undefined && paras.length > 0 ? paras : undefined;
+}
+
+/** Body for /FreeText: /RC when it yields styled text, else /Contents; /DA,
+ *  /Q and /RD either way, plus /CL when present. */
 function freeTextBody(
   doc: Document, dict: PdfDict, g: WidgetGeom, minX: number, minY: number,
   color: RGB, fill: RGB | undefined, width: number,
-): string | undefined {
-  const contentsRaw = doc.resolve(dict.get('Contents'));
-  if (!isString(contentsRaw)) return undefined;
-  const contents = decodePdfText(contentsRaw.bytes);
-
+): { body: string; faces: Map<string, StdFont> } | undefined {
   const daRaw = doc.resolve(dict.get('DA'));
   const da = isString(daRaw) ? parseDA(decodePdfText(daRaw.bytes)) : undefined;
   const fontSize = da !== undefined && da.size > 0 ? da.size : 12;
@@ -457,9 +569,23 @@ function freeTextBody(
   const boxH = g.h - padT - padB;
   if (boxW <= 0 || boxH <= 0) return undefined;
 
-  let body = `q 1 0 0 1 ${num(padL)} ${num(padB)} cm\n` +
-    freeTextBoxBody(boxW, boxH, contents, fontSize, textColor, align, color, fill, width) +
-    '\nQ\n';
+  const face = da !== undefined ? normalizeFont(da.fontName) : 'Helvetica';
+  const rich = richParagraphs(doc, dict, face, fontSize, textColor, align);
+  let inner: string;
+  let faces: Map<string, StdFont>;
+  if (rich !== undefined) {
+    const r = richTextBody(rich, boxW, boxH, width + PAD);
+    inner = freeTextFrame(boxW, boxH, color, fill, width) + r.body;
+    faces = r.faces;
+  } else {
+    const contentsRaw = doc.resolve(dict.get('Contents'));
+    if (!isString(contentsRaw)) return undefined;
+    inner = freeTextBoxBody(
+      boxW, boxH, decodePdfText(contentsRaw.bytes), fontSize, textColor, align, color, fill, width);
+    faces = new Map([[AP_FONT_KEY, 'Helvetica']]);
+  }
+
+  let body = `q 1 0 0 1 ${num(padL)} ${num(padB)} cm\n` + inner + '\nQ\n';
 
   // A callout leader, when /CL is present, drawn in BBox space.
   const cl = numsOf(doc, dict.get('CL'));
@@ -476,26 +602,63 @@ function freeTextBody(
       body += drawEnding(p[0], p[1], dx, dy, ending, Math.max(8, width * 3), color);
     }
   }
-  return body;
+  return { body, faces };
+}
+
+/** Everything a FreeText's appearance needs, read from the dict and allocating
+ *  NOTHING — so `regenerateAppearance` can install it with allocated fonts and
+ *  `annotappearance.ts`'s viewer fallback can wrap it inline (`v0tz.3`). One
+ *  builder, two wrappers: the two provably cannot draw a FreeText differently.
+ *  The reads are `regenerateAppearance`'s own helpers for the same reason. */
+export function freeTextParts(doc: Document, dict: PdfDict): FreeTextParts | undefined {
+  const g = widgetGeom(doc, dict);
+  if (!g) return undefined;
+  const rect = numsOf(doc, dict.get('Rect'));
+  if (rect.length !== 4) return undefined;
+  const color = colorOf(doc, dict.get('C')) ?? [0, 0, 0];
+  const fill = colorOf(doc, dict.get('IC'));
+  const width = widthOf(doc, dict);
+  const ca = doc.resolve(dict.get('CA'));
+  const opacity = typeof ca === 'number' && ca >= 0 && ca <= 1 ? ca : 1;
+  const parts = freeTextBody(
+    doc, dict, g, Math.min(rect[0], rect[2]), Math.min(rect[1], rect[3]), color, fill, width);
+  return parts && { g, body: parts.body, faces: parts.faces, opacity };
 }
 
 /** Regenerate the /AP /N appearance for an existing annotation dict, from the
  *  properties the dict already carries.
  *
- *  Returns false when this subtype has no generator (/Text and /Stamp are
- *  viewer-drawn or carry their content only in an appearance we do not have;
- *  /Link, /Popup, /Sound and /FileAttachment likewise), or when the
+ *  Returns false when this subtype has no generator (/Stamp carries its
+ *  content only in an appearance we do not have; /Link, /Popup and /Sound
+ *  likewise). /Text and /FileAttachment return false too, deliberately: their
+ *  icon is drawn at RESOLVE time by annotappearance.ts (`v0tz.1`) and never
+ *  written, so a viewer that draws its own icons keeps doing so. Also false
+ *  when the
  *  geometry is too degenerate or malformed to draw. In every false case the
  *  dict is left untouched, without an /AP — better an annotation with no
  *  appearance than one drawn from a guess. */
-export function regenerateAppearance(doc: Document, dict: PdfDict): boolean {
+/** Everything an annotation's appearance needs EXCEPT installing it: the
+ *  layout box, the content-stream body, the constant opacity and the faces the
+ *  body's `Tf` operators name.
+ *
+ *  Invariant (`kapw`): it ALLOCATES NOTHING, which is what lets the two callers
+ *  share it — `regenerateAppearance` installs the result as a real `/AP`, and
+ *  `annotappearance.ts`'s viewer fallback wraps the same body in an INLINE
+ *  stream at render time. Rendering must not mutate the document (`v0tz.1`'s
+ *  rule: a spurious `markModified()` turns a later `Sign()` from an incremental
+ *  append into a full rewrite of bytes an earlier signature covered), and
+ *  `installShapeAP` allocates a font object even for a body that draws no text.
+ *
+ *  One builder, so import and render provably cannot draw one annotation two
+ *  ways — `freeTextParts`' rule, generalized from the one subtype to all. */
+export function shapeParts(doc: Document, dict: PdfDict): FreeTextParts | undefined {
   const sub = dict.get('Subtype');
   const subtype = isName(sub) ? sub.name : '';
   const g = widgetGeom(doc, dict);
-  if (!g) return false;
+  if (!g) return undefined;
 
   const rect = numsOf(doc, dict.get('Rect'));
-  if (rect.length !== 4) return false;
+  if (rect.length !== 4) return undefined;
   const minX = Math.min(rect[0], rect[2]);
   const minY = Math.min(rect[1], rect[3]);
 
@@ -507,15 +670,19 @@ export function regenerateAppearance(doc: Document, dict: PdfDict): boolean {
 
   let body: string | undefined;
   switch (subtype) {
-    case 'Square':
-      body = drawRect(g, color, fill, width);
+    case 'Square': {
+      const bulge = cloudBulge(doc, dict);
+      body = bulge === undefined
+        ? drawRect(g, color, fill, width)
+        : drawCloudRect(g, color, fill, width, bulge);
       break;
+    }
     case 'Circle':
       body = drawEllipse(g, color, fill, width);
       break;
     case 'Highlight': case 'Underline': case 'StrikeOut': case 'Squiggly': {
       const quads = numsOf(doc, dict.get('QuadPoints'));
-      if (quads.length === 0 || quads.length % 8 !== 0) return false;
+      if (quads.length === 0 || quads.length % 8 !== 0) return undefined;
       const qs = offsetQuads(quads, minX, minY);
       const draw = subtype === 'Highlight' ? drawHighlight
         : subtype === 'Underline' ? drawUnderline
@@ -537,21 +704,34 @@ export function regenerateAppearance(doc: Document, dict: PdfDict): boolean {
       body = inkBody(doc, dict, minX, minY, color, width);
       break;
     case 'FreeText':
-      body = freeTextBody(doc, dict, g, minX, minY, color, fill, width);
-      break;
+      // Through freeTextParts, the builder the no-/AP viewer fallback shares,
+      // so import and render cannot draw one comment two ways (v0tz.3).
+      return freeTextParts(doc, dict);
     case 'Caret': {
       const sy = doc.resolve(dict.get('Sy'));
       const symbol = isName(sy) && sy.name === 'P' ? 'paragraph' : 'none';
       const rd = numsOf(doc, dict.get('RD'));
       body = caretBody(g, color, symbol, rd.length === 4 ? rd : undefined);
-      if (body === '') return false; // /RD left no room
+      if (body === '') return undefined; // /RD left no room
       break;
     }
     default:
-      return false;
+      return undefined;
   }
 
-  if (body === undefined) return false;
-  installShapeAP(doc, dict, g, body, opacity);
+  if (body === undefined) return undefined;
+  // Only a Caret /Sy /P draws text at all, and it names AP_FONT_KEY for its ¶;
+  // every other body here is pure geometry and needs no font resource. The
+  // default keeps installShapeAP's pre-kapw single-font registration.
+  return { g, body, opacity, faces: new Map([[AP_FONT_KEY, 'Helvetica' as StdFont]]) };
+}
+
+/** Build an annotation's /AP /N from its own properties — the import path
+ *  (ImportFdf/ImportXfdf with no usable appearance). True when one was
+ *  installed. */
+export function regenerateAppearance(doc: Document, dict: PdfDict): boolean {
+  const parts = shapeParts(doc, dict);
+  if (parts === undefined) return false;
+  installShapeAP(doc, dict, parts.g, parts.body, parts.opacity, parts.faces);
   return true;
 }

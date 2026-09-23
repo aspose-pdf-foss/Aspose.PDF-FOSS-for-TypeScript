@@ -43,8 +43,13 @@ export function buildFlattenTarget(): Uint8Array {
   objects[7] = formXObject(`/BBox [0 0 50 20] /Matrix [2 0 0 2 0 0]`, `q 1 0 0 rg 0 0 50 20 re f Q`);
   // a8 (obj 8): Hidden stamp with an appearance — must be skipped.
   objects[8] = `<< /Type /Annot /Subtype /Stamp /Rect [200 10 260 50] /F 2 /AP << /N 5 0 R >> >>`;
-  // a9 (obj 9): stamp with no appearance — must be skipped.
-  objects[9] = `<< /Type /Annot /Subtype /Stamp /Rect [200 100 260 140] /F 4 >>`;
+  // a9 (obj 9): an annotation with no appearance — must be skipped. The
+  // subtype has now moved TWICE for this, each time because the no-/AP viewer
+  // fallback grew: a /Stamp draws its caption (v0tz.2), a /Text its icon
+  // (v0tz.1), and since kapw every shape and text-markup subtype draws its own
+  // geometry. A /Link is what is left — it has no visual at all, so
+  // `shapeParts` returns undefined for it and a viewer draws nothing either.
+  objects[9] = `<< /Type /Annot /Subtype /Link /Rect [200 100 260 140] /F 4 >>`;
   return assemble(objects, 9, 1);
 }
 

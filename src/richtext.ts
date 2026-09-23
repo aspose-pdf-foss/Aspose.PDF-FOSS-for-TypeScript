@@ -11,6 +11,10 @@
  * because a regex mishandles CDATA, comments, and a `>` inside an attribute
  * value — all three of which appear in real rich text.
  */
+import type { Document } from './document.js';
+import { type PdfDict, isStream, isString } from './types.js';
+import { decodePdfText } from './metadata.js';
+import { decodeStream } from './filters.js';
 import { parseXml, type XmlNode } from './xml.js';
 import { rethrowLimit } from './errors.js';
 
@@ -23,7 +27,7 @@ import { rethrowLimit } from './errors.js';
  * turns `<p>a<b>x</b>y</p>` into `a x y`, so a query for `axy` stops matching
  * text that is there. A small block list is the only rule that gets both right.
  */
-const BLOCK = new Set([
+export const RICH_BLOCK_ELEMENTS: ReadonlySet<string> = new Set([
   'body', 'p', 'div', 'br', 'li', 'ul', 'ol', 'dl', 'dt', 'dd',
   'tr', 'td', 'th', 'table', 'blockquote', 'pre',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -60,7 +64,7 @@ export interface RichTextOptions {
 function walk(node: XmlNode, out: string[], verbatim: boolean): void {
   for (const n of node.nodes) {
     if (typeof n === 'string') { out.push(n); continue; }
-    const block = !verbatim && BLOCK.has(n.name.toLowerCase());
+    const block = !verbatim && RICH_BLOCK_ELEMENTS.has(n.name.toLowerCase());
     if (block) out.push(SEP);
     walk(n, out, verbatim);
     if (block) out.push(SEP);
@@ -107,4 +111,28 @@ export function richTextToPlain(
     // Then every run of block boundaries, with any spaces around it, is ONE break.
     .replace(/ ?\u0000[\u0000 ]*/g, '\n')
     .trim();
+}
+
+/** Rich-text markup from either the string or the stream shape, VERBATIM.
+ *
+ *  `key` is `/RV` on a form field and `/RC` on a markup annotation; the two
+ *  entries differ in where they live and agree in everything else, so the
+ *  string-or-stream duality has one reader rather than two.
+ *
+ *  Moved here from formfield.ts (`v0tz.3`) so the annotation appearance path
+ *  can reach it without importing formfield.ts, whose `flatten.js` edge leads
+ *  to annotappearance.ts and would close a cycle. formfield.ts re-exports it,
+ *  so every existing import path still works.
+ *
+ *  **Invariant:** this returns MARKUP, and its round-tripping callers depend on
+ *  that — `formdata.ts` writes it into FDF/XFDF `<value-richtext>` and
+ *  `xfdfannot.ts` into `contents-richtext`, both verbatim. Anything reading it
+ *  AS TEXT goes through `richTextToPlain` instead. */
+export function readRichTextMarkup(
+  doc: Document, dict: PdfDict, key: 'RV' | 'RC' = 'RV',
+): string | undefined {
+  const rv = doc.resolve(dict.get(key));
+  if (isString(rv)) return decodePdfText(rv.bytes);
+  if (isStream(rv)) return new TextDecoder('utf-8').decode(decodeStream(rv));
+  return undefined;
 }

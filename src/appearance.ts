@@ -12,9 +12,11 @@ import { decodePdfText } from './metadata.js';
 import { displayOf, parseOptions, type NormalizedOption } from './choiceopt.js';
 
 /** Internal horizontal padding inside the box, in points. */
-const PAD = 2;
+export const PAD = 2;
 
-import { FF_MULTILINE, FF_COMB, FF_COMBO, FF_PASSWORD } from './fieldflags.js';
+import { FF_MULTILINE, FF_COMB, FF_COMBO, FF_PASSWORD, FF_RICHTEXT } from './fieldflags.js';
+import { parseRichText, richTextBody, styleFromFace, type RichAlign, type RichBody } from './richlayout.js';
+import { readRichTextMarkup } from './richtext.js';
 
 // ZapfDingbats glyphs used for synthesized button marks.
 const ZADB_CHECK = '4';  // a check mark
@@ -70,6 +72,22 @@ export function fontResources(doc: Document, std: StdFont, key: string): PdfDict
     ['Encoding', name('WinAnsiEncoding')],
   ]);
   const fonts: PdfDict = new Map([[key, doc.allocObject(fontDict)]]);
+  return new Map<string, PdfObject>([['Font', fonts]]);
+}
+
+/** A /Resources dict carrying one Type1 font per entry of `faces`, keyed as the
+ *  body's `Tf` operators name them. The rich-text path (`v0tz.5`) needs several
+ *  where every other field body needs one. */
+export function multiFontResources(doc: Document, faces: ReadonlyMap<string, StdFont>): PdfDict {
+  const fonts: PdfDict = new Map<string, PdfObject>();
+  for (const [key, std] of faces) {
+    fonts.set(key, doc.allocObject(new Map<string, PdfObject>([
+      ['Type', name('Font')],
+      ['Subtype', name('Type1')],
+      ['BaseFont', name(std)],
+      ['Encoding', name('WinAnsiEncoding')],
+    ])));
+  }
   return new Map<string, PdfObject>([['Font', fonts]]);
 }
 
@@ -197,7 +215,7 @@ export function clipOps(g: WidgetGeom, inset: number): string {
  *  is what puts the rotated box back at the origin: a quarter turn sweeps the
  *  layout box into negative x (90°) or negative y (270°), so it is shifted by
  *  the box extent that ends up spanning that axis. */
-function matrixFor(g: WidgetGeom): number[] {
+export function matrixFor(g: WidgetGeom): number[] {
   switch (g.rotate) {
     case 90: return [0, 1, -1, 0, g.h, 0];
     case 180: return [-1, 0, 0, -1, g.w, g.h];
@@ -210,6 +228,7 @@ function matrixFor(g: WidgetGeom): number[] {
  *  content (callers pass `mk.ops + typeBody`); it is wrapped in q/Q. */
 export function buildAppearanceXObject(
   doc: Document, g: WidgetGeom, std: StdFont, fontKey: string, body: string,
+  faces?: ReadonlyMap<string, StdFont>,
 ): PdfStream {
   const content = `q\n${body}\nQ`;
   const dict: PdfDict = new Map<string, PdfObject>([
@@ -218,7 +237,11 @@ export function buildAppearanceXObject(
     ['FormType', 1],
     ['BBox', [0, 0, g.w, g.h]],
     ['Matrix', matrixFor(g)],
-    ['Resources', fontResources(doc, std, fontKey)],
+    // `faces` is the rich-text path's several (v0tz.5); omitted reproduces the
+    // single-font resources every other caller made before it existed, so they
+    // are byte-identical BY CONSTRUCTION rather than by test — the shape
+    // installShapeAP already takes on the annotation side.
+    ['Resources', faces === undefined ? fontResources(doc, std, fontKey) : multiFontResources(doc, faces)],
   ]);
   return { kind: 'stream', dict, raw: enc(content) };
 }
@@ -381,6 +404,43 @@ function textOf(value: PdfObject): string {
  *  permanent page content. */
 function maskIfPassword(text: string, ff: number): string {
   return (ff & FF_PASSWORD) ? '•'.repeat([...text].length) : text;
+}
+
+/** The size a rich-text appearance draws at when /DA states none. Auto-size
+ *  means shrink-to-fit, which is ill-defined once runs carry their own sizes,
+ *  so this takes the answer the FreeText path already gives (`v0tz.3`). */
+const RICH_DEFAULT_SIZE = 12;
+
+/** A rich-text field's body, or undefined to draw the plain value.
+ *
+ *  Undefined for every field that is not asking for rich text, and for two
+ *  that are and must not have it:
+ *
+ *  - PASSWORD. `maskIfPassword` exists because a password's value must never
+ *    reach a content stream — flattening bakes it into permanent page content,
+ *    where no viewer will ever mask it again — and rich text must not become a
+ *    second route around it.
+ *  - COMB, whose per-character cells cannot express styled runs.
+ *
+ *  Markup that will not parse, or holds no text, also falls back: a field is
+ *  never drawn emptier than its plain value, the rule the FreeText path sets. */
+function richFieldBody(
+  doc: Document, fieldDict: PdfDict, ff: number, da: ResolvedDA,
+  g: WidgetGeom, q: number, inset: number,
+): RichBody | undefined {
+  if (!(ff & FF_RICHTEXT)) return undefined;
+  if (ff & FF_PASSWORD) return undefined;
+  const maxLenRaw = doc.resolve(fieldDict.get('MaxLen'));
+  if ((ff & FF_COMB) && typeof maxLenRaw === 'number' && maxLenRaw > 0 && !(ff & FF_MULTILINE)) {
+    return undefined;
+  }
+  const rv = readRichTextMarkup(doc, fieldDict, 'RV');
+  if (rv === undefined) return undefined;
+  const align: RichAlign = q === 1 ? 'center' : q === 2 ? 'right' : 'left';
+  const size = da.size > 0 ? da.size : RICH_DEFAULT_SIZE;
+  const paras = parseRichText(rv, undefined, styleFromFace(da.std, size, da.color, align));
+  if (paras === undefined || paras.length === 0) return undefined;
+  return richTextBody(paras, g.w, g.h, inset + PAD);
 }
 
 function hasNStates(doc: Document, widget: PdfDict): boolean {
@@ -547,8 +607,11 @@ export function generateFieldAppearance(
     if (!g) continue;
     const mk = mkOps(doc, widget, g);
     let body: string | undefined;
+    let faces: ReadonlyMap<string, StdFont> | undefined;
     switch (type) {
       case 'text': {
+        const rich = richFieldBody(doc, fieldDict, ff, da, g, q, mk.inset);
+        if (rich !== undefined) { body = rich.body; faces = rich.faces; break; }
         const maxLenRaw = doc.resolve(fieldDict.get('MaxLen'));
         const maxLen = typeof maxLenRaw === 'number' ? maxLenRaw : 0;
         const shown = maskIfPassword(textOf(value), ff);
@@ -585,6 +648,6 @@ export function generateFieldAppearance(
         body = undefined; // pushbutton / signature / unknown — never display a value
     }
     if (body === undefined) continue;
-    installAP(doc, widget, buildAppearanceXObject(doc, g, da.std, 'Helv', mk.ops + clipOps(g, mk.inset) + body));
+    installAP(doc, widget, buildAppearanceXObject(doc, g, da.std, 'Helv', mk.ops + clipOps(g, mk.inset) + body, faces));
   }
 }

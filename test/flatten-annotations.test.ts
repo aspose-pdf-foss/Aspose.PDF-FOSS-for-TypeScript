@@ -112,10 +112,15 @@ describe('flattenAnnotations (L1)', () => {
 
   it('keeps a /Popup whose parent markup was not baked', () => {
     const doc = Document.Open(buildFlattenPopupTarget());
-    // strip the parent's /AP so it is unflattenable — its popup must survive too.
+    // Make the parent unflattenable — its popup must survive too. DELETING
+    // its /AP no longer does that: since kapw a /Square with no /AP draws its
+    // own geometry. What still does is an /AP that is PRESENT but unusable —
+    // an /N state subdictionary with no matching /AS — which the fallback
+    // declines by design, the producer having stated an appearance.
     const page = doc.Pages[0];
     const annots = doc.resolve(page.Dict.get('Annots')) as unknown[];
-    (doc.resolve(annots[0] as never) as Map<string, unknown>).delete('AP');
+    (doc.resolve(annots[0] as never) as Map<string, unknown>)
+      .set('AP', new Map<string, unknown>([['N', new Map<string, unknown>()]]));
 
     expect(flattenAnnotations(doc, page)).toBe(0);
     const after = doc.resolve(page.Dict.get('Annots')) as unknown[];

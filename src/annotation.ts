@@ -11,9 +11,8 @@ import {
 } from './annotdraw.js';
 
 export { quadsBBox, offsetQuads, type QuadCorners };
-import { measure } from './metrics.js';
-import { encodeWinAnsi } from './encoding.js';
-import { serializeString, enc } from './serialize.js';
+import { enc } from './serialize.js';
+import { STAMP_FONT, stampCaption, stampLabelBody } from './annotstamp.js';
 import { parseDA } from './da.js';
 import { flattenAnnotation } from './flatten.js';
 import { removeField } from './formremove.js';
@@ -952,34 +951,13 @@ export interface StampAnnotationOptions {
   color?: [number, number, number];
 }
 
-const STAMP_FONT = 'Helvetica-Bold';
-
-/** Largest font size for `bytes` fitting ~60% of box height and 85% of width. */
-function labelSize(bytes: Uint8Array, g: WidgetGeom): number {
-  let size = Math.min(g.h * 0.6, 24);
-  const avail = g.w * 0.85;
-  const w = measure(STAMP_FONT, bytes, size);
-  if (w > avail && w > 0) size = Math.max(4, (size * avail) / w);
-  return size;
-}
-
-/** Build a framed-label /AP form: a stroked border plus centered bold text. */
+/** Build a framed-label /AP form: a stroked border plus centered bold text.
+ *  The drawing is annotstamp.ts's, shared with the render-time fallback for a
+ *  /Stamp that has no /AP, so the two cannot disagree (`v0tz.2`). */
 function buildLabelAppearance(
   doc: Document, g: WidgetGeom, label: string, color: [number, number, number],
 ): PdfStream {
-  const [r, gg, b] = color;
-  const bw = Math.max(1, Math.min(g.w, g.h) * 0.04);
-  const half = bw / 2;
-  const bytes = encodeWinAnsi(label);
-  const size = labelSize(bytes, g);
-  const tw = measure(STAMP_FONT, bytes, size);
-  const x = (g.w - tw) / 2;
-  const y = (g.h - size) / 2 + size * 0.2;
-  const body =
-    `${num(r)} ${num(gg)} ${num(b)} RG ${num(bw)} w ` +
-    `${num(half)} ${num(half)} ${num(g.w - bw)} ${num(g.h - bw)} re S\n` +
-    `BT /${AP_FONT_KEY} ${num(size)} Tf ${num(r)} ${num(gg)} ${num(b)} rg ` +
-    `${num(x)} ${num(y)} Td ${serializeString(bytes)} Tj ET`;
+  const body = stampLabelBody(g.w, g.h, label, color, AP_FONT_KEY);
   return buildAppearanceXObject(doc, g, STAMP_FONT, AP_FONT_KEY, body);
 }
 
@@ -1019,7 +997,7 @@ export function addStamp(doc: Document, page: Page, opts: StampAnnotationOptions
 
   if (opts.name !== undefined) {
     stamp.StampName = opts.name;
-    if (g) installAP(doc, dict, buildLabelAppearance(doc, g, opts.name, color));
+    if (g) installAP(doc, dict, buildLabelAppearance(doc, g, stampCaption(opts.name), color));
   } else if (opts.text !== undefined) {
     if (typeof opts.text !== 'string') throw new TypeError('text must be a string');
     if (g) installAP(doc, dict, buildLabelAppearance(doc, g, opts.text, color));

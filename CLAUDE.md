@@ -340,6 +340,84 @@ Source (`src/`):
   metadata (`/Info` + XMP), outlines, forms, annotations, split/merge/extract.
 - **page.ts**, **pagetree.ts** — `Page` wrapper plus page-tree flattening and
   attribute inheritance.
+  **Invariant (`1lr9`):** `buildPages` walks the tree as a DAG. A node reached
+  twice is walked again, so a page listed twice is TWO `Page` entries over ONE
+  dictionary and `pageObjNums` repeats its number — Open reads and does not
+  repair; `Validate()` reports it and `Repair()` splits it. Cloning at Open
+  was rejected: it would change the model before anyone asked, so an
+  untouched document would no longer save byte-identical nor sign
+  incrementally. It threw `cycle in page tree` before, from a walk-wide
+  `seen` set, and the file could not be opened at all.
+  **Invariant:** only a node that is its own ANCESTOR is a cycle, and its back
+  edge is SKIPPED, not thrown on — damage the page list can be built around.
+  **Invariant, and it is what the refusal was accidentally holding:** walking a
+  shared node again makes a FAN-OUT possible (`/Kids [B B]`, B `/Kids [C C]`,
+  … reaches 2^n pages from n objects), so every node VISITED counts against
+  `maxObjects`, the bound on rows as they are produced. Measured: without it a
+  40-level fan-out does not fail an assertion, it kills the test worker out of
+  memory — `test/page-tree-shared.test.ts` reports "Worker exited
+  unexpectedly" rather than a red case, so a harness grepping for "failed"
+  reads it as green. The ancestor guard and its delete each redden 4.
+  **Note:** an edit naming a shared page resolves to its FIRST listing —
+  `RemovePage(page)` finds pages by dictionary — which gives the same result,
+  both listings being one page.
+- **pagecheck.ts** — structural integrity of the page tree (`dmin.4`):
+  `checkPageTree(doc, fix)`, behind `doc.Validate()` (`fix` false) and
+  `doc.Repair()` (`fix` true). Five rules: `CatalogInvalid`, `PageTreeShared`,
+  `PageCountMismatch`, `PageParentMismatch`, `PageMediaBoxMissing`.
+  **Invariant:** ONE walk for both modes. A checker and a fixer written
+  separately are how the two come to disagree about which nodes are pages; and
+  the leaf rule (`/Type /Page`, else a `/Kids` array makes an intermediate
+  node, else a leaf) is `buildPages`' verbatim, so `Validate()` and
+  `doc.Pages` agree too. It imports `Document` as a TYPE only.
+  **Invariant:** it reads the RAW `/Kids` graph from `/Root`, never
+  `doc.Pages`, so damage done through a live `Dict` after Open is visible.
+  **Invariant, and both readings look reasonable:** there is NO cycle test on
+  back-references — `/Parent`, an annotation's `/P` and an outline's `/Prev`
+  are required by the format, and Python once called them corruption. And a
+  reference to an absent object is NOT a failure: 7.3.10 makes it null, so a
+  dead `/Kids` entry contributes no page and surfaces only through a `/Count`
+  that then disagrees. Both are asserted directly.
+  **Invariant:** the walk follows `/Kids` only and guards a genuine `/Kids`
+  cycle by ANCESTOR set, which is what makes it terminate. A node reached twice
+  is `PageTreeShared` either way; in validate mode a shared intermediate node
+  still contributes its memoized page count to its second parent, so the
+  sharing is not ALSO misreported as a `/Count` mismatch.
+  **Note (`1lr9`):** Open used to REFUSE a shared node, misreporting it as
+  `cycle in page tree`, so until then `PageTreeShared` could only be fixtured
+  through a live edit. It opens now — see `pagetree.ts` — and every fixture
+  here is a real file.
+  **Invariant:** `Repair` keeps the file's tree SHAPE and touches only what
+  `Validate` reports. So dead `/Kids` entries are dropped ONLY on a node whose
+  `/Count` is being corrected — a null kid is legal, and dropping it
+  everywhere would move bytes in a document `Validate` passes. A shared node is
+  replaced by a shallow copy (`Reorder`'s approach to a repeated page); a node
+  that is its own ancestor loses its back edge instead, since copying it would
+  never terminate. A missing `/MediaBox` becomes US Letter, the box
+  `Page.MediaBox` already reported, so the file comes to agree with what we
+  rendered. A kid of an INLINE node skips the `/Parent` check in both modes:
+  there is no reference to write.
+  **Invariant:** on a sound document `Repair` returns `[]` and touches
+  NOTHING, `markModified()` included — pinned through the sign path, since a
+  save alone cannot see a spurious modified flag (`pagemode.ts`'s trap).
+  `CatalogInvalid` is not repairable and is never returned by it.
+  **Invariant (`document.ts`'s `flattenToRoot`):** the page edits that re-list
+  this document's own pages under the root — `RemovePage`, `InsertPage`,
+  `InsertPages` (through `currentKids()`) and `Reorder` — first copy each
+  page's inherited `MediaBox`/`CropBox`/`Resources`/`Rotate` from the nodes
+  BELOW the root onto the page, then point `/Parent` at the root. Before
+  `dmin.4` they left `/Parent` naming an intermediate node that survived the
+  save still listing the page — a file `Validate` failed, written by us — and
+  `Reorder`, which repoints `/Parent` itself BEFORE `syncPages`, lost the
+  intermediate `/MediaBox` outright. That ordering is why the step cannot live
+  in `syncPages`. The root's own values are not copied (the page still
+  inherits them), and a value the page states is never overwritten.
+  **Note, measured:** 15 of 16 mutations redden. Two needed fixtures built
+  first — the inline-root `/Parent` skip and the shared-INTERMEDIATE count
+  memo were each green until a case existed for them. The one that stays green
+  is resolving `/Type` before the leaf test: nothing writes `/Type` as an
+  indirect reference, so it is held by agreeing with `buildPages` rather than
+  by the suite. Do not read the green suite as covering it.
 - **extractor.ts** — single-page / object-graph extraction with a `PrunePolicy`.
 - **serializer.ts**, **serialize.ts** — output: classic xref table (default) and
   compressed (cross-reference stream + `/ObjStm`) via `Save({ compressed: true })`.
@@ -3895,6 +3973,156 @@ Source (`src/`):
   play them with, so no typed constructor will be added. They read back as a
   base `Annotation` and round-trip like any other, which is the whole contract.
   README's Limitations says so, so the absence is stated rather than inferred.
+  **Invariant (`kapw`), and it is the seam the whole no-`/AP` family rests
+  on:** `annotdraw.ts`'s `shapeParts` produces everything an appearance needs
+  EXCEPT installing it — box, body, opacity, faces — and has TWO callers.
+  `regenerateAppearance` is `shapeParts` + `installShapeAP` (the import path);
+  `annotappearance.ts`'s `shapeAppearance` wraps the SAME body in an INLINE
+  stream at render time. One builder, so a document that arrives with
+  appearances and one that does not provably cannot be drawn two ways —
+  `freeTextParts`' rule (`v0tz.3`) generalized from one subtype to all twelve.
+  It covers `/Square`, `/Circle`, `/Line`, `/Polygon`, `/PolyLine`, `/Ink`,
+  `/Caret` and the four text-markup subtypes; `/Stamp`, `/FreeText` and the two
+  icon subtypes keep their own builders in the dispatch, each having a rule the
+  generic path cannot know (a stamp's DRAFT default, an icon's `/Name`).
+  **Invariant (`kapw`):** `shapeParts` ALLOCATES NOTHING, which is what makes
+  the sharing possible at all. `installShapeAP` goes through `fontResources`,
+  which calls `doc.allocObject` for a font dictionary EVEN FOR A BODY THAT
+  DRAWS NO TEXT, and allocates an ExtGState besides when `/CA < 1` — and
+  rendering must not mutate, since a spurious `markModified()` turns a later
+  `Sign()` from an incremental append into a full rewrite of bytes an earlier
+  signature covered. So the fallback's resources are INLINE.
+  **Note:** only a `/Caret` with `/Sy /P` draws any text, naming `AP_FONT_KEY`
+  for its ¶; every other body is pure geometry, so the font is written only
+  when the body actually names one, and a `/Square`'s stream carries no
+  `/Resources` key at all. Both directions are mutation-checked.
+  **Note, measured, and a body comparison CANNOT see it:** the `/Matrix` and
+  `/BBox` must agree with regeneration too, and the equality cases compare only
+  the body — so the rotation case (`/MK /R 90`, where the layout box is the
+  `/Rect` TRANSPOSED) is asserted on the dict separately.
+  **Note what this CHANGED for existing tests, and it is the useful kind of
+  breakage:** three fixtures used a `/Square` with no `/AP` as their stand-in
+  for "unflattenable" or "draws nothing", and the subtype had already moved
+  once for `v0tz.1`/`v0tz.2`. It is `/Link` now — no visual at all, so
+  `shapeParts` declines it — and the popup fixture makes its parent
+  unflattenable with an `/AP` that is PRESENT but unusable instead of deleting
+  it. Expect the next widening of this fallback to need the same move again.
+- **annoticon.ts** — the icon a viewer draws for a `/Text` sticky note or a
+  `/FileAttachment` that carries NO `/AP` (`v0tz.1`): eleven vector icons, the
+  seven standard `/Text` names and four `/FileAttachment` ones, in a 20x20 unit
+  box, squared and centred in the `/Rect`. A LEAF importing nothing — subtype,
+  name, fill and box in, content-stream text out.
+  **Invariant:** it is reached through `annotappearance.ts`'s
+  `resolveAppearance` and NOTHING is written into the document. The stream is
+  built on the fly and returned as an INLINE `entry`, so `ToImage`, `ToSvg`,
+  `FlattenAnnotations` and the drawn-text search all see one answer, and
+  `flatten.ts` needed no change — it already promotes an inline `/N` to an
+  object. `AddTextNote` and `AddFileAttachment` still write no `/AP`, so a
+  viewer that draws its own icons keeps doing so for notes we create; that was
+  a decision, not an omission.
+  **Invariant:** the fallback fires only when the `/AP` KEY is absent, tested
+  on the raw dict. An `/AP` that is present but unusable (`/N` states with no
+  matching `/AS`) still draws nothing: the producer stated an appearance.
+  **Invariant:** an unknown or absent `/Name` draws the subtype's default —
+  Note, PushPin — as a viewer does. Names match exactly, and are probed with
+  `hasOwnProperty`: a `/Name /constructor` comes from the document, and `in`
+  finds `Object.prototype.constructor` and draws nothing (`predefcmap.ts`'s
+  trap).
+  **Invariant:** `/C` is the fill; an EMPTY `/C` is a stated transparent
+  (12.5.2) and draws the outline alone; an unusable one takes the default,
+  yellow for a note and white for an attachment. The outline is always black.
+  **Note:** the artwork is ours and recognisable rather than any viewer's
+  pixels — 32000-1 names the icons and prescribes no drawing. NoZoom and
+  NoRotate are not honoured, like every other appearance placed here.
+  **Note, measured:** all nine mutations redden, two only after cases were
+  added for them — the subtype gate (now a `/Square` naming `/PushPin`, since
+  a `/Stamp` draws its own fallback after `v0tz.2`) and the prototype probe
+  (`/Name /constructor`).
+- **annotstamp.ts** — a rubber stamp's caption box (`v0tz.2`): `stampCaption`
+  (the 14 standard names of 32000-1 12.5.6.12 spelled as a stamp reads —
+  `NotApproved` is NOT APPROVED — and any other name as written) and
+  `stampLabelBody`, the frame plus centred Helvetica-Bold text.
+  **Invariant:** ONE drawing for two callers. `Page.AddStamp` writes it as the
+  stamp's `/AP`, and `annotappearance.ts` draws it on the fly for a `/Stamp`
+  with no `/AP` key, so the two provably cannot disagree about what a stamp
+  looks like or says. The body was moved VERBATIM out of `annotation.ts`'s
+  `buildLabelAppearance`, which is why `AddStamp({ text })` output did not
+  move; `AddStamp({ name })` did, deliberately, since it now captions through
+  `stampCaption`.
+  **Invariant:** it allocates nothing and takes the font KEY as an argument, so
+  each caller decides where the font resource lives. That is forced:
+  `appearance.ts`'s `fontResources` allocates an object, and rendering must
+  not mutate — the fallback therefore carries an INLINE font dictionary in its
+  stream's own `/Resources`, and flatten promotes the stream with it.
+  **Invariant (`annotappearance.ts`):** the fallback caption is `/Name`, else
+  the first NON-EMPTY line of `/Contents`, else DRAFT — 12.5.6.12 makes
+  `Draft` the default `/Name`, so a stamp stating neither is a Draft stamp,
+  not a blank one. `/C` with 1, 3 or 4 components colours it; an EMPTY `/C`
+  is still red, because the transparent reading 12.5.2 gives it would make an
+  invisible stamp.
+  **Note:** it is a CAPTION, documented as such, not the standard rubber-stamp
+  artwork — those drawings are not ours to bundle.
+  **Note, measured:** all ten mutations aimed at these rules redden. The tests
+  read the caption back through `page.SearchAnnotations` rather than counting
+  ink, which is what makes them see WHAT a stamp says: a pixel count passes
+  for NotApproved drawn as `NotApproved`.
+- **cloudborder.ts** — the outward Bézier scallops of a cloudy border
+  (`/BE /S /C`, `v0tz.4`): `cloudPath` and `signedArea2`.
+  **Invariant:** a LEAF importing NOTHING — points and a bulge height in,
+  cubics out — the split `floatstack.ts`, `meshtri.ts`, `linebox.ts` and
+  `tablespan.ts` each already make, and for their reason: this is geometry
+  that is silently wrong when REVERSED. An inward-bulging cloud renders
+  perfectly well as the wrong picture, so the winding is measured from the
+  SIGNED AREA rather than assumed — `/Vertices` may run either way — and BOTH
+  directions are asserted. Measured: forcing the sign reddens only the
+  clockwise case, which is the one fixture that can see it.
+  **Invariant:** it never throws and never emits a non-finite number. A
+  repeated vertex is a real shape in a `/Vertices` array and its unit
+  direction is 0/0; a NaN in a content stream is a CORRUPT FILE rather than a
+  wrong picture — the direction `colorconvert.ts`'s clamp already records.
+  **Invariant:** one cubic per scallop, with both control points offset
+  perpendicular by `4/3 × h`, which puts the curve's midpoint at exactly `h`.
+  A scallop is never taller than half its own width, so an edge shorter than
+  one nominal scallop gets a semicircle rather than a spike — measured at 105
+  where 102 was right, on a 4pt edge at `h` 5.
+  **Note, measured, and the obvious fixture cannot see it:** the count is
+  `round(len / 2h)`, and a rectangle whose edges DIVIDE EXACTLY (100pt at
+  `h` 5) leaves flooring green. `test/cloudborder.test.ts` carries a second
+  ring at `h` 9, where the edges want 5.56 and 3.33 scallops.
+  **Note:** it is a UNIFORM approximation, not a viewer-exact screen. 12.5.4
+  names the effect and prescribes no drawing, the posture `/LE` already
+  takes; scallops are equal-width per edge and the cusps land on the
+  vertices, so a corner is where two scallops meet.
+  **Invariant (`annotdraw.ts`):** the two subtypes get their base ring
+  DIFFERENTLY, and the asymmetry is the rule. A `/Square`'s boundary is
+  DERIVED from `/Rect`, so it is ours to choose and must be chosen to fit —
+  inset by `width/2 + h`, which puts the scallops exactly where the straight
+  border would have been and keeps every bulge inside the `/BBox`; too little
+  room and the straight rect is drawn instead, a degrade rather than nothing.
+  A `/Polygon`'s is STATED by `/Vertices`, so the scallops bulge out of where
+  the document put them and the room comes from its own `/Rect` — a producer
+  that wrote `/BE` padded for it, and one that did not gets clipped bulges.
+  Measured: dropping the square's bulge inset reddens the render probe,
+  because the clipped arc lands back on the straight border's own line.
+  **Invariant (`annotdraw.ts`'s `cloudBulge`):** an absent `/I` beside
+  `/S /C` defaults to 1, never 0 — `/S /C` IS the request for a cloud, and 0
+  would make the dictionary mean nothing. `/I` clamps to the 0..2 the spec
+  states rather than being refused. An absent `/BE`, a `/S` that is not `/C`
+  and `/I 0` each leave the border byte-identical, which is `v0tz.4`'s own
+  acceptance criterion and is pinned as a fence.
+  **Note the fixture the render probe needs, measured:** it asserts BOTH that
+  the straight border's line is EMPTY at a scallop cusp and that it is INKED
+  at a peak. The first alone passes for a cloud that is merely missing, or
+  drawn too small to touch the border at all.
+  **Note the scope:** `/Circle` keeps its straight ellipse and there is no
+  authoring option — `AddSquare`/`AddPolygon` are untouched, so this is the
+  regeneration path only. A `/Square` or `/Polygon` with NO `/AP` still draws
+  nothing at render time, since `viewerAppearance` covers only `/Stamp`,
+  `/FreeText` and the two icon subtypes; that is its own issue.
+  **Note, measured:** every mutation aimed at these rules reddens except a
+  `pts.length >= 6` guard in `polyBody`, which covered nothing and was
+  REMOVED rather than kept — `cloudPath`'s own zero-length-edge guard makes a
+  degenerate two-vertex ring harmless, so the check was provably dead.
 - **formdata.ts**, **fdf.ts**, **xfdf.ts**, **xml.ts**, **annotdata.ts**,
   **fdfannot.ts**, **xfdfannot.ts** — FDF/XFDF data exchange
   (`ExportFdf`/`ExportXfdf`/`ImportFdf`/`ImportXfdf`). Two format-neutral middles
@@ -3931,6 +4159,45 @@ Source (`src/`):
   (32000-1 12.5.5), so composing in the `/Rect`'s own dimensions leaves a box
   the viewer stretches to fit, on top of wrapping and centring text against the
   wrong edges.
+  **Invariant (`v0tz.5`):** a RICH-TEXT field (`/Ff` bit 26) draws its `/RV`
+  through `richFieldBody`, tried FIRST in the `text` case and falling through
+  to the existing comb/multiline/single bodies whenever it declines. It
+  declines for two fields that ARE asking for it, and both refusals are the
+  point rather than a limitation:
+  **PASSWORD**, because `maskIfPassword` exists precisely so a password's
+  value never reaches a content stream — flattening bakes it into permanent
+  page content where no viewer will ever mask it again — and rich text must
+  not become a second route around it; and **COMB**, whose per-character cells
+  cannot express styled runs. Also for markup that will not parse or holds no
+  text, so a field is never drawn emptier than its plain value —
+  `annotdraw.ts`'s FreeText rule.
+  **Note the comb fixture, measured:** a Tj COUNT cannot separate the two
+  bodies — three runs and fourteen cells both exceed one — so it asserts
+  byte-identity against the same comb with no `/RV`. The password case asserts
+  byte-identity too, BESIDE the absence of the secret: absence alone passes
+  for a field that drew nothing whatever.
+  **Invariant (`v0tz.5`):** the base style is `resolveDA`'s — face, colour and
+  size — so a rich-text field's base face is the one its PLAIN value would
+  have drawn in, and turning bit 26 on refines the rendering rather than
+  changing it. Fonts stay the STANDARD 14: `resolveDA` already reads
+  `/DR /Font /<name> /BaseFont` and maps it through `normalizeFont`, and
+  referencing the `/DR` font object itself was considered and declined —
+  the body writes WinAnsi literals, so a `/DR` face with a `/Differences`
+  encoding would draw the WRONG GLYPHS silently, and an embedded face has no
+  bold sibling, so emphasis would mix families.
+  **Note, measured:** `da.std` and `da.color` are pinned only by fixtures that
+  STATE a non-default `/DA` — every other case here uses black Helvetica,
+  where seeding from `da` and hardcoding agree.
+  **Invariant (`v0tz.5`):** `/DA` size 0 means shrink-to-fit, which has no
+  meaning once runs carry their own sizes, so it draws at 12 — the answer the
+  FreeText path already gives.
+  **Invariant (`v0tz.5`):** `buildAppearanceXObject`'s `faces` is a DEFAULTED
+  TRAILING parameter, `installShapeAP`'s shape on the annotation side. Omitted
+  it reproduces the single-font `/Resources` every other caller made before it
+  existed, so all five are byte-identical BY CONSTRUCTION rather than by test.
+  Only the rich path passes one, and it is what makes the body's `F0`, `F1`, …
+  resolvable — held by `test/ap-font-key.test.ts`, which sweeps every field
+  appearance and to which `v0tz.5` added the one body naming several faces.
 - **crypto.ts** additionally owns `CryptKeys` and `isSignatureDict`, the two
   things preserving a document's encryption needs (`0cr3`).
   **Invariant:** the `/Encrypt` dict is COPIED VERBATIM and encryption is never
@@ -4513,6 +4780,74 @@ Source (`src/`):
   what surfaced `vvft` — an orphaned widget then survived `Redact` entirely.
   Fixed; the orphan shapes are covered by `test/redact-orphan-widget.test.ts`
   and the rule is recorded under `redactannots.ts` above.
+- **richlayout.ts** — rich text drawn: a FreeText's `/RC` (`v0tz.3`) and, since
+  `v0tz.5`, a rich-text FIELD's `/RV`.
+  `parseRichText` turns the markup plus the `/DS` default style into
+  paragraphs of styled runs, and `richTextBody` lays them out and emits a
+  content-stream body with the faces it names.
+  **Invariant (`v0tz.5`):** `richTextBody`'s `inset` is the WHOLE inset, the
+  appearance `PAD` included, and the CALLER adds it. That is what makes this a
+  leaf at all: reading `PAD` from `appearance.ts` was its one non-leaf import,
+  and `v0tz.5` needs `appearance.ts` to import THIS module — which would have
+  closed a 2-cycle, a red build under `test/import-cycles.test.ts`. The
+  alternative considered was extracting `PAD` to a module of its own; folding
+  it into the parameter is smaller, removes an edge rather than adding a file,
+  and moves no bytes, since it was only ever used as `inset + PAD`. The fences
+  are `test/freetext-rich.test.ts`'s recorded hash (which did not move) and
+  `test/richlayout.test.ts`, whose 34 cases all hold with `1 + PAD` passed at
+  its ONE call site — that they hold unedited is the evidence it was a pure
+  refactor.
+  **Note, measured:** the caller-side `+ PAD` IS load-bearing and is pinned by
+  `test/field-rich.test.ts`'s Tm assertion, not by the FreeText hash, which
+  passes `width + PAD` and so cannot see a caller that forgets it.
+  It is otherwise a pure leaf — no `Document`, no
+  allocation — over one owner per concern: `xml.ts` parses (as
+  `richtext.ts` does for search), `richtext.ts`'s `RICH_BLOCK_ELEMENTS` breaks
+  paragraphs, `cssparse.ts` and `cssvalue.ts`'s `colorOf` read the CSS, and
+  `layout.ts`'s `layoutRuns` — the ONE wrapping engine — lays out, with a
+  Standard-14 `winAnsiDriver` per face.
+  **Invariant:** the vocabulary is ISO 32000-1 12.7.3.4's: `<body>` `<p>`
+  `<span>` `<b>` `<i>` plus `<br>`, and font-size, font-weight, font-style,
+  font-family, font, color, text-align and text-decoration. An element outside
+  it is TRANSPARENT — text kept, tag ignored — so unknown markup never loses
+  words. Inheritance runs `/DS`, then `/DA`'s face, size and colour, then
+  Helvetica 12pt black; an unreadable value is skipped and the run keeps what
+  it inherited.
+  **Invariant:** `font-family` takes the FIRST name it recognises
+  (Helvetica/Arial/sans-serif, Times/Times New Roman/serif,
+  Courier/Courier New/monospace), and a list naming none keeps the inherited
+  family. Names are probed with `hasOwnProperty`, the `predefcmap.ts` trap.
+  **Invariant:** the `font` shorthand is read in ANY order, because Acrobat
+  writes `/DS` as `font: Helvetica,sans-serif 12.0pt` — family FIRST, which
+  a strict CSS reading refuses. It resets nothing it does not state.
+  **Invariant:** a paragraph's lines follow `layoutRuns`' band rule — the
+  baseline sits the line's largest size below the band top, and the band grows
+  with it — so a large run makes its own line taller. `justify` never
+  stretches a paragraph's LAST line, and a trailing `0 Tw` stops word spacing
+  leaking into whatever the form draws after the text.
+  **Invariant (`annotdraw.ts`):** `freeTextParts` is the ONE FreeText builder,
+  allocating nothing, with two wrappers: `regenerateAppearance` (XFDF/FDF
+  import) installs it with allocated fonts through `installShapeAP`'s new
+  `faces` argument, and `annotappearance.ts`'s viewer fallback wraps it with
+  INLINE fonts for a FreeText with no `/AP` key. Font keys are `F0`, `F1`, …
+  in order of first use, and every one is registered in the form's own
+  resources (`test/ap-font-key.test.ts`).
+  **Invariant:** `/RC` that will not parse, or holds no text, falls back to
+  the plain `/Contents` path, so a comment is never drawn emptier than its
+  plain text — and that path is byte-identical to before, pinned by a
+  recorded hash in `test/freetext-rich.test.ts`.
+  **Note, measured:** `parseXml` REJECTS an unclosed or mis-nested tag but
+  KEEPS an unknown entity like `&nbsp;` as literal text, so `/RC` using one
+  draws `&nbsp;` rather than falling back. The plan assumed the opposite; the
+  parser is `xml.ts`'s and shared with search, which reads it the same way.
+  **Note, measured:** all 16 mutations aimed at this redden. Three needed cases
+  first — the `hasOwnProperty` probe; the justified last line, whose first test
+  checked only the final `Tw` operator, which the trailing reset makes `0`
+  whatever the last line did; and the baseline rule, which the
+  line-gap test could not see because the mutation widened the gap too. A
+  fourth test passed on the unfixed code: a red-pixel count over the whole
+  page found the red sticky note `buildAnnotTarget` carries, which `v0tz.1`
+  draws, so it now counts inside the FreeText's rect only.
 - **richtext.ts** — an XHTML rich-text fragment reduced to searchable plain
   text, added in `k2k5`. A pure leaf over `xml.ts`. Two entries carry markup
   rather than text: a markup annotation's `/RC` (32000-1 12.5.6.2) and a form
@@ -4573,11 +4908,16 @@ Source (`src/`):
   `parseXml` SKIPS comments, where veraPDF's DOM walk returns a comment node's
   value and so includes its text. Commented rich text is vanishingly rare, and
   chasing it would mean teaching `xml.ts` to retain comments for one caller.
-  **Note, and THIS ENTRY SAID OTHERWISE until `q7hc.4.2`:** `readRichTextMarkup`
-  and its `readRichTextValue` alias live in **formfield.ts**, not here. This
-  module exports exactly TWO names, `richTextToPlain` and `RichTextOptions`.
-  The entry placed both readers here, which is the "read the code before
-  believing a comment about the code" rule catching this file itself.
+  **Note, and it has MOVED TWICE, so read the code:** until `q7hc.4.2` this
+  entry wrongly placed `readRichTextMarkup` here while it lived in
+  **formfield.ts**; since `v0tz.3` it genuinely DOES live here, and
+  `formfield.ts` re-exports it (so `readRichTextValue` and every import path
+  still work). It moved because the FreeText appearance path needs it and
+  `formfield.ts` imports `flatten.ts`, which imports `annotappearance.ts` —
+  the module that now imports `annotdraw.ts` — so reaching it through
+  `formfield.ts` would close a cycle. The block set is exported too, as
+  `RICH_BLOCK_ELEMENTS`, so `richlayout.ts` breaks paragraphs by the SAME rule
+  this module breaks search text by.
   **textrank.ts** — font-size heuristics (dominant size, `headingRanks`) shared by
   structured text and HTML export. **paths.ts** — vector/path extraction
   (`page.GetPaths`): a focused content walker (cf. `imageusage.ts`, separate from

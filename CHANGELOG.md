@@ -167,6 +167,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A page tree listing a page twice could not be opened.** `/Kids [3 0 R
+  3 0 R]` made `Document.Open` throw `cycle in page tree` with no recovery —
+  the whole file was lost over a structure the page list can be built around. It opens now: the
+  repeated page is two entries in `doc.Pages` over one dictionary, exactly as
+  the file says, `Validate()` reports it as `PageTreeShared` and `Repair()`
+  splits it. Only a node listing one of its own ancestors is a cycle, and its
+  back edge is skipped. Because a shared node is walked again, a tree fanning
+  out to 2^40 pages from 42 objects would now exhaust memory, so every node
+  visited counts against `LoadLimits.maxObjects` and such a file raises
+  `ResourceLimitError`. (1lr9)
+
+- **Page edits on a nested page tree left the file inconsistent, and `Reorder`
+  lost page sizes.** `RemovePage`, `InsertPage` and `InsertPages` re-list the
+  document's pages directly under the root, but left each page's `/Parent`
+  naming its old intermediate node — which survived the save still listing the
+  page with its old `/Count`. The file rendered correctly and was structurally
+  inconsistent. `Reorder` was worse: it repointed `/Parent` at the root before
+  re-listing, so a page that inherited its `/MediaBox`, `/CropBox`,
+  `/Resources` or `/Rotate` from an intermediate node silently lost it and came
+  out US Letter. Each edit now copies those inherited values onto the page
+  first (never the root's own, which the page still inherits, and never over a
+  value the page states itself), so the old intermediate nodes become
+  unreachable and are dropped on save. Found while building `Validate()`,
+  which flagged documents this library had written. (dmin.4)
+
 - **`saveImagesFile`, `htmlFileToPdf`, `saveMarkdownFile` and `saveDocxFile`
   are importable from the package.** All four were written, tested and
   announced, and README's own example imports the first two from
@@ -354,6 +379,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shapes and text markup with no appearance now draw.** A `/Square`,
+  `/Circle`, `/Line`, `/Polygon`, `/PolyLine`, `/Ink`, `/Caret`, `/Highlight`,
+  `/Underline`, `/StrikeOut` or `/Squiggly` whose producer left the appearance
+  to the viewer — legal, and common — rendered blank in `ToImage` and `ToSvg`
+  and vanished from `FlattenAnnotations`. Eleven subtypes the FDF/XFDF import
+  path already knew how to draw were simply absent from the no-`/AP` fallback,
+  which reached only sticky notes, file attachments, stamps and FreeText. They
+  are now drawn from the **same builder** that path uses, so a document that
+  arrives with appearances and one that does not provably cannot be drawn two
+  ways; cloud borders (`/BE /S /C`) come with them, which closes the half of
+  that feature a render could not previously reach. Nothing is written to the
+  file: the appearance is built on the fly and the annotation still carries no
+  `/AP` afterwards, so a document is byte-identical after a render and a later
+  `Sign()` is still an incremental append. An `/AP` that is present but
+  unusable is still respected rather than redrawn. **Note this changes what
+  `FlattenAnnotations` bakes** — an annotation that had nothing to bake may now
+  have something, and the returned count rises accordingly. (kapw)
+
+- **Rich-text form fields draw their styling.** A text field with the RichText
+  flag (`/Ff` bit 26) carries its markup in `/RV`, which was transported
+  faithfully by the FDF/XFDF layer and then ignored: the generated appearance
+  was built from the plain `/V`, so a styled field flattened unstyled. It now
+  draws the markup — `<b>`, `<i>`, `<span style="…">` and `<br>` over the
+  field's `/DA`: size, weight, style, family, colour, per-paragraph alignment
+  including justify, underline and line-through — through the same engine a
+  FreeText's `/RC` goes through, so the two cannot disagree about what `<b>`
+  means. The `/DA` seeds the base style, so the base face and colour are the
+  ones the plain value would have drawn in and emphasis picks that family's
+  bold or italic sibling; `/DA` size 0 draws at 12pt, shrink-to-fit having no
+  meaning once runs carry their own sizes. Fonts stay the Standard 14, as for
+  every other field appearance — an embedded `/DR` face is not referenced,
+  which keeps a field's base face the same whether or not rich text is on. A
+  **password** field never draws rich text, because its value must never reach
+  a content stream where flattening would bake it in permanently, and a
+  **comb** field never does either, its per-character cells being unable to
+  express styled runs; both draw exactly what they drew before. Markup that
+  will not parse, or holds no text, falls back to the plain `/V`. (v0tz.5)
+
+- **Cloud borders draw as clouds.** A `/Square` or `/Polygon` carrying
+  `/BE /S /C` — what review markup looks like in Acrobat, and what the cloud
+  tool writes — regenerated to a plain rectangle or a straight-sided polygon,
+  so a document full of review clouds flattened to boxes. Its edges are now
+  outward Bézier scallops sized by the intensity `/I`: one cubic per scallop,
+  `round(len / 2h)` of them per edge at a bulge height of 4.5pt per unit of
+  intensity, each at most a semicircle so a short edge gets a bulge rather
+  than a spike. A square's boundary is derived from `/Rect`, so it is inset by
+  the bulge and the scallops reach exactly where the straight border would
+  have been; a polygon's is stated by `/Vertices`, so the scallops bulge out
+  of where the document put them and the room comes from its own `/Rect`. The
+  winding is measured from the signed area rather than assumed, since
+  `/Vertices` may run either way and an inward bulge renders perfectly well as
+  the wrong picture. A uniform approximation rather than a viewer-exact
+  screen — 32000-1 12.5.4 names the effect and prescribes no drawing, the
+  posture the `/LE` line endings already take. An absent `/BE`, a solid
+  `/BE /S /S` and `/I 0` each draw the straight border byte for byte as
+  before; `/Circle` is unchanged. (v0tz.4)
+
+- **Styled FreeText comments keep their styling.** A FreeText's rich text
+  (`/RC`) was never drawn: a styled comment imported from XFDF or FDF got an
+  appearance of its plain `/Contents` and flattened unstyled, and one arriving
+  with no appearance at all drew nothing. Both now draw the markup — `<b>`,
+  `<i>`, `<span style="…">` and `<br>` over the `/DS` default style and the
+  `/DA` font: size, weight, style, family (Helvetica, Times or Courier, the
+  first name recognised in a list), colour, per-paragraph alignment including
+  justify, underline and line-through — through the same line-breaking engine
+  the rest of the library lays text out with, so a larger run makes its line
+  taller. Markup that will not parse, or holds no text, falls back to plain
+  `/Contents`, which is drawn byte for byte as before. Backgrounds, margins,
+  super/subscript and nested block layout are not rendered; rich-text form
+  fields are tracked separately. (v0tz.3)
+
+- **Rubber stamps with no appearance now draw.** A `/Stamp` whose producer
+  left the appearance to the viewer rendered blank in `ToImage` and `ToSvg`
+  and vanished from `FlattenAnnotations`. It is now drawn as a caption box in
+  its `/C` colour, red by default: its `/Name` — the 14 standard names
+  spelled the way a stamp reads, `NotApproved` as NOT APPROVED — else the
+  first line of its `/Contents`, else DRAFT, the default name the
+  specification gives a stamp. It is a legible caption, not the standard
+  rubber-stamp artwork, which is not ours to bundle. Like the sticky-note icons
+  it is drawn when the page is rendered and never written into the file, and a
+  present `/AP` is always respected. (v0tz.2)
+
+- **Sticky notes and file attachments with no appearance now draw.** A
+  `/Text` note or `/FileAttachment` whose producer left the appearance to the
+  viewer — legal, and common in reviewed documents — rendered blank in
+  `ToImage` and `ToSvg` and vanished from `FlattenAnnotations`, and that
+  included notes made with this library's own `AddTextNote`. They now get
+  the icon their `/Name` asks for, in their `/C` colour (yellow for a note
+  that states none), squared and centred in the `/Rect`; an unknown name
+  draws the default, as a viewer does. The icon is built when the page is
+  drawn and never written into the document, so an unflattened file is
+  unchanged and a viewer with its own icons keeps showing them; flattening
+  bakes it in, as it must. An `/AP` that is present is always respected, even
+  an unusable one. The artwork is the library's own rather than any viewer's.
+  (v0tz.1)
+
+- **Structural validation and repair.** `doc.Validate()` checks the page tree
+  a healthy or salvaged document carries — the catalog resolves, every node is
+  reached once, `/Count` agrees with the pages under each node, every
+  `/Parent` is the node listing it, every page has a `/MediaBox` somewhere
+  above it — and returns the same `ValidationReport` as `ValidatePdfA`. It
+  reads the raw object graph rather than `doc.Pages`, and never throws on a
+  broken structure. Two things are deliberately not failures: back-references
+  (`/Parent`, `/P`, `/Prev`) are required by the format rather than cycles,
+  and a reference to a missing object is null by ISO 32000-1 7.3.10, so it
+  surfaces only through a `/Count` that then disagrees. `doc.Repair()` fixes
+  what `Validate()` reports in place, keeping the tree's shape, so a document
+  salvaged from a truncated file writes the pages it has rather than the
+  `/Count` it claimed. On a sound document it returns `[]` and touches
+  nothing, not even the modified flag, so a following signature still appends
+  to the original bytes. It passes every vendored real-world PDF and every
+  clean fixture builder in the suite. (dmin.4)
+
 - **Empty signature fields, so a document can be prepared to be signed.**
   `doc.Form.AddSignatureField(init)` and `page.AddSignatureField(init)` create
   a `/FT /Sig` field with a widget and no `/V`: a place for a signature that
@@ -530,6 +668,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PDF/UA rule in this library is a faithful transcription. (`q7hc.4.6`)
 
 ### Changed
+
+- **`AddStamp({ name })` captions a standard name the way a stamp reads.**
+  `AddStamp({ name: 'NotApproved' })` drew the text `NotApproved`; it now
+  draws NOT APPROVED, and each of the 14 standard names in ISO 32000-1
+  12.5.6.12 is spelled out in capitals the same way. Any other name, and every
+  `AddStamp({ text })`, is drawn exactly as given, as before. The change makes
+  a stamp this library creates read the same as the one it now draws for a
+  stamp that has no appearance. (v0tz.2)
 
 - **`ValidatePdfUa()` now checks PDF/UA identification at part 1**, not only at
   part 2. `ConvertToPdfUa()` has written `pdfuaid:part 1` since it existed and

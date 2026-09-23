@@ -10,6 +10,7 @@ import { buildBlankPage } from './helpers/build-annot-target.js';
 import { isDict, isStream, PdfDict, PdfStream } from '../src/types.js';
 import { inflateStream } from '../src/flate.js';
 import { regenerateAppearance } from '../src/annotdraw.js';
+import { FF_RICHTEXT } from '../src/fieldflags.js';
 
 /** Every font key used by a `/<key> <size> Tf` operator in `body`. */
 function fontKeysUsed(body: string): string[] {
@@ -80,6 +81,14 @@ describe('generated appearances name only fonts they register', () => {
     doc.Form.AddComboBox({ page: 1, rect: [10, 130, 210, 160], name: 'cmb', options: ['x', 'y'] });
     doc.Form.AddListBox({ page: 1, rect: [10, 170, 210, 230], name: 'lst', options: ['x', 'y'] });
     doc.Form.AddPushButton({ page: 1, rect: [10, 240, 110, 270], name: 'btn', caption: 'Go' });
+    // A rich-text field (v0tz.5) is the one body that names SEVERAL faces —
+    // F0, F1, … per run — so it is the sharpest case for this contract.
+    const rich = doc.Form.AddTextField({ page: 1, rect: [10, 280, 210, 330], name: 'rich', value: 'a b' });
+    rich.Dict.set('Ff', FF_RICHTEXT);
+    rich.Dict.set('RV', {
+      kind: 'string',
+      bytes: new TextEncoder().encode('<body><p>a <b>b</b> <i>c</i></p></body>'),
+    });
     doc.Form.GenerateAppearances();
 
     const found = doc.Pages[0].Annotations

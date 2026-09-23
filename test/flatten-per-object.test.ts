@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
 import { buildBlankPage } from './helpers/build-blank-page.js';
-import { PdfDict, PdfObject, isArray, isDict, isName, isString } from '../src/types.js';
+import { PdfDict, PdfObject, isArray, isDict, isName, isString, name } from '../src/types.js';
 import { decodePdfText } from '../src/metadata.js';
 
 /** A dict's /T partial name, or undefined. */
@@ -135,9 +135,21 @@ describe('Annotation.Flatten', () => {
     const doc = Document.Open(buildBlankPage());
     const page = doc.Pages[0];
     const note = page.AddTextNote({ rect: [10, 10, 30, 30], contents: 'hi' });
-    note.Dict.delete('AP');
+    // An /AP that is PRESENT but names no state /AS selects. Since v0tz.1 a
+    // note with NO /AP at all draws the viewer's icon, so it is no longer the
+    // shape that has nothing to bake.
+    note.Dict.set('AP', new Map([['N', new Map()]]));
+    note.Dict.set('AS', name('Off'));
     expect(page.Annotations[0].Flatten()).toBe(false);
     expect(page.Annotations.length).toBe(1);
+  });
+
+  it('flattens a sticky note with no /AP at all, baking the viewer icon (v0tz.1)', () => {
+    const doc = Document.Open(buildBlankPage());
+    const page = doc.Pages[0];
+    page.AddTextNote({ rect: [10, 10, 30, 30], contents: 'hi' });
+    expect(page.Annotations[0].Flatten()).toBe(true);
+    expect(page.Annotations.length).toBe(0);
   });
 });
 

@@ -21,7 +21,7 @@ export function buildPages(doc: Document): PageTree {
   if (!isDict(pagesRoot)) throw new PdfParseError('catalog /Pages is not a dict');
   const rootPagesNum = isRef(pagesRef) ? pagesRef.num : undefined;
   const leaves: { dict: PdfDict; objNum: number }[] = [];
-  walk(doc, pagesRoot, rootPagesNum, new Set(), leaves, 1);
+  walk(doc, pagesRoot, rootPagesNum, new Set(), leaves, 1, { visits: 0 });
   return {
     pages: leaves.map((leaf, i) => new Page(doc, leaf.dict, i + 1)),
     pageObjNums: leaves.map((leaf) => leaf.objNum),
@@ -29,12 +29,28 @@ export function buildPages(doc: Document): PageTree {
   };
 }
 
+/** The walk treats the page tree as a DAG (`1lr9`). A node reached a second
+ *  time is walked again, so a page listed twice becomes two `Page` entries over
+ *  ONE dictionary and `pageObjNums` repeats its number — Open reads, it does not
+ *  repair; `doc.Validate()` reports the sharing and `doc.Repair()` splits it.
+ *  It used to keep one walk-wide `seen` set and throw 'cycle in page tree',
+ *  which left the file unopenable.
+ *
+ *  Only a node that is its own ANCESTOR is a cycle, and its back edge is
+ *  skipped rather than thrown on, for the same reason — it is damage the page
+ *  list can be built around, and Validate names it.
+ *
+ *  Walking a shared node again is what makes a FAN-OUT possible — `/Kids
+ *  [B B]`, B `/Kids [C C]`, … reaches 2^n pages from n tiny objects — so every
+ *  node VISITED counts against `maxObjects`, the bound on rows as they are
+ *  produced. The walk-wide refusal this replaces happened to block that; the
+ *  bound is what blocks it now. */
 function walk(
   doc: Document, node: PdfDict, objNum: number | undefined,
-  seen: Set<PdfDict>, out: { dict: PdfDict; objNum: number }[], depth: number,
+  ancestors: Set<PdfDict>, out: { dict: PdfDict; objNum: number }[], depth: number,
+  count: { visits: number },
 ): void {
-  if (seen.has(node)) throw new PdfParseError('cycle in page tree');
-  seen.add(node);
+  doc.loadLimits.enforce('maxObjects', ++count.visits, 'page tree');
   const type = node.get('Type');
   const kids = doc.resolve(node.get('Kids'));
   if (isName(type) && type.name === 'Page') {
@@ -47,11 +63,14 @@ function walk(
     // own flat object, so nothing but this walk can see the depth — and the
     // Document constructor runs it, which makes an unbounded one an Open crash.
     doc.loadLimits.enforce('maxNestingDepth', depth, 'page tree');
+    ancestors.add(node);
     for (const kid of kids) {
       const childNum = isRef(kid) ? kid.num : undefined;
       const child = doc.resolve(kid);
-      if (isDict(child)) walk(doc, child, childNum, seen, out, depth + 1);
+      if (isDict(child) && !ancestors.has(child))
+        walk(doc, child, childNum, ancestors, out, depth + 1, count);
     }
+    ancestors.delete(node);
     return;
   }
   // Leaf without explicit /Type and no kids: treat as page.

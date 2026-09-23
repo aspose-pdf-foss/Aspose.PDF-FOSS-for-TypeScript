@@ -1,15 +1,14 @@
 import type { Document } from './document.js';
 import {
-  PdfDict, PdfObject, isArray, isDict, isName, isStream, isString, name,
+  PdfDict, PdfObject, isArray, isDict, isName, isString, name,
 } from './types.js';
 import { decodePdfText, encodePdfText } from './metadata.js';
-import { decodeStream } from './filters.js';
 import { UnsupportedFeatureError } from './errors.js';
 import { generateFieldAppearance, buildButtonAP, synthOnState } from './appearance.js';
 import { regeneratePushButtonAP } from './buttonap.js';
 import { flattenFieldWidgets } from './flatten.js';
 import { resolveDA } from './da.js';
-import { richTextToPlain } from './richtext.js';
+import { readRichTextMarkup, richTextToPlain } from './richtext.js';
 import {
   applyWidgetStyle, checkColor, checkFieldStyle, ensureDRFont, fieldDA, pdfLatin,
   type FieldStyle,
@@ -49,25 +48,9 @@ function pdfString(s: string): PdfObject {
   return { kind: 'string', bytes: encodePdfText(s) };
 }
 
-/** Rich-text markup from either the string or the stream shape, VERBATIM.
- *
- *  `key` is `/RV` on a form field and `/RC` on a markup annotation; the two
- *  entries differ in where they live and agree in everything else, so the
- *  string-or-stream duality has one reader rather than two.
- *
- *  **Invariant:** this returns MARKUP, and its round-tripping callers depend on
- *  that — `formdata.ts` writes it into FDF/XFDF `<value-richtext>` and
- *  `xfdfannot.ts` into `contents-richtext`, both verbatim. Anything reading it
- *  AS TEXT goes through `richtext.ts`'s `richTextToPlain` instead; that is why
- *  the reduction is a sibling rather than a change of meaning here. */
-export function readRichTextMarkup(
-  doc: Document, dict: PdfDict, key: 'RV' | 'RC' = 'RV',
-): string | undefined {
-  const rv = doc.resolve(dict.get(key));
-  if (isString(rv)) return decodePdfText(rv.bytes);
-  if (isStream(rv)) return new TextDecoder('utf-8').decode(decodeStream(rv));
-  return undefined;
-}
+/** Rich-text markup, verbatim. Lives in richtext.ts since `v0tz.3`; re-exported
+ *  here so every existing import path keeps working. */
+export { readRichTextMarkup } from './richtext.js';
 
 /** @deprecated Use {@link readRichTextMarkup}, whose name says it returns
  *  markup. Kept as the import path `formdata.ts` and the tests already use. */
