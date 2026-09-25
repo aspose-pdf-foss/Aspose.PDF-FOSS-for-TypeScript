@@ -20,3 +20,6 @@ docs/feature-showcase-signed.pdf
 
 # Predefined Adobe CMap downloads (regenerate src/cmapdata.ts via npm run gen:cmaps)
 /cmaps/
+
+# veraPDF source downloads (regenerate src/xmpschemadata.ts via npm run gen:xmpschemas)
+/verapdf/

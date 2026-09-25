@@ -96,7 +96,7 @@ resolves to a file that does not exist. `tsconfig.build.json` is `src`-only
 with `rootDir: "src"`, so `dist/index.js` lands where `main` points. Never
 point `build` at `tsconfig.json`.
 
-Five generators rebuild the bundled data tables and are **not** run by `npm
+Six generators rebuild the bundled data tables and are **not** run by `npm
 test` — the generated `src/*data.ts` files are committed, and each is pinned to
 the upstream version its module documents. Re-run one only when that pin moves:
 
@@ -106,6 +106,7 @@ npm run gen:ucd        # unicode-data.ts — UAX #9/#14 classes, caseFold (unico
 npm run gen:entities   # mdentity.ts     — HTML character references
 npm run gen:cmaps      # cmapdata.ts     — the 195 predefined Adobe CMaps (cmaps/)
 npm run gen:cidunicode # cidunidata.ts   — CID->Unicode, mapping-resources-pdf
+npm run gen:xmpschemas # xmpschemadata.ts — veraPDF's predefined XMP tables (verapdf/)
 ```
 
 `npm run example:showcase` builds the feature-showcase document under
@@ -4230,6 +4231,53 @@ Source (`src/`):
   crypto.ts.
 - **xmp.ts** — read (`GetXmp`) and build (`SetXmp`) the `/Root /Metadata` XMP
   packet with a dependency-free scan, mirroring shared fields with `/Info`.
+  **Invariant (`o6uu.7`):** a write parses the packet under the DOCUMENT's
+  `loadLimits` (`editXmpPacket`'s `limits`, passed by `Document.xmpTextFor`),
+  and `SetMetadata` computes the XMP text BEFORE touching /Info — the XMP half
+  is the only one that can throw, so a refusal changes nothing. The prefix a
+  caller names in `custom` wins over a surviving foreign namespace that held
+  it, and `readCustom` reads attribute-form literals on `rdf:Description` too,
+  so `custom` is the same set before and after the first rewrite.
+  **Note, measured, the fixture trap for the prefix rule:** the foreign
+  namespace must SURVIVE the write to hold the prefix at all, so its property
+  has to be something `custom` does not model (a Bag). A foreign literal is
+  in `custom`, is replaced with the set, and the case passes without the fix.
+  **Invariant (`o6uu.3`):** a write EDITS the parsed packet, never rebuilds it.
+  `editXmpPacket` starts from `parseRdfPacket`'s model (or, when the packet will
+  not parse, from `readXmp`'s fields — exactly what survived before), applies
+  each field to the (namespace, name) property it owns, and serializes. Set
+  replaces IN PLACE, `null` deletes, and everything the update does not name —
+  History, qualified identifiers, extension schemas — survives. `buildXmp` is
+  the same edit from an empty model, so the two cannot disagree about layout.
+  It lives HERE, not in its own module: `buildXmp` must reach it, and a
+  separate module importing `readXmp` back would close a 2-cycle.
+  **Invariant:** a title, description or rights replaces the `x-default` item
+  ONLY; every other language is somebody's translation. The new item goes
+  FIRST, wherever the old one sat: `readXmp`'s `altText` reads `items[0]`, so
+  replacing it in place behind an `en` item made `GetXmp().title` report the
+  English text after the edit, and PDF/A then flagged `/Info` against XMP.
+  **Invariant:** `custom` touches the TOP-LEVEL properties `readXmp` currently
+  reports as custom, and nothing else. One the new set keeps is replaced in
+  place and one it drops is deleted. `readXmp`'s regex also reports literal
+  FIELDS of structs; those are never removed, and never HOISTED either:
+  `SetXmp({ custom: [...GetXmp().custom, mine] })` is the obvious way to add
+  one property, and it used to copy every History field to the top level.
+  **Invariant:** the six built-in namespaces are written under their STANDARD
+  prefixes whatever the source bound them to, because `readXmp`, `pdfaIdValue`
+  and `xmpVersion` match `dc:`, `pdfaid:` … literally.
+  **Invariant:** characters XML cannot carry are STRIPPED from the whole model
+  before it is written, PRESERVED content included (`stripNonXmlChars`),
+  because `serializeRdfPacket` refuses them. Two routes lead there: `/Info`
+  strings carry `\u0000` in the wild, and `parseXml` decodes a `&#x1;`
+  reference into a packet that then parses fine. Before the final review only
+  mapped values were stripped, so a preserved foreign `&#x1;` made
+  `SetMetadata` and `ConvertToPdfA` throw on a file they used to handle.
+  **Note, measured:** all eight mutations aimed at these rules redden. The
+  `custom` scoping one stayed green until `test/xmp-edit.test.ts` gained a
+  case with a built-in simple property beside the custom one: with only custom
+  literals at the top level, "remove what `readXmp` reports" and "remove every
+  simple literal" agree on every fixture. Making `installXmp` rebuild instead
+  of edit reddens the six document-level acceptance cases.
   **Invariant (`ugxr`):** an attribute's value is matched with `*`, never `+` —
   a present-but-EMPTY property is not an absent one. Every value regex here and
   in `pdfavalidate.ts`'s `pdfaIdValue` and `pdfxvalidate.ts`'s `xmpVersion`
@@ -4248,6 +4296,402 @@ Source (`src/`):
   **Note, measured:** the five reads go through `idValue`/`idNumber` rather than
   ten inline regexes, because five copies of the widened pattern is how they
   would drift apart again — which is exactly how this bug existed.
+- **xmprdf.ts** — the XMP data model (`o6uu.1`): `parseRdfPacket` turns a
+  packet into namespace-resolved `RdfProperty[]` (simple values, Bag/Seq/Alt
+  arrays, `xml:lang`, structs in all three RDF spellings, general qualifiers
+  and `rdf:resource` URI values since `o6uu.2`) and
+  `serializeRdfPacket` writes one canonical packet back. A pure leaf over
+  `xml.js`; internal until `o6uu.3` puts it under `readXmp`/`buildXmp`.
+  **Invariant:** it rides `xml.ts`'s opt-in `{ qnames: true }`, never a second
+  parser. `parseXml` STRIPS prefixes by default — `xmlns:dc` arrives as `dc`,
+  `rdf:about` as `about` — and RDF names a property by namespace URI, so the
+  stripped form cannot be resolved. The option is off for every other caller,
+  so they are byte-identical by construction.
+  **Invariant:** a property is (namespace URI, local name) and the prefix is a
+  serialization PREFERENCE only (`RdfPacket.prefixes`) — resolved per element
+  through an `xmlns` scope stack, so a rebound prefix is honoured.
+  **Invariant:** DTDs are refused HERE. `xml.ts` SKIPS `<!DOCTYPE>` rather than
+  rejecting it (the issue text assumed otherwise), and mis-skips one with an
+  internal subset.
+  **Invariant:** the round-trip contract is the MODEL, not the bytes —
+  `parse(serialize(m))` deep-equals `m`; output is one `rdf:Description` in
+  element form whatever the input used.
+  **Invariant:** names are Unicode NCNames. Adobe writes a space in a property
+  name as U+2182 + hex (`pdfx:Formↂ0020fields`, IRS f1040); an ASCII-only test
+  throws on a real packet.
+  **Invariant (`o6uu.5`):** `xml:lang` is INHERITED, as RDF/XML defines it.
+  It rides the namespace scope `bind` already threads, under the key `' lang'`
+  (a space cannot occur in a prefix). A LITERAL takes the language in force;
+  a NON-literal node, and a URI, takes only its own. `xml:lang=""` cancels,
+  and the model never holds `lang: ''`. **The serializer is the other half
+  and the easy one to miss:** it writes every node against the language in
+  force above it and emits `xml:lang=""` where a node has none under one that
+  has, or the literals inside a language-bearing node come back tagged. A
+  model with no nested language writes byte-identically to before.
+  **Note:** two pre-`o6uu.5` tests in `test/xmprdf-qualifiers.test.ts`
+  asserted the non-inheriting reading. Both were corrected. The outer-element
+  and `rdf:value` spellings of a language are NOT equivalent, since only the
+  outer one reaches the qualifiers.
+  **Invariant (`o6uu.5`):** parse and write agree with a CONFORMING reader
+  about whitespace. `parseXml`'s opt-in `normalize` applies XML 2.11
+  (CRLF/CR to LF) and 3.3.3 (literal tab/LF in an attribute to a space,
+  before references resolve). `escText`/`escAttr` write CR, and in
+  attributes tab and LF too, as references. `escapeXml` is shared by eight
+  writers and stays untouched, as does every other `parseXml` caller.
+  **Invariant (`o6uu.5`):** Descriptions stating different non-empty
+  `rdf:about` values are refused (XMPCore's rule); an empty or absent one is
+  compatible. `RdfPacket.about` is ABSENT when empty, and `xmp.ts`'s
+  `pinBuiltinPrefixes` spreads the packet, or `SetXmp` drops it.
+  **Note, measured:** all 13 mutations aimed at `o6uu.5` redden. The
+  empty-means-none rule for a NON-literal node's own language needed its own
+  case, because literals read the in-force language through a separate path.
+  **Invariant (final review):** what parses, serializes. A local name the
+  serializer would refuse (`parseXml` reads `a$b` as a name) fails at PARSE, and
+  the serializer throws `TypeError` on a character outside XML 1.0 `Char` — a C0
+  control, U+FFFE, a lone surrogate — in a value, a lang or a namespace.
+  `escapeXml` cannot express one and `parseXml` tolerates one, so the round
+  trip stayed green while a conforming reader would reject the whole packet;
+  `o6uu.3` feeds `/Info` strings, which carry `\u0000` in the wild, through it.
+  **Invariant (`o6uu.2`):** a resource node holding `rdf:value` IS a qualified
+  value and every sibling is a qualifier. RDF has no third reading, so no
+  "struct with an rdf:value field" exists to refuse. Qualifiers are
+  `RdfProperty`s on the node that owns the value (a property or a list item),
+  so a qualifier may carry qualifiers. `xml:lang` keeps its own `lang` field,
+  and it is accepted on the node or on `rdf:value` but refused when they disagree.
+  `qualifiers` is ABSENT, never empty: an `rdf:value` with no siblings reads as
+  a plain value, which keeps every `o6uu.1` model byte-identical.
+  **Invariant (`o6uu.2`):** `rdf:resource` is `{ kind: 'simple', uri: true }`
+  and is written back as an ATTRIBUTE. A URI and a string that looks like one
+  are different values, and the serializer never turns one into the other.
+  The qualified form is always written with `rdf:value` FIRST; calibre writes
+  the qualifier first, which is what `fixtures/xmp/calibre-identifiers.xmp` pins.
+  **Note:** a duplicate property keeps its FIRST occurrence; UTF-16 packets are
+  `readXmp`'s decoding problem, not this module's.
+  **Note, measured (`o6uu.2`):** all 11 mutations aimed at qualifiers and URIs
+  redden. Dropping `rdf:value` detection costs 9 cases, dropping property
+  qualifiers 6, and the rest 1 to 3 each. The single-case ones are the
+  `xml:lang` conflict, reading `xml:lang` from `rdf:value`, and refusing a
+  qualified `rdf:value`.
+  **Note, measured:** all eight mutations aimed at the rules above redden, over
+  40 cases — resolving by prefix instead of URI 34, dropping Description
+  attributes 5, dropping item `lang`, reading `parseType` as a simple value
+  and ignoring the source's prefixes 3 each, the ASCII NCName 2 (one of them the
+  IRS packet), the DTD check and the duplicate guard 1 each.
+  **Note on the oracle:** the only real Seq-of-structs packet is
+  `fixtures/xmp/`'s, vendored from Acrobat Reader's own `TutorialSample.pdf`
+  because no Acrobat Pro was available to re-save one of ours. It has no
+  nested-Description or attribute-form struct and no multi-language Alt, so
+  those are held by hand-built cases alone.
+- **pdfdate.ts** — `D:` dates (32000-1 7.9.4) and XMP dates (W3C-DTF ISO 8601)
+  converted TEXT TO TEXT (`o6uu.4`): `pdfDateToIso`, `isoToPdfDate`,
+  `isoInstant`, `sameInstant`. A leaf importing nothing; never throws.
+  **Invariant:** nothing here passes through a JS `Date` on the way from one
+  syntax to the other. A `Date` keeps the instant and drops the offset it was
+  written in, and `readMetadata` already hands one back — which is why the
+  sync reads raw text rather than `GetMetadata()`. D→ISO→D is byte-exact for
+  every full-form `D:` string; the two lossy steps are STATED — an hour with
+  no minutes gains `:00` (ISO requires minutes), and ISO fractional seconds are
+  dropped (PDF has no field for them).
+  **Invariant:** `sameInstant` compares to the SECOND. Our own
+  `SetMetadata(Date)` writes `D:…+00'00'` into /Info and `….000Z` into XMP;
+  compared as text, or to the millisecond, every sync of our own output would
+  rewrite it.
+  **Note:** `isoInstant` builds from `Date.UTC(2000, …)` and then
+  `setUTCFullYear`, because `Date.UTC` maps years 0–99 onto the 1900s.
+  **Note, measured:** all four mutations aimed here redden — dropping the
+  zone-needs-a-time refusal, reverting to a bare `Date.UTC`, comparing
+  instants to the millisecond, and emitting an offset without apostrophes.
+  The mirror fix in `xmp.ts` (`toIsoDate`/`toPdfDate`) reddens on its own too.
+  **Invariant:** the PRIMARY side converts too — `metadata.ts`'s
+  `pdfDateText` and `xmp.ts`'s `dateStr` — but only a string that reads in
+  the OTHER grammar and not this one. `2024` reads as both (the `D:` prefix
+  is optional) and so stays as written; `yesterday` reads as neither and is
+  written as given, as before `o6uu.4`.
+- **metasync.ts** — `/Info` ↔ XMP synchronisation (`o6uu.4`), behind
+  `doc.SyncMetadata`. Pure: `infoSide` and `xmpSide` read each side as raw
+  text, `planSync` decides the update, and `document.ts` alone applies it.
+  **Invariant:** an EXACT MIRROR — a field absent on the source is deleted on
+  the target — except a source value that does not READ, which leaves the
+  target alone and is reported in `skipped`: a date in neither grammar, or a
+  value PRESENT BUT UNREADABLE, which `SideText` spells `null` (an /Info
+  entry that is not a string, an XMP property that is a struct). Read as
+  absent, a `/Title` that is a name object deleted a perfectly good
+  `dc:title` — a final-review finding.
+  **Invariant:** `/Author` is compared SPLIT AND JOINED in both directions.
+  `SetMetadata` writes `A,B` verbatim beside `dc:creator [A, B]`, and an
+  `xmpToInfo` that compared raw text rewrote our own output and marked the
+  document modified — Review Focus #1 failing, found by the final review, not
+  by the plan's no-op test, whose author was already spaced.
+  **Invariant:** the parse fallback reads dates as the packet WROTE them
+  (`xmp.ts`'s `xmpScalar`), never through `readXmp`'s `Date`, which is
+  `new Date(s)` and so reads a zone-less time in the MACHINE's zone.
+  **Invariant:** an XMP packet that will not parse falls back to `readXmp`'s
+  scan, never to an empty side. Read as empty, an exact mirror copies it over
+  /Info as eight deletions.
+  **Invariant:** only differing fields are written and a no-op sync calls
+  nothing that marks the document modified — pinned through the SIGN path in
+  `test/metadata-sync.test.ts`, since a save alone cannot see a spurious
+  modified flag (`pagemode.ts`'s trap). `'infoToXmp'` never creates /Info.
+  **Note:** the title and description are read as the `x-default` item, else
+  the first — `readXmp`'s reading, so the sync and `GetXmp` (and hence the
+  PDF/A consistency rule) agree about what the title is — and written to
+  `x-default` alone, so translations survive.
+  **Note:** it depends on `xmp.ts` exporting `NS` and `splitAuthors`; one
+  namespace table and one author split, not two.
+  **Note, measured:** all six mutations aimed at the sync redden — skipping
+  the delete-on-absent, comparing dates as text, returning an empty side from
+  the parse fallback, reading an Alt's first item, applying an empty plan, and
+  creating /Info before planning.
+- **xmpvalue.ts** — `XmpValue`, a read-only typed view over one `RdfValue`
+  (`o6uu.4`), behind `doc.GetXmpValue`. A leaf over `xmprdf.ts` types,
+  `langmatch.ts` and `pdfdate.ts`.
+  **Invariant:** every converter answers `undefined` rather than throwing.
+  `asInt`/`asReal` are strict grammars (no `"12abc"`, no exponent, no
+  `NaN`/`Infinity`) and `asBool` reads XMP's `True`/`False` only.
+  **Invariant:** `asText(lang)` picks from an Alt by exact tag, then RFC 4647
+  range through `langMatches`, then `x-default`, then the first item — exact
+  first, because `en` as a range also matches an EARLIER `en-GB`.
+  **Note, measured, and the first fixture could not see it:** dropping the
+  exact-tag pass stayed GREEN against an Alt asked for `en-US`, since range
+  `en-US` does not match tag `en` and the two passes agree there. What
+  separates them is an earlier item the range ALSO matches —
+  `[en-GB, en]` asked for `en` — which is the case in `test/xmpvalue.test.ts`.
+  **Note:** the class is exported `export type`, and the compiler still
+  counts it as a VALUE in `test/readme-api.test.ts`'s tally.
+  **Note:** the write half is `xmpwrite.ts` (`o6uu.8`).
+- **xmpwrite.ts** — typed XMP WRITES (`o6uu.8`), behind `doc.SetXmpValue`:
+  `checkXmpWrite` validates, `toRdfValue` converts an `XmpValueInput` to the
+  `xmprdf.ts` model. A leaf over `xmprdf.js` alone.
+  **Invariant:** plain values for scalars, TAGGED objects for the rest — an
+  ordered Seq and an unordered Bag are both "an array", and a URI and a string
+  that looks like one are different values. A tagged object holds exactly ONE
+  tag.
+  **Invariant:** every value reads back through `XmpValue`: a `Date` as
+  `toISOString()` (what `SetXmp` writes), a `lang` map with `x-default` FIRST.
+  A number whose `String()` is in exponent notation is REFUSED, since
+  `asReal` refuses that grammar and the write would not read back.
+  **Invariant:** a boolean is written `True`/`False` EXACTLY. **Note,
+  measured:** the round trip cannot see the case — `asBool` reads either — so
+  writing lowercase stayed GREEN until a case asserted the written text.
+  veraPDF's Boolean type is `^True$|^False$`, so lowercase would fail a PDF/A
+  value check (`o6uu.10`) while every read in this library passed.
+  **Invariant:** validated before anything is touched — a rejected call leaves
+  the document byte-identical. `TypeError` for the wrong kind of thing,
+  `RangeError` for a reserved prefix naming a DIFFERENT namespace (a reserved
+  prefix for its own namespace, `dc` for Dublin Core, is fine), and for a
+  `Date` outside years 0-9999, which `toISOString` writes as an expanded
+  ±YYYYYY year that `asDate` cannot read back — the mirror would then have
+  deleted the /Info date without a word.
+  **Invariant:** the reserved prefixes are XML's four PLUS `xmprdf.ts`'s
+  well-known table, read through `wellKnownNamespace` — ONE table with the
+  serializer. A shorter list of its own let `{ prefix: 'xmpMM' }` lose to
+  the real xmpMM silently, or push it to nsN, depending on property order.
+  **Invariant (`document.ts`):** the eight /Info-shared properties are
+  mirrored through `metasync.ts`'s `xmpSide` and `planSync` on the NEW packet,
+  so `SetXmpValue` and `SyncMetadata` cannot disagree about a mirror — except
+  that a value /Info cannot hold DELETES the key where the sync would skip it,
+  because the caller has just replaced what /Info described. The packet text
+  is computed before /Info is touched (`SetMetadata`'s `o6uu.7` order), and a
+  delete of an absent property writes nothing and marks nothing modified.
+  **Note:** `xmp.ts`'s `claimPrefix` is now the ONE owner of "a caller's prefix
+  wins over a foreign namespace", shared by `custom` and `SetXmpValue`; and
+  `editXmpPacketWith` is `editXmpPacket`'s edit path with a caller-supplied
+  edit, so there is one parse-edit-write path, not two.
+  **Note:** no type enforcement against the predefined schemas — that is
+  PDF/A value-type checking (`o6uu.10`), and a second answer here would drift.
+  **Note, measured:** all 12 mutations aimed at this module and its wiring
+  redden, the boolean spelling only after the case above was added.
+  **Invariant (`o6uu.12`):** a `{ lang }` tag must be subtags of letters and
+  digits joined by single hyphens, and no two may collide ignoring case —
+  `RangeError` otherwise, since two spellings of `x-default` write an Alt
+  naming one language twice. A namespace holding a character XML cannot carry
+  is REFUSED (`TypeError`), never left to the serializer's strip, which would
+  write it under a DIFFERENT URI that `GetXmpValue` then misses.
+  **Invariant (`o6uu.12`):** a write that leaves the packet as it was is no
+  write — `editXmpPacketWith` compares the serialized model before and after
+  and answers `undefined` — so setting a value it already has, or deleting one
+  that is absent, marks nothing modified and a later `Sign()` still appends.
+  The /Info mirror runs EITHER way, against the unchanged packet when nothing
+  was written: that is what makes deleting a property XMP never held still
+  delete the /Info key describing it, and `planSync` writing only what differs
+  is what keeps an agreeing /Info untouched.
+  **Note, a stated limit:** a property or prefix that is an NCName only by its
+  Unicode letters reads back through `GetXmpValue` but NOT through
+  `GetXmp().custom`, whose scan matches ASCII names.
+- **xmpschemas.ts**, **xmpschemadata.ts**, **pdfaext.ts**, **pdfaextfix.ts** —
+  PDF/A's rule that every XMP property is predefined or described (ISO
+  19005-1 6.7.8–6.7.9, -2/-3 6.6.2.3; `o6uu.6`). `xmpschemadata.ts` is
+  GENERATED by `scripts/gen-xmp-schemas.mjs` from veraPDF-library at a pinned
+  commit — facts only, no code — and `xmpschemas.ts` is the leaf over it;
+  `pdfaext.ts` is pure over `RdfPacket` and produces the issues;
+  `pdfaextfix.ts` writes missing descriptions and is the only one of the four
+  touching a `Document`.
+  **Invariant:** parts 1–3 only. `PDFA-4.xml` carries no rule on an XMP
+  property or an extension-schema object — ISO 19005-4 dropped it — and parts
+  2 and 3 are identical (the 21 extracted rules diff empty).
+  **Invariant:** presence is keyed by PROPERTY `(namespace, name)`, never by
+  namespace, and part 1 uses the XMP 2004 set where parts 2–3 use 2005. At
+  parts 2–3 an object-level packet may also be described by the catalog's.
+  **Invariant, and it reads wrong:** a later schema entry for a namespace
+  REPLACES an earlier one (veraPDF's registry is a map), and "shall be
+  present" is enforced by the PREFIX test — every shape test passes an absent
+  field. The converter therefore extends the LAST entry for a namespace.
+  **Invariant:** known value types come in three tiers — a schema with no
+  simple `namespaceURI` or no `property` array registers nothing and sees only
+  `new ValidatorsContainer()`'s base set; a registered one sees its era's set
+  plus its own `valueType` declarations.
+  **Invariant:** the converter describes only what it can state truthfully:
+  `pdfuaid` and `pdfxid` from their standards, a simple non-URI value as
+  `Text`. An array, a struct or a URI in an unknown namespace stays reported.
+  It pins the five PDF/A extension prefixes on the way out, which also repairs
+  a pre-existing description under other prefixes.
+  **Invariant:** the generator finds a Java method by its DECLARATION — a
+  parameter list followed by `{` — never by first mention; the first draft
+  matched a CALL site and extracted nothing, which its own
+  "registered nothing" guard caught. It also refuses to run if
+  `EMPTY_VALIDATORS_CONTAINER` stops being `new ValidatorsContainer()`, the
+  fact the base tier rests on.
+  **Invariant, and the final review found it CRITICAL:** the packets checked
+  are the streams a dictionary REACHABLE from the catalog names by
+  `/Metadata` (`pdfavalidate.ts`'s `metadataStreams`) — never the object map,
+  and never `/Type /Metadata`. Every metadata write leaves the replaced stream
+  in the map until `Save()` sweeps it, so an object-map scan validated packets
+  the document no longer held: `ConvertToPdfA('1b')` reported failures in
+  streams it had superseded itself, while the saved file was clean. Part 2
+  hid it (the catalog's descriptions excuse an orphan's properties), which is
+  why every end-to-end case at `2b` passed.
+  **Invariant:** the converter re-pins the five prefixes whenever a container
+  exists under the wrong ones, even with nothing missing — a complete
+  description can fail on its prefixes alone.
+  **Note, a stated divergence:** veraPDF reads each element's own prefix; the
+  model keeps the FIRST binding per namespace (`RdfPacket.prefixes`).
+  **Invariant (`o6uu.11`):** an object-level packet at parts 2–3 checks its
+  value types against the catalog packet's DECLARED types for the same
+  namespace plus its own — `extendSchemasDefinitionForPDFA_2_3` seeds each
+  schema's container from `oldValidators`, keyed by namespace. Only that
+  namespace: a type the catalog declares elsewhere does not leak. Both
+  directions and the part-1 exclusion are pinned in
+  `test/pdfaext-residue.test.ts`.
+  **Invariant (`o6uu.11`):** `pinPdfaPrefixes` re-binds a foreign namespace
+  it displaces to a FRESH prefix itself and rewrites that namespace's
+  `pdfaSchema:prefix` in every description, including one the same pass just
+  wrote. Leaving the rebinding to the serializer let the written prefix and
+  the described one disagree.
+  **Invariant (`o6uu.11`):** `ConvertToPdfA`, `ConvertToPdfUa` and
+  `ConvertToPdfX` all describe through `describeXmpPackets`, so each describes
+  EVERY undescribed property it can state truthfully, not only its own
+  identification schema. The UA and X passes run only when the packet claims
+  PDF/A part 1–3.
+  **Note, and it corrected the spec:** the vendored Acrobat packet is flagged
+  for exactly `xmpMM:OriginalDocumentID` and `pdf:Trapped`, neither of which
+  occurs in veraPDF's tables. A real third-party packet reporting two named
+  properties is a sharper fence than one reporting none.
+  **Note, measured:** all 17 mutations aimed at these four modules and their
+  wiring redden, each at the case built for it — including the last-entry-wins
+  reading, the valueType requirement for registration, the base-tier types of
+  an unregistered schema, and the part-4 gate. Wiring the rule moved no
+  existing test: the whole suite stayed green.
+  **Note on the anchor:** a transcription with no runnable oracle
+  (`72nc.1`'s ceiling). Value-type correctness (6.6.2.3.1-2) is `o6uu.10`,
+  below.
+- **xmptypes.ts**, **pdfavaluetypes.ts** — XMP property VALUE types for PDF/A
+  (ISO 19005-1 6.7.9-3, -2/-3 6.6.2.3.1-2; `o6uu.10`), veraPDF's
+  `isValueTypeCorrect`. `xmptypes.ts` is `ValidatorsContainer` ported over the
+  `xmprdf.ts` model (`XmpTypeRegistry`, `isXmpDate`), a pure leaf over the
+  generated tables; `pdfavaluetypes.ts` resolves each top-level property's type
+  and reports `XmpValueType`, and holds `repairShape` for the converter.
+  **Invariant, and it is what made the port small:** closed-choice checking is
+  OFF. `GFPDMetadata` builds its packages through the constructors passing
+  `isClosedChoiceCheck = false` (the flag exists for the metadata fixer), so a
+  restricted field registers its OPEN type and the predefined side is one
+  `(namespace, name) → type` table. `gen:xmpschemas` replays veraPDF's
+  registration sequence to produce it — unknown-type registrations dropped,
+  first wins — and FAILS if a name `o6uu.6`'s tables list is one the replay
+  drops, so the two tables cannot drift. Measured: retyping one `dc:format`
+  registration to an unknown type in a copy of the pinned sources makes the
+  generator refuse, naming the property.
+  **Invariant:** resolution is `AXLXMPProperty.getSchemasDefinition`'s order —
+  this packet's extension schemas, then at parts 2–3 the catalog packet's, then
+  the predefined set — so an extension schema OUTRANKS a predefined type. Each
+  schema's registry starts from the catalog's registry for its namespace (an
+  object packet at parts 2–3) or a fresh era one, extended by its own
+  `valueType`s only. A registration naming an UNKNOWN type is dropped, so
+  resolution falls THROUGH to the predefined type rather than failing.
+  **Note, measured, and the obvious fixture cannot see that last rule:** a
+  property whose value is ALSO wrong for the predefined type reports under both
+  readings, since an unknown type validates nothing. Dropping the filter stayed
+  GREEN until a case redefined a VALID Lang Alt `dc:rights` with an unknown
+  type — only the fall-through reading passes it.
+  **Invariant:** veraPDF parses WITHOUT normalization (`VeraPDFMeta.parse`
+  sets `setOmitNormalization(true)`), so a plain-text `dc:title` FAILS — it is
+  not silently wrapped into a Lang Alt. A Lang Alt is an Alt with some item
+  carrying `xml:lang` (`detectAltText`, run by `ParseRDF` regardless) or an
+  empty Alt.
+  **Invariant:** Date is XMPCore's `ISO8601Converter.parse` transcribed, never
+  `pdfdate.ts`'s grammar — two answers to "is this a date" is how we and
+  veraPDF would disagree. Its `gatherInt` CLAMPS, so only the shape fails:
+  `2024-13-40` is a valid date, and so is the empty string.
+  **Invariant:** a property name is probed with `Object.hasOwn` — it comes
+  from the document, and `constructor` must not find `Object.prototype`'s.
+  **Note, three stated divergences:** a property with no type is reported
+  ONCE, by `o6uu.6`'s rule (veraPDF's `null == true` reports it again as type
+  null); XPath accepts any simple value (no XPath compiler, and no predefined
+  property uses it); URI and URL accept any simple value, which is veraPDF's
+  own current behaviour rather than ours.
+  **Note, a fourth divergence, found by the final review:** a Lang Alt whose
+  items get their language only by INHERITANCE passes here and fails in
+  veraPDF. `xmprdf.ts` inherits `xml:lang` as RDF/XML defines it (`o6uu.5`),
+  so `<rdf:Description xml:lang="en">…<rdf:Alt><rdf:li>T</rdf:li>` gives the
+  item `lang: 'en'`; XMPCore's `ParseRDF` records an element's OWN `xml:lang`
+  only, so `detectAltText` never marks that Alt. It can only MISS a defect,
+  never report a false one, and closing it would need the model to tell a
+  stated language from an inherited one — so it is recorded, not fixed.
+  **Invariant (`pdfaextfix.ts`):** an object-level stream is rewritten with
+  its dict COPIED, minus `/Filter`, `/DecodeParms`, `/Length` and `/DL` — the
+  encoding no longer describes the payload, but every other key the producer
+  wrote survives. Rebuilding the dict from `/Type` and `/Subtype` alone
+  silently dropped them (a final-review finding).
+  **Invariant (`pdfaextfix.ts`):** the converter repairs SHAPE only — simple →
+  Lang Alt `x-default` item or one-item array, Bag ↔ Seq, one-item Bag/Seq →
+  Alt — and keeps a repair only if it then VALIDATES; anything wrong in
+  content is left as written.
+  **Invariant (`o6uu.13`):** wrapping a simple value into an item is done at
+  the PROPERTY level (`repairProperty`): the value's qualifiers and its
+  language move ONTO the item, the language replacing `x-default`. Left on the
+  property they describe the ARRAY, so a `dc:title xml:lang="de"` became a
+  German-tagged Alt whose one item claimed to be the default.
+  **Invariant (`o6uu.13`):** BOTH packet-editing passes — description and
+  value-type repair — read every reachable packet (the catalog's first, since
+  an object packet borrows its descriptions and types at parts 2–3) and write
+  each changed one back IN PLACE (`writeBack`, `replaceObject` on its own
+  number, dict copied minus the encoding). Never through `installXmpText`,
+  which allocates a new stream and repoints the CATALOG only: a stream the
+  catalog shares with a page then left the page naming the unrepaired packet.
+  `describeXmpPackets` replaced `describeCatalogXmp`, which described the
+  catalog's packet alone — so at PART 1, where an object packet may not borrow
+  the catalog's descriptions, a page's packet stayed undescribed and
+  `ConvertToPdfA('1b')` reported it unresolved.
+  **Note, measured, and why one of the shared-stream cases calls the pass
+  directly:** inside `ConvertToPdfA` the identification pass rewrites the
+  catalog packet through `SetXmp` BEFORE either pass runs, which already
+  splits a shared stream in two — so an end-to-end case cannot see the
+  in-place write, and passes under the `installXmpText` mutation.
+  `test/pdfavaluetypes-residue.test.ts` calls `repairXmpValueTypes` on the
+  shared document for that reason.
+  **Note, and the plan predicted the opposite:** the vendored Acrobat packet is
+  NOT clean. It reports exactly three, at both eras, and each is what veraPDF's
+  pinned tables imply — `xmpMM:History` events carry `stEvt:changed` and
+  `xmpMM:DerivedFrom` carries `stRef:originalDocumentID`, neither of which is
+  a field of veraPDF's ResourceEvent or ResourceRef (grep of `XMPConstants`),
+  and `dc:creator` is an empty Bag where a Seq is required. The packet is not a
+  PDF/A packet; the test pins the three rather than asserting none. The calibre
+  packet is clean.
+  **Note on the anchor:** a transcription with no runnable oracle — `72nc.1`'s
+  ceiling. Agreement with the vendored packets is evidence against packets we
+  did not write, not conformance.
+  **Note, measured:** all 18 mutations aimed at these modules and their wiring
+  redden, dropping the unknown-type filter only after the fall-through case
+  above was added.
 - **text.ts** — coordinate-based text extraction (`Page.GetText()`): walks
   content ops, emits positioned glyph runs, and assembles them into words/lines
   (affine matrix helpers live here too).
@@ -9893,6 +10337,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
+| `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |
 | `fixtures/commonmark/` | `PROVENANCE.md` | The official CommonMark 0.31.2 suite — 652 examples, run with no allowlist through the test-only oracle in `test/helpers/md-html.ts` |
 | `fixtures/gfm/` | `PROVENANCE.md` | GitHub's own `spec.txt` — the 24 examples tagged with an extension name. The other 648 are a CommonMark **0.29** document and are deliberately not run |

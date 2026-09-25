@@ -21,6 +21,7 @@ export interface PdfaOptions {
   embeddedFile?: 'full' | 'bare' | 'noUf' | 'noMime';
   // metadata
   omitMetadata?: boolean;     // omit /Root /Metadata
+  xmpExtra?: string;          // raw rdf:Description markup appended inside rdf:RDF
   pdfaPart?: string;          // pdfaid:part value (default matches `part`)
   pdfaConformance?: string;   // pdfaid:conformance value (default 'B')
   infoTitle?: string | null;  // /Info /Title (default 'Clean'); null omits /Info
@@ -276,7 +277,7 @@ export function buildPdfaPdf(opts: PdfaOptions = {}, part: 1 | 2 | 3 | 4 = 2): U
   if (opts.fontEmbedded ?? true) objects[6] = '<< /Length 4 /Length1 4 >>\nstream\ntrue\nendstream';
 
   // metadata (XMP with pdfaid)
-  const xmp = xmpPacket(pdfaPart, pdfaConf, pdfaRev, xmpTitle);
+  const xmp = xmpPacket(pdfaPart, pdfaConf, pdfaRev, xmpTitle, opts.xmpExtra ?? '');
   objects[7] = `<< /Type /Metadata /Subtype /XML /Length ${byteLen(xmp)} >>\nstream\n${xmp}endstream`;
 
   // The ICC output profile as an indirect object. Omitted when the profile is
@@ -368,7 +369,7 @@ export function buildPdfaPdf(opts: PdfaOptions = {}, part: 1 | 2 | 3 | 4 = 2): U
 }
 
 function xmpPacket(
-  part: string, conformance: string | null, rev: string | null, title: string,
+  part: string, conformance: string | null, rev: string | null, title: string, extra: string,
 ): string {
   const idAttrs = [`pdfaid:part="${part}"`];
   if (conformance !== null) idAttrs.push(`pdfaid:conformance="${conformance}"`);
@@ -379,7 +380,7 @@ function xmpPacket(
     + `${idAttrs.join(' ')}/>`
     + `<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">`
     + `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">${title}</rdf:li></rdf:Alt></dc:title>`
-    + `</rdf:Description></rdf:RDF></x:xmpmeta>\n<?xpacket end="w"?>`;
+    + `</rdf:Description>${extra}</rdf:RDF></x:xmpmeta>\n<?xpacket end="w"?>`;
 }
 
 /**

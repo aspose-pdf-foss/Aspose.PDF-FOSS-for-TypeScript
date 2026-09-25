@@ -1,4 +1,5 @@
 import { PdfDict, PdfObject, isString } from './types.js';
+import { pdfDateToIso, isoToPdfDate } from './pdfdate.js';
 
 /** Decode a PDF text-string's bytes: UTF-16BE when a FE FF BOM is present, else Latin1. */
 export function decodePdfText(bytes: Uint8Array): string {
@@ -112,13 +113,22 @@ export function readMetadata(
   return meta;
 }
 
+/** A /Info date's text. A string that reads as an ISO 8601 date and NOT as a
+ *  `D:` one is converted (`o6uu.4`) — that is a caller handing XMP syntax to
+ *  the /Info side; anything else is written as given, as it always was. */
+function pdfDateText(v: Date | string): string {
+  if (v instanceof Date) return formatPdfDate(v);
+  const s = String(v);
+  return pdfDateToIso(s) === undefined ? isoToPdfDate(s) ?? s : s;
+}
+
 /** Merge an update into a working /Info dict in place: undefined leaves, null deletes, value sets. */
 export function applyUpdate(info: PdfDict, update: MetadataUpdate): void {
   for (const [field, key] of STANDARD_FIELDS) {
     const v = (update as unknown as Record<string, string | Date | null | undefined>)[field];
     if (v === undefined) continue;
     if (v === null) { info.delete(key); continue; }
-    const text = DATE_FIELDS.has(field) && v instanceof Date ? formatPdfDate(v) : String(v);
+    const text = DATE_FIELDS.has(field) ? pdfDateText(v as Date | string) : String(v);
     info.set(key, { kind: 'string', bytes: encodePdfText(text) });
   }
   if (update.custom) {

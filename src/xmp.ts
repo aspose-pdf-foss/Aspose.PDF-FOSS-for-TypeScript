@@ -1,4 +1,8 @@
 import type { MetadataUpdate } from './metadata.js';
+import { parseRdfPacket, serializeRdfPacket, stripNonXmlChars, type RdfPacket, type RdfProperty, type RdfValue } from './xmprdf.js';
+import { rethrowLimit } from './errors.js';
+import { LoadLimits } from './loadlimits.js';
+import { pdfDateToIso, isoToPdfDate } from './pdfdate.js';
 
 /** Structured view of a document's XMP packet (read side). */
 export interface XmpMetadata {
@@ -216,110 +220,259 @@ function readCustom(xml: string): XmpProperty[] {
     if (namespace === undefined) continue;
     out.push({ namespace, prefix: m[1], name: m[2], value: unescapeXml(m[3].trim()) });
   }
+  // Attribute form too (`o6uu.7`): `<rdf:Description acme:Batch="B1">` is the
+  // same property, and the first rewrite moves it to element form — reading
+  // only elements made `custom`'s reach change after one SetXmp. Reserved
+  // prefixes (rdf, xml, xmlns, …) are absent from `ns`, so they skip here too.
+  for (const tag of xml.matchAll(/<rdf:Description\b([^>]*)>/g)) {
+    for (const m of tag[1].matchAll(/([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+      const namespace = ns.get(m[1]);
+      if (namespace === undefined) continue;
+      out.push({ namespace, prefix: m[1], name: m[2], value: unescapeXml(m[3] ?? m[4] ?? '') });
+    }
+  }
   return out;
 }
 
 /** A partial XMP update: each known field may be set, or `null` to delete. */
 export type XmpUpdate = { [K in keyof Omit<XmpMetadata, 'raw'>]?: XmpMetadata[K] | null };
 
-/** Escape the five XML predefined entities (`&` first to avoid double-encoding). */
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
+/** A scalar's text as the packet WROTE it (`o6uu.4`): `metasync.ts`'s
+ *  fallback for an unparseable packet reads dates this way, since `readXmp`'s
+ *  own `Date` is built with `new Date(s)` and so depends on the local zone. */
+export { scalar as xmpScalar };
 
+/** An XMP date's text. A string that reads as a `D:` date and NOT as an XMP
+ *  one is converted (`o6uu.4`) — that is a caller handing /Info syntax to the
+ *  XMP side; anything else is written as given, as it always was. */
 function dateStr(d: Date | string): string {
-  return d instanceof Date ? d.toISOString() : String(d);
+  if (d instanceof Date) return d.toISOString();
+  const s = String(d);
+  return isoToPdfDate(s) === undefined ? pdfDateToIso(s) ?? s : s;
 }
 
-/** Emit a well-formed XMP packet for the known dc / xmp / pdf properties. Absent
- *  fields are omitted; `raw` is ignored (the packet is rebuilt from fields). */
-export function buildXmp(meta: XmpMetadata): string {
-  const lines: string[] = [];
-  const alt = (tag: string, v: string) =>
-    `   <${tag}><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(v)}</rdf:li></rdf:Alt></${tag}>`;
-  const container = (tag: string, kind: 'Seq' | 'Bag', items: string[]) =>
-    `   <${tag}><rdf:${kind}>${items.map((i) => `<rdf:li>${escapeXml(i)}</rdf:li>`).join('')}</rdf:${kind}></${tag}>`;
-  const simple = (tag: string, v: string) => `   <${tag}>${escapeXml(v)}</${tag}>`;
+export const NS = {
+  dc: 'http://purl.org/dc/elements/1.1/',
+  xmp: 'http://ns.adobe.com/xap/1.0/',
+  pdf: 'http://ns.adobe.com/pdf/1.3/',
+  pdfaid: 'http://www.aiim.org/pdfa/ns/id/',
+  pdfuaid: 'http://www.aiim.org/pdfua/ns/id/',
+  pdfxid: 'http://www.npes.org/pdfx/ns/id/',
+} as const;
 
-  if (meta.title !== undefined) lines.push(alt('dc:title', meta.title));
-  if (meta.authors && meta.authors.length) lines.push(container('dc:creator', 'Seq', meta.authors));
-  if (meta.description !== undefined) lines.push(alt('dc:description', meta.description));
-  if (meta.subjects && meta.subjects.length) lines.push(container('dc:subject', 'Bag', meta.subjects));
-  if (meta.rights !== undefined) lines.push(alt('dc:rights', meta.rights));
-  if (meta.keywords !== undefined) lines.push(simple('pdf:Keywords', meta.keywords));
-  if (meta.producer !== undefined) lines.push(simple('pdf:Producer', meta.producer));
-  if (meta.creatorTool !== undefined) lines.push(simple('xmp:CreatorTool', meta.creatorTool));
-  if (meta.createDate !== undefined) lines.push(simple('xmp:CreateDate', dateStr(meta.createDate)));
-  if (meta.modifyDate !== undefined) lines.push(simple('xmp:ModifyDate', dateStr(meta.modifyDate)));
+type FieldKind = 'alt' | 'seq' | 'bag' | 'text' | 'date';
 
-  const pdfaDesc = (meta.pdfaPart !== undefined || meta.pdfaConformance !== undefined
-    || meta.pdfaRev !== undefined)
-    ? `\n  <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"`
-      + (meta.pdfaPart !== undefined ? ` pdfaid:part="${meta.pdfaPart}"` : '')
-      + (meta.pdfaConformance !== undefined ? ` pdfaid:conformance="${escapeXml(meta.pdfaConformance)}"` : '')
-      + (meta.pdfaRev !== undefined ? ` pdfaid:rev="${meta.pdfaRev}"` : '')
-      + `/>`
-    : '';
+/** Every field of `XmpMetadata` but `custom`, as the property it owns. The
+ *  declaration ORDER is the order fields are appended to a packet that lacks
+ *  them, so a fresh packet reads in the order `buildXmp` always wrote. */
+const FIELDS: [Exclude<keyof XmpUpdate, 'custom'>, string, string, FieldKind][] = [
+  ['title', NS.dc, 'title', 'alt'],
+  ['authors', NS.dc, 'creator', 'seq'],
+  ['description', NS.dc, 'description', 'alt'],
+  ['subjects', NS.dc, 'subject', 'bag'],
+  ['rights', NS.dc, 'rights', 'alt'],
+  ['keywords', NS.pdf, 'Keywords', 'text'],
+  ['producer', NS.pdf, 'Producer', 'text'],
+  ['creatorTool', NS.xmp, 'CreatorTool', 'text'],
+  ['createDate', NS.xmp, 'CreateDate', 'date'],
+  ['modifyDate', NS.xmp, 'ModifyDate', 'date'],
+  ['pdfaPart', NS.pdfaid, 'part', 'text'],
+  ['pdfaConformance', NS.pdfaid, 'conformance', 'text'],
+  ['pdfaRev', NS.pdfaid, 'rev', 'text'],
+  ['pdfuaPart', NS.pdfuaid, 'part', 'text'],
+  ['pdfuaRev', NS.pdfuaid, 'rev', 'text'],
+  ['pdfxVersion', NS.pdfxid, 'GTS_PDFXVersion', 'text'],
+];
 
-  const pdfuaDesc = (meta.pdfuaPart !== undefined || meta.pdfuaRev !== undefined)
-    ? `\n  <rdf:Description rdf:about="" xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"`
-      + (meta.pdfuaPart !== undefined ? ` pdfuaid:part="${meta.pdfuaPart}"` : '')
-      + (meta.pdfuaRev !== undefined ? ` pdfuaid:rev="${meta.pdfuaRev}"` : '')
-      + `/>`
-    : '';
+const simpleValue = (v: unknown) => ({ kind: 'simple' as const, value: stripNonXmlChars(String(v)) });
 
-  // One rdf:Description per prefix, carrying that prefix's xmlns declaration.
-  // Absent or empty `custom` contributes nothing, so a packet without custom
-  // properties is byte-for-byte what it was before this field existed.
-  let customDesc = '';
-  if (meta.custom && meta.custom.length) {
-    validateCustom(meta.custom);
-    const byPrefix = new Map<string, XmpProperty[]>();
-    for (const p of meta.custom) {
-      const group = byPrefix.get(p.prefix);
-      if (group) group.push(p); else byPrefix.set(p.prefix, [p]);
-    }
-    for (const [prefix, props] of byPrefix) {
-      customDesc += `\n  <rdf:Description rdf:about="" xmlns:${prefix}="${escapeXml(props[0].namespace)}">`
-        + props.map((p) => `\n   <${prefix}:${p.name}>${escapeXml(p.value)}</${prefix}:${p.name}>`).join('')
-        + `\n  </rdf:Description>`;
-    }
-  }
+/** Apply `update` to `packet` in place. `current` is what `readXmp` reported
+ *  for the packet being edited — the scope of `custom`'s removal. */
+function applyXmpUpdate(packet: RdfPacket, update: XmpUpdate, current: XmpProperty[] | undefined): void {
+  const props = packet.properties;
+  const at = (ns: string, name: string) => props.findIndex((p) => p.ns === ns && p.name === name);
+  const put = (p: RdfProperty) => { const i = at(p.ns, p.name); if (i < 0) props.push(p); else props[i] = p; };
+  const del = (ns: string, name: string) => { const i = at(ns, name); if (i >= 0) props.splice(i, 1); };
 
-  const pdfxDesc = meta.pdfxVersion !== undefined
-    ? `\n  <rdf:Description rdf:about="" xmlns:pdfxid="http://www.npes.org/pdfx/ns/id/"`
-      + ` pdfxid:GTS_PDFXVersion="${escapeXml(meta.pdfxVersion)}"/>`
-    : '';
-
-  return `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/">
- <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">
-${lines.join('\n')}
-  </rdf:Description>${pdfaDesc}${pdfuaDesc}${pdfxDesc}${customDesc}
- </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>`;
-}
-
-/** Merge `update` over `current`: value sets, `null` deletes; `raw` is dropped. */
-export function mergeXmp(current: XmpMetadata, update: XmpUpdate): XmpMetadata {
-  const out: XmpMetadata = { ...current };
-  delete out.raw;
-  for (const key of Object.keys(update) as (keyof XmpUpdate)[]) {
+  for (const [key, ns, name, kind] of FIELDS) {
     const v = update[key];
     if (v === undefined) continue;
-    if (v === null) delete (out as Record<string, unknown>)[key];
-    else (out as Record<string, unknown>)[key] = v;
+    if (v === null) { del(ns, name); continue; }
+    if (kind === 'alt') {
+      // Only x-default is ours: every other language is somebody's translation.
+      const old = props[at(ns, name)]?.value;
+      const items = old?.kind === 'array' && old.form === 'Alt' ? [...old.items] : [];
+      const item = { value: simpleValue(v), lang: 'x-default' };
+      // x-default goes FIRST whether it was there or not: XMP orders it so, and
+      // readXmp's altText reads items[0] — replacing it in place behind an
+      // `en` item made GetXmp().title report the English text after the edit.
+      const i = items.findIndex((it) => it.lang?.toLowerCase() === 'x-default');
+      if (i >= 0) items.splice(i, 1);
+      items.unshift(item);
+      put({ ns, name, value: { kind: 'array', form: 'Alt', items } });
+    } else if (kind === 'seq' || kind === 'bag') {
+      const list = v as string[];
+      if (list.length === 0) del(ns, name);
+      else put({ ns, name, value: { kind: 'array', form: kind === 'seq' ? 'Seq' : 'Bag',
+        items: list.map((s) => ({ value: simpleValue(s) })) } });
+    } else if (kind === 'date') put({ ns, name, value: simpleValue(dateStr(v as Date | string)) });
+    else put({ ns, name, value: simpleValue(v) });
   }
-  return out;
+
+  if (update.custom !== undefined) {
+    // Top-level only: readXmp's scan also reports literal FIELDS of structs,
+    // which are not properties of the packet and are not ours to remove —
+    // nor to ADD back: `SetXmp({ custom: [...GetXmp().custom, mine] })` is the
+    // obvious way to add one property, and hoisting every History field to
+    // the top level corrupts the packet we just took care to keep.
+    const key = (ns: string, name: string) => `${ns}\u0000${name}`;
+    const topLevel = new Set(props.map((p) => key(p.ns, p.name)));
+    const nested = new Set((current ?? []).map((c) => key(c.namespace, c.name)).filter((k) => !topLevel.has(k)));
+    // A property the new set keeps is replaced IN PLACE, like every field; only
+    // the ones it drops are deleted.
+    const keep = new Set((update.custom ?? []).map((c) => key(c.namespace, c.name)));
+    for (const c of current ?? []) if (!keep.has(key(c.namespace, c.name))) del(c.namespace, c.name);
+    for (const c of update.custom ?? []) {
+      if (nested.has(key(c.namespace, c.name))) continue;
+      // The prefix the caller asked for wins (`o6uu.7`): a surviving foreign
+      // namespace holding it would otherwise take it first, and the caller's
+      // namespace would be written — and read back — as nsN.
+      claimPrefix(packet, c.namespace, c.prefix);
+      put({ ns: c.namespace, name: c.name, value: simpleValue(c.value) });
+    }
+  }
+}
+
+/** Strip characters XML cannot carry from everything in the model, PRESERVED
+ *  content included. `parseXml` decodes character references, so a packet
+ *  holding `&#x1;` parses fine and then cannot be written back — and every
+ *  metadata write, PDF/A conversion included, would throw on a file it used
+ *  to handle. */
+function sanitize(props: RdfProperty[]): void {
+  const value = (v: RdfValue): RdfValue => {
+    if (v.kind === 'simple') return { ...v, value: stripNonXmlChars(v.value) };
+    if (v.kind === 'array') return { ...v, items: v.items.map((it) => {
+      const out = { ...it, value: value(it.value) };
+      if (it.lang !== undefined) out.lang = stripNonXmlChars(it.lang);
+      if (it.qualifiers) { out.qualifiers = [...it.qualifiers]; sanitize(out.qualifiers); }
+      return out;
+    }) };
+    const fields = [...v.fields];
+    sanitize(fields);
+    return { ...v, fields };
+  };
+  for (let i = 0; i < props.length; i++) {
+    const p = props[i];
+    const out: RdfProperty = { ...p, ns: stripNonXmlChars(p.ns), value: value(p.value) };
+    if (p.lang !== undefined) out.lang = stripNonXmlChars(p.lang);
+    if (p.qualifiers) { out.qualifiers = [...p.qualifiers]; sanitize(out.qualifiers); }
+    props[i] = out;
+  }
+}
+
+/** The six built-in namespaces go out under their standard prefixes, whatever
+ *  the source bound them to: `readXmp`, `pdfaIdValue` and `xmpVersion` match
+ *  `dc:`, `pdfaid:` … LITERALLY. A foreign namespace that claimed one of those
+ *  prefixes loses the claim and the serializer renames it. */
+function pinBuiltinPrefixes(packet: RdfPacket): RdfPacket {
+  const std = new Map<string, string>(Object.entries(NS).map(([p, ns]) => [ns, p]));
+  const taken = new Set(std.values());
+  const prefixes = new Map<string, string>();
+  for (const [ns, p] of packet.prefixes) if (!std.has(ns) && !taken.has(p)) prefixes.set(ns, p);
+  for (const [ns, p] of std) prefixes.set(ns, p);
+  return { ...packet, prefixes };
+}
+
+/** The model to edit: the packet's own when it parses, else a rebuild from
+ *  the fields `readXmp` can see — exactly what survived before `o6uu.3`. */
+function startModel(existing: Uint8Array | undefined, limits: LoadLimits): { packet: RdfPacket; current: XmpMetadata } {
+  if (existing === undefined) return { packet: { properties: [], prefixes: new Map() }, current: {} };
+  const current = readXmp(existing);
+  try {
+    return { packet: parseRdfPacket(new TextEncoder().encode(current.raw ?? ''), limits), current };
+  } catch (e) {
+    rethrowLimit(e);
+    const packet: RdfPacket = { properties: [], prefixes: new Map() };
+    const custom = (current.custom ?? []).filter((c) => {
+      try { validateCustom([c]); return true; } catch (err) { rethrowLimit(err); return false; }
+    });
+    applyXmpUpdate(packet, { ...current, custom }, undefined);
+    return { packet, current };
+  }
+}
+
+/** Apply `update` to the XMP packet `existing` and return the packet text
+ *  (`o6uu.3`). Everything the update does not name survives — History,
+ *  qualified identifiers, extension schemas, other languages. `undefined`
+ *  means "write nothing": there was no packet and the result is empty.
+ *  `limits` are the DOCUMENT's (`o6uu.7`): a document opened with looser
+ *  limits must be able to write the packet it was allowed to read. */
+export function editXmpPacket(existing: Uint8Array | undefined, update: XmpUpdate,
+  limits: LoadLimits = LoadLimits.defaults): string | undefined {
+  if (update.custom) validateCustom(update.custom);
+  const { packet, current } = startModel(existing, limits);
+  applyXmpUpdate(packet, update, current.custom);
+  if (existing === undefined && packet.properties.length === 0) return undefined;
+  return writeXmpPacket(packet);
+}
+
+/** A model packet as the text `SetXmp` writes: characters XML cannot carry
+ *  stripped, the six built-in namespaces pinned to their standard prefixes.
+ *  The one owner of that tail, shared by `editXmpPacket` and the PDF/A
+ *  extension-schema pass (`o6uu.6`). */
+export function writeXmpPacket(packet: RdfPacket): string {
+  sanitize(packet.properties);
+  return serializeRdfPacket(pinBuiltinPrefixes(packet));
+}
+
+/** Bind `ns` to `prefix`, taking the prefix from any other namespace that
+ *  holds it — the serializer prefers the model's binding, first come first
+ *  served, so without this a surviving foreign namespace keeps it and the
+ *  caller's is written as nsN (`o6uu.7`). Shared by `custom` and
+ *  `SetXmpValue` (`o6uu.8`). */
+export function claimPrefix(packet: RdfPacket, ns: string, prefix: string): void {
+  for (const [other, p] of [...packet.prefixes]) if (p === prefix && other !== ns) packet.prefixes.delete(other);
+  packet.prefixes.set(ns, prefix);
+}
+
+/** `editXmpPacket`'s edit path with the edit supplied by the caller
+ *  (`o6uu.8`): parse (under `limits`), apply `edit`, write. `edit` returns
+ *  whether it changed anything; `undefined` means write nothing, so a no-op
+ *  leaves the document unmodified. */
+export function editXmpPacketWith(existing: Uint8Array | undefined, edit: (p: RdfPacket) => boolean,
+  limits: LoadLimits = LoadLimits.defaults): string | undefined {
+  const { packet } = startModel(existing, limits);
+  // An edit that leaves the packet as it was is NO edit (`o6uu.12`): a
+  // rewrite would mark the document modified, and a later Sign() would then
+  // rewrite bytes an earlier signature covered instead of appending.
+  const before = writeXmpPacket(packet);
+  if (!edit(packet)) return undefined;
+  const after = writeXmpPacket(packet);
+  return after === before ? undefined : after;
+}
+
+/** A fresh packet for `meta`, through the same edit `SetXmp` makes — so the
+ *  two cannot disagree about layout. `raw` is ignored. */
+export function buildXmp(meta: XmpMetadata): string {
+  if (meta.custom) validateCustom(meta.custom);
+  const packet: RdfPacket = { properties: [], prefixes: new Map() };
+  applyXmpUpdate(packet, meta, undefined);
+  return serializeRdfPacket(pinBuiltinPrefixes(packet));
 }
 
 /** Split an /Author scalar into ordered author items (drops empty segments). */
-function splitAuthors(s: string): string[] {
+export function splitAuthors(s: string): string[] {
   return s.split(',').map((t) => t.trim()).filter((t) => t.length > 0);
+}
+
+/** A STRING date is re-spelled in the other side's syntax (`o6uu.4`); one that
+ *  does not read passes through as it always did. A `Date` is untouched, so
+ *  every caller passing one writes the same bytes as before. */
+function toIsoDate(v: Date | string | null): Date | string | null {
+  return typeof v === 'string' ? pdfDateToIso(v) ?? v : v;
+}
+function toPdfDate(v: Date | string | null): Date | string | null {
+  return typeof v === 'string' ? isoToPdfDate(v) ?? v : v;
 }
 
 /** Project the shared fields of an /Info MetadataUpdate onto an XmpUpdate. */
@@ -331,8 +484,8 @@ export function mirrorMetaToXmp(u: MetadataUpdate): XmpUpdate {
   if (u.keywords !== undefined) out.keywords = u.keywords;
   if (u.creator !== undefined) out.creatorTool = u.creator;
   if (u.producer !== undefined) out.producer = u.producer;
-  if (u.creationDate !== undefined) out.createDate = u.creationDate;
-  if (u.modDate !== undefined) out.modifyDate = u.modDate;
+  if (u.creationDate !== undefined) out.createDate = toIsoDate(u.creationDate);
+  if (u.modDate !== undefined) out.modifyDate = toIsoDate(u.modDate);
   return out;
 }
 
@@ -345,7 +498,7 @@ export function mirrorXmpToMeta(u: XmpUpdate): MetadataUpdate {
   if (u.keywords !== undefined) out.keywords = u.keywords;
   if (u.creatorTool !== undefined) out.creator = u.creatorTool;
   if (u.producer !== undefined) out.producer = u.producer;
-  if (u.createDate !== undefined) out.creationDate = u.createDate;
-  if (u.modifyDate !== undefined) out.modDate = u.modifyDate;
+  if (u.createDate !== undefined) out.creationDate = toPdfDate(u.createDate);
+  if (u.modifyDate !== undefined) out.modDate = toPdfDate(u.modifyDate);
   return out;
 }

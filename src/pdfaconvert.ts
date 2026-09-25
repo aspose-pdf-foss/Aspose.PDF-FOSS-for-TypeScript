@@ -16,10 +16,12 @@ import { hasSignatureField } from './signature.js';
 import { usesTransparency } from './pdfatransparency.js';
 import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
+import { describeXmpPackets, repairXmpValueTypes } from './pdfaextfix.js';
 
 export type ConvertCategory =
   | 'javascript' | 'multimedia' | 'embeddedFiles' | 'xfa' | 'optionalContent'
-  | 'postScript' | 'info' | 'formActions' | 'deviceColor' | 'transparency';
+  | 'postScript' | 'info' | 'formActions' | 'deviceColor' | 'transparency' | 'extensionSchemas'
+  | 'xmpValueTypes';
 
 export interface ConvertOptions {
   /** Output-intent ICC profile. Defaults to a bundled sRGB profile. */
@@ -69,7 +71,7 @@ function nameOf(ctx: Cctx, dict: PdfDict, key: string): string | undefined {
 // ---- passes ----------------------------------------------------------------
 
 /** The pdfaid:conformance to write. PDF/A-4's base conformance is spelled by
- *  ABSENCE (ISO 19005-4 6.7.3-3), and `null` is how mergeXmp deletes a field —
+ *  ABSENCE (ISO 19005-4 6.7.3-3), and `null` is how SetXmp deletes a field —
  *  `ctx.level.toUpperCase()` would write `pdfaid:conformance=""`, which is the
  *  precise thing the part-4 refusal this replaced existed to prevent. */
 function conformanceUpdate(ctx: Cctx): string | null {
@@ -101,6 +103,26 @@ const identificationPass: Pass = (ctx) => {
   });
   const idPart = conf === null ? `part ${ctx.part} (no conformance)` : `part ${ctx.part}/conformance ${conf}`;
   return [{ rule: 'PdfaIdentification', action: `Wrote pdfaid:${idPart}${ctx.part === 4 ? '/rev 2020' : ''} and mirrored /Info into XMP.` }];
+};
+
+/** Describe in `pdfaExtension:schemas` every XMP property that is neither
+ *  predefined nor described (ISO 19005-1 6.7.9, -2/-3 6.6.2.3.1; `o6uu.6`).
+ *  Parts 1–3 only — ISO 19005-4 has no such rule. Runs after
+ *  identificationPass, which may have written the properties it describes. */
+const extensionSchemaPass: Pass = (ctx) => {
+  if (ctx.part === 4 || ctx.preserve.has('extensionSchemas')) return [];
+  return describeXmpPackets(ctx.doc, ctx.part);
+};
+
+/** Repair XMP values whose SHAPE is wrong for their type (`o6uu.10`): plain
+ *  text where a Lang Alt or an array is expected, a Bag where a Seq is. The
+ *  commonest real-world defect is a plain `dc:title`, which veraPDF parses
+ *  WITHOUT normalization and so rejects. A value that is wrong in content is
+ *  left and reported. Runs after `extensionSchemaPass`, whose descriptions
+ *  decide the types. */
+const xmpValueTypesPass: Pass = (ctx) => {
+  if (ctx.part === 4 || ctx.preserve.has('xmpValueTypes')) return [];
+  return repairXmpValueTypes(ctx.doc, ctx.part);
 };
 
 /** Declare the part's version in the catalog. This is unconditional: the
@@ -927,7 +949,7 @@ const ocConfigPass: Pass = (ctx) => {
 };
 
 const PASSES: Pass[] = [
-  identificationPass, versionPass, fileIdPass, outputIntentPass,
+  identificationPass, extensionSchemaPass, xmpValueTypesPass, versionPass, fileIdPass, outputIntentPass,
   // Immediately after outputIntentPass, which decides the space it aims at.
   deviceColorPass,
   inertTransparencyGroupPass,

@@ -131,3 +131,28 @@ describe('parseXml — mixed content ordering', () => {
     expect(root.nodes.filter((n) => typeof n === 'string')).toEqual([' ']);
   });
 });
+
+describe('parseXml qnames option', () => {
+  const src = enc('<a:root xmlns:a="u" a:x="1" y="2"><a:kid xml:lang="en"/></a:root>');
+
+  it('keeps prefixes on element names and attribute keys when asked', () => {
+    const r = parseXml(src, undefined, { qnames: true });
+    expect(r.name).toBe('a:root');
+    expect([...r.attrs.keys()]).toEqual(['xmlns:a', 'a:x', 'y']);
+    expect(r.children[0].name).toBe('a:kid');
+    expect(r.children[0].attrs.get('xml:lang')).toBe('en');
+  });
+
+  it('strips prefixes by default, exactly as before', () => {
+    const r = parseXml(src);
+    expect(r.name).toBe('root');
+    expect([...r.attrs.keys()]).toEqual(['a', 'x', 'y']);
+    expect(r.children[0].attrs.get('lang')).toBe('en');
+  });
+
+  it('matches an end tag by its qualified name in qnames mode', () => {
+    const mismatched = enc('<a:r xmlns:a="u" xmlns:b="u"></b:r>');
+    expect(() => parseXml(mismatched, undefined, { qnames: true })).toThrow(PdfParseError);
+    expect(parseXml(mismatched).name).toBe('r');
+  });
+});

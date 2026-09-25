@@ -207,6 +207,9 @@ export { verifyLinearization } from './linearize.js';
 export type { LinearizationCheck } from './linearize.js';
 export type { Metadata, MetadataUpdate } from './metadata.js';
 export type { XmpMetadata, XmpUpdate } from './xmp.js';
+export type { XmpValue } from './xmpvalue.js';
+export type { XmpValueInput, XmpWriteOptions } from './xmpwrite.js';
+export type { MetadataField, MetadataSyncReport, SyncDirection } from './metasync.js';
 export type {
   SignOptions, SignatureAppearance, SignatureField, CertifyOptions, DocMdpPermission,
   DocumentTimestampOptions,

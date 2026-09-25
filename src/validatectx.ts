@@ -1,6 +1,6 @@
 import type { Document } from './document.js';
 import {
-  PdfObject, PdfDict, PdfRef, isDict, isName, isArray, isStream, isRef,
+  PdfObject, PdfDict, PdfRef, PdfStream, isDict, isName, isArray, isStream, isRef,
 } from './types.js';
 import { inflateStream } from './flate.js';
 import { parseContentStream, type ContentTokenBudget } from './content.js';
@@ -22,6 +22,38 @@ export interface Ctx {
 export function memo<T>(ctx: Ctx, key: string, fn: () => T): T {
   if (!ctx.cache.has(key)) ctx.cache.set(key, fn());
   return ctx.cache.get(key) as T;
+}
+
+/** Every stream a dictionary REACHABLE from the catalog names by `/Metadata`
+ *  — how veraPDF finds its XMP packages. Not the object map: every metadata
+ *  write leaves the replaced stream there until `Save()` sweeps it, so an
+ *  object-map scan validates packets the document no longer holds and
+ *  `ConvertToPdfA` reported failures in streams it had itself superseded. Nor
+ *  `/Type /Metadata`, which is optional (a final-review finding, both). Shared by the PDF/A rules and the
+ *  converter (`o6uu.10`). */
+export function metadataStreams(ctx: Pick<Ctx, 'catalog' | 'R'>): [PdfRef, PdfStream][] {
+  const out = new Map<number, [PdfRef, PdfStream]>();
+  const seen = new Set<number>();
+  const stack: PdfObject[] = [ctx.catalog];
+  while (stack.length > 0) {
+    const o = stack.pop()!;
+    if (isRef(o)) {
+      if (seen.has(o.num)) continue;
+      seen.add(o.num);
+      stack.push(ctx.R(o));
+      continue;
+    }
+    if (isArray(o)) { for (const v of o) stack.push(v); continue; }
+    const dict = isStream(o) ? o.dict : isDict(o) ? o : undefined;
+    if (dict === undefined) continue;
+    const md = dict.get('Metadata');
+    if (isRef(md)) {
+      const s = ctx.R(md);
+      if (isStream(s)) out.set(md.num, [md, s]);
+    }
+    for (const v of dict.values()) stack.push(v);
+  }
+  return [...out.values()];
 }
 
 /** The name value of `dict.get(key)`, resolved, or undefined. */

@@ -6,6 +6,7 @@ export type { ConvertAction, ConversionReport } from './conversion.js';
 import type { ConvertCategory } from './pdfaconvert.js';
 import { validatePdfX, xVersionString, isLegacy, type PdfXLevel } from './pdfxvalidate.js';
 import { rewriteRgbToCmyk } from './pdfxcolor.js';
+import { describeXmpPackets } from './pdfaextfix.js';
 
 export interface PdfXConvertOptions {
   /** Output-intent ICC profile to embed. Omitted → a registered-name intent. */
@@ -74,6 +75,16 @@ const identificationPass: Pass = (ctx) => {
     actions.push({ rule: 'PdfxIdentification', action: `Wrote /Info /GTS_PDFXVersion '${version}'.` });
   }
   return actions;
+};
+
+/** A PDF/A document stays PDF/A (`o6uu.11`): `pdfxid` is not a predefined
+ *  schema for ISO 19005-1..3, so writing it obliges a description —
+ *  `ConvertToPdfUa`'s `pdfaExtensionPass`, for the same reason. Only when
+ *  the packet claims one of those parts; a plain document gets no extension
+ *  schema it does not need. */
+const pdfaExtensionPass: Pass = (ctx) => {
+  const part = ctx.doc.GetXmp().pdfaPart;
+  return part === 1 || part === 2 || part === 3 ? describeXmpPackets(ctx.doc, part) : [];
 };
 
 /** Declare the level's version ceiling in the catalog. This is unconditional:
@@ -355,7 +366,7 @@ const colorPass: Pass = (ctx) => {
 };
 
 const PASSES: Pass[] = [
-  identificationPass, versionPass, fileIdPass, outputIntentPass, trappedPass,
+  identificationPass, pdfaExtensionPass, versionPass, fileIdPass, outputIntentPass, trappedPass,
   pageGeometryPass, annotationPass, actionsPass, optionalContentPass,
   embeddedFilesPass, transferHalftonePass, colorPass,
 ];

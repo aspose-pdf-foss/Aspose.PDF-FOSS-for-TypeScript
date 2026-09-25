@@ -5,6 +5,7 @@ import { STANDARD_STRUCTURE_TYPES } from './struct.js';
 import type { StructElement } from './struct.js';
 import { PDF20_NS } from './structns.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
+import { describeXmpPackets } from './pdfaextfix.js';
 
 export interface PdfUaConvertOptions {
   /** Which part of ISO 14289 to target: 1 (the default) or 2. */
@@ -111,6 +112,18 @@ const identificationPass: Pass = (ctx) => {
   return [{ rule: 'PdfuaIdentification', action: 'Wrote pdfuaid:part 1 XMP identification.' }];
 };
 
+/** A PDF/A document stays PDF/A (`o6uu.6`): `pdfuaid` is not a predefined
+ *  schema for ISO 19005-1..3, so writing it obliges a description. Only when
+ *  the packet claims one of those parts — a plain document gets no extension
+ *  schema it does not need. Note it runs `ConvertToPdfA`'s own description
+ *  pass, so it describes EVERY property still undescribed that it can state
+ *  truthfully, not only `pdfuaid` (`o6uu.11`) — the document then passes the
+ *  PDF/A rule, which is the point, and `ConvertToPdfX` does the same. */
+const pdfaExtensionPass: Pass = (ctx) => {
+  const part = ctx.doc.GetXmp().pdfaPart;
+  return part === 1 || part === 2 || part === 3 ? describeXmpPackets(ctx.doc, part) : [];
+};
+
 /** PDF/UA-2 is defined over PDF 2.0, so declare it. serializer.ts's
  *  headerVersion() reads the catalog /Version (invariant 909q), so this is the
  *  whole of writing a 2.0 header.
@@ -187,7 +200,7 @@ const PASSES: Pass[] = [
   // Part 2 only; each returns [] at part 1, so the part-1 action list is
   // byte-identical.
   versionPass, parentPass, documentElementPass,
-  identificationPass,
+  identificationPass, pdfaExtensionPass,
 ];
 
 /** Remediate `doc` toward PDF/UA-1, then re-validate. The facade supplies the

@@ -28,7 +28,11 @@ import { convertToPdfX, type PdfXConvertOptions } from './pdfxconvert.js';
 import { ensureStructTree } from './structwrite.js';
 import { autoTag, type AutoTagOptions, type AutoTagReport } from './autotag.js';
 import { inflateStream } from './flate.js';
-import { readXmp, buildXmp, mergeXmp, mirrorMetaToXmp, mirrorXmpToMeta, XmpMetadata, XmpUpdate } from './xmp.js';
+import { readXmp, editXmpPacket, editXmpPacketWith, claimPrefix, mirrorMetaToXmp, mirrorXmpToMeta, XmpMetadata, XmpUpdate } from './xmp.js';
+import { checkXmpWrite, toRdfValue, type XmpValueInput, type XmpWriteOptions } from './xmpwrite.js';
+import { parseRdfPacket } from './xmprdf.js';
+import { XmpValue, findXmpValue } from './xmpvalue.js';
+import { planSync, infoSide, xmpSide, mirroredField, type MetadataSyncReport, type SyncDirection } from './metasync.js';
 import { Page } from './page.js';
 import { stitchTables, type TableStitchOptions } from './tablestitch.js';
 import type { Table, TableExtractOptions } from './tablemodel.js';
@@ -162,11 +166,6 @@ import {
   matchChain, deriveStyle, clampWeight,
   type LoadFontOptions, type FontMatch, type FontFamily,
 } from './fontmatch.js';
-
-/** True when `meta` carries at least one known (non-raw) XMP field. */
-function hasXmpField(meta: XmpMetadata): boolean {
-  return Object.entries(meta).some(([k, v]) => k !== 'raw' && v !== undefined);
-}
 
 export interface SplitOptions {
   /** Pruning policy applied while extracting each page's object graph. */
@@ -1188,6 +1187,62 @@ export class Document {
     return readXmp(inflateStream(md));
   }
 
+  /** One XMP property as a typed value (`o6uu.4`), found by namespace URI and
+   *  local name among the packet's top-level properties; `undefined` when
+   *  there is no packet, the property is absent, or the packet will not parse.
+   *  Parsed under this document's `loadLimits`. */
+  GetXmpValue(namespaceUri: string, propName: string): XmpValue | undefined {
+    const md = this.resolve(this.catalog().get('Metadata'));
+    if (!isStream(md)) return undefined;
+    try {
+      return findXmpValue(parseRdfPacket(inflateStream(md), this.loadLimits), namespaceUri, propName);
+    } catch (e) {
+      rethrowLimit(e);
+      return undefined;
+    }
+  }
+
+  /** Write one top-level XMP property from a typed value (`o6uu.8`); `null`
+   *  deletes it. Everything the write does not name survives. The eight
+   *  properties /Info shares are mirrored through `SyncMetadata`'s own rules,
+   *  and a value /Info cannot represent deletes the /Info key rather than
+   *  leaving it describing the old one. Validated before anything is touched
+   *  (`TypeError`, `RangeError`), and the packet text is computed before /Info
+   *  is edited, so a refusal changes nothing. */
+  SetXmpValue(namespaceUri: string, propName: string, value: XmpValueInput | null, opts: XmpWriteOptions = {}): void {
+    checkXmpWrite(namespaceUri, propName, value, opts);
+    const md = this.resolve(this.catalog().get('Metadata'));
+    const existing = isStream(md) ? inflateStream(md) : undefined;
+    const text = editXmpPacketWith(existing, (p) => {
+      const i = p.properties.findIndex((q) => q.ns === namespaceUri && q.name === propName);
+      if (value === null) {
+        if (i < 0) return false;
+        p.properties.splice(i, 1);
+        return true;
+      }
+      const prop = { ns: namespaceUri, name: propName, value: toRdfValue(value) };
+      if (i < 0) p.properties.push(prop); else p.properties[i] = prop;
+      if (opts.prefix !== undefined) claimPrefix(p, namespaceUri, opts.prefix);
+      return true;
+    }, this.loadLimits);
+    // The mirror runs even when the packet did not change (`o6uu.12`): deleting
+    // a property XMP never held must still delete the /Info key describing it,
+    // and an /Info that disagrees with an unchanged packet is brought in line.
+    // `planSync` writes only what differs, so agreement touches nothing.
+    const field = mirroredField(namespaceUri, propName);
+    if (field !== undefined) {
+      const plan = planSync(infoSide(this.currentInfo(), (o) => this.resolve(o)),
+        xmpSide(text !== undefined ? new TextEncoder().encode(text) : existing, this.loadLimits), 'xmpToInfo');
+      const info: MetadataUpdate = {};
+      // Unreadable for /Info (a struct title, a date that will not convert):
+      // delete rather than keep /Info describing the value just replaced.
+      if (plan.skipped.includes(field)) (info as Record<string, unknown>)[field] = null;
+      else if (plan.changed.includes(field)) (info as Record<string, unknown>)[field] = plan.info[field];
+      if (Object.keys(info).length > 0) applyUpdate(this.ensureInfo(), info);
+    }
+    if (text !== undefined) this.installXmpText(text);
+  }
+
   /** Render every page to one Markdown document. See `Page.ToMarkdown`. */
   ToMarkdown(options?: MarkdownExportOptions): string {
     return renderDocumentToMarkdown(this, options);
@@ -1509,15 +1564,33 @@ export class Document {
     return i >= 0 ? this.Pages[i] : undefined;
   }
 
-  /** Build the XMP packet for `meta` and install it as the catalog's /Metadata
-   *  stream (uncompressed). Replaces any existing packet; the old object is
-   *  dropped by the next Save() mark-sweep. */
-  private installXmp(meta: XmpMetadata): void {
-    const bytes = new TextEncoder().encode(buildXmp(meta));
+  /** Apply `update` to the document's XMP packet and install the result as
+   *  the catalog's /Metadata stream (uncompressed). The packet is EDITED, not
+   *  rebuilt (`o6uu.3`), so everything the update does not name survives.
+   *  Writes nothing when there was no packet and the update adds nothing. The
+   *  old object is dropped by the next Save() mark-sweep. */
+  private installXmp(update: XmpUpdate): void {
+    const text = this.xmpTextFor(update);
+    if (text !== undefined) this.installXmpText(text);
+  }
+
+  /** The catalog packet with `update` applied, WITHOUT installing it — the
+   *  one step of a metadata write that can throw, so a setter that also edits
+   *  /Info computes it first (`o6uu.7`). Parsed under this document's
+   *  limits. `undefined` means write nothing. */
+  private xmpTextFor(update: XmpUpdate): string | undefined {
+    const md = this.resolve(this.catalog().get('Metadata'));
+    return editXmpPacket(isStream(md) ? inflateStream(md) : undefined, update, this.loadLimits);
+  }
+
+  /** @internal Install `text` as the catalog's /Metadata stream, uncompressed.
+   *  The one place a packet becomes a stream — `installXmp` and the PDF/A
+   *  extension-schema pass (`o6uu.6`) both end here. */
+  installXmpText(text: string): void {
     const dict: PdfDict = new Map<string, PdfObject>([
       ['Type', name('Metadata')], ['Subtype', name('XML')],
     ]);
-    const stream: PdfStream = { kind: 'stream', dict, raw: bytes };
+    const stream: PdfStream = { kind: 'stream', dict, raw: new TextEncoder().encode(text) };
     this.catalog().set('Metadata', this.allocObject(stream));
   }
 
@@ -1746,20 +1819,52 @@ export class Document {
   }
 
   SetMetadata(update: MetadataUpdate): void {
-    applyUpdate(this.ensureInfo(), update);
+    // XMP FIRST: it is the only half that can throw (a packet past the
+    // document's limits), and computing it before /Info is touched keeps a
+    // refused write from leaving /Info half-updated (`o6uu.7`).
     const xmpUpdate = mirrorMetaToXmp(update);
-    if (Object.keys(xmpUpdate).length === 0) return; // no shared fields → leave XMP alone
-    const merged = mergeXmp(this.GetXmp(), xmpUpdate);
-    const hadXmp = isStream(this.resolve(this.catalog().get('Metadata')));
-    // Avoid materializing an empty packet from a pure-delete on a doc with no XMP.
-    if (hadXmp || hasXmpField(merged)) this.installXmp(merged);
+    const text = Object.keys(xmpUpdate).length === 0 ? undefined : this.xmpTextFor(xmpUpdate);
+    applyUpdate(this.ensureInfo(), update);
+    if (text !== undefined) this.installXmpText(text);
   }
 
   /** Set/replace the document XMP packet from `update` (merged over the current
    *  packet; `null` deletes a field), mirroring shared fields back into /Info. */
   SetXmp(update: XmpUpdate): void {
-    this.installXmp(mergeXmp(this.GetXmp(), update));
+    this.installXmp(update);
     applyUpdate(this.ensureInfo(), mirrorXmpToMeta(update));
+  }
+
+  /** Make /Info and the XMP packet agree on the eight fields they share
+   *  (`o6uu.4`): `'infoToXmp'` rewrites XMP from /Info, `'xmpToInfo'` the
+   *  reverse. An exact mirror — a field the source lacks is deleted on the
+   *  target — with dates converted between `D:` and ISO 8601 text, offset
+   *  intact. Only differing fields are written; when the sides already agree
+   *  nothing is touched and the document is NOT marked modified, so a later
+   *  `Sign()` keeps its incremental path. `'infoToXmp'` never creates /Info
+   *  and edits the packet in place, so foreign schemas survive. A source date
+   *  that does not read leaves its target alone and is named in `skipped`.
+   *
+   *  `'xmpToInfo'` CREATES /Info when the document has none. ISO 19005-4
+   *  permits /Info only beside a catalog `/PieceInfo`, and then holding
+   *  `/ModDate` alone, so on a PDF/A-4 document it produces an
+   *  `InfoRestriction` failure — sync `'infoToXmp'` there, or run
+   *  `ConvertToPdfA('4')` afterwards to reduce /Info again. */
+  SyncMetadata(direction: SyncDirection): MetadataSyncReport {
+    if (direction !== 'infoToXmp' && direction !== 'xmpToInfo') {
+      throw new RangeError(`SyncMetadata: direction must be 'infoToXmp' or 'xmpToInfo', got ${String(direction)}`);
+    }
+    const md = this.resolve(this.catalog().get('Metadata'));
+    const plan = planSync(
+      infoSide(this.currentInfo(), (o) => this.resolve(o)),
+      xmpSide(isStream(md) ? inflateStream(md) : undefined, this.loadLimits),
+      direction,
+    );
+    if (plan.changed.length > 0) {
+      if (direction === 'infoToXmp') this.installXmp(plan.xmp);
+      else applyUpdate(this.ensureInfo(), plan.info);
+    }
+    return { changed: plan.changed, skipped: plan.skipped };
   }
 
   /** Remove all document metadata: drop the /Info dictionary and the catalog's

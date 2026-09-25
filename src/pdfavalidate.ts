@@ -10,11 +10,14 @@ import { validatePdfUa } from './structvalidate.js';
 import { parseCMap } from './cmap.js';
 import type { Page } from './page.js';
 import {
-  type Ctx as BaseCtx, memo, nameOf, filterNames, allObjects, xmpText,
+  type Ctx as BaseCtx, memo, metadataStreams, nameOf, filterNames, allObjects, xmpText,
   enumerateFonts, descendantFont, hasFontProgram,
   type PageScan, pageScans, usesDeviceColor, extGStates, blendModeName, eachAnnotation,
 } from './validatectx.js';
 import { rethrowLimit } from './errors.js';
+import { parseRdfPacket } from './xmprdf.js';
+import { extensionSchemaIssues, type PacketUnderTest } from './pdfaext.js';
+import { valueTypeIssues } from './pdfavaluetypes.js';
 
 export type { PageScan } from './validatectx.js';
 export { memo, filterNames, allObjects, pageScans } from './validatectx.js';
@@ -264,6 +267,38 @@ const xmpInfoConsistencyRule: Rule = (ctx) => {
   }
   return issues;
 };
+
+/** Every reachable metadata packet that parses, the catalog's marked `main`.
+ *  A stream that will not parse is skipped: well-formedness is a separate
+ *  clause. Shared by the two XMP rules below. */
+const metadataPackets = (ctx: Ctx): PacketUnderTest[] => memo(ctx, 'pdfa:metadataPackets', () => {
+  const mainRef = ctx.catalog.get('Metadata');
+  const packets: PacketUnderTest[] = [];
+  for (const [ref, obj] of metadataStreams(ctx)) {
+    const main = isRef(mainRef) && mainRef.num === ref.num;
+    try {
+      const packet = parseRdfPacket(inflateStream(obj), ctx.doc.loadLimits);
+      packets.push(main ? { packet, main } : { packet, main, object: ref });
+    } catch (e) {
+      rethrowLimit(e);
+    }
+  }
+  return packets;
+});
+
+/** Every XMP property predefined or described, and every description well
+ *  formed (ISO 19005-1 6.7.8–6.7.9, -2/-3 6.6.2.3; `o6uu.6`) — over EVERY
+ *  metadata stream, as veraPDF checks each XMP package. Part 4 has no such
+ *  rule. A stream that will not parse is skipped: well-formedness is a
+ *  separate clause. */
+const extensionSchemaRule: Rule = (ctx) =>
+  (ctx.part === 4 ? [] : extensionSchemaIssues(metadataPackets(ctx), ctx.part));
+
+/** Every XMP property's value matches its predefined or described type
+ *  (ISO 19005-1 6.7.9-3, -2/-3 6.6.2.3.1-2; `o6uu.10`). Part 4 has no such
+ *  rule. */
+const xmpValueTypeRule: Rule = (ctx) =>
+  (ctx.part === 4 ? [] : valueTypeIssues(metadataPackets(ctx), ctx.part));
 
 const STANDARD_SIMPLE_ENCODINGS = new Set(['WinAnsiEncoding', 'MacRomanEncoding', 'StandardEncoding']);
 
@@ -1243,7 +1278,7 @@ const embeddedFileConformanceRule: Rule = (ctx) => {
 const RULES: Rule[] = [
   encryptionRule, fileIdRule, versionRule, externalStreamRule, lzwRule,
   psXObjectRule, refXObjectRule, optionalContentRule,
-  metadataRule, pdfaIdRule, xmpInfoConsistencyRule,
+  metadataRule, pdfaIdRule, xmpInfoConsistencyRule, extensionSchemaRule, xmpValueTypeRule,
   infoRestrictionRule, permissionsRule, needsRenderingRule,
   requirementsRule, alternatePresentationsRule,
   fontEmbeddedRule, fontEncodingRule, fontCidSetRule, toUnicodeRule, toUnicodeContentRule,

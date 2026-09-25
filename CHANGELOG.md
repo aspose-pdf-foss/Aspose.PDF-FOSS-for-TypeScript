@@ -167,6 +167,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ConvertToPdfA` repairs and describes page-level XMP packets too, and a
+  wrapped value keeps its language.** At PDF/A-1 a page's (or any object's)
+  own metadata packet was never given the `pdfaExtension:schemas`
+  descriptions it needed — only the catalog's was — so conversion left it
+  reported as `XmpPropertyNotDescribed`; every reachable packet is now
+  described, a page packet at parts 2–3 borrowing what the catalog already
+  describes rather than repeating it. Repaired packets are written back into
+  their own streams, so one stream shared by the catalog and a page is fixed
+  for both instead of leaving the page on the old copy. And when a plain value
+  is wrapped into a Lang Alt or an array, its `xml:lang` and qualifiers now
+  move onto the item: a `dc:title` in German becomes a German item rather than
+  an `x-default` one inside a German-tagged array (o6uu.13).
+
+- **`SetXmpValue` refuses what it would silently corrupt, and a write that
+  changes nothing no longer marks the document modified.** A `{ lang }` map
+  could hold `x-default` and `X-Default` — writing an Alt that names one
+  language twice — and took any string as a tag, `x y` included; tags must now
+  be letters and digits joined by hyphens, distinct ignoring case, or the call
+  throws `RangeError`. A namespace holding a character XML cannot carry was
+  stripped on write, so the property landed under a different URI and
+  `GetXmpValue` with the caller's URI missed it; it now throws `TypeError`.
+  Deleting a shared property XMP did not hold (`/Info /Producer` alone) left
+  the `/Info` key in place; it is now deleted. And setting a property to the
+  value it already had rewrote the packet and marked the document modified,
+  so a later `Sign()` rewrote the file instead of appending; now nothing is
+  touched. A property named with non-ASCII letters reads back through
+  `GetXmpValue` but not `GetXmp().custom`, which is now documented (o6uu.12).
+
+- **PDF/A extension-schema checks and repairs no longer misfire in four
+  cases.** An object-level metadata packet at parts 2–3 now knows the value
+  types the catalog packet declares for the same namespace, as veraPDF's does,
+  so a description using one is no longer reported as `XmpExtensionValueType`.
+  `ConvertToPdfA` extending a description whose `pdfaSchema:property` list was
+  a Bag or Alt reported the property described while the entry still failed
+  the Seq rule; it now turns the list into a Seq. When the required PDF/A
+  prefixes displaced a foreign namespace that had borrowed one of them, the
+  namespace was written under a generated prefix while its description still
+  named the old one; it is now re-bound explicitly and its
+  `pdfaSchema:prefix` rewritten to match. And `ConvertToPdfX` on a PDF/A 1–3
+  document wrote `pdfxid` without describing it, so the document stopped being
+  PDF/A; it now writes the description, as `ConvertToPdfUa` already did for
+  `pdfuaid` (o6uu.11).
+
+- **Date conversion between `/Info` and XMP no longer skips or invents
+  dates.** `SyncMetadata` (and the date conversion under `SetMetadata` and
+  `SetXmp`) refused an offset written without apostrophes —
+  `D:20240603123045+0200`, a spelling `GetMetadata` already read — so such a
+  date was reported in `skipped` rather than converted; it now converts to
+  `+02:00`. The day was checked only against 31, so `D:20240231` converted to
+  a date that does not exist, and an ISO `2024-02-30` was rolled forward into
+  March when compared; both grammars now check the day against its month and
+  the leap year, and such a date is skipped. The docs now also state that an
+  XMP date with no zone designator is read as UTC — beside an `/Info` date
+  carrying an offset it differs, so either direction rewrites the other — and
+  that `SyncMetadata('xmpToInfo')` creates `/Info`, which PDF/A-4 forbids
+  without a `/PieceInfo` (o6uu.9).
+
+- **Four XMP write edge cases now behave as documented.**
+  - A document opened with looser `LoadLimits` could read a deeply nested
+    XMP packet but not write it: `SetMetadata` and `SetXmp` parsed the packet
+    under the default limits and threw `ResourceLimitError`. They now use the
+    document's own limits.
+  - When the XMP half of `SetMetadata` was refused, the `/Info` half had
+    already been written, leaving the two out of step. The XMP half is now
+    computed first, so a refused write changes nothing.
+  - A `custom` property could come back from `GetXmp()` with a generated
+    `nsN` prefix instead of the prefix the caller asked for. This happened
+    when another namespace surviving in the packet already held that
+    prefix. The caller's prefix now wins.
+  - A custom property written as an attribute on `rdf:Description` was
+    missing from `GetXmp().custom` until the first write moved it to
+    element form, so the list changed after one `SetXmp`. It is now
+    reported from the start (o6uu.7).
+
+- **XMP packets are now read and written the way a conforming XML reader
+  sees them.** A carriage return in a value was written raw, so any other
+  XML reader returned it as a line feed. It is now written as a character
+  reference, and tabs and line breaks in attribute values are written the
+  same way. Reading now applies XML's own line-ending and attribute-whitespace
+  normalization. An `xml:lang` on an `rdf:Alt`, `rdf:Bag`, `rdf:Seq` or
+  `rdf:Description` used to be dropped silently. It is now inherited into the
+  values below it, as RDF/XML defines, and `xml:lang=""` cancels it. A
+  non-empty `rdf:about` (the resource the packet describes) was discarded on
+  every write, and it now survives `SetXmp` and `SetMetadata`. Two
+  `rdf:Description` elements that name different resources are refused, as
+  Adobe's own XMP toolkit refuses them, rather than merged into one packet
+  (o6uu.5).
+
+- **A date passed as a string no longer lands in the wrong syntax on the other
+  side.** `SetMetadata({ creationDate: "D:20240603123045+02'00'" })` copied
+  that `D:` text verbatim into `xmp:CreateDate`, and `SetXmp` copied an
+  ISO-8601 string verbatim into `/CreationDate` — each a value the other
+  side's grammar does not accept, which PDF/A readers reject. A string date is
+  now converted text to text, keeping its precision and its UTC offset. The
+  side the string was handed to is fixed too: an ISO string passed to
+  `SetMetadata` is written to `/Info` as a `D:` date, and a `D:` string passed
+  to `SetXmp` is written to XMP as ISO 8601 — but only when it reads in the
+  other syntax and not this one. A string that reads in neither passes through
+  as before, and a `Date` object is written exactly as it always was (o6uu.4).
+
+- **Writing metadata no longer discards XMP the library does not model.**
+  `SetXmp`, `SetMetadata` and every conversion that stamps an identification
+  (`ConvertToPdfA`, `ConvertToPdfUa`, `ConvertToPdfX`) rebuilt the whole XMP
+  packet from its fifteen known fields, so one title edit silently dropped an
+  `xmpMM:History`, a `DerivedFrom` reference, identifiers qualified by
+  `xmpidq:Scheme`, every non-literal custom property, the translations of a
+  title, and a PDF/A extension-schema description — leaving a PDF/A file that
+  uses a custom namespace no longer describing it. The packet is now parsed
+  into an RDF data model, edited field by field, and written back: a field you
+  set replaces its property in place, `null` deletes it, a title replaces only
+  its `x-default` language, and everything else survives. The packet is now
+  written in one canonical layout (a single `rdf:Description`, properties as
+  elements), so its bytes differ from before even where nothing was lost;
+  every reader in this library accepts both forms. Characters XML cannot carry
+  (such as a NUL in an `/Info` title) are dropped from values written into the
+  packet. (o6uu.3)
+
 - **A page tree listing a page twice could not be opened.** `/Kids [3 0 R
   3 0 R]` made `Document.Open` throw `cycle in page tree` with no recovery —
   the whole file was lost over a structure the page list can be built around. It opens now: the
@@ -378,6 +495,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the recovery sweep, with `doc.recovery` naming the cycle. (ibzo.2)
 
 ### Added
+
+- **PDF/A checks every XMP property's value against its type.**
+  `ValidatePdfA` reports `XmpValueType` at parts 1–3 when a property's value
+  does not match its type (ISO 19005-1 6.7.9, -2/-3 6.6.2.3.1): the type comes
+  from the packet's own extension schemas, then the catalog packet's, then the
+  predefined XMP 2004/2005 set, so a schema can redefine a predefined property.
+  It is veraPDF's `isValueTypeCorrect` ported over the pinned sources the
+  generator already reads — simple types by veraPDF's own patterns, dates by
+  XMPCore's parser, arrays, Lang Alt and the structured types, with
+  closed-choice checking off as veraPDF's validator runs it. Three stated
+  divergences: a property with no known type is reported once (as
+  undescribed), not twice; an XPath value is checked only for being simple;
+  and a Lang Alt whose items take their `xml:lang` only by inheritance from an
+  enclosing element passes here, where veraPDF, reading each element's own
+  language, reports it. `ConvertToPdfA` repairs the shape mismatches it can without losing a
+  value — the commonest being a plain `dc:title` or `dc:rights`, which veraPDF
+  rejects because it does not normalize — under the new `'xmpValueTypes'`
+  category. Measured on a real Acrobat packet, it reports exactly what
+  veraPDF's tables imply: `xmpMM:History` events carrying `stEvt:changed` and
+  a `xmpMM:DerivedFrom` carrying `stRef:originalDocumentID` (neither field is
+  in veraPDF's structured types), and an empty `dc:creator` Bag where a Seq is
+  required (o6uu.10).
+
+- **Typed XMP writes.** `doc.SetXmpValue(namespaceUri, name, value, opts?)`
+  writes any top-level XMP property from an `XmpValueInput`: plain strings,
+  numbers, booleans and `Date`s, and tagged objects for what plain values
+  cannot say — `{ seq }` and `{ bag }` for XMP's ordered and unordered arrays,
+  `{ lang }` for a language alternative (the only way to write title and
+  description translations, since `SetXmp` writes `x-default` alone), `{ uri }`
+  and `{ struct }`. `null` deletes. Every value reads back through
+  `GetXmpValue`, and everything the write does not name survives. The eight
+  properties `/Info` shares are mirrored through `SyncMetadata`'s own rules, so
+  the two cannot disagree; a value `/Info` cannot hold deletes its key. The
+  call is validated first and computes the packet before touching `/Info`, so
+  a refusal changes nothing; `opts.prefix` wins over a foreign namespace
+  already using it. A prefix the library gives a well-known namespace
+  (`dc`, `xmpMM`, `pdfaExtension`, …) is refused for any other namespace, and
+  a `Date` outside years 0–9999 is refused, since its ISO text would not
+  read back (o6uu.8).
+
+- **PDF/A checks that every XMP property is predefined or described.**
+  `ValidatePdfA` at parts 1–3 now reports an XMP property that is neither in
+  the XMP 2004 (part 1) or 2005 (parts 2–3) predefined schemas nor described
+  in the packet's `pdfaExtension:schemas`, and a description that is itself
+  malformed — the rule veraPDF enforces and this library did not, so a file
+  whose custom namespace lost its description validated here and failed
+  there. It checks by property rather than namespace, covers object-level
+  metadata streams too, and takes its predefined tables from veraPDF's own by
+  a generator (`npm run gen:xmpschemas`), so hundreds of rows were not typed
+  by hand. `ConvertToPdfA` writes the descriptions it can state truthfully —
+  `pdfuaid`, `pdfxid`, and any other simple text value as `Text` — and
+  `ConvertToPdfUa` does the same on a document already claiming PDF/A, which
+  is what keeps a PDF/A + PDF/UA document conformant. Values are not
+  type-checked yet; PDF/A-4 has no such rule (o6uu.6).
+
+- **`doc.SyncMetadata(direction)` makes `/Info` and XMP agree.** The two
+  drift whenever one is edited without the other, and PDF/A-1 reports the
+  disagreement as an error. `'infoToXmp'` or `'xmpToInfo'` names the source;
+  the sync is an exact mirror over the eight shared fields, deleting on the
+  target what the source lacks. Both sides are read as raw text rather than
+  through `GetMetadata()`, whose `Date` loses the offset, so dates convert
+  `D:` ↔ ISO 8601 with precision and offset intact and a `D:…+00'00'` beside
+  a `….000Z` of the same instant counts as agreement — which is what our own
+  `SetMetadata(Date)` writes. Only differing fields are written and a no-op
+  sync marks nothing modified, so a later `Sign()` stays an incremental
+  append; `'infoToXmp'` edits the packet in place, keeping foreign schemas and
+  title translations, and never creates `/Info` (o6uu.4).
+
+- **Typed XMP reads.** `doc.GetXmpValue(namespaceUri, name)` returns any
+  top-level XMP property as an `XmpValue` with `asText(lang?)`, `asDate()`,
+  `asBool()`, `asInt()`, `asReal()`, `asUri()` and `asArray()`. It reaches
+  what `GetXmp()`'s fifteen named fields never modelled — arrays, language
+  alternatives chosen by RFC 4647 range, and `rdf:resource` URIs — over the
+  data model `SetXmp` already edits. Every converter answers `undefined`
+  rather than throwing, so a producer's malformed value costs that value and
+  nothing else; `asDate()` keeps the ISO text beside the instant, since a JS
+  `Date` drops the offset it was written in (o6uu.4).
 
 - **Shapes and text markup with no appearance now draw.** A `/Square`,
   `/Circle`, `/Line`, `/Polygon`, `/PolyLine`, `/Ink`, `/Caret`, `/Highlight`,
@@ -668,6 +862,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PDF/UA rule in this library is a faithful transcription. (`q7hc.4.6`)
 
 ### Changed
+
+- **A bad `pdfaProperty:category` is reported as `XmpExtensionField`.**
+  `ValidatePdfA` reported a category other than `internal`/`external` under
+  `XmpExtensionValueType`, the rule for a value type no schema declares. It is
+  a malformed field, so it now reports under `XmpExtensionField`, beside the
+  schema's other field-shape faults; a caller filtering on the old rule id
+  for this case must switch (o6uu.11).
 
 - **`AddStamp({ name })` captions a standard name the way a stamp reads.**
   `AddStamp({ name: 'NotApproved' })` drew the text `NotApproved`; it now

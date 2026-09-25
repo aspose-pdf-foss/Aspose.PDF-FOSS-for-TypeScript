@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readXmp, buildXmp, mergeXmp } from '../src/xmp.js';
+import { readXmp, buildXmp } from '../src/xmp.js';
 import { Document } from '../src/document.js';
 import { buildXmpPdf } from './helpers/build-xmp-pdf.js';
 import { buildBlankPage } from './helpers/build-annot-target.js';
@@ -122,15 +122,6 @@ describe('buildXmp', () => {
   });
 });
 
-describe('mergeXmp', () => {
-  it('applies value sets, null deletes, and drops raw', () => {
-    const merged = mergeXmp({ title: 'old', producer: 'P', raw: 'RAW' }, { title: 'new', producer: null });
-    expect(merged.title).toBe('new');
-    expect(merged.producer).toBeUndefined();
-    expect(merged.raw).toBeUndefined();
-  });
-});
-
 describe('Document.SetXmp', () => {
   it('creates a /Metadata packet readable via GetXmp and surviving Save/Open', () => {
     const doc = Document.Open(buildBlankPage());
@@ -219,7 +210,7 @@ describe('xmp pdfaid', () => {
 
   it('round-trips pdfaid:rev', () => {
     const packet = buildXmp({ pdfaPart: 4, pdfaRev: 2020 });
-    expect(packet).toContain('pdfaid:rev="2020"');
+    expect(packet).toContain('<pdfaid:rev>2020</pdfaid:rev>');
     const back = readXmp(enc(packet));
     expect(back.pdfaPart).toBe(4);
     expect(back.pdfaRev).toBe(2020);
@@ -232,7 +223,7 @@ describe('xmp pdfaid', () => {
   });
 
   it('emits a pdfaid block for a rev with no part or conformance', () => {
-    expect(buildXmp({ pdfaRev: 2020 })).toContain('pdfaid:rev="2020"');
+    expect(buildXmp({ pdfaRev: 2020 })).toContain('<pdfaid:rev>2020</pdfaid:rev>');
   });
 
   it('reads pdfaid:rev written in element form', () => {
@@ -246,7 +237,7 @@ describe('xmp pdfuaid', () => {
   it('builds and reads back pdfuaid:part', () => {
     const xml = buildXmp({ title: 'Doc', pdfuaPart: 1 });
     expect(xml).toContain('xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"');
-    expect(xml).toContain('pdfuaid:part="1"');
+    expect(xml).toContain('<pdfuaid:part>1</pdfuaid:part>');
     const back = readXmp(enc(xml));
     expect(back.pdfuaPart).toBe(1);
   });
@@ -256,7 +247,7 @@ describe('xmp pdfxid', () => {
   it('builds and reads back pdfxid:GTS_PDFXVersion', () => {
     const xml = buildXmp({ title: 'Doc', pdfxVersion: 'PDF/X-4' });
     expect(xml).toContain('xmlns:pdfxid="http://www.npes.org/pdfx/ns/id/"');
-    expect(xml).toContain('pdfxid:GTS_PDFXVersion="PDF/X-4"');
+    expect(xml).toContain('<pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion>');
     expect(readXmp(enc(xml)).pdfxVersion).toBe('PDF/X-4');
   });
 

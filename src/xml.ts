@@ -6,7 +6,8 @@ import { LoadLimits } from './loadlimits.js';
  *  the start and end tags, so markup-bearing content can be carried through
  *  untouched. */
 export interface XmlNode {
-  /** Local name, namespace prefix stripped. */
+  /** The element name: its local name, prefix stripped — or the full qualified
+   *  name (`rdf:li`) when parsed with `qnames`. */
   name: string;
   attrs: Map<string, string>;
   children: XmlNode[];
@@ -36,16 +37,35 @@ export function escapeXml(s: string): string {
     c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;');
 }
 
+/** Options for {@link parseXml}. */
+export interface ParseXmlOptions {
+  /** Keep namespace prefixes on element names and attribute keys (`rdf:li`,
+   *  `xmlns:dc`, `xml:lang`) instead of stripping them. Off by default, which
+   *  is what every pre-existing caller gets. `xmprdf.ts` needs it because RDF
+   *  names a property by namespace URI, and a stripped prefix cannot be
+   *  resolved to one. No namespace resolution happens here either way. */
+  qnames?: boolean;
+  /** Apply XML 1.0's two whitespace normalizations (`o6uu.5`): CRLF and a bare
+   *  CR become LF across the document (2.11), and a literal tab, LF or CR in
+   *  an attribute value becomes a space BEFORE references are resolved
+   *  (3.3.3), so a written `&#xD;` still arrives as a CR. Off by default, so
+   *  every other reader is byte-identical; `xmprdf.ts` turns it on, because an
+   *  XMP value is data a conforming reader must agree with us about. */
+  normalize?: boolean;
+}
+
 /** Parse an XML document and return its root element. Throws PdfParseError on
  *  malformed input. Deliberately minimal: no DTD internal subsets, no
- *  namespace resolution (prefixes are stripped), no entity declarations.
+ *  namespace resolution (prefixes are stripped unless `opts.qnames`), no
+ *  entity declarations.
  *
  *  Element nesting is bounded by `limits.maxNestingDepth` (`ibzo.11`):
  *  `parseElement` recurses per element, so a 200,000-deep `<g>` chain
  *  overflowed the stack. Past the bound is `ResourceLimitError`, not
  *  `PdfParseError` — the markup is well formed, it is merely too deep. */
-export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): XmlNode {
-  const src = new TextDecoder('utf-8').decode(bytes);
+export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults, opts: ParseXmlOptions = {}): XmlNode {
+  const decoded = new TextDecoder('utf-8').decode(bytes);
+  const src = opts.normalize ? decoded.replace(/\r\n?/g, '\n') : decoded;
   let i = 0;
   let depth = 0;
 
@@ -73,7 +93,7 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
     if (i === start) fail('expected a name');
     const n = src.slice(start, i);
     const c = n.indexOf(':');
-    return c < 0 ? n : n.slice(c + 1);
+    return opts.qnames || c < 0 ? n : n.slice(c + 1);
   };
 
   const parseElement = (): XmlNode => {
@@ -101,7 +121,8 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
       i++;
       const e = src.indexOf(q, i);
       if (e < 0) fail(`unterminated value for attribute ${an}`);
-      attrs.set(an, unescapeXml(src.slice(i, e)));
+      const literal = src.slice(i, e);
+      attrs.set(an, unescapeXml(opts.normalize ? literal.replace(/[\t\n]/g, ' ') : literal));
       i = e + 1;
     }
 
