@@ -4,13 +4,15 @@ import {
 } from './types.js';
 import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { collectGlyphUsage, UsageMap } from './glyphusage.js';
-import { shrinkGlyf, shrinkCff, shrinkNameKeyedCff, ShrinkResult } from './fontshrink.js';
+import { shrinkGlyf, shrinkCff, shrinkNameKeyedCff, shrinkType1, shrinkCffSfnt, ShrinkResult } from './fontshrink.js';
+import { Type1Font } from './type1.js';
 import { dedupStreams } from './dedup.js';
 import { recompressStreams } from './recompress.js';
 import { optimizeImages, OptimizeImageOptions, ImageOptimization, SkippedImage } from './imageopt.js';
 import { pruneDefaultResources, DrPruneResult } from './drprune.js';
 import { parseSfnt } from './sfnt.js';
 import { hasSignatureField } from './signature.js';
+import { unembedStandard14, UnembeddedFont, UnembedSkip } from './unembed.js';
 import { decodeStream, encodeStream } from './filters.js';
 
 /** Which concerns to run. fonts/dedup/compress are lossless and default to true;
@@ -21,13 +23,19 @@ export interface OptimizeOptions {
   compress?: boolean;
   /** Prune /AcroForm /DR entries nothing in the document names. Lossless. */
   dr?: boolean;
+  /** Remove the embedded program of fonts naming a Latin Standard-14 face,
+   *  which every viewer draws from built-in outlines. OFF by default: the page
+   *  then renders in the VIEWER's face, not the one the author embedded.
+   *  Declined per font, with a reason, wherever the swap could change which
+   *  glyph a code draws, and for a document declaring PDF/A. */
+  unembedStandard14?: boolean;
   /** LOSSY: recompress images to JPEG. Off unless set. There is deliberately no
    *  `true` shorthand — it would mean "degrade my images at settings I did not
    *  choose". */
   images?: OptimizeImageOptions;
 }
 
-export type { OptimizeImageOptions, ImageOptimization, SkippedImage, DrPruneResult };
+export type { OptimizeImageOptions, ImageOptimization, SkippedImage, DrPruneResult, UnembeddedFont, UnembedSkip };
 
 export interface FontOptimization {
   baseFont: string;
@@ -46,6 +54,12 @@ export interface OptimizeReport {
   /** Fonts left untouched, and why. The first place to look when Optimize
    *  under-delivers. */
   skipped: SkippedFont[];
+  /** Standard-14 fonts whose embedded program was removed. Empty unless
+   *  `unembedStandard14` was set. */
+  unembedded: UnembeddedFont[];
+  /** Standard-14 fonts `unembedStandard14` declined, and why. Custom faces are
+   *  never listed: they are simply out of its scope. */
+  unembedSkipped: UnembedSkip[];
   /** Images recompressed. Empty unless `images` was supplied. */
   images: ImageOptimization[];
   /** Images left untouched, and why. */
@@ -79,13 +93,13 @@ function descendantOf(doc: Document, font: PdfDict): PdfDict {
   return font;
 }
 
-interface FontProgram { descriptor: PdfDict; key: 'FontFile2' | 'FontFile3'; stream: PdfStream }
+interface FontProgram { descriptor: PdfDict; key: 'FontFile' | 'FontFile2' | 'FontFile3'; stream: PdfStream }
 
 /** Locate a font's embedded program: its descriptor key and stream. */
 function fontProgram(doc: Document, font: PdfDict): FontProgram | undefined {
   const fd = doc.resolve(descendantOf(doc, font).get('FontDescriptor'));
   if (!isDict(fd)) return undefined;
-  for (const key of ['FontFile2', 'FontFile3'] as const) {
+  for (const key of ['FontFile2', 'FontFile3', 'FontFile'] as const) {
     const s = doc.resolve(fd.get(key));
     if (isStream(s)) return { descriptor: fd, key, stream: s };
   }
@@ -161,6 +175,8 @@ function shrinkOne(
   try {
     if (prog.key === 'FontFile2') {
       result = shrinkGlyf(parseSfnt(plain, 0, doc.loadLimits), gids, { dropGlyphNames });
+    } else if (prog.key === 'FontFile') {
+      result = shrinkType1(new Type1Font(plain, doc.loadLimits), gids);
     } else {
       const sub = nameOf(doc, prog.stream.dict.get('Subtype'));
       // CID-keyed and name-keyed CFFs resolve in opposite directions, and each
@@ -171,8 +187,9 @@ function shrinkOne(
       else if (sub === 'Type1C') result = shrinkNameKeyedCff(plain, gids);
       else if (sub === 'OpenType') {
         const f = parseSfnt(plain, 0, doc.loadLimits);
-        if (f.outlines !== 'glyf') return { reason: 'OpenType FontFile3 is CFF-outlined' };
-        result = shrinkGlyf(f, gids, { dropGlyphNames });
+        result = f.outlines === 'cff'
+          ? shrinkCffSfnt(f, gids, doc.loadLimits, { dropGlyphNames })
+          : shrinkGlyf(f, gids, { dropGlyphNames });
       } else return { reason: `unsupported FontFile3 subtype: ${sub ?? 'none'}` };
     }
   } catch (e) { rethrowLimit(e);
@@ -185,6 +202,11 @@ function shrinkOne(
   extra.delete('DP');
   extra.delete('Length');
   if (prog.key === 'FontFile2') extra.set('Length1', result.bytes.length);
+  if (result.type1Lengths) {
+    extra.set('Length1', result.type1Lengths.length1);
+    extra.set('Length2', result.type1Lengths.length2);
+    extra.set('Length3', result.type1Lengths.length3);
+  }
   const replacement = encodeStream(result.bytes, 'FlateDecode', extra);
   const bytesSaved = prog.stream.raw.length - replacement.raw.length;
   // Blanking trades glyph bytes against fixed rebuild overhead (for CFF, the
@@ -221,11 +243,15 @@ interface ProgramGroup {
  * a freshly allocated stream, so stream identity is only a reliable key before
  * any shrink runs.
  */
-function groupByProgram(doc: Document, usage: UsageMap, report: OptimizeReport): ProgramGroup[] {
+function groupByProgram(
+  doc: Document, usage: UsageMap, report: OptimizeReport, unembedded: ReadonlySet<PdfDict>,
+): ProgramGroup[] {
   const groups = new Map<PdfStream, ProgramGroup>();
   for (const [font, u] of usage) {
     const prog = fontProgram(doc, font);
     if (!prog) {
+      // Unembedded moments ago by `unembedStandard14`, and reported there.
+      if (unembedded.has(font)) continue;
       // Nothing to shrink and nothing to veto. An incomplete scan of a font with
       // no program still says more about why than the missing program does.
       report.skipped.push({
@@ -243,12 +269,12 @@ function groupByProgram(doc: Document, usage: UsageMap, report: OptimizeReport):
   return [...groups.values()];
 }
 
-function optimizeFonts(doc: Document, report: OptimizeReport): void {
+function optimizeFonts(doc: Document, report: OptimizeReport, unembedded: ReadonlySet<PdfDict>): void {
   // Must precede every shrink: shrinkOne swaps in a new program stream, which
   // this answer must not depend on. See glyphNameDroppableFonts.
   const nameDroppable = glyphNameDroppableFonts(doc);
   const usage: UsageMap = collectGlyphUsage(doc);
-  for (const g of groupByProgram(doc, usage, report)) {
+  for (const g of groupByProgram(doc, usage, report, unembedded)) {
     // One program, one entry: reporting per dict would double-count the bytes a
     // single shrink saved.
     const baseFont = baseFontOf(doc, g.fonts[0]);
@@ -285,6 +311,7 @@ export function optimizeDocument(doc: Document, opts: OptimizeOptions = {}): Opt
   }
   const report: OptimizeReport = {
     fonts: [], skipped: [],
+    unembedded: [], unembedSkipped: [],
     images: [], skippedImages: [],
     lossy: false,
     dedup: { merged: 0, bytesSaved: 0 },
@@ -310,12 +337,22 @@ export function optimizeDocument(doc: Document, opts: OptimizeOptions = {}): Opt
     report.skippedImages = r.skippedImages;
     report.lossy = true;
   }
-  if (opts.fonts ?? true) optimizeFonts(doc, report);
+  // Before fonts: a program about to be removed must not be subset first, nor
+  // counted twice in bytesSaved.
+  let unembedded: ReadonlySet<PdfDict> = new Set();
+  if (opts.unembedStandard14) {
+    const u = unembedStandard14(doc);
+    report.unembedded = u.unembedded;
+    report.unembedSkipped = u.skipped;
+    unembedded = u.fonts;
+  }
+  if (opts.fonts ?? true) optimizeFonts(doc, report, unembedded);
   if (opts.dedup ?? true) report.dedup = dedupStreams(doc);
   if (opts.compress ?? true) report.compress = recompressStreams(doc);
 
   report.bytesSaved =
     report.fonts.reduce((n, f) => n + f.bytesSaved, 0) +
+    report.unembedded.reduce((n, f) => n + f.bytesSaved, 0) +
     report.images.reduce((n, i) => n + i.bytesSaved, 0) +
     report.dr.bytesSaved + report.dedup.bytesSaved + report.compress.bytesSaved;
   doc.markModified();

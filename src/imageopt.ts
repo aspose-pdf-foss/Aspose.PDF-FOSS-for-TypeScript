@@ -17,6 +17,10 @@ export interface OptimizeImageOptions {
   dpi?: number;
   /** IJG scale 1..100. Default 75. */
   quality?: number;
+  /** Write progressive (SOF2, spectral selection only) rather than baseline
+   *  JPEG. Same pixels, usually fewer bytes; every PDF viewer that reads
+   *  DCTDecode reads either. Default false. */
+  progressive?: boolean;
 }
 
 export interface ImageOptimization {
@@ -203,7 +207,7 @@ export function optimizeImages(
     let jpeg: Uint8Array;
     try {
       const resized = resampleBox(src, w, h, CHANNELS[kind], dw, dh);
-      jpeg = encodeJpeg(dw, dh, resized, kind, { quality });
+      jpeg = encodeJpeg(dw, dh, resized, kind, { quality, progressive: opts.progressive });
     } catch (e) { rethrowLimit(e);
       skip(`re-encode failed: ${(e as Error).message}`); continue;
     }

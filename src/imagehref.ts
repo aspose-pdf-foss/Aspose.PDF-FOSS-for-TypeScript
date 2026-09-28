@@ -252,9 +252,19 @@ export function imageHref(doc: Document, stream: PdfStream, fill: Rgb): string |
  *  this was "mdexport.ts's rule, reused rather than re-derived", which it was
  *  not; it is now. It lives here because the rule is about an ENCODED image,
  *  beside {@link encodeImage} that produces one and {@link imageExtension} that
- *  names one. */
-export function imageKey(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
+ *  names one.
+ *
+ *  A FOURTH consumer, `dedup.ts` (`29z6.3`), keys an image XObject by its
+ *  DECODED samples plus a `context` — so one picture stored raw and again
+ *  Flate-compressed is recognised as one. */
+export function imageKey(bytes: Uint8Array, context?: string): string {
+  const h = createHash('sha256');
+  // `context` is everything besides the bytes that decides what they MEAN — for
+  // `dedup.ts`'s decoded-sample key, the image dict without its filter entries.
+  // The NUL keeps a context from running into the bytes; absent, the key is the
+  // plain byte hash the three exporters have always used.
+  if (context !== undefined) h.update(context).update('\0');
+  return h.update(bytes).digest('hex');
 }
 
 /** The conventional file extension for a media type this module emits. */

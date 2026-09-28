@@ -17,11 +17,12 @@ import { usesTransparency } from './pdfatransparency.js';
 import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
 import { describeXmpPackets, repairXmpValueTypes } from './pdfaextfix.js';
+import { embedStandard14 } from './pdfastd14.js';
 
 export type ConvertCategory =
   | 'javascript' | 'multimedia' | 'embeddedFiles' | 'xfa' | 'optionalContent'
   | 'postScript' | 'info' | 'formActions' | 'deviceColor' | 'transparency' | 'extensionSchemas'
-  | 'xmpValueTypes';
+  | 'xmpValueTypes' | 'fontEmbedding';
 
 export interface ConvertOptions {
   /** Output-intent ICC profile. Defaults to a bundled sRGB profile. */
@@ -437,6 +438,11 @@ const cosmeticPass: Pass = (ctx) => {
   }
   return actions;
 };
+
+/** Embed the bundled substitute for a non-embedded Latin Standard-14 font
+ *  (`29z6.6`) — see pdfastd14.ts. The one pass that ADDS an asset the document
+ *  did not carry, so it has its own opt-out. */
+const std14EmbedPass: Pass = (ctx) => (ctx.preserve.has('fontEmbedding') ? [] : embedStandard14(ctx.doc));
 
 const PROHIBITED_ANNOTS = new Set(['Movie', 'Sound', 'Screen', '3D', 'RichMedia']);
 
@@ -953,7 +959,11 @@ const PASSES: Pass[] = [
   // Immediately after outputIntentPass, which decides the space it aims at.
   deviceColorPass,
   inertTransparencyGroupPass,
-  annotationFlagsPass, formsPass, cosmeticPass,
+  annotationFlagsPass, formsPass,
+  // After formsPass, whose generated appearances name Helvetica too; before
+  // cosmeticPass and toUnicodePass, which read the font dicts this rewrites.
+  std14EmbedPass,
+  cosmeticPass,
   actionsPass, multimediaPass, xfaPass, optionalContentPass, embeddedFilesPass, postScriptPass,
   toUnicodePass,
   // Widened to parts 1-3 in pjy7; only catalogKeysPass's tail and ocConfigPass are

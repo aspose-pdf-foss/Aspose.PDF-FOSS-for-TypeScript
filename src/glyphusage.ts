@@ -8,7 +8,8 @@ import { contentStreamBytes } from './text.js';
 import { decodeStream } from './filters.js';
 import { CffFont } from './cff.js';
 import { parseSfnt, SfntFont } from './sfnt.js';
-import { resolveSimpleEncoding } from './font.js';
+import { resolveSimpleEncoding, glyphNameResolver } from './font.js';
+import { Type1Font } from './type1.js';
 import { winAnsi, standardEncoding, glyphToUnicode } from './encoding.js';
 import { rethrowLimit } from './errors.js';
 import { budgetFor } from './decodebudget.js';
@@ -16,6 +17,9 @@ import { budgetFor } from './decodebudget.js';
 /** Glyphs a font actually shows, and whether that set is trustworthy. */
 export interface FontUsage {
   gids: Set<number>;
+  /** The character codes shown, as the show strings spell them. pdfastd14.ts's
+   *  width check is per CODE, which the gid set cannot answer. */
+  codes: Set<number>;
   /** False when some usage site could not be scanned — the font must be skipped. */
   complete: boolean;
   reason?: string;
@@ -40,6 +44,9 @@ const MAX_XOBJECT_DEPTH = 8;
 interface CodeMapper {
   codeWidth: 1 | 2;
   gidsOf(code: number): number[] | undefined;
+  /** Why `gidsOf(code)` came back empty, when the mapper can say more than
+   *  "no GID". */
+  explain?(code: number): string;
 }
 
 /** Union the answers of several chains; undefined when every one comes up empty. */
@@ -69,8 +76,8 @@ function buildMapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; reaso
   const subtype = nameOf(doc, font.get('Subtype'));
   if (subtype === 'Type0') return type0Mapper(doc, font);
   if (subtype === 'TrueType') return simpleTrueTypeMapper(doc, font);
-  // Type1/MMType1 reach the CFF chain only when the program is a /FontFile3
-  // Type1C; a /FontFile PFB has no CFF to resolve against and is reported.
+  // Type1/MMType1: a /FontFile3 Type1C takes the CFF chains, a /FontFile the
+  // Type 1 name chain (type1Mapper).
   if (subtype === 'Type1' || subtype === 'MMType1') return simpleCffMapper(doc, font);
   if (subtype === 'Type3') return { reason: 'Type3 font' };
   return { reason: `unsupported font subtype: ${subtype ?? 'none'}` };
@@ -162,10 +169,8 @@ function simpleCffMapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; r
   if (!fd) return { reason: 'font has no FontDescriptor' };
   const ff3 = doc.resolve(fd.get('FontFile3'));
   if (!isStream(ff3)) {
-    // A /FontFile PFB is Type1 charstrings, not CFF — nothing here can read it.
-    return { reason: isStream(doc.resolve(fd.get('FontFile')))
-      ? 'Type1 /FontFile (PFB) has no CFF to resolve against'
-      : 'CFF font program is not embedded' };
+    const ff = doc.resolve(fd.get('FontFile'));
+    return isStream(ff) ? type1Mapper(doc, font, ff) : { reason: 'CFF font program is not embedded' };
   }
 
   let cff: CffFont;
@@ -205,6 +210,36 @@ function simpleCffMapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; r
   if (builtin) chains.push((code) => builtin.get(code));
 
   return { mapper: { codeWidth: 1, gidsOf: unionChains(chains) } };
+}
+
+/** Simple Type 1 (`/FontFile`): code -> glyph NAME -> the program's
+ *  `/CharStrings`. Unlike the TrueType and CFF mappers this is ONE chain, not a
+ *  union: 32000-1 9.6.6.2 gives a name-keyed program a single order, and
+ *  `glyphNameResolver` is its one owner — the renderer and the width fallback
+ *  resolve through it too, so the scan keeps exactly the glyph they draw. A code
+ *  that names nothing, or a name the program does not define, cannot be mapped
+ *  exactly and leaves the font whole. */
+function type1Mapper(doc: Document, font: PdfDict, ff: PdfStream): { mapper?: CodeMapper; reason?: string } {
+  let t1: Type1Font;
+  try { t1 = new Type1Font(decodeStream(ff), budgetFor(ff).limits); }
+  catch (caught) { rethrowLimit(caught); return { reason: 'Type1 /FontFile program failed to parse' }; }
+  const nameFor = glyphNameResolver(resolveSimpleEncoding(font, (o) => doc.resolve(o)), t1.builtinEncodingNames());
+  return {
+    mapper: {
+      codeWidth: 1,
+      gidsOf: (code) => {
+        const n = nameFor(code);
+        const gid = n === undefined ? undefined : t1.gidForName(n);
+        return gid === undefined ? undefined : [gid];
+      },
+      explain: (code) => {
+        const n = nameFor(code);
+        return n === undefined
+          ? `code ${code} resolves to no glyph name`
+          : `code ${code} names /${n}, which the Type1 program does not define`;
+      },
+    },
+  };
 }
 
 function type0Mapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; reason?: string } {
@@ -275,7 +310,7 @@ interface Ctx {
 
 function usageFor(ctx: Ctx, font: PdfDict): FontUsage {
   let u = ctx.usage.get(font);
-  if (!u) { u = { gids: new Set(), complete: true }; ctx.usage.set(font, u); }
+  if (!u) { u = { gids: new Set(), codes: new Set(), complete: true }; ctx.usage.set(font, u); }
   return u;
 }
 
@@ -302,7 +337,8 @@ function record(ctx: Ctx, font: PdfDict, bytes: Uint8Array): void {
   for (let i = 0; i + m.codeWidth <= bytes.length; i += m.codeWidth) {
     const code = m.codeWidth === 2 ? (bytes[i] << 8) | bytes[i + 1] : bytes[i];
     const gids = m.gidsOf(code);
-    if (!gids) { markIncomplete(ctx, font, `code ${code} has no GID`); return; }
+    if (!gids) { markIncomplete(ctx, font, m.explain?.(code) ?? `code ${code} has no GID`); return; }
+    u.codes.add(code);
     for (const gid of gids) u.gids.add(gid);
   }
 }
@@ -442,7 +478,7 @@ export function collectGlyphUsage(doc: Document): UsageMap {
     const subtype = nameOf(doc, obj.get('Subtype'));
     if (subtype === 'CIDFontType0' || subtype === 'CIDFontType2') continue;
     if (!ctx.usage.has(obj)) {
-      ctx.usage.set(obj, { gids: new Set(), complete: false, reason: 'font not reached by the content scan' });
+      ctx.usage.set(obj, { gids: new Set(), codes: new Set(), complete: false, reason: 'font not reached by the content scan' });
     }
   }
   return ctx.usage;

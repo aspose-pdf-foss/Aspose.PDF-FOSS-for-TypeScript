@@ -131,13 +131,23 @@ function huffmanDriver(
           // why it gets a source of its own rather than going through
           // decodeTextRegion's `huffman` path.
           //
-          // UNVERIFIED, tracked as `qfgw`: this reads INLINE from the
-          // dictionary's bit stream with no BMSIZE wrapper, unlike the
-          // NINST == 1 path below. The reading is that the wrapper exists
+          // This reads INLINE from the dictionary's bit stream with no BMSIZE
+          // wrapper, unlike the NINST == 1 path below: the wrapper exists
           // because GRRD is arithmetic-only and an MqDecoder needs a byte
           // range, which an aggregate reading Huffman bits does not — its own
-          // refinements carry their RSIZE wrappers where RI is set. Our
-          // encoder shares that reading, so no fixture here can settle it.
+          // refinements carry their RSIZE wrappers where RI is set.
+          //
+          // CORROBORATED (`qfgw`), not merely our reading: Apache PDFBox's
+          // jbig2-imageio (`SymbolDictionary.decodeThroughTextRegion`) hands
+          // its TextRegion the dictionary's own stream at its current position,
+          // reads no BMSIZE and does not align — BMSIZE, the alignment and the
+          // seek past it all live in its `decodeRefinedSymbol`, the NINST == 1
+          // path — and it passes a FIXED `sbSymCodeLen`, decoding no symbol-ID
+          // table, as this does. jbig2dec reads no BMSIZE there either, but is
+          // NOT a second witness: its text region builds a fresh Huffman reader
+          // over the segment's word stream, which starts at byte 0 rather than
+          // at the dictionary's position. Still no real-world FILE: the shape
+          // needs a Huffman dictionary that also refines, and none is vendored.
           const aggInt = new HuffmanIntSource(r, {
             fs: standardTable(6), ds: standardTable(8), dt: standardTable(11),
             rdw: standardTable(15), rdh: standardTable(15),

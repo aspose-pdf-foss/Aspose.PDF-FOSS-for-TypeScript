@@ -1,5 +1,6 @@
 import type { LoadLimits } from './loadlimits.js';
 import { SfntFont } from './sfnt.js';
+import { Type1Font, eraseType1Glyphs } from './type1.js';
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import { glyphClosure, assembleSfnt, cat, u16b, u32b } from './subset.js';
 import { CffFont, bias, readIndex, parseDict, op1 } from './cff.js';
@@ -21,6 +22,32 @@ export interface ShrinkResult {
   bytes: Uint8Array;
   gidsKept: number;
   gidsDropped: number;
+  /** The three `/FontFile` lengths, for a Type 1 program only. */
+  type1Lengths?: { length1: number; length2: number; length3: number };
+}
+
+/**
+ * Sparse-shrink a Type 1 (`/FontFile`) program by glyph ERASURE: every glyph
+ * outside `keep` becomes `0 0 hsbw endchar`, its NAME still defined, so the
+ * code -> name chain a simple font dict follows resolves exactly as before.
+ * `.notdef` is always kept, and so is every glyph a kept glyph's `seac` composes
+ * from — those are reached by StandardEncoding name, not by the document.
+ */
+export function shrinkType1(font: Type1Font, keep: Set<number>): ShrinkResult {
+  const names = new Set<string>(['.notdef']);
+  for (const gid of keep) {
+    const n = font.glyphName(gid);
+    if (n === undefined) continue;
+    names.add(n);
+    for (const c of font.seacComponents(gid)) names.add(c);
+  }
+  const out = eraseType1Glyphs(font.raw, names);
+  let kept = 0;
+  for (let gid = 0; gid < font.numGlyphs; gid++) if (names.has(font.glyphName(gid)!)) kept++;
+  return {
+    bytes: out.bytes, gidsKept: kept, gidsDropped: font.numGlyphs - kept,
+    type1Lengths: { length1: out.length1, length2: out.length2, length3: out.length3 },
+  };
 }
 
 export interface ShrinkOptions {
@@ -95,6 +122,45 @@ export function shrinkGlyf(font: SfntFont, keep: Set<number>, opts: ShrinkOption
     bytes: assembleSfnt(tables),
     gidsKept: closure.size,
     gidsDropped: font.numGlyphs - closure.size,
+  };
+}
+
+/**
+ * Sparse-shrink an OpenType-CFF (`OTTO`) whole-embed as the sfnt it is: the
+ * `CFF ` table goes through the CFF shrink that matches its keying, and every
+ * other table is copied through (minus DROP_TABLES), so `cmap`, `hmtx` and
+ * `post` still describe the same GIDs — both CFF shrinks keep GID numbering.
+ *
+ * The keying picks the shrink, not the font dict: `shrinkCff` re-assembles
+ * CID-keyed and would strip a name-keyed program of the charset names a simple
+ * dict's chain runs through, while `shrinkNameKeyedCff` refuses a CID-keyed one.
+ */
+export function shrinkCffSfnt(
+  font: SfntFont, keep: Set<number>, limits?: LoadLimits, opts: ShrinkOptions = {},
+): ShrinkResult {
+  const cff = font.table('CFF ')!;
+  const inner = parseCffProgram(cff).isCID ? shrinkCff(cff, keep, limits) : shrinkNameKeyedCff(cff, keep);
+
+  const head = font.table('head')!.slice();
+  new DataView(head.buffer, head.byteOffset, head.byteLength).setUint32(8, 0); // recomputed at assembly
+
+  const tables: { tag: string; data: Uint8Array }[] = [];
+  for (const tag of font.tables.keys()) {
+    if (DROP_TABLES.has(tag) || tag === 'CFF ' || tag === 'head') continue;
+    const data = font.table(tag, false);
+    if (!data) continue;
+    if (tag === 'post' && opts.dropGlyphNames) {
+      const v3 = rewritePostV3(data);
+      if (v3) { tables.push({ tag, data: v3 }); continue; }
+    }
+    tables.push({ tag, data: data.slice() });
+  }
+  tables.push({ tag: 'CFF ', data: inner.bytes }, { tag: 'head', data: head });
+
+  return {
+    bytes: assembleSfnt(tables, 0x4f54544f),            // 'OTTO'
+    gidsKept: inner.gidsKept,
+    gidsDropped: inner.gidsDropped,
   };
 }
 

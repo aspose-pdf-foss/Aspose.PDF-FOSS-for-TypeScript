@@ -12,6 +12,9 @@ export interface JpegEncodeOptions {
   subsampling?: '4:4:4' | '4:2:0';
   /** Per-image Huffman tables. Default true. */
   optimizeHuffman?: boolean;
+  /** Spectral-selection progressive (SOF2) rather than baseline. Default false.
+   *  Decodes to the same pixels; see `CoefFrame.progressive`. */
+  progressive?: boolean;
 }
 
 const CHANNELS: Record<JpegKind, number> = { gray: 1, rgb: 3, cmyk: 4 };
@@ -147,5 +150,6 @@ export function encodeJpeg(
     quant,
     jfif: kind !== 'cmyk',
     optimizeHuffman: optimize,
+    progressive: opts.progressive ?? false,
   });
 }

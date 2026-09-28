@@ -253,6 +253,7 @@ export type { StreamFilterName } from './streamfilter.js';
 export type {
   OptimizeOptions, OptimizeReport, FontOptimization, SkippedFont,
   OptimizeImageOptions, ImageOptimization, SkippedImage, DrPruneResult,
+  UnembeddedFont, UnembedSkip,
 } from './optimize.js';
 export type {
   ColorConvertOptions, ConvertColorsOptions, ColorConvertReport,

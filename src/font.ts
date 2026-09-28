@@ -851,7 +851,7 @@ const ESTIMATED_WIDTH = 500;
  * which the font's own encoding — `/MacRomanEncoding`, a `/Differences` name,
  * anything — reaches through the Unicode `simple` already resolved for decoding.
  */
-function std14Widths(baseFont: string | undefined, simple: (string | undefined)[]): number[] {
+export function std14Widths(baseFont: string | undefined, simple: (string | undefined)[]): number[] {
   const std = normalizeFont(baseFont ?? 'Helvetica');
   if (std === 'Symbol' || std === 'ZapfDingbats')
     return Array.from({ length: 256 }, (_, code) => glyphWidth(std, code));

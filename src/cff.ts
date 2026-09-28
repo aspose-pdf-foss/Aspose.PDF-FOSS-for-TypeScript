@@ -109,6 +109,11 @@ export class CffFont {
     return this._charsetNames ?? [];
   }
 
+  /** True when a name-keyed font's built-in Encoding is the predefined
+   *  StandardEncoding (Top DICT offset 0, or absent) — distinct from Expert,
+   *  which {@link builtinEncoding} also answers `undefined` for. */
+  usesStandardEncoding(): boolean { return !this.isCID && this.encodingOff === 0; }
+
   /**
    * The font's built-in Encoding, `code -> gid`. `undefined` when the font uses a
    * predefined encoding (Standard or Expert), which embeds no table — the caller

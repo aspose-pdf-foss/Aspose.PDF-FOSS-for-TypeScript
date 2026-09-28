@@ -8351,12 +8351,23 @@ Source (`src/`):
   have TWO standard choices, so value 2 is reserved — while `SBHUFFDS` and
   `SBHUFFDT` have THREE and 2 is a real table there. Getting the asymmetry wrong
   refuses valid files or accepts invalid ones, so it is asserted directly.
-  **Note, tracked as `qfgw`:** a Huffman dictionary's aggregate
-  (`REFAGGNINST > 1`) reads INLINE from the dictionary's bit stream with no
-  BMSIZE wrapper, unlike the `== 1` path. The reading is that the wrapper exists
-  because GRRD is arithmetic-only and needs a byte range; an aggregate reading
-  Huffman bits does not, and its own refinements carry their RSIZE wrappers.
-  Unverified — our encoder shares the reading, so no fixture can settle it.
+  **Invariant (`qfgw`, CORROBORATED):** a Huffman dictionary's aggregate
+  (`REFAGGNINST > 1`) reads INLINE from the dictionary's bit stream, with no
+  BMSIZE wrapper and fixed `symCodeLen`-bit symbol IDs. The `== 1` path is
+  wrapped, because GRRD is arithmetic-only and needs a byte range; an aggregate
+  reading Huffman bits does not, and its own refinements carry their RSIZE
+  wrappers. Our encoder shares that reading, so the in-tree fixture cannot
+  settle it. **Apache PDFBox's jbig2-imageio does:** its
+  `SymbolDictionary.decodeThroughTextRegion` hands the TextRegion the
+  dictionary's own stream at its current position, reads no BMSIZE, does not
+  align, and passes a fixed `sbSymCodeLen`, while `decodeRefinedSymbol` alone
+  reads BMSIZE, aligns and seeks past it.
+  **Note, and it is a false witness worth naming:** jbig2dec also reads no
+  BMSIZE on that path, but its `jbig2_decode_text_region` builds a FRESH
+  Huffman reader (`jbig2_huffman_new`, offset 0) over the segment's word
+  stream. So its Huffman aggregate decodes from the segment's first byte. Do
+  not cite it as agreeing. Still no real-world FILE uses the shape; one
+  independent implementation agreeing is evidence, not conformance.
 - **docmodel.ts** — the neutral document model behind every document exporter.
   `buildDocModel(doc, pages)` reconstructs pages as a `DocNode[]` tree from the
   tagged structure tree when the document has one, and from geometry plus
@@ -9617,6 +9628,85 @@ Source (`src/`):
   **Invariant:** shrinking preserves GID numbering and never renumbers — a usage
   scan that cannot prove itself complete must skip the font, not guess, since a
   wrong guess silently blanks a glyph that is actually shown.
+  **Invariant (`29z6.1`):** a Type 1 `/FontFile` is subset by glyph ERASURE
+  (`type1.ts`'s `eraseType1Glyphs`, behind `fontshrink.ts`'s `shrinkType1`):
+  an unused charstring becomes `0 0 hsbw endchar`, the NAME stays defined and
+  `/Subrs` is copied whole. The format is name-keyed throughout, so deleting a
+  name breaks every `/Differences` and `seac` reference to it. The reader and
+  the writer find charstrings through ONE walk, `charStringEntries`.
+  **Invariant:** the usage scan maps a Type 1 code through `glyphNameResolver`,
+  the chain the renderer and the width fallback use. That makes it ONE chain
+  and not a union, because 9.6.6.2 gives a name-keyed program a single order.
+  A code that names nothing, or a name the program lacks, marks the font
+  incomplete. It does not fall back to `.notdef`.
+  **Invariant:** a kept glyph's `seac` base and accent are kept by
+  StandardEncoding NAME (`Type1Font.seacComponents`), since `seac` never goes
+  through the document's encoding. **Measured:** dropping that closure reddens
+  only the seac case in `test/optimize-type1.test.ts`. The real Nimbus
+  fixture has no `seac` and cannot see it.
+  **Invariant (`29z6.2`):** an OpenType-CFF whole-embed is shrunk as an sfnt
+  (`shrinkCffSfnt`). The `CFF ` table goes through `shrinkCff` or
+  `shrinkNameKeyedCff`, and the choice is made by the program's KEYING, never
+  by the font dict. Every other table is copied through, and the result is
+  assembled under the `OTTO` tag.
+  **Note, measured, and the render CANNOT see either rule:** routing a
+  name-keyed program through `shrinkCff` renders byte-identically, and so does
+  writing the `0x00010000` tag. Our renderer reaches these glyphs through the
+  sfnt `cmap` and never reads the CFF charset names, and `parseSfnt` reads
+  outlines off the `CFF ` table rather than the tag. Each rule is held by one
+  structural assertion in `test/optimize-otto.test.ts` (`isCID`, the leading
+  `OTTO`). Do not read its render comparison as covering them.
+  **Invariant (`29z6.3`):** `dedup.ts` keys an image XObject coded only with
+  TRANSPARENT filters by its DECODED samples. The hash goes through
+  `imagehref.ts`'s `imageKey(bytes, context)`, the one owner of "are these two
+  images the same", and the context is the dict minus `Filter`, `DecodeParms`,
+  `DP`, `Length` and `DL`. Without that context the same bytes read as RGB and
+  as gray would merge. The opaque codecs keep the byte key, a COST rule that
+  nothing fences: making every filter transparent reddens nothing.
+  **Invariant:** a group's survivor is its SMALLEST payload, ties to the
+  lowest object number, which is exactly the old rule for a byte-identical
+  group. The pass repeats (max 8) until nothing merges, because a dict key
+  serializes its refs and two images only match once their `/SMask`s have
+  merged. Each rule is mutation-checked in `test/dedup-images.test.ts`.
+  **unembed.ts** (`29z6.4`) is `Optimize({ unembedStandard14 })`, OFF by
+  default. It deletes the descriptor's `/FontFile*` key and nothing else.
+  **Invariant:** it declines wherever a viewer's built-in face could draw a
+  different glyph for a code. So it touches only `/Type1` dicts naming a
+  Latin face EXACTLY (`matchStd14(b) === b`, so the `Arial` alias does not
+  count). The encoding must be a Latin base or a dict WITH a `/BaseEncoding`:
+  per 9.6.6.1 a `/Differences` without one is relative to the EMBEDDED
+  program. A font with no `/Encoding` qualifies only if its program already
+  uses StandardEncoding (`CffFont.usesStandardEncoding`,
+  `Type1Font.builtinEncodingNames() === undefined`).
+  **Invariant:** the key is removed from the DESCRIPTOR, so every font dict
+  reaching that descriptor must qualify. Those dicts are found by a DEEP walk,
+  since a direct font dict shares a descriptor as surely as an indirect one.
+  A document declaring PDF/A is declined outright.
+  **pdfastd14.ts** (`29z6.6`) is the opposite operation, `ConvertToPdfA`'s
+  `std14EmbedPass`. It is the ONE place the converter adds an asset, which is
+  why it has its own `preserve` category. The Standard-14 `/Type1` becomes a
+  non-symbolic `/TrueType` over the bundled Liberation face, and the encoding
+  is REWRITTEN to express the same code -> name map over a WinAnsi/MacRoman
+  base (ISO 19005-2 6.2.11.6 forbids a Standard base for TrueType).
+  **Invariant, and it is what makes the ordering work:** the usage scan
+  cannot map codes for a font with NO program, so the pass embeds FIRST, then
+  scans once, then checks each font and puts it back from a snapshot on any
+  failure. It fails on an incomplete scan, a shown code with no glyph, or a
+  shown code whose width is off by more than 1. That check is per SHOWN code
+  (`FontUsage.codes`, added for this), because the AFMs and the Liberation
+  faces disagree on five codes.
+  **Invariant:** a font with no `/Encoding` gets StandardEncoding's meaning,
+  the spec's reading for a non-embedded Latin face. Our renderer reads it as
+  WinAnsi (`buildSimpleEncoding`'s implicit default), so the two differ on
+  `'` and `` ` `` for such a font. The render-identity test uses an explicit
+  `WinAnsiEncoding` for that reason.
+  **Note, measured:** 10 of 11 mutations across both modules redden. The
+  green one is pdfastd14's Symbol/ZapfDingbats exclusion, a REDUNDANT
+  defence: the bundled Symbol face has no (3,1) cmap at all, so the width
+  check can never pass for it. Kept as the honest statement of scope.
+  **Note:** `/lenIV -1` (unencrypted charstrings) is REFUSED, and so is a
+  private section with no `closefile`. `decrypt` does not model either shape,
+  and writing charstrings nothing reads right is worse than skipping the font.
   **drprune.ts** removes `/AcroForm /DR` entries nothing names, in every resource
   category, and deletes the objects that orphans.
   **Invariant:** the reference scan walks from the *catalog*, never
@@ -9650,6 +9740,22 @@ Source (`src/`):
   nine hashes in `test/jpeg-encode-identity.test.ts` and leaves every case in
   `jpeg`, `jpeg-real`, `grayimage` and `grayscale-convert` green. That file is a
   FENCE recorded before the extraction, not a golden to refresh.
+  **Invariant (`29z6.5`):** `CoefFrame.progressive` writes spectral-selection
+  SOF2 (a DC scan, then one AC scan per component) through the SAME header and
+  DHT writers baseline uses. `test/jpeg-encode-identity.test.ts` did not move,
+  and it is the fence for that refactor. A non-interleaved scan walks the
+  component's OWN block grid, `ceil(ceil(w * h / maxH) / 8)`, never the
+  MCU-padded one, and `jpeg.ts` reads it the same way (`c.blocksPerLine`).
+  Progressive always builds optimal tables, one AC table per `td` SLOT pooled
+  across scans: the Annex K AC tables carry no EOBRUN symbols.
+  **Note, measured, and a mutation harness LIED here first:** on a pixel
+  mismatch `toEqual` took 211 s to render its diff of two 100 KB arrays, the
+  harness timed out, and it read the timeout as a pass. The tests compare with
+  `Buffer.compare`. **A harness must report a timeout as a timeout.**
+  **Note, measured, and NOT covered:** letting a DATA block's trailing EOB
+  start its own run rather than joining the empty blocks after it reddens
+  nothing. It is a cost rule worth a symbol at each data-to-empty boundary.
+  The EMPTY-block runs ARE pinned, by the flat-image size bound.
   **Invariant:** blocks cross that boundary in **zig-zag** order and quantization
   tables in **natural** order, and the asymmetry is the thing to get right.
   Zig-zag because JPEG entropy coding is defined over it — a run length counts

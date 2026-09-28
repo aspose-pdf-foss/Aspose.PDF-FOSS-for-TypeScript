@@ -228,10 +228,10 @@ describe('collectGlyphUsage — simple CFF', () => {
     expect([...u.gids].sort((a, b) => a - b)).toEqual([1, 2]);
   });
 
-  it('skips a Type1 /FontFile PFB with a reason, rather than guessing', () => {
+  it('skips a /FontFile that is not a Type 1 program, rather than guessing', () => {
     const u = cffUsageOf(buildSimpleCffPdf({ asPfb: true }));
     expect(u.complete).toBe(false);
-    expect(u.reason).toMatch(/CFF|FontFile3|PFB/i);
+    expect(u.reason).toBe('Type1 /FontFile program failed to parse');
   });
 
   it('skips rather than guesses when no chain resolves a shown code', () => {

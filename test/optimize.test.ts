@@ -3,7 +3,7 @@ import * as pkg from '../src/index.js';
 import { Document } from '../src/document.js';
 import { UnsupportedFeatureError } from '../src/errors.js';
 import { PdfDict, PdfObject, PdfStream, isStream, name } from '../src/types.js';
-import { buildWholeFontPdf, buildSimpleTtfPdf, buildSharedProgramPdf, buildSimpleCffPdf, buildCffOttoPdf, customGlyphNames } from './helpers/build-optimize-pdf.js';
+import { buildWholeFontPdf, buildSimpleTtfPdf, buildSharedProgramPdf, buildSimpleCffPdf, customGlyphNames } from './helpers/build-optimize-pdf.js';
 import { CffFont } from '../src/cff.js';
 import { buildSimpleImagePdf, buildTwinImagePdf } from './helpers/build-imageopt-pdf.js';
 import { buildCmapTable, buildPostV2 } from './helpers/build-sfnt.js';
@@ -311,21 +311,15 @@ describe('Optimize — simple CFF', () => {
     expect(f.glyphPath(3).length).toBe(0);               // unused, blanked
   });
 
-  it('skips a Type1 /FontFile PFB with a reason', () => {
+  it('skips a /FontFile that is not a Type 1 program, with a reason', () => {
+    // A CFF under /FontFile is mislabelled rather than subsettable (29z6.1
+    // subsets a real one — see optimize-type1.test.ts).
     const doc = Document.Open(buildSimpleCffPdf({ asPfb: true }));
     const report = doc.Optimize();
     expect(report.fonts).toEqual([]);
-    expect(report.skipped[0].reason).toMatch(/CFF|PFB/i);
+    expect(report.skipped[0].reason).toBe('Type1 /FontFile program failed to parse');
   });
 });
 
-describe('Optimize — OpenType CFF whole-embed stays out of scope', () => {
-  it('skips an /OpenType FontFile3 with CFF outlines, with a reason', () => {
-    // Unchanged behavior, asserted so the Type1C dispatch cannot quietly swallow
-    // it: rewrapping a shrunk CFF table into an OTTO sfnt is a separate concern.
-    const doc = Document.Open(buildCffOttoPdf());
-    const report = doc.Optimize();
-    expect(report.fonts).toEqual([]);
-    expect(report.skipped[0].reason).toMatch(/CFF-outlined|OpenType/);
-  });
-});
+// An /OpenType FontFile3 with CFF outlines is subset since 29z6.2 — see
+// optimize-otto.test.ts.

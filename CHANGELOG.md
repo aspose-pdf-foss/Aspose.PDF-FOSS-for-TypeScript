@@ -19,6 +19,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Optimize({ images: { progressive: true } })` writes progressive JPEG.**
+  The image pass wrote baseline (SOF0) only. With the flag it writes a
+  spectral-selection progressive file (SOF2): one interleaved DC scan, then
+  one AC scan per component, coding trailing zeros as EOB runs. Successive
+  approximation is not written. The decoded pixels are the baseline
+  encoding's exactly, checked through `jpeg.ts`'s own progressive decoder. A
+  scan walks the component's own block grid rather than the MCU-padded one,
+  which is what a 227x149 photograph with subsampled chroma exercises.
+  Measured on libjpeg's `testorig` photograph at the default 4:2:0, the file
+  is 1.5-2.2% smaller at quality 50-90. At 4:4:4 it is 0.8-1.6% LARGER, since a
+  scan per full-resolution chroma plane does not repay itself on a small
+  image. On a flat image the EOB runs halve the file (8,710 bytes to 4,451).
+  `encodeJpeg` takes the same `progressive` option (29z6.5).
+- **`ConvertToPdfA` embeds the bundled substitute for a non-embedded Latin
+  Standard-14 font.** It used to report every such font as `FontEmbedded`
+  unresolved, on a stated rule of never fabricating assets. A simple `/Type1`
+  font naming one of the twelve Latin faces exactly (Helvetica, Times, Courier
+  and their styles) now becomes a non-symbolic `/TrueType` with the bundled
+  Liberation face as `/FontFile2`, shrunk to the glyphs the page shows. Its
+  encoding is rewritten to express the same code -> glyph map over the WinAnsi
+  or MacRoman base ISO 19005-2 6.2.11.6 requires. A font with no `/Encoding`
+  keeps StandardEncoding's meaning through explicit `/Differences` (`'` stays
+  quoteright). `/Widths` is kept, or written from the AFM metrics the text was
+  laid out with. The page renders exactly as the non-embedded page did,
+  because the renderer already drew these fonts from the same bundled faces.
+  The font is declined and left unresolved when a shown code's width disagrees
+  with the face's advance by more than 1/1000 em. It is also declined when a
+  shown code has no glyph in the face, and for Symbol and ZapfDingbats. The
+  width check applies to SHOWN codes only: measured, the Helvetica and Times
+  AFMs disagree with the faces on five codes (¯ ± µ · ÷), and failing every
+  Helvetica font over an unused `±` would make the pass useless.
+  `preserve: ['fontEmbedding']` keeps the old behaviour (29z6.6).
+- **`Optimize({ unembedStandard14: true })` removes Standard-14 font
+  programs.** It is off by default. It deletes the `/FontFile*` key of a
+  simple `/Type1` font whose `/BaseFont` names a Latin Standard-14 face
+  exactly (a subset prefix aside; an alias such as `Arial` does not count),
+  and nothing else: `/Widths`, `/Encoding` and the descriptor stay. It declines
+  per font, reported in `report.unembedSkipped`, wherever a viewer's built-in
+  face could draw a different glyph for a code: an encoding the embedded
+  program defines, a `/Differences` with no `/BaseEncoding` (relative to that
+  program) or naming a glyph outside the Latin sets, a descriptor shared with
+  a non-Standard-14 font, and Symbol and ZapfDingbats. It also declines on a
+  document that declares PDF/A, whose conformance it would break. Run before
+  `ConvertToPdfA`, conversion embeds the bundled substitute again (29z6.6).
+  Measured: unembedding NimbusSans-Regular under `/BaseFont /Helvetica` saves
+  its 104 KB program (29z6.4).
+- **`Optimize` merges duplicate images by their decoded pixels.** The dedup
+  pass used to hash ENCODED payloads. So one picture stored twice, once raw and
+  once Flate-compressed (what merging two differently produced documents
+  routinely yields), survived as two copies. An image XObject coded only with
+  cheap lossless filters (Flate, LZW, RunLength, ASCIIHex, ASCII85) is now
+  keyed by its decoded samples plus its dict without the encoding entries. The
+  same bytes read as 16x16 RGB and as 16x48 gray are therefore still two
+  images, and a one-sample difference is never merged. DCT, JPX, CCITT and
+  JBIG2 images keep the byte-identical rule, because decoding them to compare
+  would cost more than it finds. The survivor of a group is its smallest
+  payload, so the compressed copy is kept. The pass repeats until nothing
+  merges, so two images become one once their raw and Flate soft masks have
+  merged (29z6.3).
+- **`Optimize` subsets OpenType-CFF whole-embeds.** A `/FontFile3` with
+  `/Subtype /OpenType` and CFF outlines used to be skipped with "OpenType
+  FontFile3 is CFF-outlined". That is the shape an `.otf` takes when its CFF
+  will not rebuild. Such a font is now subset as the sfnt it is. The `CFF `
+  table goes through the existing CFF shrink that matches its keying: CID-keyed
+  stays CID-keyed, and name-keyed keeps its charset names and built-in
+  encoding. Every other table is copied through, so `cmap`, `hmtx` and `post`
+  still describe the same glyph ids. The keying decides the shrink, not the
+  font dict: a CID re-assembly strips a name-keyed program of the names a
+  simple dict resolves through. Measured on the bundled NimbusSans-Regular.otf
+  (82 KB, 855 glyphs) under a simple `/TrueType` dict, a page showing `AVA`
+  goes from 63,657 to 10,919 bytes and renders byte-identically (29z6.2).
+- **`Optimize` subsets Type 1 (`/FontFile`) font programs.** They used to be
+  skipped outright and listed in `report.skipped`. Now every glyph the
+  document never shows has its charstring replaced by an empty
+  `0 0 hsbw endchar`. The glyph's name stays defined, so `/Encoding`,
+  `/Differences` and `seac` references resolve exactly as before, and the
+  private portion is re-encrypted with true `/Length1`-`/Length3`. The glyphs
+  a kept `seac` accent composes from are kept too. `/Subrs` is copied whole,
+  because any kept glyph may call it.
+  Used codes resolve through the renderer's own
+  32000-1 9.6.6.2 name chain. A code that names nothing, or names a glyph the
+  program does not define, leaves the font whole and reports that code. Measured
+  on the bundled NimbusSans-Regular (104 KB, 855 glyphs), a page showing
+  `AVA` saves from 104,312 to 24,803 bytes and renders byte-identically
+  (29z6.1).
+
 ### Security
 
 - **Font programs cannot exhaust memory or spin on one glyph.** A CFF or

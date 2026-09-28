@@ -236,12 +236,20 @@ export function buildSimpleCffPdf(o: SimpleCffOptions = {}): Uint8Array {
   return serializeDocument(objects, new Map<string, PdfObject>([['Root', ref(1, 0)]]));
 }
 
-/** A PDF embedding an OTTO (OpenType-CFF) whole-embed as a simple /TrueType font
- *  via an /OpenType /FontFile3. Out of scope for shrinking — rewrapping a shrunk
- *  CFF table back into an sfnt is its own concern — so this exists to prove the
- *  Type1C path does not quietly swallow it. */
-export function buildCffOttoPdf(): Uint8Array {
-  const otto = buildCffOtto();
+export interface CffOttoOptions {
+  /** The OTTO program; defaults to {@link buildCffOtto}'s two-glyph font. */
+  otto?: Uint8Array;
+  /** The font dict: a simple /TrueType (default) or /Type1 dict, or a /Type0
+   *  over a /CIDFontType0 descendant with /Identity-H. */
+  subtype?: 'TrueType' | 'Type1' | 'Type0';
+  /** The show operand; defaults to `(A)`. A Type0 wants a hex CID string. */
+  content?: string;
+}
+
+/** A PDF embedding an OTTO (OpenType-CFF) whole-embed via an /OpenType
+ *  /FontFile3 — the shape `cffsubset.ts`'s whole-embed fallback produces. */
+export function buildCffOttoPdf(o: CffOttoOptions = {}): Uint8Array {
+  const otto = o.otto ?? buildCffOtto();
   const objects = new Map<number, PdfObject>();
 
   objects.set(6, {
@@ -257,14 +265,36 @@ export function buildCffOttoPdf(): Uint8Array {
     ['FontFile3', ref(6, 0)],
   ]));
 
-  objects.set(4, new Map<string, PdfObject>([
-    ['Type', name('Font')], ['Subtype', name('TrueType')],
-    ['BaseFont', name('TestOtto')],
-    ['FirstChar', 65], ['LastChar', 66], ['Widths', [500, 600]],
-    ['FontDescriptor', ref(7, 0)], ['Encoding', name('WinAnsiEncoding')],
-  ]));
+  if (o.subtype === 'Type0') {
+    objects.set(5, new Map<string, PdfObject>([
+      ['Type', name('Font')], ['Subtype', name('CIDFontType0')],
+      ['BaseFont', name('TestOtto')],
+      ['CIDSystemInfo', new Map<string, PdfObject>([
+        ['Registry', { kind: 'string', bytes: enc('Adobe') }],
+        ['Ordering', { kind: 'string', bytes: enc('Identity') }],
+        ['Supplement', 0],
+      ])],
+      ['FontDescriptor', ref(7, 0)], ['DW', 600],
+    ]));
+    objects.set(4, new Map<string, PdfObject>([
+      ['Type', name('Font')], ['Subtype', name('Type0')],
+      ['BaseFont', name('TestOtto')], ['Encoding', name('Identity-H')],
+      ['DescendantFonts', [ref(5, 0)]],
+    ]));
+  } else {
+    // /Widths covers printable ASCII only when a caller supplies its own
+    // program; the default fixture keeps its historical two entries.
+    const wide = o.otto !== undefined;
+    objects.set(4, new Map<string, PdfObject>([
+      ['Type', name('Font')], ['Subtype', name(o.subtype ?? 'TrueType')],
+      ['BaseFont', name('TestOtto')],
+      ['FirstChar', wide ? 32 : 65], ['LastChar', wide ? 126 : 66],
+      ['Widths', wide ? Array(95).fill(600) : [500, 600]],
+      ['FontDescriptor', ref(7, 0)], ['Encoding', name('WinAnsiEncoding')],
+    ]));
+  }
 
-  const body = 'BT /F1 24 Tf 50 700 Td (A) Tj ET';
+  const body = `BT /F1 24 Tf 50 700 Td ${o.content ?? '(A)'} Tj ET`;
   objects.set(3, {
     kind: 'stream',
     dict: new Map<string, PdfObject>([['Length', body.length]]),

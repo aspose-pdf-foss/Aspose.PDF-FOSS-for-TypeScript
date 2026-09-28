@@ -1,6 +1,6 @@
 import { LoadLimits } from './loadlimits.js';
 import type { Path } from './pagerender.js';
-import { PdfParseError } from './errors.js';
+import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import { standardEncodingNames } from './encoding.js';
 import { runType1Charstring, Type1Env, Type1Glyph } from './type1charstring.js';
 import { readType1Header } from './type1header.js';
@@ -122,31 +122,179 @@ export class Type1Font {
   }
 
   private readCharStrings(priv: Uint8Array, lenIV: number): void {
-    let p = indexOfAscii(priv, '/CharStrings');
-    if (p < 0) return;
-    p = indexOfAscii(priv, 'begin', p);
-    if (p < 0) return;
-    p += 5;
-    while (p < priv.length) {
-      while (p < priv.length && priv[p] !== 0x2f) {                 // '/'
-        if (matchesAscii(priv, p, 'end')) return;
-        p++;
-      }
-      if (p >= priv.length) return;
-      const name = readName(priv, p + 1);
-      let q = name.end;
-      const len = readInt(priv, q);
-      if (!len) { p = q; continue; }
-      const data = afterBinaryToken(priv, len.end, len.value);
-      if (!data) return;
-      if (!this.nameToGid.has(name.value)) {
-        this.nameToGid.set(name.value, this.names.length);
-        this.names.push(name.value);
-        this.byName.set(name.value, decrypt(data.bytes, CHARSTRING_R, lenIV));
-      }
-      p = data.end;
+    for (const e of charStringEntries(priv)) {
+      if (this.nameToGid.has(e.name)) continue;
+      this.nameToGid.set(e.name, this.names.length);
+      this.names.push(e.name);
+      this.byName.set(e.name, decrypt(priv.subarray(e.dataStart, e.dataEnd), CHARSTRING_R, lenIV));
     }
   }
+
+  /**
+   * The StandardEncoding glyph NAMES a `seac` in this glyph composes from — base
+   * then accent — or `[]` when it has none. A subset that keeps an accented glyph
+   * must keep both, since `seac` reaches them by name through StandardEncoding
+   * rather than through anything the document's own encoding says.
+   */
+  seacComponents(gid: number): string[] {
+    const cs = this.byName.get(this.names[gid] ?? '');
+    if (!cs) return [];
+    const out: string[] = [];
+    runType1Charstring(cs, {
+      subrs: this.subrs,
+      limits: this.limits,
+      seacGlyph: (code) => {
+        const n = standardEncodingNames[code & 0xff];
+        if (n) out.push(n);
+        return n ? this.byName.get(n) : undefined;
+      },
+    });
+    return out;
+  }
+}
+
+/** One `/CharStrings` entry, located in the decrypted private portion. */
+interface CharStringEntry {
+  name: string;
+  /** The decimal length token. */
+  lenStart: number; lenEnd: number;
+  /** The encrypted charstring bytes. */
+  dataStart: number; dataEnd: number;
+}
+
+/** Every `/CharStrings` entry in order. ONE walk, shared by the reader and by
+ *  {@link eraseType1Glyphs}, so the two cannot disagree about where a glyph's
+ *  bytes are. */
+function* charStringEntries(priv: Uint8Array): Generator<CharStringEntry> {
+  let p = indexOfAscii(priv, '/CharStrings');
+  if (p < 0) return;
+  p = indexOfAscii(priv, 'begin', p);
+  if (p < 0) return;
+  p += 5;
+  while (p < priv.length) {
+    while (p < priv.length && priv[p] !== 0x2f) {                 // '/'
+      if (matchesAscii(priv, p, 'end')) return;
+      p++;
+    }
+    if (p >= priv.length) return;
+    const name = readName(priv, p + 1);
+    let q = name.end;
+    while (q < priv.length && isWhite(priv[q])) q++;
+    const len = readInt(priv, q);
+    if (!len) { p = name.end; continue; }
+    const data = afterBinaryToken(priv, len.end, len.value);
+    if (!data) return;
+    yield { name: name.value, lenStart: q, lenEnd: len.end, dataStart: data.end - len.value, dataEnd: data.end };
+    p = data.end;
+  }
+}
+
+/** A Type 1 program re-emitted by {@link eraseType1Glyphs}, with the three PDF
+ *  `/FontFile` lengths it needs. */
+export interface Type1Rewrite {
+  bytes: Uint8Array;
+  length1: number;
+  length2: number;
+  length3: number;
+}
+
+/** `0 0 hsbw endchar` — a valid, empty, zero-width Type 1 glyph. */
+const EMPTY_CHARSTRING = Uint8Array.from([139, 139, 13, 14]);
+
+/**
+ * Re-emit a Type 1 program with every `/CharStrings` entry whose name is NOT in
+ * `keep` replaced by `0 0 hsbw endchar`. Glyph ERASURE, not removal: every name
+ * stays defined, so `/Encoding`, `/Differences` and `seac` references all keep
+ * resolving, and `/Subrs` is carried verbatim since a kept glyph may call any of
+ * them.
+ *
+ * The clear header is copied byte for byte, the private portion is re-encrypted
+ * as BINARY eexec whatever the input used, and the trailer (the zeros and
+ * `cleartomark`) is carried over when found, else written in its conventional
+ * form. PFB framing is dropped: a PDF `/FontFile` is PFA-shaped.
+ */
+export function eraseType1Glyphs(input: Uint8Array, keep: ReadonlySet<string>): Type1Rewrite {
+  const bytes = stripPfb(input);
+  const at = indexOfAscii(bytes, 'eexec');
+  if (at < 0) throw new PdfParseError('Type1: no eexec section');
+  let p = at + 5;
+  while (p < bytes.length && isWhite(bytes[p])) p++;
+  const clear = bytes.subarray(0, p);
+  const cipher = looksHex(bytes, p) ? hexDecode(bytes, p) : bytes.subarray(p);
+  const priv = decrypt(cipher, EEXEC_R, 4);
+
+  const lenIV = readIntAfter(priv, '/lenIV') ?? 4;
+  // lenIV -1 means the charstrings are not encrypted at all, a shape `decrypt`
+  // does not model — refuse rather than write charstrings nothing reads right.
+  if (lenIV < 0) throw new UnsupportedFeatureError('Type1: /lenIV -1 (unencrypted charstrings)');
+
+  // The private portion ends at `closefile`; past it `decrypt` has run over the
+  // trailer, which is plaintext and decrypts to noise.
+  const close = lastIndexOfAscii(priv, 'closefile');
+  if (close < 0) throw new PdfParseError('Type1: private portion has no closefile');
+  let end = close + 9;
+  if (priv[end] === 0x0d) end++;
+  if (priv[end] === 0x0a) end++;
+
+  const erased = encryptCharstring(EMPTY_CHARSTRING, lenIV);
+  const erasedLen = asciiBytes(String(erased.length));
+  const pieces: Uint8Array[] = [];
+  let cursor = 0;
+  let seen = 0;
+  for (const e of charStringEntries(priv)) {
+    seen++;
+    if (keep.has(e.name) || e.dataEnd > end) continue;
+    pieces.push(priv.subarray(cursor, e.lenStart), erasedLen,
+      priv.subarray(e.lenEnd, e.dataStart), erased);
+    cursor = e.dataEnd;
+  }
+  if (seen === 0) throw new PdfParseError('Type1: no /CharStrings');
+  pieces.push(priv.subarray(cursor, end));
+
+  const encrypted = encryptEexec(cat(pieces));
+  const trailer = trailerOf(bytes, p);
+  return {
+    bytes: cat([clear, encrypted, trailer]),
+    length1: clear.length, length2: encrypted.length, length3: trailer.length,
+  };
+}
+
+/** The zeros-and-`cleartomark` trailer as the input wrote it, found by walking
+ *  back from the last `cleartomark` over zeros and whitespace. Walking back may
+ *  take a stray `0` or blank from the cipher it follows; that is harmless, since
+ *  the cipher is regenerated and the trailer is filler until `cleartomark`. */
+function trailerOf(bytes: Uint8Array, from: number): Uint8Array {
+  const mark = lastIndexOfAscii(bytes, 'cleartomark');
+  if (mark < from) return asciiBytes(`${'0'.repeat(64)}\n`.repeat(8) + 'cleartomark\n');
+  let t = mark;
+  while (t > from && (bytes[t - 1] === 0x30 || isWhite(bytes[t - 1]))) t--;
+  return bytes.subarray(t);
+}
+
+function encryptWith(plain: Uint8Array, r0: number, pad: number, padByte: number): Uint8Array {
+  let r = r0;
+  const out = new Uint8Array(plain.length + pad);
+  for (let i = 0; i < out.length; i++) {
+    const src = i < pad ? padByte : plain[i - pad];
+    const c = (src ^ (r >> 8)) & 0xff;
+    r = ((c + r) * C1 + C2) & 0xffff;
+    out[i] = c;
+  }
+  return out;
+}
+
+const encryptCharstring = (plain: Uint8Array, lenIV: number): Uint8Array =>
+  encryptWith(plain, CHARSTRING_R, lenIV, 0);
+
+/** Encrypt the private portion as binary eexec, choosing a pad byte whose
+ *  ciphertext neither opens with whitespace (a reader skips it after `eexec`)
+ *  nor with four hex digits (the test that tells binary eexec from hex). */
+function encryptEexec(plain: Uint8Array): Uint8Array {
+  for (let padByte = 0; padByte < 256; padByte++) {
+    const out = encryptWith(plain, EEXEC_R, 4, padByte);
+    if (!isWhite(out[0]) && !looksHex(out, 0)) return out;
+  }
+  throw new PdfParseError('Type1: no eexec pad byte yields a binary-looking prefix');
 }
 
 // ---------- byte helpers ----------
@@ -224,6 +372,20 @@ function matchesAscii(b: Uint8Array, at: number, s: string): boolean {
 function indexOfAscii(b: Uint8Array, s: string, from = 0): number {
   for (let i = Math.max(0, from); i + s.length <= b.length; i++) if (matchesAscii(b, i, s)) return i;
   return -1;
+}
+
+function lastIndexOfAscii(b: Uint8Array, s: string): number {
+  for (let i = b.length - s.length; i >= 0; i--) if (matchesAscii(b, i, s)) return i;
+  return -1;
+}
+
+const asciiBytes = (s: string): Uint8Array => Uint8Array.from(s, (ch) => ch.charCodeAt(0) & 0xff);
+
+function cat(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((a, x) => a + x.length, 0));
+  let o = 0;
+  for (const x of parts) { out.set(x, o); o += x.length; }
+  return out;
 }
 
 function readInt(b: Uint8Array, at: number): { value: number; end: number } | undefined {

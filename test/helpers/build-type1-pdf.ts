@@ -20,6 +20,8 @@ export interface Type1PdfOptions {
   encoding?: string;
   /** [code, glyphName] pairs for an /Encoding /Differences array. */
   differences?: [number, string][];
+  /** The font dict's /BaseFont (and the descriptor's /FontName). Default 'TestFont'. */
+  baseFont?: string;
   /** Omit /Widths entirely, so the font must measure from its own program. */
   omitWidths?: boolean;
 }
@@ -46,10 +48,11 @@ export function buildType1Pdf(program: Uint8Array, opts: Type1PdfOptions): Uint8
   const widths = opts.omitWidths
     ? ''
     : ` /FirstChar 65 /LastChar 90 /Widths [${Array(26).fill(1000).join(' ')}]`;
-  objs[4] = enc('<< /Type /Font /Subtype /Type1 /BaseFont /TestFont'
+  const bf = opts.baseFont ?? 'TestFont';
+  objs[4] = enc(`<< /Type /Font /Subtype /Type1 /BaseFont /${bf}`
     + `${encEntry}${widths} /FontDescriptor 6 0 R >>`);
   objs[5] = enc(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
-  objs[6] = enc('<< /Type /FontDescriptor /FontName /TestFont /Flags 4 '
+  objs[6] = enc(`<< /Type /FontDescriptor /FontName /${bf} /Flags 4 `
     + '/FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 1000 /Descent 0 '
     + '/CapHeight 1000 /StemV 80 /FontFile 7 0 R >>');
   objs[7] = concat([
