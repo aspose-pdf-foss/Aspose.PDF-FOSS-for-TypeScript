@@ -1,0 +1,202 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Contents:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Contents:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Chapter one\t1",
+      "styleName": "Contents 1",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter one\t1",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Chapter two\t2",
+      "styleName": "Contents 1",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter two\t2",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Chapter one",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter one",
+          "bold": true,
+          "italic": false,
+          "sizePt": 14.0,
+          "font": "Cambria"
+        }
+      ]
+    },
+    {
+      "text": "Body with a footnote",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Body with a footnote",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Body with an endnote",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Body with an endnote",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Anchor for a text box.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Anchor for a text box.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Commented words",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Commented words",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Kept inserted words.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Kept inserted words.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Chapter two",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter two",
+          "bold": true,
+          "italic": false,
+          "sizePt": 14.0,
+          "font": "Cambria"
+        }
+      ]
+    },
+    {
+      "text": "Landscape page.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Landscape page.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": []
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 2,
+    "footers": 2,
+    "footnotes": 1,
+    "endnotes": 1,
+    "textBoxes": 1,
+    "fields": 1,
+    "comments": 1,
+    "revisions": 2
+  }
+}

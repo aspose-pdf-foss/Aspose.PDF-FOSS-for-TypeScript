@@ -89,6 +89,9 @@ export interface FontPdfSpec {
   missingWidth?: number;
   /** Draw a Type0 font instead of a simple one. */
   type0?: Type0Spec;
+  /** Embed these bytes as `/FontFile3 /Subtype /OpenType` on a SIMPLE font
+   *  (PDF 2.0's OpenType program slot), instead of `embed`'s `/FontFile2`. */
+  openTypeProgram?: Uint8Array;
   /** Text to show; default 'A'. */
   text?: string;
   /** /Tr to set before showing. */
@@ -253,6 +256,11 @@ export function buildFontPdf(spec: FontPdfSpec): Uint8Array {
     fontRef = doc.allocObject(font);
   } else {
     if (spec.embed === true) descriptor.set('FontFile2', fontFile());
+    if (spec.openTypeProgram !== undefined) {
+      descriptor.set('FontFile3', doc.allocObject(stream(
+        new Map<string, PdfObject>([['Subtype', name('OpenType')]]), spec.openTypeProgram,
+      )));
+    }
     const subtype = spec.subtype ?? 'TrueType';
     const font = new Map<string, PdfObject>([
       ['Type', name('Font')],

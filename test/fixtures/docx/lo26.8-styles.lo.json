@@ -1,0 +1,188 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Styles and headings",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Styles and headings",
+          "bold": true,
+          "italic": false,
+          "sizePt": 18.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Second level",
+      "styleName": "Heading 2",
+      "heading": 2,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Second level",
+          "bold": true,
+          "italic": false,
+          "sizePt": 16.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Third level",
+      "styleName": "Heading 3",
+      "heading": 3,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Third level",
+          "bold": true,
+          "italic": false,
+          "sizePt": 14.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Custom heading text",
+      "styleName": "Custom Heading",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Custom heading text",
+          "bold": true,
+          "italic": false,
+          "sizePt": 16.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Plain body text.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Plain body text.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Direct formats sizes fonts colours end.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Direct ",
+          "bold": true,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        },
+        {
+          "text": "formats ",
+          "bold": false,
+          "italic": true,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        },
+        {
+          "text": "sizes ",
+          "bold": false,
+          "italic": false,
+          "sizePt": 16.0,
+          "font": "Times New Roman"
+        },
+        {
+          "text": "fonts ",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Courier New"
+        },
+        {
+          "text": "colours end.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "A strong word.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "A ",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        },
+        {
+          "text": "strong ",
+          "bold": true,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        },
+        {
+          "text": "word.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "toggle rest.",
+      "styleName": "Bold Para",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "toggle rest.",
+          "bold": true,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 0,
+    "endnotes": 0,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  }
+}

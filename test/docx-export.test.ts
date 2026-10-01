@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Document } from '../src/index.js';
 import { unzip, textOf } from './helpers/unzip.js';
 import { parseXml } from '../src/xml.js';
+import { buildPngRgbWith } from './helpers/build-embed-images.js';
 
 function built(): Document {
   const doc = Document.New();
@@ -16,6 +17,23 @@ function built(): Document {
 
 const parts = (doc: Document) => unzip(doc.ToDocx());
 const paths = (doc: Document) => parts(doc).map((e) => e.path).sort();
+
+describe('ToDocx with a large image (h4z3)', () => {
+  it('writes a multi-megabyte picture into the package and reads it back', () => {
+    // Noise does not compress, so the media part is as large as the picture:
+    // writeZip overflowed the stack on an entry a tenth of this size.
+    const n = 1024;
+    const rgb: number[] = new Array(n * n * 3);
+    let x = 7;
+    for (let i = 0; i < rgb.length; i++) { x = (Math.imul(x, 1664525) + 1013904223) >>> 0; rgb[i] = x >>> 24; }
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    page.AddImage(buildPngRgbWith(n, n, rgb, 0), [72, 300, 400, 400]);
+    const media = parts(doc).filter((e) => e.path.startsWith('word/media/'));
+    expect(media).toHaveLength(1);
+    expect(media[0].bytes.length).toBeGreaterThan(1024 * 1024);
+  });
+});
 
 describe('ToDocx package', () => {
   it('writes the expected part set', () => {

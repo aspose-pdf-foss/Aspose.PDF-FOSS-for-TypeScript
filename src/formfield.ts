@@ -9,6 +9,7 @@ import { regeneratePushButtonAP } from './buttonap.js';
 import { flattenFieldWidgets } from './flatten.js';
 import { resolveDA } from './da.js';
 import { readRichTextMarkup, richTextToPlain } from './richtext.js';
+import { formatValue, evaluateRules } from './afrules.js';
 import {
   applyWidgetStyle, checkColor, checkFieldStyle, ensureDRFont, fieldDA, pdfLatin,
   type FieldStyle,
@@ -25,6 +26,19 @@ import {
   FF_READONLY, FF_REQUIRED, FF_MULTILINE, FF_PASSWORD, FF_COMB,
   FF_FILESELECT, FF_RICHTEXT, FF_DONOTSPELLCHECK, FF_DONOTSCROLL,
 } from './fieldflags.js';
+
+/** Options for regenerating field appearances (jzn8). */
+export interface FieldAppearanceOptions {
+  /** Draw the value as the field's recognised AForm format script displays it
+   *  (`FormattedValue`). The stored /V is never changed. Default false. */
+  format?: boolean;
+}
+
+/** @internal */
+export function checkAppearanceOptions(opts: FieldAppearanceOptions): void {
+  if (opts === null || typeof opts !== 'object') throw new TypeError('appearance options must be an object');
+  if (opts.format !== undefined && typeof opts.format !== 'boolean') throw new TypeError('format must be a boolean');
+}
 
 export type FieldType =
   'text' | 'checkbox' | 'radio' | 'choice' | 'pushbutton' | 'signature' | 'unknown';
@@ -177,6 +191,17 @@ export class Field {
   /** Set the field value. Validation happens before any mutation, so a throw
    *  leaves the document unmodified. */
   set Value(v: string | string[] | boolean) {
+    if (this.doc.formEnforceRules && this.Type === 'text' && typeof v === 'string') {
+      const { rejected } = evaluateRules(this.FullName, this.Actions, v);
+      if (rejected.length > 0) throw new RangeError(`field "${this.FullName}": ${rejected[0].message}`);
+    }
+    this.storeValue(v);
+  }
+
+  /** @internal Write a value with no AForm rule check. Recalculate stores a
+   *  calculated result through here even when the field's own validate rule
+   *  rejects it: Acrobat calculates, then validates. */
+  storeValue(v: string | string[] | boolean): void {
     switch (this.Type) {
       case 'text': this.setText(v); break;
       case 'checkbox': this.setCheckbox(v); break;
@@ -199,6 +224,17 @@ export class Field {
     return parseFieldActions(this.doc, this.Dict);
   }
 
+  /** The value as this field's recognised AForm format script would display it
+   *  (`AFNumber_Format`, `AFPercent_Format`, `AFDate_*`, `AFTime_*`,
+   *  `AFSpecial_Format`), or undefined when there is none. Read-only; /V is
+   *  unchanged. No JavaScript is executed: see README's scope. */
+  get FormattedValue(): string | undefined {
+    if (this.Type !== 'text') return undefined;
+    const f = this.Actions.format;
+    if (f === undefined || f.type !== 'javascript') return undefined;
+    return formatValue(f.script, this.Value as string);
+  }
+
   /** Set or clear /AA triggers. An absent key is left as it is and `null`
    *  removes that trigger, the same shape `SetStyle` takes; every action is
    *  validated before the first write. */
@@ -214,15 +250,24 @@ export class Field {
    *  which does the whole form and deletes /AcroForm. Returns the number of
    *  widgets baked. The handle is dead afterwards: `doc.Form` rebuilds per
    *  access and will no longer list this field. */
-  Flatten(): number {
-    this.GenerateAppearance();   // a widget with no /AP has nothing to bake
+  Flatten(opts: FieldAppearanceOptions = {}): number {
+    this.GenerateAppearance(opts);   // a widget with no /AP has nothing to bake
     return flattenFieldWidgets(this.doc, this.Dict, this.Widgets);
   }
 
   /** Regenerate this field's appearance stream(s) from its current value, so the
-   *  result renders without relying on a viewer honoring /NeedAppearances. */
-  GenerateAppearance(): void {
-    generateFieldAppearance(this.doc, this.acroForm, this.Dict, this.Type, this.ff, this.rawValue());
+   *  result renders without relying on a viewer honoring /NeedAppearances.
+   *  `{ format: true }` draws `FormattedValue` where there is one. A password
+   *  field stays masked either way: masking happens inside appearance
+   *  generation, after this substitution. */
+  GenerateAppearance(opts: FieldAppearanceOptions = {}): void {
+    checkAppearanceOptions(opts);
+    let value: PdfObject = this.rawValue();
+    if (opts.format === true) {
+      const fv = this.FormattedValue;
+      if (fv !== undefined) value = { kind: 'string', bytes: encodePdfText(fv) };
+    }
+    generateFieldAppearance(this.doc, this.acroForm, this.Dict, this.Type, this.ff, value);
   }
 
   private regen(): void {

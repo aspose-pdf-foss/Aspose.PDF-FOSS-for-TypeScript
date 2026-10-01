@@ -1,7 +1,7 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isString } from './types.js';
 import { decodePdfText } from './metadata.js';
-import { Field, classify, wrapField } from './formfield.js';
+import { Field, classify, wrapField, checkAppearanceOptions, type FieldAppearanceOptions } from './formfield.js';
 import type {
   TextField, CheckboxField, RadioField, ChoiceField, ButtonField,
 } from './formfield.js';
@@ -11,6 +11,8 @@ import {
   type ComboBoxInit, type ListBoxInit, type PushButtonInit, type SignatureFieldInit,
 } from './formcreate.js';
 import { removeField } from './formremove.js';
+import { recalculate, checkValues } from './afform.js';
+import type { RecalculateReport, ValueCheckReport } from './afrules.js';
 
 // Re-exported so existing import sites (appearance.ts, formdata.ts, index.ts)
 // and downstream consumers keep working after the split.
@@ -193,11 +195,41 @@ export class Form {
   }
 
   /** Generate appearance streams for every field, then drop the AcroForm
-   *  /NeedAppearances flag so the document renders identically everywhere. */
-  GenerateAppearances(): void {
-    for (const f of this.Fields) f.GenerateAppearance();
+   *  /NeedAppearances flag so the document renders identically everywhere.
+   *  `{ format: true }` draws each field's `FormattedValue` where it has one. */
+  GenerateAppearances(opts: FieldAppearanceOptions = {}): void {
+    checkAppearanceOptions(opts);
+    for (const f of this.Fields) f.GenerateAppearance(opts);
     const acro = this.doc.resolve(this.doc.catalog().get('AcroForm'));
     if (isDict(acro)) acro.delete('NeedAppearances');
     this.doc.markModified();
+  }
+
+  /** When true, setting a text field's `Value` first checks it against the
+   *  field's recognised keystroke and validate rules and throws RangeError on
+   *  a rejection, leaving the document unchanged. Default false. Stored on the
+   *  document, so it survives `doc.Form` being rebuilt. */
+  get EnforceRules(): boolean {
+    return this.doc.formEnforceRules;
+  }
+
+  set EnforceRules(v: boolean) {
+    if (typeof v !== 'boolean') throw new TypeError('EnforceRules must be a boolean');
+    this.doc.formEnforceRules = v;
+  }
+
+  /** Recompute calculated fields whose calculate script is a recognised
+   *  `AFSimple_Calculate`, once, in /AcroForm /CO order, as Acrobat does. No
+   *  JavaScript is executed; any other script is reported, never run. A value
+   *  that does not change is not written, so a no-op call marks nothing
+   *  modified. */
+  Recalculate(): RecalculateReport {
+    return recalculate(this.doc, this.Fields);
+  }
+
+  /** Report each field value its own recognised keystroke or validate rule
+   *  rejects. Reads only; changes nothing. */
+  CheckValues(): ValueCheckReport {
+    return checkValues(this.Fields);
   }
 }

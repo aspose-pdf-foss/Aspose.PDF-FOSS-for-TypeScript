@@ -1,0 +1,53 @@
+{
+  "lo26.8-lists.docx": [],
+  "lo26.8-media.docx": [],
+  "lo26.8-skipped.docx": [
+    "links.length"
+  ],
+  "lo26.8-styles.docx": [],
+  "lo26.8-tables.docx": [
+    "paragraphs.length",
+    "paragraphs[11].segments.length",
+    "paragraphs[11].text",
+    "paragraphs[12].segments[0].text",
+    "paragraphs[12].text",
+    "paragraphs[13].inTable",
+    "paragraphs[13].segments[0].text",
+    "paragraphs[13].text"
+  ],
+  "word2010-basic.docx": [
+    "links[0].url"
+  ],
+  "word2010-lists.docx": [],
+  "word2010-media.docx": [],
+  "word2010-skipped.docx": [
+    "counts.fields",
+    "counts.footers",
+    "counts.headers",
+    "paragraphs.length",
+    "paragraphs[10].heading",
+    "paragraphs[10].segments[0].bold",
+    "paragraphs[10].segments[0].font",
+    "paragraphs[10].segments[0].sizePt",
+    "paragraphs[10].segments[0].text",
+    "paragraphs[10].text",
+    "paragraphs[11].segments.length",
+    "paragraphs[11].text",
+    "paragraphs[9].heading",
+    "paragraphs[9].segments.length",
+    "paragraphs[9].text"
+  ],
+  "word2010-styles.docx": [],
+  "word2010-tables.docx": [
+    "paragraphs.length",
+    "paragraphs[11].segments.length",
+    "paragraphs[11].text",
+    "paragraphs[12].segments[0].text",
+    "paragraphs[12].text",
+    "paragraphs[13].inTable",
+    "paragraphs[13].segments[0].text",
+    "paragraphs[13].text",
+    "paragraphs[14].segments.length",
+    "paragraphs[14].text"
+  ]
+}

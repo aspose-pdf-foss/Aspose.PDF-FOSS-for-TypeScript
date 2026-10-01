@@ -1,0 +1,77 @@
+{
+  "producers": {
+    "tar": "bsdtar 3.8.8 - libarchive 3.8.8 zlib/1.2.13.1-motley liblzma/5.8.1 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled",
+    "dotnet": "4.0.30319.42000",
+    "git": "git version 2.55.0.windows.5",
+    "commit": "f6f49fa5f4376f7dde084e83020d539d19dd2234"
+  },
+  "archives": {
+    "tar.zip": {
+      "entries": {
+        "a.txt": {
+          "size": 2001,
+          "sha256": "1b7156cb093a3339000436dbdbe5f4ac52642175b46a54751c8f0bcbd1c5d41d"
+        },
+        "sub/b.txt": {
+          "size": 2,
+          "sha256": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+        },
+        "bin.dat": {
+          "size": 256,
+          "sha256": "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+        }
+      },
+      "comment": 0,
+      "flags": [
+        8,
+        8,
+        8
+      ]
+    },
+    "net.zip": {
+      "entries": {
+        "a.txt": {
+          "size": 2001,
+          "sha256": "1b7156cb093a3339000436dbdbe5f4ac52642175b46a54751c8f0bcbd1c5d41d"
+        },
+        "sub\\b.txt": {
+          "size": 2,
+          "sha256": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+        },
+        "bin.dat": {
+          "size": 256,
+          "sha256": "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+        },
+        "café.txt": {
+          "size": 6,
+          "sha256": "7b49b9e063bd91a4f9252b413261f5557b9c570aa61516989499f64a62dbcdd6"
+        }
+      },
+      "comment": 0,
+      "flags": [
+        0,
+        0,
+        2048,
+        0
+      ]
+    },
+    "git.zip": {
+      "entries": {
+        "src/crc32.ts": {
+          "size": 773,
+          "sha256": "2f4c2e04582fcb2e5a458ce0f837d88cf89fcf22a8eb77b08bc6513e9230e619"
+        },
+        "src/zip.ts": {
+          "size": 4270,
+          "sha256": "bae3c0de8e5df6015929d9c795d619a339163cdf44219302fec7c8547b1e62b1"
+        }
+      },
+      "comment": 40,
+      "flags": [
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}

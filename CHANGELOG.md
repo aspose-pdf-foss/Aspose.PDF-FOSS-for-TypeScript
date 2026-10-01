@@ -21,6 +21,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Word documents render to PDF.** `doc.AddDocx(bytes)` renders a `.docx`
+  as freshly sized pages, `flow.AddDocx` appends one to a flow beside other
+  content, `page.AddDocx(bytes, rect)` lays one into a rectangle, and
+  `docxFileToPdf(in, out)` does the whole trip from a file. It is a documented
+  subset over the existing flow engine rather than a Word layout engine, so
+  the result paginates, tags (`/H1`..`/H6`, `/P`, `/L`, `/Table`, `/Figure`)
+  and mixes with Markdown, HTML and hand-built content — and it reflows rather
+  than reproducing Word's line breaks. What renders: paragraphs with their
+  resolved styles, alignment, spacing, line spacing and indents; headings by
+  outline level; bold, italic, underline, strike, size, colour and highlight;
+  lists; tables with column spans, vertical merges, shading and repeating
+  header rows; images inline and as block figures; external hyperlinks; and
+  the last section's page size and margins. Lists carry Word's OWN labels
+  (`1.a)`, numbering that continues across an interrupting paragraph), which
+  is why the flow engine gained `FlowListItem.label`, and Word's indents
+  render because paragraphs and headings gained an `indent` option (`left`,
+  `right`, `firstLine`, negative for a hanging indent) — both opt-in, with
+  existing output byte-identical. A font that is not registered falls back to
+  Times, Helvetica or Courier by the class the DOCX's own font table states
+  for it, rather than by a guessed table of font names, and is reported.
+  Adjacent paragraph spacing COLLAPSES to the larger of space-after and
+  space-before: the design assumed Word adds them, and measuring Word 2010
+  through COM over seven cases showed it does not. Everything outside the
+  subset is counted in `skipped` as `{ name, count, kind }` — `dropped` for
+  what drew nothing (headers, footers, footnote references, an unreadable
+  image) and `degraded` for what drew differently (tab stops, internal links,
+  fields, tracked changes, a nested table) — so a caller can tell a lost
+  construct from an empty document. Legacy `.doc` is not read. (m2fp.5)
+
+- **Acrobat's standard form scripts now take effect, without running any
+  JavaScript.** A field's calculate, format, keystroke and validate scripts
+  are recognised when they are exactly one call to one of Acrobat's 17
+  standard AForm functions with literal arguments — `AFSimple_Calculate`,
+  `AFNumber_Format`, `AFDate_FormatEx`, `AFRange_Validate` and the rest — and
+  implemented natively. Everything is opt-in, so existing output is unchanged:
+  `form.Recalculate()` recomputes totals once, in `/CO` order, as Acrobat
+  does; `field.FormattedValue`, and `{ format: true }` on
+  `GenerateAppearances` and `FlattenForm`, draw `$1,234.50` rather than
+  `1234.5` while `/V` stays raw; `form.CheckValues()` reports values the
+  form's own rules reject; and `form.EnforceRules = true` makes the `Value`
+  setter refuse them. A script that is anything else is reported, never run.
+  The semantics are transcribed from pdf.js's Apache-2.0 AForm and checked
+  against 11,448 goldens generated from it, and the recogniser accepts 59 of
+  the 63 AForm scripts in pdf.js's own Acrobat-authored test corpus — the
+  other four are expressions or a mistyped argument, correctly refused. Three
+  divergences are stated in the README: strict date matching, no red text for
+  negative numbers, and no rewriting of a value under `EnforceRules`. (jzn8)
+
 - **`Optimize({ images: { progressive: true } })` writes progressive JPEG.**
   The image pass wrote baseline (SOF0) only. With the flag it writes a
   spectral-selection progressive file (SOF2): one interleaved DC scan, then
@@ -254,6 +302,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pixels and content streams are not bounded yet. (ibzo.2)
 
 ### Fixed
+
+- **`ToDocx` and `ToEpub` no longer throw on a large image.** The ZIP writer
+  under both exports spread every byte of each entry into a function call's
+  arguments, so a picture of a few hundred kilobytes — a media part is stored
+  uncompressed — threw `RangeError: Maximum call stack size exceeded` and the
+  whole export failed; a 40,000-relationship `.rels` of 220 KB did the same
+  inside the test runner. The archive is now assembled from byte chunks and
+  copied once, which also stops holding every payload byte in an array at
+  eight bytes a slot. Measured: 4 MB stored and 4 MB deflated entries round
+  trip through an independent reader, and a page with a 3 MB picture exports.
+  Output is byte-identical for every archive that wrote before. An entry
+  starting past 4 GB now throws as well, where its 32-bit offset used to wrap
+  silently (h4z3).
+
+- **A CFF2-outlined system font no longer hides a usable sibling from
+  `LoadFontByName` and render substitution.** The font index reads only a
+  face's `name`, `head` and `OS/2`, so a variable OpenType-CFF face (a `CFF2`
+  table and neither `CFF ` nor `glyf`) was indexed like any other — and when
+  style matching preferred it, typically as the family's Regular, the load
+  failed and `LoadFontByName` returned `undefined` although a drawable face
+  of the same family sat beside it. Such a face is now skipped at index time,
+  decided from the table directory the partial read already holds, so
+  selection falls through to the next candidate at no extra I/O. A face that
+  carries CFF2 beside a `glyf` or `CFF ` table is still indexed and draws
+  through that table. (dmin.6)
+
+- **`AddFont` names CFF2 when it refuses a CFF2 font, instead of calling it
+  broken.** A CFF2 font (an `OTTO` sfnt carrying a `CFF2` table rather than
+  `CFF ` or `glyf`) threw `PdfParseError: font has neither a glyf nor a CFF
+  table`, which reads as a damaged file when the font is well formed and
+  simply one this library declines to read (see Scope and Limitations). It
+  now throws `UnsupportedFeatureError` naming CFF2. A PDF embedding a CFF2
+  program as `/FontFile3 /Subtype /OpenType` is unchanged in behaviour but
+  now degrades by decision rather than by accident: it opens, its text
+  extracts, and it renders pixel-identically to the same font with no
+  embedded program at all (the Standard-14 substitute). (dmin.5)
 
 - **`ConvertToPdfA` repairs and describes page-level XMP packets too, and a
   wrapped value keeps its language.** At PDF/A-1 a page's (or any object's)

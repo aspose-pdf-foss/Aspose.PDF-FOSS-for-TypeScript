@@ -376,10 +376,11 @@ export function buildCompositeTtf(): Uint8Array {
 }
 
 /** Minimal OTTO (CFF) font: the glyf-flavored fixture's metric tables plus an
- *  empty 'CFF ' table, re-tagged 'OTTO', with no 'glyf'/'loca'. */
-export function makeOttoWithCff(): Uint8Array {
+ *  empty 'CFF ' table, re-tagged 'OTTO', with no 'glyf'/'loca'. `outlineTag`
+ *  'CFF2' gives the shape a CFF2 font has instead: 'OTTO', a CFF2 table, no 'CFF '. */
+export function makeOttoWithCff(outlineTag: 'CFF ' | 'CFF2' = 'CFF '): Uint8Array {
   const tables: { tag: string; data: Uint8Array }[] = [
-    { tag: 'CFF ', data: new Uint8Array(4) },
+    { tag: outlineTag, data: new Uint8Array(4) },
     { tag: 'OS/2', data: buildOS2() },
     { tag: 'cmap', data: buildCmap() },
     { tag: 'head', data: buildHead() },
@@ -1002,4 +1003,21 @@ export function buildCompositeFanoutTtf(k: number, levels: number): Uint8Array {
     ...placed.map((p) => concat([new TextEncoder().encode(p.tag), u32(0), u32(p.at), u32(p.length)])),
     ...placed.map((p) => p.padded),
   ]);
+}
+
+/** The same face with its outlines declared as CFF2 (dmin.6): the sfnt version
+ *  becomes 'OTTO' and the 'glyf' directory entry is re-tagged 'CFF2', leaving
+ *  every naming table intact. That is a variable OpenType-CFF font's shape as
+ *  the index sees it — readable names, outlines we decline to read. */
+export function asCff2(ttf: Uint8Array): Uint8Array {
+  const out = new Uint8Array(ttf);
+  const v = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  v.setUint32(0, 0x4F54544F);
+  const n = v.getUint16(4);
+  for (let i = 0; i < n; i++) {
+    const rec = 12 + i * 16;
+    if (String.fromCharCode(...out.subarray(rec, rec + 4)) === 'glyf')
+      out.set([0x43, 0x46, 0x46, 0x32], rec); // 'CFF2'
+  }
+  return out;
 }

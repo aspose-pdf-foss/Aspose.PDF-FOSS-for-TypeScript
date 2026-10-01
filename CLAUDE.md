@@ -113,9 +113,12 @@ npm run gen:xmpschemas # xmpschemadata.ts — veraPDF's predefined XMP tables (v
 `examples/feature-showcase/`; the remaining `scripts/gen-*` entries
 regenerate committed test fixtures (the corrupt files, the JPX and JBIG2
 streams, the SVG inputs, the headless-Chrome SVG and filter goldens, the
-WCS ICC goldens, and `gen:dfont`'s FontForge-written Macintosh suitcase) and
-are likewise never run by the suite — it reads what they produced. Each needs
-a tool that is NOT a dependency: headless Chrome, `mscms.dll`, FontForge.
+WCS ICC goldens, `gen:dfont`'s FontForge-written Macintosh suitcase,
+`gen:aform`'s pdf.js AForm goldens, and `gen:zip`'s libarchive, .NET and git
+ZIP archives) and are likewise never run by the suite — it reads what they
+produced. Each needs something that is NOT a dependency: headless Chrome,
+`mscms.dll`, FontForge, Windows `tar.exe` and PowerShell, or network access to
+fetch pdf.js at its pinned commit.
 
 **Note, and do NOT "fix" it back:** `.gitignore` deliberately carries **no**
 rule for `examples/feature-showcase/.reference/`. That directory was a fetched
@@ -1017,6 +1020,15 @@ Source (`src/`):
   `Document` (nothing to do with `svgrender.ts`, which is PDF→SVG).
   `pageformat.ts` is the named page-size vocabulary (`PageFormat.A4`,
   `.custom`, `.landscape()`) used by blank-page creation and `Flow`.
+  **Invariant (`m2fp.5`):** `layoutRuns` takes a `firstLineIndent` and
+  narrows (or, negative, widens) line 0 alone, recorded as `LaidLine.indent`
+  only when non-zero — so every caller stating none is byte-identical. In
+  `stamp.ts` `lineX`/`lineBoxWidth` are the one owners of "where does this
+  line start and what does it align to", read by the emitter, by run
+  decoration AND by `segmentBoxes`: that last one was missed in the first
+  commit, so a link rect sat 50pt left of its indented glyphs. A residue,
+  recorded: a first-line word wider than the narrowed line overflows it, as
+  an over-wide word does anywhere.
 - **tiling.ts** — the tiling-pattern model shared by the authoring layer: option
   validation, the lattice `/Matrix`, and the `PatternType 1` dict.
   **Invariant:** pure. It builds a DIRECT `PdfDict` and touches no `Document`,
@@ -1156,6 +1168,18 @@ Source (`src/`):
   the degrade at all takes content that can neither fit nor fragment, such as a
   single unbreakable 900px line. The design's own float fixture was an
   over-tall image and reached nothing.
+  **Invariant (`m2fp.5`):** `FlowListItem.label` draws THAT text as the
+  item's marker in place of the computed ordinal or bullet, measured into the
+  depth's marker width like any other; `''` draws none and a task `marker`
+  still wins. `FlowParagraphOptions.indent` (`left`, `right`, `firstLine`,
+  negative for hanging) is a decorator in `flowblock.ts` (`IndentElement`)
+  reading `insetScale`, plus `firstLineIndent` in the wrapping engine. Both
+  are opt-in: `rich-runs-identity`, `markdown-flow` and `html-identity` held
+  UNEDITED. A CONTINUATION drops the first-line indent — its first line is not
+  the paragraph's. **Note, measured:** that rule's first test was VACUOUS — a
+  two-column flow's second column starts exactly at the page middle, so
+  filtering fragments by `x > mid` kept only an indented line and compared it
+  with itself. It filters `> mid - 1` and asserts the set is large.
 - **flowfloat.ts** — a CSS float as the flow engine sees it (`zch2.10`):
   `elementFloat`, a `FloatContent` over an ordinary `FlowElement[]` painted
   through `placeElements`, and `floatElement`, the wrapper element that carries
@@ -4141,6 +4165,54 @@ Source (`src/`):
   cycle — `/Popup` and `/IRT` are stripped and carried as `/NM` name links,
   because `/Popup` → popup → `/Parent` closes a loop that inlining cannot
   represent.
+- **afcall.ts**, **afnumber.ts**, **afdate.ts**, **afspecial.ts**,
+  **afcalc.ts**, **afrules.ts**, **afform.ts** — Acrobat's standard AForm
+  functions made to take effect WITHOUT executing JavaScript (`jzn8`), behind
+  `Form.Recalculate`, `Field.FormattedValue`, `{ format: true }`,
+  `Form.CheckValues` and `Form.EnforceRules`. `afcall.ts` recognises a script;
+  `afnumber`/`afdate`/`afspecial`/`afcalc` are the semantics; `afrules.ts`
+  dispatches by trigger and owns the report types; `afform.ts` is the only one
+  holding a `Document`, and imports `Document`, `Form` and `Field` as TYPES.
+  **Invariant:** a script is recognised only as EXACTLY ONE call to one of the
+  17 names with literal arguments (numbers, strings with the simple escapes,
+  booleans, a string array or Acrobat's `new Array (...)`), or it is
+  `undefined` — never partially understood. 6t2v.2 decided document script is
+  never executed; `test/aform-noexec.test.ts` fails the build if any `src/`
+  module reaches for `eval`, `new Function` or `node:vm`.
+  **Invariant:** the semantics are pdf.js's (`aform.js`, `util.js`) at commit
+  `d52fdf411a6e4d338180687456e0df019e28475e`, and `test/fixtures/aform/` holds
+  goldens `npm run gen:aform` generates from that code. The generator uses a
+  FRESH `Util` per case: `util.js` caches its date regex with the `/g` flag, so
+  a reused instance alternates between matching and failing on one input.
+  **Invariant, a stated divergence:** dates match STRICTLY. pdf.js falls back to
+  a guess whose year defaults to the CURRENT year, then to `Date.parse`; a value
+  that does not match its picture is left unformatted and rejected here. Dates
+  are fields normalised through `Date.UTC`, never the machine's zone — the
+  goldens are generated under TZ=UTC, where pdf.js's local `Date` is the same.
+  **Invariant:** a variable-width picture token (`\d{1,2}`) is matched as
+  `(?=(\d{1,2}))\N`, pdf.js's own rule, which makes it POSSESSIVE — `HMM`
+  refuses `930`. It is also the ReDoS guard: the picture comes from the
+  document, and without it `'Hs'.repeat(16)` against 48 digits hung the worker.
+  **Invariant:** `exactSum` (Shewchuk) stands in for `Math.sumPrecise`, which
+  Node 24 lacks, and the generator's polyfill is exact BigInt arithmetic — two
+  different algorithms on purpose, so they cannot share a rounding bug.
+  **Invariant:** `EnforceRules` lives on the DOCUMENT (`formEnforceRules`),
+  because `doc.Form` is rebuilt per access. `Recalculate` writes through
+  `Field.storeValue`, which skips the rule check: Acrobat calculates, then
+  validates, so a calculated value its own rule rejects is stored and REPORTED
+  by `CheckValues`. A value that does not change is not written, so a no-op
+  `Recalculate` marks nothing modified — pinned through the sign path.
+  **Note, measured, and five planned mutations were GREEN first:** a trailing
+  identifier guard after a number was dead (the caller demands `,` or `)`) and
+  was removed; `replace` versus `replaceAll` in `makeNumber` is an EQUIVALENT
+  mutant, `parseFloat` stopping at the first non-numeric character; `yy` as
+  1900+ or 2000+ agreed on every golden until a `02/29/00` case; `stripped ||
+  value` needed separator-only inputs added to the generator; and the slot
+  check needed its reverse case. All redden now.
+  **Note on the oracle:** pdf.js is a reimplementation, not Acrobat — evidence,
+  not conformance. `real/dates.pdf` is Acrobat-authored, from pdf.js's own
+  test corpus; its `PROVENANCE.md` records why that one file may be vendored
+  and the twelve report-derived ones may not.
 - **appearance.ts**, **da.ts**, **metrics.ts** — appearance-stream generation
   for form fields and annotations: Form XObject assembly, `/DA` parsing, and
   Standard-14 (AFM) glyph metrics.
@@ -8562,6 +8634,11 @@ Source (`src/`):
   a millisecond apart agree even when the field comes from the clock, so it
   catches one only if the run straddles a second boundary; the stored value is
   asserted directly for that reason. A mutation using `getSeconds()` passed.
+  **Invariant (`h4z3`):** the archive is assembled from `Uint8Array` CHUNKS
+  and copied once — never `push(...payload)`, which passes every byte as a
+  call argument and overflowed the stack on a few-hundred-KB entry, failing
+  `ToDocx`/`ToEpub` for any large picture. `docx-flow-identity` is the fence
+  that the rewrite moved no byte.
   **Invariant:** overflow THROWS rather than wrapping. Past 4 GB or 65535
   entries ZIP's 32-bit fields silently produce an archive that looks well-formed
   and is not; ZIP64 is the feature that would lift the bound and is absent.
@@ -8587,6 +8664,368 @@ Source (`src/`):
   **Note:** no CI here can open Word. The tests prove structural conformance to
   ECMA-376 and nothing about a particular consumer — do not read them as a
   compatibility claim.
+- **zipread.ts** — reading a ZIP archive (`m2fp.1`), for the DOCX importer's
+  package layer: `openZip(bytes, limits)` lists the central directory and
+  `read(path)` decodes one entry. Note the direction: `zip.ts` WRITES and the
+  two share no code; `test/helpers/unzip.ts` is the independent test reader
+  and must stay independent.
+  **Invariant:** LAZY — an entry is decoded, charged and CRC-checked when it
+  is READ, so a bomb in an entry nobody reads costs nothing — and ONE
+  `InputDecoder` per archive, so every read is charged to one
+  `maxTotalDecodedBytes`. No cache: a second read decodes and charges again.
+  A stored entry goes through `InputDecoder.stored`, bounded and charged like
+  a deflated one; dropping that reddens the total cases.
+  **Invariant:** the entry count is enforced against `maxContainerItems` as
+  records are PRODUCED; a declared count that disagrees is damage.
+  **Invariant:** sizes, CRC and flags come from the CENTRAL directory; the
+  local header's OWN name and extra lengths locate the data. Both halves are
+  pinned by `test/fixtures/zip/tar.zip`, where libarchive writes a data
+  descriptor (local sizes 0) and a 32-byte local extra against a 24-byte
+  central one — no builder fixture has the second.
+  **Invariant:** every ZIP-confusion shape — where two readers would see
+  different content — is damage: a DUPLICATE name; a local header naming a
+  different file; a local method, CRC or size disagreeing with the central
+  record (streaming readers such as Java's `ZipInputStream`, which POI uses on
+  a stream, trust the LOCAL fields), excused only under a data descriptor; and
+  a directory that does not end EXACTLY at the end record (Python's `zipfile`
+  reads at `eocd - cdSize` and shifts every offset). A UTF-8 name keeps a
+  leading BOM (`ignoreBOM: true`), since every other reader keeps it and a
+  stripped `﻿word/document.xml` would be a part nobody else sees. The
+  last four were found by the final review, not the plan. An unsupported
+  feature refuses the ENTRY at `read()`; only ZIP64 and multi-disk, which hide
+  the directory, refuse at open.
+  **Note:** a count of 0xFFFF alone is not read as ZIP64, because `writeZip`
+  writes exactly that for 65,535 entries. And `writeZip` sets flag bit 11 for
+  a non-ASCII name since `m2fp.1`; before, this reader — conforming to APPNOTE
+  — would have decoded such a name as CP437.
+  **Note (`m2fp.6`):** on a single disk an end record whose two entry counts
+  disagree is DAMAGE (`PdfParseError`), not "multi-disk" — only a non-zero
+  disk number is the feature we decline. A stored entry passes its size as
+  `declared`, so an over-limit one is refused BEFORE the copy. And a method-8
+  entry with no data and size 0 reads as empty, as Python's `zipfile` does,
+  where zlib calls a zero-byte stream truncated. **No vendored archive emits
+  that last shape** — Word, LibreOffice, libarchive, .NET and git all store
+  their empty entries — so it rests on a builder case alone.
+  **Note, measured, and TWO guards are redundant defences:** the
+  local-offset bound (a read past the buffer yields a zero signature) and
+  passing the entry's size as `declared` (a small lie is still caught by size
+  equality — AFTER a full inflate, so it is a MEMORY rule, pinned only by the
+  refuse-before-inflating case). Each stays green when broken alone; do not
+  read the suite as covering them. The directory-end check WAS a third while
+  it read `> eocd` (the signature test caught the same inputs); tightened to
+  `!== eocd` it is load-bearing, held by the gap case.
+  **Note, a fixture trap:** a test lying about a size or CRC must lie in BOTH
+  headers alike, or the local/central comparison refuses it first — with a
+  `PdfParseError` too, so a type-only assertion passes vacuously. Deflated
+  `bravo` is exactly 7 bytes, which is how one such patch once changed nothing.
+- **opcread.ts** — reading an OPC package (`m2fp.2`): `openOpc(bytes, limits)`
+  over `zipread.ts` — content types, and each source's relationships with
+  internal targets resolved. Note the direction: `ooxml.ts` WRITES, and the two
+  share exactly one rule, `relsPath`, which `ooxml.ts` exports for it.
+  **Invariant:** LAZY — `[Content_Types].xml` at open, each `.rels` on first
+  query of its source, cached; a FAILED parse is cached and rethrown (the SAME
+  instance, which is the only thing a test can see), and every other source
+  stays usable, so one broken part costs that part.
+  **Invariant:** part names compare ASCII-case-insensitively (exact, then a
+  folded index); two entries differing only by case are refused at open —
+  `zipread.ts`'s duplicate-name rule one level up.
+  **Invariant:** an internal target resolves as RFC 3986 against the SOURCE
+  part (`resolveTarget`), and `..` past the root CLAMPS, as
+  `remove_dot_segments` and `System.IO.Packaging` do. An empty target is the
+  source ITSELF under RFC 3986, not its directory, so it gets no `part`; so does
+  a query, fragment, scheme or network path.
+  **Invariant:** the target is percent-decoded BEFORE dot segments are
+  removed, so `%2e%2e` is `..` — decoding after let it survive as a literal
+  segment, and a reader normalizing per RFC 3986 6.2.2.2 named a different
+  part (final review). An encoded separator (`%2F`, `%5C`) names no part, and
+  an Override naming one, or a `.`/`..`/empty segment, is damage.
+  **Invariant:** relationships are indexed by Id; `m2fp.3` resolves every
+  `r:id` through `relationship`, and a scan made N links cost N^2 — measured
+  ~1 s for 20,000 (`test/opcread.test.ts`'s cost case).
+  **Invariant (`m2fp.7`):** a source is CANONICALIZED through `locate` and its
+  relationships cached under the FOLDED name, so `WORD/document.xml` and
+  `word/document.xml` are one parse and every `part` comes back in the
+  package's spelling, never the caller's.
+  **Note (`m2fp.7`), each a decision rather than a gap:** `contentType` is NOT
+  an existence test — a Default answers for any matching extension, held or
+  not; ask `has`. A backslash in a target is a literal character, as it is to
+  `zipread.ts`, so `media\image1.png` names no held part and degrades like a
+  dangling reference. And the MAIN document is `wmlread.ts`'s `mainPart`, not
+  an OPC convenience: the FIRST `officeDocument` relationship, transitional or
+  Strict, with no fall-through to a later one when it names nothing held.
+  **Invariant:** an external target is kept verbatim, never resolved or fetched
+  (3ywf.1).
+  **Note, measured:** 19 of 21 mutations redden, plus all four aimed at the
+  final-review fixes. The empty-target guard and the
+  root-or-directory guard are a REDUNDANT PAIR (either alone green, both
+  together red at 2), and taking the extension from the LAST segment covers
+  nothing observable — a dotless last segment yields a "extension" holding `/`,
+  which no valid `Default` matches.
+  **Note:** XML parts decode as UTF-8 only, so a UTF-16 `.rels` is refused as
+  not well-formed. Strict OOXML relationship types are kept verbatim here;
+  `wmlread.ts` is what accepts them beside the transitional ones.
+- **xmlns.ts** — a namespace-resolved view of XML (`m2fp.3`): `parseNsXml`
+  over `parseXml(…, { qnames: true })`, giving each element its namespace URI
+  and local name and keying each attribute by `(ns, local)` through a
+  per-element `xmlns` scope. A leaf that knows no vocabulary; `xmprdf.ts` keeps
+  its own RDF-specific binding.
+  **Invariant:** an UNPREFIXED attribute has NO namespace, even under a default
+  namespace (Namespaces in XML 6.2) — `wp:extent cx` and `a:latin typeface`
+  are `('', 'cx')`.
+  **Invariant:** Markup Compatibility (ECMA-376 Part 3) is applied AT BUILD
+  when the caller names what it understands: an `mc:AlternateContent` is
+  replaced, spliced into its parent, by the children of the first `mc:Choice`
+  whose `Requires` prefixes ALL resolve to understood namespaces, else of
+  `mc:Fallback`, else nothing; an element or attribute in a not-understood
+  `mc:Ignorable` namespace is dropped with its subtree. A consumer never sees
+  MC markup. A root that MC removes is `PdfParseError`.
+- **wmlns.ts**, **wmlstyles.ts**, **wmlnumbering.ts**, **wmlbody.ts**,
+  **wmlread.ts** — the WordprocessingML model (`m2fp.3`): `readDocx(bytes,
+  limits)` turns a `.docx` into `WmlBlock[]` (paragraphs with runs, lists and
+  headings; tables with spans and merges) with every inherited property
+  RESOLVED, for `m2fp.5` to lower onto the flow engine. Note the direction:
+  `docx*` modules WRITE and share no code with these. Nothing is exported from
+  `index.ts` yet. `wmlread.ts` is the only one that touches a package; the rest
+  take bytes or parsed trees, so every rule is testable from one hand-built XML
+  string.
+  **Invariant:** namespaces are RESOLVED, never matched by prefix, and Strict
+  is one vocabulary with transitional — `canonNs` folds each Strict URI onto
+  its twin at parse. Word's extension namespaces (w14, wps, …) are NOT
+  understood, so a `Choice` requiring them yields to the `Fallback` we can read.
+  **Invariant:** resolution order is ECMA-376 17.7.2 — `docDefaults`, the
+  paragraph style's `basedOn` chain (else the DEFAULT paragraph style, also for
+  an unknown id or one naming a style of another type), the numbering level's
+  `pPr`, the character style's chain, direct formatting — PER FIELD, so a
+  base's left indent survives a derived style's right indent.
+  **Invariant, and Word confirmed both halves:** toggles (b, i, strike) XOR
+  ACROSS the paragraph-style and character-style layers, while WITHIN one
+  `basedOn` chain the nearer style wins — a toggle restated down a chain stays
+  set. `docDefaults` answers only when neither style layer states it; direct
+  formatting is ABSOLUTE.
+  **Invariant:** a heading is the resolved `w:outlineLvl` + 1, NEVER a style
+  id: ids are localized (`1` is Heading 1 in Russian Word) and names are
+  `w:name`. A theme font (`asciiTheme`) outranks the literal beside it, as Word
+  reads it; `w:highlight` outranks `w:shd`; the size with nothing stated is 10pt.
+  **Invariant:** list counters are keyed by ABSTRACT num, so two `w:num`s over
+  one abstract num CONTINUE each other (Word: `4.`); a num's `startOverride`
+  or `lvl` override restarts those levels on the num's FIRST use. A non-list
+  paragraph resets nothing; visiting a level resets the deeper ones, limited
+  by 1-based `w:lvlRestart` (0 never). `%N` takes level N-1's value in THAT
+  level's `w:numFmt`. `numId` 0 opts out of a style's numbering.
+  **Invariant:** a complex field's state lives on the WALKER, not the
+  paragraph — a TOC field's instruction spans paragraphs; its result is kept
+  and the field recorded once. Content controls, smart tags, custom XML,
+  insertions and simple fields are transparent; deletions, bookmarks and
+  proofing marks are dropped. Anything else is recorded in `unsupported` by
+  qualified name and its TEXT IS KEPT (`svgdraw.ts`'s rule), with an unknown
+  inline wrapper keeping its runs' formatting.
+  **Invariant:** a relationship naming nothing costs the link or the image's
+  part, never the text or the image, and is recorded. Styles, numbering and
+  theme are found through the MAIN DOCUMENT's relationships by type (Strict
+  types too) and each DEGRADES to empty when unreadable, recorded as
+  `styles.xml: unreadable`; the main document is required (`PdfParseError`).
+  **Invariant (`m2fp.4`):** tracked changes (`w:ins`/`w:del`/moves) and simple
+  fields keep the final-text treatment but are RECORDED, and so are header and
+  footer references and a section break inside a paragraph — the flow engine
+  renders none of them, and the corpus showed they had left no trace at all.
+  **Note (`m2fp.4`), measured:** against the real-world corpus (Word 2010 and
+  LibreOffice 26.8 writing, both reading) `readDocx` needed NO correction beyond
+  that recording — it agrees at every one of ~1,100 leaf values the two readers
+  agree on. Breaking a list format, the toggle XOR or the header records each
+  reddens `test/docx-corpus.test.ts` at the expected files, so the agreement is
+  load-bearing rather than vacuous.
+  **Invariant (final review):** `firstLine` and `hanging` are ONE signed
+  property — the nearest layer stating either decides and the other is
+  dropped, `hanging` winning inside one `w:ind`. Resolved per field, a
+  Normal's first-line indent (the house style of most CIS documents) survived
+  under every list level's hanging and both reached the model.
+  **Invariant (final review):** an image relationship naming a part the package
+  does not hold yields NO `part` and is recorded — `opcread.ts` sets `part` for
+  any internal target, held or not, so `m2fp.5`'s read would throw. And a
+  complex field still open at the end of the body is recorded as
+  `w:fldChar (unterminated)`: everything after its `begin` is instruction, and
+  losing the rest of a document must not be silent.
+  **Invariant (`m2fp.8`):** a HYPERLINK field, complex or `w:fldSimple`, LINKS
+  its result and is NOT recorded; every other field still is. Its instruction
+  is joined across the `w:instrText` runs Word splits it into and read once
+  complete (at `separate`, `end`, or the end of the body), so a field is now
+  recorded when DECIDED rather than at `begin` — the count is unchanged.
+  Switches `\l \o \t` and the general `\* \# \@` take an argument, so neither
+  a tooltip nor `MERGEFORMAT` is read as the target; `\l` alone is an anchor,
+  with a target it is that target's fragment. Where a `w:hyperlink` and a
+  field both apply the INNER one wins, which is why an element link carries
+  the field depth it was entered at (`LinkScope`).
+  **Note, measured:** all ten mutations aimed at `m2fp.8` redden, keeping the
+  FIRST target only after a two-argument case was added. The corpus holds NO
+  HYPERLINK field — Word 2010 and LibreOffice both write TOC entries as
+  `w:hyperlink` elements or `PAGEREF` fields — so this rests on builder cases
+  and ECMA-376 17.16 alone, not on bytes we did not write.
+  **Invariant (`m2fp.9`):** a `w:sym` keeps the code point Word stores
+  (usually U+F0xx) in the symbol's OWN font and stays recorded: no Unicode
+  table for Symbol/Wingdings is vendored, and one transcribed from memory is
+  this repo's forbidden move. A `w:ruby` keeps its `w:rubyBase` text only — it
+  used to concatenate the annotation onto the base. A row's
+  `gridBefore`/`gridAfter` are MODELLED on `WmlRow`, because they SHIFT its
+  cells; every other `trPr`/`tcPr` child is reported once on the table,
+  quiet only about widths and `cnfStyle`. `w:spacing`'s line units and
+  autospacing, and `contextualSpacing` (QUIET until `m2fp.9` — it removes
+  visible space), are reported only when stated ON. A floating drawing is
+  recorded as `w:drawing (anchor)`, the `name (reason)` form every other
+  drawing record uses; the m2fp.3 design wrote `w:drawing/anchor`.
+  **Invariant (`m2fp.9`):** `numStyleLink` follows `WmlNumbering.byStyleLink`,
+  an index built at parse, FIRST abstract num per name — it was a scan of every
+  abstract num, ~11 per list paragraph. Held by counting iterations of the
+  abstracts map, not by timing.
+  **Invariant (`m2fp.9`, `xmlns.ts`):** `mc:ProcessContent` names ignorable
+  elements whose CHILDREN are spliced in, by `prefix:local` or `prefix:*`,
+  inherited like `mc:Ignorable`; `mc:MustUnderstand` naming a namespace not
+  understood is `PdfParseError`. A styles, numbering or theme relationship
+  naming a part the package lacks is recorded `styles.xml: missing`, and an
+  unknown block's text inside an open field instruction stays hidden.
+  **Note, measured:** 19 of 20 mutations redden. The green one is `gridCount`
+  accepting 0, an EQUIVALENT mutant: `if (after)` rejects a 0 on its own.
+  **Note, measured:** 29 of 29 mutations redden, two only after cases were
+  added. The `basedOn` walk's `seen` set is a REDUNDANT PAIR with the depth
+  bound under bounded limits, so it is pinned by a cycle under
+  `LoadLimits.unlimited()`; and dropping `w:del` is redundant with dropping
+  `w:delText` for TEXT, so its case deletes a tab.
+  **Note on the oracle, and it is Word itself:** `test/fixtures/docx/wml-oracle.docx`
+  is OURS — it states shapes Word will not write (two nums over one abstract
+  num, a toggle restated down a chain) — and `wml-oracle.json` is Word 2010's
+  COMPUTED formatting of it, read through COM (`scripts/gen-wml-oracle.ps1`,
+  not run by `npm test`). `test/wml-oracle.test.ts` compares every paragraph,
+  label, heading level and word; breaking the XOR reddens exactly `xor` and
+  `red`. Word corrected no spec rule. Its ceiling: one Word version, one UI
+  language, properties only — nothing about layout, tables or images. Word 2010
+  REFUSES a theme lacking `a:clrScheme`/`a:fmtScheme`, and reports a theme
+  font's real face in `Font.Name` with the `+` placeholder in `.NameAscii`.
+- **wmlflow.ts**, **wmlruns.ts**, **wmlimport.ts** — DOCX rendering
+  (`m2fp.5`): `flow.AddDocx`, `page.AddDocx`, `doc.AddDocx` and
+  `node.ts`'s `docxFileToPdf`. `wmlflow.ts` lowers `readDocx`'s model to
+  `FlowElement[]` SEGMENTS plus a counted `skipped` report, `wmlruns.ts`
+  maps inline content to `TextRun`s and image atomics, and `wmlimport.ts`
+  is the wiring — the only one of the three holding a `Document`
+  (`htmlflow.ts`'s shape). Note the direction: `docx*` modules WRITE.
+  `wmlread.ts` gained `openDocx` for it — the same read plus a lazy part
+  reader (image bytes, charged to the archive's limits), fontTable.xml's
+  class per font name and the core-properties title; `readDocx` is
+  `openDocx(...).doc`.
+  **Invariant:** output is SEGMENTS split at page and column breaks, because a
+  break is not a `FlowElement` — `Flow.AddColumnBreak` is a sentinel inside
+  the flow. So each entry point decides what a break means: a Flow makes it a
+  column break, and `page.AddDocx`, which has one rect, places the segments
+  continuously and reports `w:br (page)`/degraded.
+  **Invariant, and the DESIGN HAD IT BACKWARDS:** Word COLLAPSES adjacent
+  paragraph spacing to `max(after, before)`; the spec assumed it adds.
+  Measured through Word 2010 COM over seven cases
+  (`test/spacing-oracle.test.ts`, `scripts/gen-spacing-oracle.ps1`, not run
+  by `npm test`). The engine ADDS `spaceAfter + spaceBefore`, so the mapper
+  emits `spaceAfter = after` and `spaceBefore = max(0, before - prevAfter)`,
+  `Ctx.prevAfter` carried across paragraphs, list items and block images; a
+  table and a break reset it to 0. THE CALLER PLACES WITH
+  `paragraphSpacing: 0`, which `doc.AddDocx` and `page.AddDocx` force.
+  **Note the oracle's witness is the THIRD paragraph's position:**
+  `Range.Information(6)` of a paragraph that has space-before reads as though
+  spacing were additive while the layout below it uses max, so the spaced
+  paragraph's own reported position is not evidence.
+  **Invariant:** an EMPTY paragraph keeps its line. `paragraph('')` measures
+  0 (`zch2.13`) and would vanish, so its collapsed space-before, one line and
+  its space-after ride on the NEXT element's `spaceBefore` (`Ctx.gap`). Its
+  line is sized at the default 10pt: the model does not carry the paragraph
+  mark's own size.
+  **Invariant:** `RunProps` colours are 0..255 (`hexColor`) and a `TextRun`
+  wants 0..1 — `unitRgb` in `wmlruns.ts` is the one conversion, used for run
+  colour, highlight and cell shading. The plan said they were already 0..1;
+  the first colour test wrote 255 into a content stream.
+  **Invariant:** the `kind` table is `DROPPED`, a closed set, and everything
+  else is `degraded` — `readDocx` keeps an unknown construct's text, so
+  "drew differently" is the safe default. A placement compromise states its
+  kind EXPLICITLY: `image:scaled-to-fit` drew, and `kindOf` would call it
+  dropped by its `image:` prefix.
+  **Invariant:** a font resolves through the caller's `resolveFamily` (default
+  `documentFamilyResolver`) over `[name, generic]`, the generic being the
+  DOCX font table's own `w:family` class (roman → serif, swiss → sans-serif,
+  modern → monospace) — the producer's classification, where `cssfont.ts`
+  refuses to guess a class from a name. No name at all is Word's default,
+  serif, and reports nothing; a named face that lands on a Standard-14
+  stand-in is reported `font:<Name>`, "resolved" meaning the regular face is
+  not a string.
+  **Invariant:** list labels are WORD'S (`readDocx` counted them), never
+  `list()`'s own counter, through `FlowListItem.label` — which is what lets a
+  list interrupted by a paragraph resume at `3.`. A run of consecutive list
+  paragraphs is ONE `list()`, nested by `ilvl`. A bullet is usually a
+  private-use code point in Symbol or Wingdings: when the item's face cannot
+  draw it (`coverageOf`) it becomes U+2022 and is reported.
+  **Invariant:** a numbered HEADING stays a heading, and so does a numbered
+  paragraph split by a page break stay a paragraph: both go through the
+  paragraph path with `labelOf`'s label prepended as a run, atomics'
+  `beforeRun` shifted by one.
+  **Invariant:** a heading passes Word's face and size EXPLICITLY, so
+  `heading()`'s Helvetica-Bold/24pt defaults never apply on top
+  (`cssflow.ts`'s rule). Outline levels 7–9 render as `/H6` and are reported.
+  **Invariant:** a paragraph that is ONE image is a block figure at its
+  extent; an image among words is an atomic. One that cannot be drawn is
+  reported once (`image:<contentType>`/dropped) and the paragraph still takes
+  its empty line.
+  **Invariant (tables):** a `vMerge` is counted down the GRID column, never
+  the cell index — `gridBefore` and spans shift a row's cells — and rows below
+  OMIT the covered cell, as `tableauthor.ts` wants. A continuation with no
+  restart above it is its own cell, and so is one whose `gridSpan` DIFFERS from
+  the restart's (`m2fp.10`): covering it left its extra grid columns unfilled,
+  shifted every later cell and THREW at placement — "setColumnWidths has 3
+  entries but the table has 4 columns" — so it is reported
+  `w:vMerge (span mismatch)`/degraded and the merge ends there.
+  **Invariant (`m2fp.10`), MEASURED through Word COM:** a table does NOT
+  collapse spacing. The space-after above it and the space-before below it are
+  each applied in full (`test/fixtures/docx/table-spacing-oracle.json`), which
+  is why `tableElements` resets `prevAfter` to 0. The m2fp.5 review suspected
+  that reset was a divergence; the oracle says it is Word's own behaviour, and
+  dropping it reddens `test/table-spacing-oracle.test.ts`.
+  The grid sets column widths only when its
+  length equals the rows' column count, since a mismatched spec count throws
+  at PLACEMENT, past any report; a grid wider than the column becomes
+  fractions, so the table scales rather than overflowing. A cell takes runs:
+  its paragraphs are joined by line breaks and a nested table is flattened
+  and reported (`csstable.ts`'s rule).
+  **Invariant:** a file's value never becomes a caller's `TypeError`. The flow
+  builders validate their arguments (a non-positive `leading`, a negative
+  `spaceAfter`), so a stated line height of zero falls back to single spacing
+  and negative spacing reads as none. Found by probing out-of-range
+  properties after the plan's tasks were done, not by the plan: `w:line="0"`
+  and `w:after="-200"` each refused the whole document.
+  **The same rule reaches the PAGE (review fix):** `w:pgMar` is read by
+  MAGNITUDE — Word writes top/bottom signed (ST_SignedTwipsMeasure) — and
+  margins that leave no column, on the document's page or on a `format` the
+  caller stated, are dropped and reported `w:pgMar`/degraded after a probe
+  through `normalizeFlowOptions` (`flowGeometryFits` in `document.ts`).
+  Margins the CALLER states still throw.
+  **Invariant (review fix):** only ONE image is "lone". Two or more images
+  with nothing else are atomics on a line; the old test filtered every image
+  out of such a paragraph and drew none with nothing reported. An inline
+  image with no usable `wp:extent` draws at its intrinsic pixels × 0.75, as
+  the lone path does.
+  **Invariant (review fix, `flowelement.ts`):** a paragraph's first-line
+  indent scales by the SAME factor its `IndentElement` was squeezed by,
+  passed down as `MeasureContext.indentScale`/`PlaceContext.indentScale`. A
+  hanging line reaches back by the left room actually GRANTED; unscaled,
+  `w:ind left="9999999" hanging="9999999"` drew line 0 at x = −499489,
+  reported only as `squeezed`. Absent or 1, `TextElement` hands its options
+  through untouched, which is what keeps every fence byte-identical.
+  **Invariant:** options are validated before a page is allocated, and
+  `skipped` is a FRESH array of fresh records on every return — placement-time
+  records go to a local `SkipLog` merged on the way out (`AddHtml`'s rule).
+  **Note, measured:** 37 of 38 mutations redden. The green one is
+  `SkipLog.list` returning its internal records, an EQUIVALENT mutant: every
+  log is discarded after `list()` and every public return goes through
+  `mergeSkipped` or a one-shot log, so nothing can alias. THREE reddened only
+  after their fixtures were rebuilt: grid scaling (a two-column 800pt grid
+  passed the page-edge bound unscaled), the section geometry (no case stated
+  a `w:sectPr`), and `flow.ts`'s continuation rule below.
+  **Note on the oracle:** `test/docx-import-corpus.test.ts` renders the
+  `m2fp.4` corpus and holds the text, heading and table counts and the
+  `skipped` names to what Word and LibreOffice BOTH read; the round trip
+  (`ToDocx` → `AddDocx`) pins text and structure types. Neither says where
+  ink lands — there is no oracle for the rendering, only hand-built cases.
 - **docxflow.ts**, **docxtable.ts**, **docxstyles.ts**, **docxexport.ts** — DOCX
   flow mode (`Document.ToDocx`, `Page.ToDocx`), the third serializer over
   `docmodel.ts` after `htmlsemantic.ts` and `mdexport.ts`. Three are pure —
@@ -10440,6 +10879,8 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/tiff/` | `PROVENANCE.md` | TIFF **input**: nine files from libtiff (via libvips/sharp) and utif2, with ground truth from a third decoder — libvips reading each back. The tiled-G4 file is the only shape that separates the *block* width `decodeCcitt` is told from the *image* width, a mutation `test/tiff.test.ts` leaves green. Found the `jpeg.ts` RGB-component-id bug on its first run (`test/tiff-real.test.ts`) |
 | `fixtures/pdfx/` | `PROVENANCE.md` | Ghostscript-produced PDF/X-1a/X-3/X-4 for `pdfxvalidate.ts` — four conformant, one deliberately not, and the only fixtures reaching `outputIntentRule`'s registered-name branch (`test/pdfx-real.test.ts`) |
 | `fixtures/corrupt/` | `PROVENANCE.md` | Damaged files for the recovery suite (`test/corrupt-real.test.ts`). The one directory where the *source* is what is third-party — a corrupt file has no producer — so Ghostscript and qpdf lay out the bytes and the damage is recorded byte for byte, alongside what each fixture salvages and loses |
+| `fixtures/zip/` | `PROVENANCE.md` | ZIP **input** from three writers that are not ours — libarchive (`tar.exe`), .NET Framework and `git archive`. Pins the two rules no builder fixture reaches on real bytes: sizes from the central directory (libarchive's data descriptors) and data located by the LOCAL extra length (libarchive's 32-vs-24). Also a bit-11 UTF-8 name and a backslash name (.NET) and an archive comment (git). The manifest's hashes come from the INPUTS, not the archives (`test/zipread-real.test.ts`) |
+| `fixtures/docx/` | `PROVENANCE.md` | DOCX from **Microsoft Word 2010** (Russian UI, COM automation, `scripts/gen-docx-word.ps1`, not run by `npm test`). `m2fp.2` uses it to anchor OPC reading on bytes we did not write — relationships out of Id order (`rId8` first), a content type answered by a `Default` — and resolves main document, styles, numbering, image and external hyperlink. Not byte-reproducible (Word stamps `docProps/core.xml`); the vendored file is the reference. Records for `m2fp.3` that a localized Word writes LOCALIZED style ids (`heading 1` is `w:styleId="1"`); its test is `test/opcread-docx.test.ts`. **The `m2fp.4` corpus:** five recipes written by BOTH Word 2010 (COM) and LibreOffice 26.8 (UNO, a pinned MSI unpacked outside the repo), `word2010-basic` included — styles, lists, tables, media, and the constructs `readDocx` only records — each READ by both applications into `<name>.word.json`/`<name>.lo.json` (`scripts/gen-docx-corpus.ps1`). `test/docx-corpus.test.ts` pins `disagreements.json` EXACTLY and holds `readDocx` to every value the two readers agree on; past a disagreement in LENGTH it compares elements only up to the shorter reading, while `readDocx`'s OWN length must fall between the two — the final review measured that without that bound a `readDocx` stopping at a section break or a merged cell passed exactly the files covering them. The readers disagree on five shapes, each a finding (a URL's trailing slash, TOC hyperlinks, headers of a linked section, a section-break paragraph, a covered merged cell). The corpus found `readDocx` silently dropping headers, footers, section breaks and revisions from its report, and nothing else. Beside it, `wml-oracle.docx` is OURS and `wml-oracle.json` is Word 2010's COMPUTED formatting of it through COM (`scripts/gen-wml-oracle.ps1`) — the oracle for `m2fp.3`'s style resolution, toggle XOR and list counters. It corrected no rule and confirmed every open question; it did teach the builder that Word refuses a theme lacking `a:clrScheme`/`a:fmtScheme` (`test/wml-oracle.test.ts`) |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |

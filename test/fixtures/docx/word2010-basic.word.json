@@ -1,0 +1,115 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Quarterly Report",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Quarterly Report",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  14,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "An opening paragraph.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "An opening paragraph.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "First item",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "1.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "First item",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Second item",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "2.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Second item",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       },
+                       {
+                           "text":  "See the docs.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "See the docs.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       }
+                   ],
+    "tables":  [
+
+               ],
+    "links":  [
+                  {
+                      "text":  "the docs",
+                      "url":  "https://example.com/"
+                  }
+              ],
+    "images":  1,
+    "counts":  {
+                   "headers":  0,
+                   "footers":  0,
+                   "footnotes":  0,
+                   "endnotes":  0,
+                   "textBoxes":  0,
+                   "fields":  0,
+                   "comments":  0,
+                   "revisions":  0
+               }
+}

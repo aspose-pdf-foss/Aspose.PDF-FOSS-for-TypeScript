@@ -60,6 +60,8 @@ import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from '
 import { untagObjects } from './structwrite.js';
 import { checkOnSkipped, markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
+import { docxElements, checkDocxOptions, type AddDocxResult, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
+import { SkipLog, mergeSkipped } from './wmlflow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { HtmlDocument } from './htmldom.js';
 import { placeElements } from './flowplace.js';
@@ -699,6 +701,26 @@ export class Page {
       structParent: options.structParent,
     });
     return { usedHeight, remainder, skipped: [...skipped, ...late], unsupported };
+  }
+
+  /** Lay a Word document (.docx) into the rectangle [x, y, w, h] on this page
+   *  (`m2fp.5`). A page or column break cannot be honoured in one rect: the
+   *  content before and after it is placed continuously and the break reported.
+   *  Returns `usedHeight`, `skipped` and a `remainder` for `placeElements`. */
+  AddDocx(
+    bytes: Uint8Array,
+    rect: [number, number, number, number],
+    options: DocxFlowOptions & { structParent?: StructElement } = {},
+  ): AddDocxResult {
+    checkDocxOptions(options);
+    const late = new SkipLog();
+    const onSkipped = (s: DocxSkipped): void => { late.add(s.name, s.kind, s.count); options.onSkipped?.(s); };
+    const { segments, skipped } = docxElements(this.doc, bytes, rect[2], { ...options, onSkipped });
+    if (segments.length > 1) late.add('w:br (page)', 'degraded', segments.length - 1);
+    const { usedHeight, remainder } = placeElements(this.doc, this, segments.flat(), rect, {
+      paragraphSpacing: 0, structParent: options.structParent,
+    });
+    return { usedHeight, remainder, skipped: mergeSkipped(skipped, late.list()) };
   }
 
   /** Start a buffered vector-drawing session on this page. Operators are

@@ -28,13 +28,14 @@ import {
 } from './flowelement.js';
 
 import {
-  rule, codeBlock, quote,
+  rule, codeBlock, quote, indented,
   type FlowRuleOptions, type FlowCodeOptions, type FlowQuoteOptions,
 } from './flowblock.js';
 import { table, type FlowTableOptions } from './flowtable.js';
 import type { TableBuilder } from './tableauthor.js';
 import { markdownElements, type MarkdownFlowOptions, type MarkdownResult } from './mdflow.js';
 import { htmlElements, type HtmlFlowOptions, type HtmlFlowResult } from './htmlflow.js';
+import { docxElements, type DocxFlowOptions, type DocxFlowResult, type OpenedDocxSource } from './wmlimport.js';
 import type { HtmlDocument } from './htmldom.js';
 import type { MdDocument } from './mdast.js';
 
@@ -217,6 +218,12 @@ export interface FlowParagraphOptions {
   spaceBefore?: number;
   /** Points inserted below this element (dropped at a column top). >= 0. Default 0. */
   spaceAfter?: number;
+  /** Indent in points (`m2fp.5`). `left`/`right` narrow the text box from each
+   *  side (>= 0); `firstLine` shifts the FIRST line of the paragraph — negative
+   *  is a hanging indent, and may not reach past `left`. An indent wider than
+   *  the column squeezes, reporting `'squeezed'`, rather than throwing.
+   *  Default: none. */
+  indent?: { left?: number; right?: number; firstLine?: number };
   /** Drop this element below the floats on the given side(s) before placing it.
    *  Default: none. */
   clear?: FlowClear;
@@ -224,6 +231,19 @@ export interface FlowParagraphOptions {
    *  Opt-in: a caller who passes nothing gets the previous silence. Fires once,
    *  at BUILD time, from the builder this option was handed to. */
   onUndrawable?: (u: Undrawable) => void;
+}
+
+/** A paragraph's indent, validated and resolved to numbers. @internal */
+function normalizeIndent(o: FlowParagraphOptions): { left: number; right: number; firstLine: number } {
+  const i = o.indent;
+  if (i === undefined) return { left: 0, right: 0, firstLine: 0 };
+  if (typeof i !== 'object' || i === null) throw new TypeError('indent must be an object');
+  const left = i.left ?? 0, right = i.right ?? 0, firstLine = i.firstLine ?? 0;
+  if (!Number.isFinite(left) || left < 0) throw new TypeError('indent.left must be a non-negative finite number');
+  if (!Number.isFinite(right) || right < 0) throw new TypeError('indent.right must be a non-negative finite number');
+  if (!Number.isFinite(firstLine)) throw new TypeError('indent.firstLine must be a finite number');
+  if (firstLine < -left) throw new TypeError('indent.firstLine may not hang past indent.left');
+  return { left, right, firstLine };
 }
 
 /** Options for {@link Flow.AddHeading}. Extends {@link FlowParagraphOptions}; the
@@ -242,7 +262,16 @@ function paragraphOptions(o: FlowParagraphOptions): TextBlockOptions {
     font: o.font, fontSize: o.fontSize, color: o.color, align: o.align, leading: o.leading,
     underline: o.underline, strikethrough: o.strikethrough, background: o.background,
     atomics: resolveAtomics(o.atomics),
+    // Only when stated, so a paragraph with no first-line indent hands the
+    // block exactly the options it always did (m2fp.5).
+    ...(o.indent?.firstLine ? { firstLineIndent: o.indent.firstLine } : {}),
   };
+}
+
+/** The text a first-line indent needs: the run path carries it, so a string
+ *  becomes one run. Unchanged when no first-line indent is stated. @internal */
+function forFirstLine(text: FlowText, firstLine: number): FlowText {
+  return firstLine !== 0 && typeof text === 'string' ? [{ text }] : text;
 }
 
 /** A word-wrapped text element (paragraph or heading) flowed through
@@ -261,9 +290,18 @@ class TextElement implements FlowElement {
     readonly clear?: FlowClear,
   ) {}
 
+  /** The options with the first-line indent scaled by an enclosing indent's
+   *  squeeze (`MeasureContext.indentScale`), so a hanging line reaches back
+   *  only by the left room actually granted. Unchanged when nothing squeezed,
+   *  which keeps every caller byte-identical. */
+  private scaled(k: number | undefined): TextBlockOptions {
+    const fi = this.opts.firstLineIndent;
+    return k === undefined || k === 1 || !fi ? this.opts : { ...this.opts, firstLineIndent: fi * k };
+  }
+
   measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
-    const { usedHeight, remainder } = measureFlowText(this.text, ctx.width, ctx.availHeight, this.opts);
+    const { usedHeight, remainder } = measureFlowText(this.text, ctx.width, ctx.availHeight, this.scaled(ctx.indentScale));
     return { usedHeight, fits: remainder === null };
   }
 
@@ -277,7 +315,8 @@ class TextElement implements FlowElement {
     if (this.tag === undefined && ctx.structParent && !isEmptyFlowText(this.text)) {
       this.tag = ctx.structParent.Append(this.structType);
     }
-    const opts = this.tag ? { ...this.opts, tag: this.tag } : this.opts;
+    const base = this.scaled(ctx.indentScale);
+    const opts = this.tag ? { ...base, tag: this.tag } : base;
     const rect: [number, number, number, number] =
       [ctx.x, ctx.top - ctx.availHeight, ctx.width, ctx.availHeight];
     const { remainder, remainderAtomics, usedHeight } =
@@ -295,7 +334,9 @@ class TextElement implements FlowElement {
       // re-based these onto the sliced one. Carrying the originals forward
       // puts an image at the wrong place, or off the end where it vanishes.
       remainder: remainder === null ? null
-        : new TextElement(remainder, { ...this.opts, atomics: remainderAtomics },
+        // …and never the first-line indent: a continuation's first line is not
+        // the paragraph's (m2fp.5).
+        : new TextElement(remainder, { ...this.opts, atomics: remainderAtomics, firstLineIndent: undefined },
           this.structType, 0, this.spaceAfter, this.tag),
       drew: true,
     };
@@ -323,10 +364,11 @@ function reportCoverage(
  *  {@link Flow.AddParagraph}; use it to compose the `blocks` of a list item or
  *  the contents of a block quote. */
 export function paragraph(text: FlowText, o: FlowParagraphOptions = {}): FlowElement[] {
+  const ind = normalizeIndent(o);
   reportCoverage(text, o.font ?? 'Helvetica', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
-  return [new TextElement(text, paragraphOptions(o), 'P', spaceBefore, spaceAfter,
-    undefined, false, undefined, normalizeClear(o.clear))];
+  return indented([new TextElement(forFirstLine(text, ind.firstLine), paragraphOptions(o), 'P', spaceBefore, spaceAfter,
+    undefined, false, undefined, normalizeClear(o.clear))], ind.left, ind.right);
 }
 
 /** Build a word-wrapped heading element. `level` is an integer 1..6, driving a
@@ -338,6 +380,7 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
     throw new TypeError('heading level must be an integer in 1..6');
   if (o.keepWithNext !== undefined && typeof o.keepWithNext !== 'boolean')
     throw new TypeError('keepWithNext must be a boolean');
+  const ind = normalizeIndent(o);
   const withDefaults: FlowParagraphOptions = {
     ...o,
     font: o.font ?? 'Helvetica-Bold',
@@ -346,8 +389,8 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
   // AFTER withDefaults, so the reported face is the one the painter will use.
   reportCoverage(text, withDefaults.font ?? 'Helvetica-Bold', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
-  return [new TextElement(text, paragraphOptions(withDefaults), 'H' + String(level),
-    spaceBefore, spaceAfter, undefined, true, o.keepWithNext, normalizeClear(o.clear))];
+  return indented([new TextElement(forFirstLine(text, ind.firstLine), paragraphOptions(withDefaults), 'H' + String(level),
+    spaceBefore, spaceAfter, undefined, true, o.keepWithNext, normalizeClear(o.clear))], ind.left, ind.right);
 }
 
 /** k constant for a 4-Bézier circle approximation (mirrors graphics.ts). */
@@ -593,7 +636,8 @@ function drawMarkerOnce(
   const baseline = ctx.top - o.fontSize; // = the body's first-line baseline
   if (marker.kind === 'shape') {
     drawShapeMarker(ctx.doc, ctx.page, marker.shape, rightEdge, baseline, o, state.lbl);
-  } else {
+  } else if (marker.text !== '') {
+    // An empty label (m2fp.5) draws nothing, and still counts as drawn.
     const mw = measureText(marker.text, o.fontSize, o.font);
     const markerOpts: StampOptions = {
       font: o.font, fontSize: o.fontSize, color: o.color,
@@ -808,6 +852,11 @@ export interface FlowListItem {
   /** Draw a task-list checkbox for THIS item instead of the computed marker.
    *  Vector-drawn: WinAnsi has no ballot-box glyph. */
   marker?: 'checkbox' | 'checked';
+  /** Draw THIS text as the item's marker, in place of the computed ordinal or
+   *  bullet — a label computed elsewhere, as a Word document's `1.a)` is
+   *  (`m2fp.5`). It is measured into the depth's marker width like any other
+   *  marker; `''` draws none. `marker` (a task checkbox) still wins. */
+  label?: string;
   /** Further block content for THIS item, built with the flow builders
    *  (`paragraph`, `codeBlock`, `quote`, `list`). Each is placed at the item's
    *  own indent, under its `/LBody`, and the item's marker is drawn by whichever
@@ -883,6 +932,8 @@ function validateNode(n: FlowListNode): FlowListItem {
     throw new TypeError('item.atomics must be an array');
   if (n.marker !== undefined && n.marker !== 'checkbox' && n.marker !== 'checked')
     throw new TypeError("item.marker must be 'checkbox' or 'checked'");
+  if (n.label !== undefined && typeof n.label !== 'string')
+    throw new TypeError('item.label must be a string');
   if (n.items !== undefined && !Array.isArray(n.items))
     throw new TypeError('item.items must be an array');
   if (n.ordered !== undefined && typeof n.ordered !== 'boolean')
@@ -965,7 +1016,9 @@ function buildListElements(items: FlowListNode[], options: FlowListOptions): Flo
           shape: item.marker,
           actualText: item.marker === 'checked' ? '☑' : '☐',
         }
-        : markerFor(cfg, index, depth);
+        : item.label !== undefined
+          ? { kind: 'text', text: item.label }
+          : markerFor(cfg, index, depth);
       maxWidthByDepth[depth] =
         Math.max(maxWidthByDepth[depth] ?? 0, markerWidth(marker, itemOpts.fontSize, itemOpts.font));
       const p: Planned = {
@@ -1364,6 +1417,18 @@ export class Flow {
       htmlElements(this.doc, src, this.geometry.columnWidth, options);
     this.items.push(...elements);
     return { skipped, unsupported };
+  }
+
+  /** Append a Word document (.docx) as a documented subset — paragraphs, styles,
+   *  headings, lists, tables, images and links — reporting everything else in
+   *  `skipped` (`m2fp.5`). A page or column break becomes a column break. */
+  AddDocx(src: Uint8Array | OpenedDocxSource, options: DocxFlowOptions = {}): DocxFlowResult {
+    const { segments, skipped } = docxElements(this.doc, src, this.geometry.columnWidth, options);
+    segments.forEach((els, k) => {
+      if (k > 0) this.AddColumnBreak();
+      this.items.push(...els);
+    });
+    return { skipped };
   }
 
   /** Force the following content to start in the next column (next page if in

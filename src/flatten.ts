@@ -6,6 +6,7 @@
 // with the render pass. Flatten adds the ref promotion on top (rendering must
 // stay read-only).
 import type { Document } from './document.js';
+import type { FieldAppearanceOptions } from './formfield.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isRef } from './types.js';
 import {
@@ -172,8 +173,8 @@ function isWidget(doc: Document, annot: PdfDict): boolean {
  * widget annotations and the document /AcroForm. After this the form is static
  * content — fields are no longer editable. Returns the number of widgets baked.
  */
-export function flattenForm(doc: Document): number {
-  doc.Form.GenerateAppearances(); // ensure every widget has an /AP to bake
+export function flattenForm(doc: Document, opts: FieldAppearanceOptions = {}): number {
+  doc.Form.GenerateAppearances(opts); // ensure every widget has an /AP to bake
   let count = 0;
   for (const page of doc.Pages) {
     count += flattenPageAnnots(doc, page, (a) => isWidget(doc, a));

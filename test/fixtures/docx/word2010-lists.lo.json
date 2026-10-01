@@ -1,0 +1,282 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Bullets:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Bullets:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Fruit",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Fruit",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Apple",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "o",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Apple",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Green apple",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Green apple",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Vegetables",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Vegetables",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Numbers:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Numbers:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "First",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "1.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "First",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Sub a",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "a.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Sub a",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Sub sub i",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "i.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Sub sub i",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Second",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "2.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Second",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "An interruption.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "An interruption.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Third",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "3.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Third",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "A new list:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "A new list:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Restart one",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "1.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Restart one",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Restart two",
+      "styleName": "List Paragraph",
+      "heading": null,
+      "listLabel": "2.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Restart two",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "End of lists.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "End of lists.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": []
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 0,
+    "endnotes": 0,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  }
+}

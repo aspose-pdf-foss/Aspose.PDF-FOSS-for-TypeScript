@@ -51,9 +51,15 @@ export function writeZip(entries: ZipEntry[]): Uint8Array {
     seen.add(e.path);
   }
 
-  const local: number[] = [];
-  const central: number[] = [];
+  // The archive is assembled from Uint8Array CHUNKS and concatenated once
+  // (h4z3). Spreading a payload into `push(...raw)` passed every byte as a call
+  // argument — a stack overflow past a few hundred KB, inside vitest at a
+  // 220 KB .rels — and held it in a number[] at 8 bytes a slot. Only the small
+  // header and directory fields still go through arrays of numbers.
+  const local: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
   let offset = 0;
+  let centralLength = 0;
 
   for (const e of entries) {
     const name = Array.from(new TextEncoder().encode(e.path));
@@ -62,6 +68,10 @@ export function writeZip(entries: ZipEntry[]): Uint8Array {
       ? new Uint8Array(deflateRawSync(Buffer.from(e.bytes)))
       : e.bytes;
     const sum = crc32(e.bytes);
+    // APPNOTE 4.4.4: without bit 11 a reader must decode the name as CP437, so
+    // a UTF-8 name needs it. Only a non-ASCII name sets it, which keeps every
+    // archive of ASCII paths — every DOCX and EPUB we write — byte-identical.
+    const flags = /[^\x00-\x7f]/.test(e.path) ? 0x0800 : 0;
 
     if (e.bytes.length > MAX_BYTES || raw.length > MAX_BYTES)
       throw new RangeError(`zip entry ${e.path} exceeds 4 GB; ZIP64 is not supported`);
@@ -70,15 +80,19 @@ export function writeZip(entries: ZipEntry[]): Uint8Array {
     // cannot describe the same file differently.
     const header = [
       ...u16(method === 'deflate' ? 20 : 10),  // version needed
-      ...u16(0),                               // flags
+      ...u16(flags),                           // flags
       ...u16(method === 'deflate' ? 8 : 0),    // method
       ...u16(DOS_TIME), ...u16(DOS_DATE),
       ...u32(sum), ...u32(raw.length), ...u32(e.bytes.length),
       ...u16(name.length), ...u16(0),          // name length, extra length
     ];
-    local.push(...u32(0x04034b50), ...header, ...name, ...raw);
+    // The OFFSET is a 32-bit field too: an archive past 4 GB wraps it silently.
+    if (offset > MAX_BYTES)
+      throw new RangeError(`zip entry ${e.path} starts past 4 GB; ZIP64 is not supported`);
+    const head = Uint8Array.from([...u32(0x04034b50), ...header, ...name]);
+    local.push(head, raw);
 
-    central.push(
+    const dir = Uint8Array.from([
       ...u32(0x02014b50),
       ...u16(20),                              // version made by
       ...header,
@@ -86,17 +100,22 @@ export function writeZip(entries: ZipEntry[]): Uint8Array {
       ...u32(0),                               // external attrs
       ...u32(offset),
       ...name,
-    );
-    offset = local.length;
+    ]);
+    central.push(dir);
+    centralLength += dir.length;
+    offset += head.length + raw.length;
   }
 
-  const cdOffset = local.length;
-  const eocd = [
+  const cdOffset = offset;
+  const eocd = Uint8Array.from([
     ...u32(0x06054b50),
     ...u16(0), ...u16(0),                      // this disk, cd start disk
     ...u16(entries.length), ...u16(entries.length),
-    ...u32(central.length), ...u32(cdOffset),
+    ...u32(centralLength), ...u32(cdOffset),
     ...u16(0),                                 // comment length
-  ];
-  return Uint8Array.from([...local, ...central, ...eocd]);
+  ]);
+  const out = new Uint8Array(cdOffset + centralLength + eocd.length);
+  let at = 0;
+  for (const chunk of [...local, ...central, eocd]) { out.set(chunk, at); at += chunk.length; }
+  return out;
 }

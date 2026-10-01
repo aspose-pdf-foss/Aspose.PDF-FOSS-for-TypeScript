@@ -420,6 +420,57 @@ class QuotedElement implements FlowElement {
   }
 }
 
+/** A paragraph's left/right indent (`m2fp.5`): the content box shifted right by
+ *  `left` and narrowed by `left + right`, through ONE `insetScale` factor so an
+ *  indent wider than the column squeezes rather than driving the width to zero
+ *  (`e1bp`). Forwards everything the wrapped element owns, as `QuotedElement`
+ *  does, so spacing, keep-with-next and compromise reporting read through it. */
+class IndentElement implements FlowElement {
+  constructor(
+    private readonly inner: FlowElement,
+    private readonly left: number,
+    private readonly right: number,
+  ) {}
+
+  get spaceBefore(): number | undefined { return this.inner.spaceBefore; }
+  get spaceAfter(): number | undefined { return this.inner.spaceAfter; }
+  get clear(): FlowClear | undefined { return this.inner.clear; }
+  get keepWithNextEligible(): boolean | undefined { return this.inner.keepWithNextEligible; }
+  get keepWithNext(): boolean | undefined { return this.inner.keepWithNext; }
+  get onCompromise(): ((how: Compromise) => void) | undefined { return this.inner.onCompromise; }
+  set onCompromise(fn: ((how: Compromise) => void) | undefined) { this.inner.onCompromise = fn; }
+
+  /** ONE factor for both edges, read by measure and place alike. */
+  private scale(width: number): number { return insetScale(width, this.left + this.right); }
+
+  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+    const k = this.scale(ctx.width);
+    return this.inner.measure?.({ width: ctx.width - (this.left + this.right) * k, availHeight: ctx.availHeight, indentScale: k })
+      ?? { usedHeight: 0, fits: false };
+  }
+
+  place(ctx: PlaceContext): PlaceResult {
+    const k = this.scale(ctx.width);
+    const res = this.inner.place({
+      ...ctx, x: ctx.x + this.left * k, width: ctx.width - (this.left + this.right) * k, indentScale: k,
+    });
+    // Reported once something drew, never from `measure` (kk3q).
+    if (res.drew && k < 1) this.onCompromise?.('squeezed');
+    return {
+      usedHeight: res.usedHeight,
+      drew: res.drew,
+      remainder: res.remainder === null ? null : new IndentElement(res.remainder, this.left, this.right),
+    };
+  }
+}
+
+/** Wrap each element in a left/right indent; the elements unchanged when both
+ *  are 0, which is what keeps every caller that states no indent byte-identical. */
+export function indented(els: FlowElement[], left: number, right: number): FlowElement[] {
+  if (left === 0 && right === 0) return els;
+  return els.map((e) => new IndentElement(e, left, right));
+}
+
 /** Build a block quote from already-built child elements: each is indented and
  *  gains a gutter bar. Nests — pass the result of one `quote` as the `blocks` of
  *  another. The builder behind `Flow.AddQuote`. */

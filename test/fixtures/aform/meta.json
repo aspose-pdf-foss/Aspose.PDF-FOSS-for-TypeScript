@@ -1,0 +1,26 @@
+{
+  "sha": "d52fdf411a6e4d338180687456e0df019e28475e",
+  "sources": {
+    "src/scripting_api/aform.js": "dd032e82b5311b25505568591f7855b7988e0dd53be57d402784c84c33365d85",
+    "src/scripting_api/util.js": "c05cc5300e47144cf53a5321a5d25c70358fb5fe4cde151bee48d25cb874a686",
+    "src/scripting_api/constants.js": "0c62f65e3555a5a8c97c7ac5a80929c18eb94a149545fa6c7c9481b3be153c63",
+    "src/scripting_api/pdf_object.js": "aef78c9f548a2ea054362fadae2b0799acadd0e5ab4a416d9e775586bf2d3da4",
+    "src/shared/scripting_utils.js": "a9b84a04f6a39b1e6ce647bafd3a88ca715aed4fbf5b9d14e20a79429f2c3b71",
+    "src/shared/math_clamp.js": "177a9924f860fa5d6016284924f2296921811af2b9eb2400c32bb95d7a18fb97"
+  },
+  "counts": {
+    "number-format": 9120,
+    "percent-format": 760,
+    "number-keystroke": 140,
+    "date-format": 591,
+    "date-keystroke": 597,
+    "special-format": 36,
+    "special-keystroke": 107,
+    "range-validate": 80,
+    "simple-calculate": 17
+  },
+  "strictFalse": {
+    "date-format": 399,
+    "date-keystroke": 399
+  }
+}

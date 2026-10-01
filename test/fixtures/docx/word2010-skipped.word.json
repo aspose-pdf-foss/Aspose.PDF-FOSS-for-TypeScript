@@ -1,0 +1,218 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Contents:",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Contents:",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Chapter one\t1",
+                           "styleName":  "Оглавление 1",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Chapter one\t1",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Chapter two\t2",
+                           "styleName":  "Оглавление 1",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Chapter two\t2",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Chapter one",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Chapter one",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  14,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Body with a footnote",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Body with a footnote",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Body with an endnote",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Body with an endnote",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Anchor for a text box.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Anchor for a text box.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Commented words",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Commented words",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Kept inserted words.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Kept inserted words.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       },
+                       {
+                           "text":  "Chapter two",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Chapter two",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  14,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Landscape page.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Landscape page.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       }
+                   ],
+    "tables":  [
+
+               ],
+    "links":  [
+
+              ],
+    "images":  0,
+    "counts":  {
+                   "headers":  1,
+                   "footers":  1,
+                   "footnotes":  1,
+                   "endnotes":  1,
+                   "textBoxes":  1,
+                   "fields":  3,
+                   "comments":  1,
+                   "revisions":  2
+               }
+}

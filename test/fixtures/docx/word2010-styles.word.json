@@ -1,0 +1,209 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Styles and headings",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Styles and headings",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  14,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Second level",
+                           "styleName":  "Заголовок 2",
+                           "heading":  2,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Second level",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  13,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Third level",
+                           "styleName":  "Заголовок 3",
+                           "heading":  3,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Third level",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Custom heading text",
+                           "styleName":  "Custom Heading",
+                           "heading":  2,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Custom heading text",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  13,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Plain body text.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Plain body text.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Direct formats sizes fonts colours end.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Direct ",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            },
+                                            {
+                                                "text":  "formats ",
+                                                "bold":  false,
+                                                "italic":  true,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            },
+                                            {
+                                                "text":  "sizes ",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  16,
+                                                "font":  "Calibri"
+                                            },
+                                            {
+                                                "text":  "fonts ",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Courier New"
+                                            },
+                                            {
+                                                "text":  "colours end.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "A strong word.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "A ",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            },
+                                            {
+                                                "text":  "strong ",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            },
+                                            {
+                                                "text":  "word.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "toggle rest.",
+                           "styleName":  "Bold Para",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "toggle ",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            },
+                                            {
+                                                "text":  "rest.",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Bold Para",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       }
+                   ],
+    "tables":  [
+
+               ],
+    "links":  [
+
+              ],
+    "images":  0,
+    "counts":  {
+                   "headers":  0,
+                   "footers":  0,
+                   "footnotes":  0,
+                   "endnotes":  0,
+                   "textBoxes":  0,
+                   "fields":  0,
+                   "comments":  0,
+                   "revisions":  0
+               }
+}

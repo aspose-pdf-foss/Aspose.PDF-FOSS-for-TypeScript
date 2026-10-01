@@ -40,7 +40,10 @@ function isSfnt(raw: Uint8Array): boolean {
  * `/FontFile` (Type 1), in that precedence.
  *
  * A malformed program is a broken font, not a broken document: every parse is
- * guarded, and an unreadable one simply leaves its slot empty.
+ * guarded, and an unreadable one simply leaves its slot empty. A CFF2 program
+ * (dmin.5) lands here DELIBERATELY: `SfntFont` refuses it with
+ * `UnsupportedFeatureError`, and it degrades exactly as a broken one does —
+ * text through `/Widths` and `/ToUnicode`, no glyphs from the program.
  */
 export function loadEmbeddedProgram(
   fdObj: PdfObject | undefined, resolve: Resolve, inflate: Inflate,

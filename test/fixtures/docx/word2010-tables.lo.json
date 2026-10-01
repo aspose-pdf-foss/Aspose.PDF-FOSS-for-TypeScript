@@ -1,0 +1,265 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Table:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Table:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Name",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Name",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Qty",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Qty",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Note",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Note",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Wide cell",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Wide cell",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Shaded",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Shaded",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Tall",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Tall",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "in1",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "in1",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "in2",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "in2",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": []
+    },
+    {
+      "text": "c3",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "c3",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "b4",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "b4",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "c4",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "c4",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "After the table.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "After the table.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": []
+    }
+  ],
+  "tables": [
+    {
+      "rows": [
+        [
+          "Name",
+          "Qty",
+          "Note"
+        ],
+        [
+          "Wide cell",
+          "Shaded"
+        ],
+        [
+          "Tall",
+          "in1\nin2",
+          "c3"
+        ],
+        [
+          "b4",
+          "c4"
+        ]
+      ]
+    }
+  ],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 0,
+    "endnotes": 0,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  }
+}

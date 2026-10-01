@@ -1,0 +1,288 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Bullets:",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Bullets:",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Fruit",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Fruit",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Apple",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "o",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Apple",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Green apple",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Green apple",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Vegetables",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Vegetables",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Numbers:",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Numbers:",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "First",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "1.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "First",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Sub a",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "a.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Sub a",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Sub sub i",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "i.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Sub sub i",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Second",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "2.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Second",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "An interruption.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "An interruption.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Third",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "3.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Third",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "A new list:",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "A new list:",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Restart one",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "1.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Restart one",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Restart two",
+                           "styleName":  "Абзац списка",
+                           "heading":  null,
+                           "listLabel":  "2.",
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Restart two",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "End of lists.",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "End of lists.",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       }
+                   ],
+    "tables":  [
+
+               ],
+    "links":  [
+
+              ],
+    "images":  0,
+    "counts":  {
+                   "headers":  0,
+                   "footers":  0,
+                   "footnotes":  0,
+                   "endnotes":  0,
+                   "textBoxes":  0,
+                   "fields":  0,
+                   "comments":  0,
+                   "revisions":  0
+               }
+}

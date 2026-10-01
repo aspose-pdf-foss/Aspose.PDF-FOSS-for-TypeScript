@@ -39,7 +39,7 @@ const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
  *  `_rels` directory — `word/document.xml` keeps its relationships in
  *  `word/_rels/document.xml.rels`. Putting them all at the root produces a
  *  package whose parts exist and whose links dangle. */
-function relsPath(source: string): string {
+export function relsPath(source: string): string {
   if (source === '') return '_rels/.rels';
   const cut = source.lastIndexOf('/');
   const dir = cut < 0 ? '' : source.slice(0, cut + 1);

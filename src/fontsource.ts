@@ -124,8 +124,15 @@ function peekNames(path: string): { faceIndex: number; names: FontNames }[] {
       }];
     }
 
-    return eachFace(fd, (table) =>
-      namesFromTables({ name: table('name'), head: table('head'), os2: table('OS/2') }))
+    // (dmin.6) A face whose ONLY outlines are CFF2 is not indexed. Its names
+    // read fine, so it would be matched and then fail to load (dmin.5 refuses
+    // CFF2 by decision) — and a lookup that chose it answered `undefined` with
+    // a usable sibling beside it. Skipping it here lets selection fall through.
+    // The directory is already in hand, so this costs no read.
+    return eachFace(fd, (table, _faceIndex, has) =>
+      has('CFF2') && !has('CFF ') && !has('glyf')
+        ? undefined
+        : namesFromTables({ name: table('name'), head: table('head'), os2: table('OS/2') }))
       .map(({ faceIndex, value }) => ({ faceIndex, names: value }));
   } catch (caught) { rethrowLimit(caught);
     return [];
@@ -147,7 +154,10 @@ function peekNames(path: string): { faceIndex: number; names: FontNames }[] {
  */
 function eachFace<T>(
   fd: number,
-  pick: (table: (tag: string) => Uint8Array | undefined, faceIndex: number) => T | undefined,
+  pick: (
+    table: (tag: string) => Uint8Array | undefined, faceIndex: number,
+    has: (tag: string) => boolean,
+  ) => T | undefined,
 ): { faceIndex: number; value: T }[] {
   const faceAt = (dirOffset: number, base: number, faceIndex: number): T | undefined => {
     const head12 = readAt(fd, dirOffset, 12);
@@ -166,7 +176,7 @@ function eachFace<T>(
       const b = readAt(fd, base + r.offset, r.length);
       return b.length === r.length ? b : undefined;
     };
-    return pick(table, faceIndex);
+    return pick(table, faceIndex, (tag) => dir.has(tag));
   };
 
   const out: { faceIndex: number; value: T }[] = [];

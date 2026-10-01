@@ -1,4 +1,4 @@
-/** Decompression for input files that are NOT PDF — PNG, TIFF, WOFF, WOFF2 —
+/** Decompression for input files that are NOT PDF — PNG, TIFF, WOFF, WOFF2, ZIP —
  *  under the same bounds a PDF stream decodes under (`ibzo.11`).
  *
  *  **Invariant:** the bounds are `DecodeBudget`'s, not new ones. One decode is
@@ -23,7 +23,7 @@
  *
  *  A leaf over `loadlimits.js`, `decodebudget.js`, `lzw.js`, `ascii.js` and
  *  `errors.js`; it knows no `Document`. */
-import { inflateSync, brotliDecompressSync } from 'node:zlib';
+import { inflateSync, inflateRawSync, brotliDecompressSync } from 'node:zlib';
 import { LoadLimits } from './loadlimits.js';
 import { DecodeBudget } from './decodebudget.js';
 import { lzwDecode } from './lzw.js';
@@ -84,6 +84,20 @@ export class InputDecoder {
   brotli(input: Uint8Array, declared?: number): Uint8Array {
     return this.run(input, declared, (cap) => new Uint8Array(
       brotliDecompressSync(view(input), Number.isFinite(cap) ? { maxOutputLength: Math.max(1, cap + 1) } : {})));
+  }
+
+  /** Raw DEFLATE (RFC 1951), as a ZIP entry uses — no zlib header or trailer. */
+  inflateRaw(input: Uint8Array, declared?: number): Uint8Array {
+    return this.run(input, declared, (cap) => new Uint8Array(
+      inflateRawSync(view(input), Number.isFinite(cap) ? { maxOutputLength: Math.max(1, cap + 1) } : {})));
+  }
+
+  /** Bytes stored uncompressed. Nothing to decode, but still bounded and
+   *  charged, so a stored ZIP entry cannot escape the total a deflated one is
+   *  held to. A COPY, so the caller cannot mutate the archive through it.
+   *  `declared` is checked against the bounds BEFORE the copy is made. */
+  stored(input: Uint8Array, declared?: number): Uint8Array {
+    return this.run(input, declared, () => input.slice());
   }
 
   /** TIFF LZW (early change 1). */

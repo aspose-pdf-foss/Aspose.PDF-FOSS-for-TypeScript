@@ -17,6 +17,11 @@ export type FlowClear = ClearSide;
 export interface MeasureContext {
   width: number;
   availHeight: number;
+  /** The factor an enclosing paragraph indent was squeezed by (`insetScale`),
+   *  which the text's first-line indent must scale by too — a hanging line
+   *  reaches back by the left room actually GRANTED, not the room stated.
+   *  Absent means 1. */
+  indentScale?: number;
 }
 
 /** Where an element is being placed. `top` is the current column pen (PDF user
@@ -36,6 +41,8 @@ export interface PlaceContext {
   /** When the flow is tagged, the grouping element under which this element
    *  appends its `/Hn` or `/P` on first draw. Absent for an untagged flow. */
   structParent?: StructElement;
+  /** See {@link MeasureContext.indentScale}. Absent means 1. */
+  indentScale?: number;
 }
 
 /** Outcome of {@link FlowElement.place}. @internal */

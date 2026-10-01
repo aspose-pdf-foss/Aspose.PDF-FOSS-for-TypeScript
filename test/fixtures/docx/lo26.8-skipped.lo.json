@@ -1,0 +1,210 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Contents:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Contents:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Table of Contents",
+      "styleName": "Contents Heading",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Table of Contents",
+          "bold": true,
+          "italic": false,
+          "sizePt": 16.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Chapter one\t1",
+      "styleName": "Contents 1",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter one\t1",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Chapter two\t2",
+      "styleName": "Contents 1",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter two\t2",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Chapter one",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter one",
+          "bold": true,
+          "italic": false,
+          "sizePt": 18.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Body with a footnote",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Body with a footnote",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Body with an endnote",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Body with an endnote",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Anchor for a text box.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Anchor for a text box.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Commented words",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Commented words",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Kept inserted words.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Kept inserted words.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Chapter two",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Chapter two",
+          "bold": true,
+          "italic": false,
+          "sizePt": 18.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Landscape page.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Landscape page.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 1,
+    "footers": 1,
+    "footnotes": 1,
+    "endnotes": 1,
+    "textBoxes": 1,
+    "fields": 1,
+    "comments": 1,
+    "revisions": 2
+  }
+}

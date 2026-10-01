@@ -260,6 +260,12 @@ export class SfntFont {
       this.tables.set(tag, { offset, length });
     }
     this.outlines = this.tables.has('CFF ') ? 'cff' : 'glyf';
+    // (dmin.5) CFF2 is declined by decision (dmin.3), not damage: a well-formed
+    // CFF2 font carries neither outline table we read, so it must be told
+    // apart from one that is simply broken. Embedded programs still degrade —
+    // glyphprogram.ts catches this like any unreadable program.
+    if (this.outlines === 'glyf' && !this.tables.has('glyf') && this.tables.has('CFF2'))
+      throw new UnsupportedFeatureError('CFF2 outlines are not supported (variable OpenType-CFF); provide a TrueType or CFF-flavoured font');
     if (this.outlines === 'glyf' && !this.tables.has('glyf'))
       throw new PdfParseError('font has neither a glyf nor a CFF table');
   }

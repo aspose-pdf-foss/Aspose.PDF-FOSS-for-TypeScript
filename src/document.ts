@@ -1,4 +1,5 @@
 import { Lexer } from './lexer.js';
+import type { FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
 import { readXref, XrefEntry, PdfRevision } from './xref.js';
 import { sweepObjects, ObjCandidate, SweepResult } from './recover.js';
@@ -113,9 +114,11 @@ import {
 } from './siglock.js';
 import { DEFAULT_PLACEHOLDER_BYTES, fillSignature } from './sigplaceholder.js';
 import { buildTimeStampRequest, extractTimeStampToken, type TimestampProvider } from './rfc3161.js';
-import { Flow, type FlowOptions } from './flow.js';
+import { Flow, normalizeFlowOptions, type FlowOptions } from './flow.js';
 import { checkOnSkipped, type MarkdownFlowOptions } from './mdflow.js';
 import { documentTitle, type HtmlFlowOptions } from './htmlflow.js';
+import { openDocxSource, checkDocxOptions, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
+import { SkipLog, mergeSkipped } from './wmlflow.js';
 import { parseHtml } from './htmltree.js';
 import type { HtmlDocument } from './htmldom.js';
 import type { UnsupportedDeclaration } from './cssprop.js';
@@ -365,6 +368,18 @@ interface SignTarget {
   lock?: FieldLock;
 }
 
+/** Whether `Flow` would accept this geometry: the probe `doc.AddDocx` asks before
+ *  letting a document's own page margins reach the constructor. */
+function flowGeometryFits(options: FlowOptions): boolean {
+  try {
+    normalizeFlowOptions(options);
+    return true;
+  } catch (caught) { rethrowLimit(caught);
+    if (caught instanceof TypeError) return false;
+    throw caught;
+  }
+}
+
 export class Document {
   /** One Page per page, in document order. Populated by the constructor. */
   readonly Pages: Page[];
@@ -412,6 +427,9 @@ export class Document {
   /** Set once the in-memory model diverges from `originalBytes` (any mutation
    *  through a tracked entry point), forcing sign-on-save instead of append. */
   private modified = false;
+  /** @internal `Form.EnforceRules` (jzn8). Lives on the Document because
+   *  `doc.Form` is rebuilt per access. */
+  formEnforceRules = false;
   /** The finished signed byte image cached by {@link Sign}; returned verbatim by
    *  {@link Save}/{@link WriteTo} so the signed bytes are never re-serialized. */
   private pendingSignedBytes?: Uint8Array;
@@ -3409,6 +3427,52 @@ export class Document {
     return { pages, skipped: [...skipped, ...late], unsupported };
   }
 
+  /** Render a whole Word document (.docx), appending freshly sized pages
+   *  (`m2fp.5`). The one-call form of `NewFlow` + `AddDocx` + `Render`. Page size
+   *  and margins come from the document's last section unless `options` states
+   *  them; the document's own core-properties title becomes the PDF title unless
+   *  an explicit `title` is given (`AddHtml`'s rule for `<title>`). */
+  AddDocx(
+    bytes: Uint8Array,
+    options: DocxFlowOptions & FlowOptions & { title?: string } = {},
+  ): { pages: Page[]; skipped: DocxSkipped[] } {
+    const explicit = options.title;
+    if (explicit !== undefined && (typeof explicit !== 'string' || explicit === ''))
+      throw new TypeError('title must be a non-empty string');
+    checkDocxOptions(options);
+    const src = openDocxSource(this, bytes);
+    const pg = src.opened.doc.page;
+    // Placement-time reports: a LOCAL log merged on the way out, never an
+    // append to the array flow.AddDocx handed back (AddHtml's rule).
+    const late = new SkipLog();
+    // The geometry is the FILE's, so it must never become a caller's TypeError.
+    // Word writes w:pgMar top/bottom SIGNED (ST_SignedTwipsMeasure) and places
+    // the text by the magnitude; margins that leave no column — on the
+    // document's own page or on a format the caller stated — are dropped and
+    // reported, falling back to the flow's defaults. Margins the CALLER states
+    // are theirs to get wrong and still throw.
+    const format = pg === undefined ? undefined : PageFormat.custom(pg.widthPt, pg.heightPt);
+    const margins: FlowOptions = pg === undefined ? {} : {
+      marginLeft: Math.abs(pg.margins.left), marginRight: Math.abs(pg.margins.right),
+      marginTop: Math.abs(pg.margins.top), marginBottom: Math.abs(pg.margins.bottom),
+    };
+    let flowOptions: FlowOptions = { ...(format ? { format } : {}), ...margins, ...options, paragraphSpacing: 0 };
+    if (pg !== undefined && !flowGeometryFits(flowOptions)) {
+      flowOptions = { ...(format ? { format } : {}), ...options, paragraphSpacing: 0 };
+      if (flowGeometryFits(flowOptions)) late.add('w:pgMar', 'degraded');
+    }
+    const flow = new Flow(this, flowOptions);
+    const onSkipped = (s: DocxSkipped): void => { late.add(s.name, s.kind, s.count); options.onSkipped?.(s); };
+    const { skipped } = flow.AddDocx(src, { ...options, onSkipped });
+    const pages = flow.Render();
+    const title = explicit ?? src.opened.title;
+    if (title !== undefined) {
+      this.SetMetadata({ title });
+      this.DisplayDocTitle = true;
+    }
+    return { pages, skipped: mergeSkipped(skipped, late.list()) };
+  }
+
   /** Create a {@link FloatingBox} bound to this document. Add content with
    *  `AddParagraph`/`AddImage`, then float it into a flow with
    *  `flow.AddFloatBox(box, side)`. */
@@ -3822,9 +3886,10 @@ export class Document {
   /** Flatten the interactive form into static page content: generate every
    *  field's appearance, bake each widget into its page at its /Rect, then drop
    *  the document /AcroForm. After this the form fields are no longer editable.
-   *  Returns the number of widgets baked. */
-  FlattenForm(): number {
-    return flattenForm(this);
+   *  Returns the number of widgets baked. `{ format: true }` bakes each
+   *  field's `FormattedValue` where it has one. */
+  FlattenForm(opts: FieldAppearanceOptions = {}): number {
+    return flattenForm(this, opts);
   }
 
   RemovePage(target: number | Page): void {

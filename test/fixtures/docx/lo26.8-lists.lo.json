@@ -1,0 +1,274 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Bullets:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Bullets:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Fruit",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Fruit",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Apple",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Apple",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Green apple",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Green apple",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Vegetables",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Vegetables",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Numbers:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Numbers:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "First",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "1.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "First",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Sub a",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "a.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Sub a",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Sub sub i",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "i.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Sub sub i",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Second",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "2.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Second",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "An interruption.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "An interruption.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Third",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "3.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Third",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "A new list:",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "A new list:",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Restart one",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "1.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Restart one",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Restart two",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": "2.",
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Restart two",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "End of lists.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "End of lists.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 0,
+    "endnotes": 0,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  }
+}

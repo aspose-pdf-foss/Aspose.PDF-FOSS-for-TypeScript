@@ -417,6 +417,10 @@ export interface TextBlockOptions extends Omit<StampOptions, 'align' | 'rotate'>
   valign?: 'top' | 'center' | 'bottom';
   /** Baseline-to-baseline distance in points. Default 1.2 * fontSize. */
   leading?: number;
+  /** Points to shift the FIRST line of the block (`m2fp.5`); negative hangs it
+   *  left of the box. Run content only — the flow layer turns a string into one
+   *  run when it states this. Default 0. */
+  firstLineIndent?: number;
 }
 
 interface NormalizedBlockOptions {
@@ -494,6 +498,10 @@ function normalizeBlockOptions(o: TextBlockOptions): NormalizedBlockOptions {
   const rotate = o.rotate ?? 0;
   if (typeof rotate !== 'number' || !Number.isFinite(rotate))
     throw new TypeError('rotate must be a finite number');
+  // NaN here would make every line's width limit NaN and put each word on its
+  // own line — a plausible wrong layout rather than an error.
+  if (o.firstLineIndent !== undefined && (typeof o.firstLineIndent !== 'number' || !Number.isFinite(o.firstLineIndent)))
+    throw new TypeError('firstLineIndent must be a finite number');
   const decor = resolveDecor(o, color, fontSize, vmetricsFor(font));
   return { font, fontSize, color, opacity, align, valign, leading, rotate, behind, decor };
 }
@@ -649,6 +657,19 @@ function alignOffset(align: NormalizedBlockOptions['align'], boxWidth: number, l
   return 0; // left, and justify (slack goes into Tw), both start at the left edge
 }
 
+/** A line's x within its box: its first-line indent (`m2fp.5`), then alignment
+ *  within what the indent leaves. For every line with no indent this is exactly
+ *  `alignOffset`, which is every line of every caller that states none. */
+function lineX(align: NormalizedBlockOptions['align'], boxWidth: number, line: LaidLine): number {
+  const ind = line.indent ?? 0;
+  return ind + alignOffset(align, boxWidth - ind, line.width);
+}
+
+/** The width a line aligns and justifies to: the box less its first-line indent. */
+function lineBoxWidth(boxWidth: number, line: LaidLine): number {
+  return boxWidth - (line.indent ?? 0);
+}
+
 /** Word spacing (the `Tw` operator value) that justifies `line` to `boxWidth` by
  *  spreading its slack across the inter-word gaps. Returns 0 — i.e. no
  *  justification, left fallback — for non-'justify' alignment, hard-break/final
@@ -673,11 +694,11 @@ function blockLineBoxes(
   lines: LaidLine[], x: number, w: number, baselines: number[], o: NormalizedBlockOptions,
 ): LineBox[] {
   return lines.map((line, i) => {
-    const tw = justifySpacing(o.align, w, line);
+    const tw = justifySpacing(o.align, lineBoxWidth(w, line), line);
     return {
-      x: x + alignOffset(o.align, w, line.width),
+      x: x + lineX(o.align, w, line),
       baseline: baselines[i],
-      width: tw > 0 ? w : line.width,
+      width: tw > 0 ? lineBoxWidth(w, line) : line.width,
     };
   });
 }
@@ -757,9 +778,9 @@ function segmentBoxes(
 ): SegmentBox[] {
   const out: SegmentBox[] = [];
   lines.forEach((line, i) => {
-    const tw = justifySpacing(o.align, w, line);
+    const tw = justifySpacing(o.align, lineBoxWidth(w, line), line);
     const baseline = baselines[i];
-    let dx = x + alignOffset(o.align, w, line.width);
+    let dx = x + lineX(o.align, w, line);
     for (const seg of line.segments) {
       let spaces = 0;
       if (tw > 0) for (const ch of seg.text) if (ch === ' ') spaces++;
@@ -925,9 +946,9 @@ function buildRunBlockBody(
   let segIdx = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const tw = justifySpacing(o.align, w, line);
+    const tw = justifySpacing(o.align, lineBoxWidth(w, line), line);
     if (tw !== prevTw) { s += `${num(tw)} Tw\n`; prevTw = tw; }
-    const offset = alignOffset(o.align, w, line.width);
+    const offset = lineX(o.align, w, line);
     if (i === 0) s += `${num(x + offset)} ${num(baselines[0])} Td\n`;
     else s += `${num(offset - prevOffset)} ${num(baselines[i] - baselines[i - 1])} Td\n`;
     prevOffset = offset;
@@ -1045,7 +1066,7 @@ export function flowTextBlock(
     const ro: NormalizedBlockOptions =
       o.align === 'justify' && !justifiable(resolved) ? { ...o, align: 'left' } : o;
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize);
+      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0);
     if (lines.length > 0) {
       const fontKeys = resolved.map((r) => registerFont(doc, page, r.font));
       const gsKey = ro.opacity < 1 ? registerExtGState(doc, page, ro.opacity) : undefined;
@@ -1155,7 +1176,7 @@ export function measureTextBlock(
     const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
     if (nothingDrawable(resolved)) return { usedHeight: 0, remainder: null };
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize);
+      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0);
     const rest = sliceContent(remainder, content, atomicOf, resolved);
     return {
       usedHeight: linesHeight(lines),

@@ -1,0 +1,543 @@
+{
+    "word":  "14.0 build 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "plain",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "plain",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "pb xor direct off",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "pb",
+                                             "bold":  true,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         },
+                                         {
+                                             "text":  "xor",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         },
+                                         {
+                                             "text":  "direct",
+                                             "bold":  true,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         },
+                                         {
+                                             "text":  "off",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "child red",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "child",
+                                             "bold":  true,
+                                             "italic":  true,
+                                             "size":  14,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         },
+                                         {
+                                             "text":  "red",
+                                             "bold":  false,
+                                             "italic":  true,
+                                             "size":  14,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  255,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "again",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "again",
+                                             "bold":  true,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "Heading",
+                           "listString":  "",
+                           "outlineLevel":  1,
+                           "words":  [
+                                         {
+                                             "text":  "Heading",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  16,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "Fake",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "Fake",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  16,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "one",
+                           "listString":  "1.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "one",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "onea",
+                           "listString":  "1.a)",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "onea",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "oneb",
+                           "listString":  "1.b)",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "oneb",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "two",
+                           "listString":  "2.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "two",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "twoa",
+                           "listString":  "2.a)",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "twoa",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "between",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "between",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "three",
+                           "listString":  "3.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "three",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "shared",
+                           "listString":  "4.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "shared",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "override",
+                           "listString":  "5.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "override",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "overridden",
+                           "listString":  "6.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "overridden",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "roman",
+                           "listString":  "I.",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "roman",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "styled",
+                           "listString":  "•",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "styled",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "optout",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "optout",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "fmt theme",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "fmt",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  12,
+                                             "name":  "Courier New",
+                                             "nameAscii":  "Courier New",
+                                             "color":  16711680,
+                                             "underline":  true,
+                                             "strike":  true,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         },
+                                         {
+                                             "text":  "theme",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Georgia",
+                                             "nameAscii":  "+Заголовки",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "hl shd",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "hl",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  7,
+                                             "shading":  -16777216
+                                         },
+                                         {
+                                             "text":  "shd",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  65280
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "fallback",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "fallback",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       },
+                       {
+                           "text":  "sdt",
+                           "listString":  "",
+                           "outlineLevel":  10,
+                           "words":  [
+                                         {
+                                             "text":  "sdt",
+                                             "bold":  false,
+                                             "italic":  false,
+                                             "size":  10,
+                                             "name":  "Cambria",
+                                             "nameAscii":  "+Основной текст",
+                                             "color":  -16777216,
+                                             "underline":  false,
+                                             "strike":  false,
+                                             "highlight":  0,
+                                             "shading":  -16777216
+                                         }
+                                     ]
+                       }
+                   ]
+}

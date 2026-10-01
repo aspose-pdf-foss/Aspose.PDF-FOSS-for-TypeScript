@@ -139,6 +139,10 @@ export interface LaidLine {
    *  `max(leading, maxFontSize * leading / fontSize)` for every line with no
    *  atomic, which is what makes every existing caller byte-identical. */
   height: number;
+  /** Points this line starts right of the box's left edge — set on line 0
+   *  alone, by a first-line or (negative) hanging indent (`m2fp.5`), and ABSENT
+   *  otherwise, so every existing caller's lines are unchanged. */
+  indent?: number;
 }
 
 /** Result of flowing text into a box.
@@ -281,7 +285,7 @@ function* breakOverwideWord(
  *  @internal */
 export function layoutRuns(
   runs: readonly LayoutRun[], boxWidth: number, boxHeight: number,
-  leading: number, blockFontSize: number,
+  leading: number, blockFontSize: number, firstLineIndent = 0,
 ): RunLayoutResult {
   // An atomic wider than the box scales BOTH dimensions down — the rule
   // flow.ts's image() already applies to a block image, so it is one rule
@@ -428,6 +432,19 @@ export function layoutRuns(
    *  rather than a rebuild. */
   let restAt = -1;
 
+  // The FIRST line packs against its own width (m2fp.5): narrower for a
+  // first-line indent, wider for a (negative) hanging one, whose extra room the
+  // caller reserved to the left of the box. A positive indent never narrows
+  // line 0 below 12pt — flowelement.ts's MIN_CONTENT_WIDTH, inlined because
+  // importing it would reach back through stamp.ts to here. Every later line
+  // packs against the box. Note an OVER-WIDE word on line 0 still splits
+  // against `boxWidth`, so its first piece may pass the indented edge:
+  // recorded, not fixed.
+  const fi = firstLineIndent > 0
+    ? Math.min(firstLineIndent, Math.max(0, boxWidth - Math.min(boxWidth, 12)))
+    : firstLineIndent;
+  const limit = (): number => (wrapped.length === 0 ? boxWidth - fi : boxWidth);
+
   /** Take one packed line, or report that the budget is spent — in which case
    *  `restAt` names where that line, and so the remainder, begins. */
   const keep = (units: Unit[], endsParagraph: boolean, startChar: number): boolean => {
@@ -515,7 +532,7 @@ export function layoutRuns(
         if (cur.length === 0) { cur = [u]; curWidth = spanWidth(u.start, u.end); continue; }
         const sep = u.spaceBefore ? spaceWidth(cur[cur.length - 1].end - 1) : 0;
         const next = curWidth + sep + spanWidth(u.start, u.end);
-        if (next <= boxWidth) { cur.push(u); curWidth = next; continue; }
+        if (next <= limit()) { cur.push(u); curWidth = next; continue; }
         if (!keep(cur, false, cur[0].start)) break para;
         cur = [u];
         curWidth = spanWidth(u.start, u.end);
@@ -592,6 +609,9 @@ export function layoutRuns(
       segments,
       maxFontSize: ascents[k],
       height: heights[k],
+      // Line 0 alone, and only when non-zero, so every line of every existing
+      // caller is unchanged object for object.
+      ...(k === 0 && fi !== 0 ? { indent: fi } : {}),
     });
   }
 

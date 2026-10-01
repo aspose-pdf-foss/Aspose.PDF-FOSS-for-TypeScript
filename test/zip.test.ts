@@ -8,6 +8,33 @@ const bytes = (s: string) => new TextEncoder().encode(s);
 /** Long enough that deflate actually shrinks it. */
 const LONG = 'the quick brown fox '.repeat(50);
 
+/** `n` bytes of deterministic noise: incompressible, so a deflated entry of it
+ *  stays as large as its input. */
+const noise = (n: number, seed: number): Uint8Array => {
+  const out = new Uint8Array(n);
+  let x = seed >>> 0;
+  for (let i = 0; i < n; i++) { x = (Math.imul(x, 1664525) + 1013904223) >>> 0; out[i] = x >>> 24; }
+  return out;
+};
+
+describe('writeZip: large entries (h4z3)', () => {
+  it('writes and reads back a 4 MB stored entry and a 4 MB deflated one', () => {
+    // Spreading a payload into push() arguments overflowed the stack at a few
+    // hundred KB inside vitest; these are ten times past that.
+    const stored = noise(4 * 1024 * 1024, 1);
+    const deflated = noise(4 * 1024 * 1024, 2);
+    const zip = writeZip([
+      { path: 'media/big.bin', bytes: stored, method: 'store' },
+      { path: 'big.xml', bytes: deflated },
+      { path: 'after.txt', bytes: bytes('still here') },
+    ]);
+    const [a, b, c] = unzip(zip);
+    expect(Buffer.compare(Buffer.from(a.bytes), Buffer.from(stored))).toBe(0);
+    expect(Buffer.compare(Buffer.from(b.bytes), Buffer.from(deflated))).toBe(0);
+    expect(new TextDecoder().decode(c.bytes)).toBe('still here');
+  });
+});
+
 describe('writeZip', () => {
   it('round-trips a stored entry', () => {
     const zip = writeZip([{ path: 'a.txt', bytes: bytes('hello'), method: 'store' }]);

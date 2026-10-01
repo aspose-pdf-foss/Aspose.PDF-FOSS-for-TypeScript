@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutText, winAnsiDriver } from '../src/layout.js';
+import { layoutText, layoutRuns, winAnsiDriver } from '../src/layout.js';
 
 const CR = winAnsiDriver('Courier');
 
@@ -123,5 +123,37 @@ describe('layoutText remainder re-flow', () => {
     expect(part2.remainder).toBe('');
 
     expect([...texts(part1), ...texts(part2)]).toEqual(texts(full));
+  });
+});
+
+describe('first-line indent (m2fp.5)', () => {
+  const run = (text: string) => [{ text, driver: CR, fontSize: SIZE }];
+  const WORDS = 'aaaa bbbb cccc dddd eeee ffff gggg';   // each word 28.8pt, a space 7.2pt
+
+  it('packs line 0 against boxWidth - indent and marks it; later lines use the full box', () => {
+    const plain = layoutRuns(run(WORDS), 120, BIG, LEADING, SIZE);
+    const ind = layoutRuns(run(WORDS), 120, BIG, LEADING, SIZE, 30);
+    expect(plain.lines[0].text).toBe('aaaa bbbb cccc');
+    expect(ind.lines[0].text).toBe('aaaa bbbb');
+    expect(ind.lines[0].indent).toBe(30);
+    expect(ind.lines[1].indent).toBeUndefined();
+    expect(ind.lines[1].text).toBe('cccc dddd eeee');
+  });
+
+  it('lets a hanging (negative) first line pack WIDER than the box', () => {
+    const hang = layoutRuns(run(WORDS), 120, BIG, LEADING, SIZE, -30);
+    expect(hang.lines[0].indent).toBe(-30);
+    expect(hang.lines[0].text).toBe('aaaa bbbb cccc dddd');
+    expect(hang.lines[0].width).toBeGreaterThan(120);
+  });
+
+  it('never narrows line 0 below 12pt, however large the indent', () => {
+    const got = layoutRuns(run(WORDS), 120, BIG, LEADING, SIZE, 500);
+    expect(got.lines[0].indent).toBeCloseTo(108, 6);
+  });
+
+  it('is byte-identical with no indent: no line carries the key', () => {
+    const got = layoutRuns(run(WORDS), 60, BIG, LEADING, SIZE);
+    expect(got.lines.every((l) => !('indent' in l))).toBe(true);
   });
 });

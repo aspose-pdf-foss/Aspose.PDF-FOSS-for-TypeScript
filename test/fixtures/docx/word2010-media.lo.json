@@ -1,0 +1,99 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Picture: ",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Picture: ",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "A link to the example site.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "A link to the example site.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Target paragraph",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Target paragraph",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Jump to the target.",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Jump to the target.",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": []
+    }
+  ],
+  "tables": [],
+  "links": [
+    {
+      "text": "the example site",
+      "url": "https://example.com/docs"
+    },
+    {
+      "text": "the target",
+      "anchor": "target"
+    }
+  ],
+  "images": 1,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 0,
+    "endnotes": 0,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  }
+}

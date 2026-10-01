@@ -4,9 +4,9 @@ export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceL
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile, saveMarkdownFile, saveDocxFile,
-  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, htmlFileToPdf,
+  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, htmlFileToPdf, docxFileToPdf,
 } from './node.js';
-export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions } from './node.js';
+export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions } from './node.js';
 export { Document } from './document.js';
 export type {
   SplitOptions, ExtractPagesOptions, InsertPagesOptions, OpenOptions, SaveOptions,
@@ -26,6 +26,10 @@ export {
   Field, TextField, CheckboxField, RadioField, ChoiceField, ButtonField,
 } from './formfield.js';
 export type { FieldType } from './formfield.js';
+export type { FieldAppearanceOptions } from './formfield.js';
+export type {
+  RecalculateReport, RecalculatedValue, UnrecognisedScript, ValueCheckReport, ValueRejection,
+} from './afrules.js';
 export type {
   FieldInit, TextFieldInit, CheckboxInit, RadioOption, RadioGroupInit,
   ChoiceOption, ChoiceInit, ComboBoxInit, ListBoxInit, PushButtonInit, SignatureFieldInit,
@@ -144,6 +148,8 @@ export { htmlElements } from './htmlflow.js';
 export type {
   HtmlFlowOptions, HtmlFlowResult, HtmlElements, AddHtmlResult,
 } from './htmlflow.js';
+// --- DOCX rendering (m2fp.5) ---
+export type { DocxFlowOptions, DocxFlowResult, AddDocxResult, DocxSkipped } from './wmlimport.js';
 // The unrenderable-construct report (zch2.7). `describe` is renamed on
 // export because the bare name collides with vitest's and with any caller's
 // own; describeNotRendered says what it describes.

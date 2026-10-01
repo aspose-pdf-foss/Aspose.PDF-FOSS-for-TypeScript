@@ -11,6 +11,7 @@ import type { MarkdownExportOptions } from './mdexport.js';
 import type { DocxOptions } from './docxexport.js';
 import { parseHtmlBytes } from './htmltree.js';
 import type { HtmlFlowOptions } from './htmlflow.js';
+import type { DocxFlowOptions, DocxSkipped } from './wmlimport.js';
 import type { FlowOptions } from './flow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { UnsupportedDeclaration } from './cssprop.js';
@@ -342,4 +343,24 @@ function confinedPath(base: string, src: string): string | undefined {
   const rel = relative(base, target);
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return undefined;
   return target;
+}
+
+/** How {@link docxFileToPdf} renders: everything `doc.AddDocx` takes. */
+export interface DocxFileOptions extends DocxFlowOptions, FlowOptions {
+  /** Document title. Non-empty. Default: the document's own core-properties title. */
+  title?: string;
+}
+
+/** Read a Word document (.docx) from disk, render it, and write the PDF to
+ *  `outPath` (`m2fp.5`). The one-call form of `Document.New` + `AddDocx` +
+ *  `Save`; returns what did not render. */
+export async function docxFileToPdf(
+  inputPath: string, outPath: string, options: DocxFileOptions = {},
+): Promise<{ skipped: DocxSkipped[] }> {
+  const bytes = new Uint8Array(await readFile(inputPath));
+  const doc = Document.New();
+  const { skipped } = doc.AddDocx(bytes, options);
+  await mkdir(dirname(resolve(outPath)), { recursive: true });
+  await writeFile(outPath, doc.Save());
+  return { skipped };
 }
