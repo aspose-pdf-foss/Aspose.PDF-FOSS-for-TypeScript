@@ -44,9 +44,13 @@ export interface SearchOptions {
   includeHidden?: boolean;
 }
 
-const centroidOf = (q: Rect): [number, number] => [(q[0] + q[2]) / 2, (q[1] + q[3]) / 2];
-const inRect = (r: Rect, x: number, y: number): boolean =>
-  x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+/** Whether a glyph quad lies in `region` by the CENTROID rule described on
+ *  `SearchOptions.region`. Exported so `compare.ts` scopes a comparison by
+ *  the one rule search and table extraction already share. */
+export function centroidIn(region: Rect, q: Rect): boolean {
+  const x = (q[0] + q[2]) / 2, y = (q[1] + q[3]) / 2;
+  return x >= region[0] && x <= region[2] && y >= region[1] && y <= region[3];
+}
 
 /** Find every occurrence of `find` in the page's assembled text. A string is
  *  matched literally; a RegExp is always applied globally (its own `g` flag is
@@ -65,7 +69,7 @@ export function searchText(
   visitContent(doc, page, {
     glyph: (e) => {
       if (!e.text) return;
-      if (region && !inRect(region, ...centroidOf(e.quad))) return;
+      if (region && !centroidIn(region, e.quad)) return;
       runs.push(runFromGlyph(e, e));
     },
   }, walkOpts(opts));

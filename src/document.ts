@@ -45,6 +45,9 @@ import { stitchTables, type TableStitchOptions } from './tablestitch.js';
 import type { Table, TableExtractOptions } from './tablemodel.js';
 import type { Rect } from './text.js';
 import type { RedactOptions } from './redact.js';
+import { compareText, type CompareTextOptions, type TextComparison } from './compare.js';
+import { planSideBySide, renderSideBySide, type SideBySideOptions, type SideBySideResult } from './comparesidebyside.js';
+import { compareRendering, type RenderingCompareOptions, type RenderingComparison } from './comparerendering.js';
 import type { ApplyRedactionsOptions, MarkRedactTextOptions } from './redactapply.js';
 import { flattenForm } from './flatten.js';
 import { optimizeDocument, OptimizeOptions, OptimizeReport } from './optimize.js';
@@ -3708,6 +3711,43 @@ export class Document {
     let total = 0;
     for (const page of this.Pages) total += page.ReplaceText(find, replacement);
     return total;
+  }
+
+  /** Compare this document's text with `other`'s: what was deleted, what was
+   *  inserted and what stayed, each placed on its pages the way `Search` places
+   *  a match. See `CompareTextOptions` for page-by-page mode, character
+   *  granularity, case, regions and exclusion areas. */
+  CompareText(other: Document, options?: CompareTextOptions): TextComparison {
+    return compareText(this, other, options);
+  }
+
+  /** Compare how this document and `other` RENDER, page by page: which
+   *  pixels changed, where (in page space), and optionally a difference image.
+   *  Sees what `CompareText` cannot — colour, images, lines — but not what
+   *  changed. See `RenderingCompareOptions`. */
+  CompareRendering(other: Document, options?: RenderingCompareOptions): RenderingComparison {
+    return compareRendering(this, other, options);
+  }
+
+  /** Compare this document with `other` and set the two side by side in a
+   *  **new** Document: one sheet per page pair, this document's page on the
+   *  left and `other`'s on the right, deletions marked on the left and
+   *  insertions on the right. Neither input is changed. See
+   *  `SideBySideOptions` for the comparison options, the gap, colours, and
+   *  annotation or drawn marks. */
+  CompareSideBySide(other: Document, options: SideBySideOptions = {}): SideBySideResult {
+    const plan = planSideBySide(this, other, options); // validates and compares; allocates nothing
+    const out = Document.createEmptyDocument();
+    const rootNum = out.requireIndirectPagesRoot();
+    const nums = plan.sheets.map((s) => out.allocObject(new Map<string, PdfObject>([
+      ['Type', name('Page')],
+      ['Parent', ref(rootNum)],
+      ['MediaBox', [0, 0, s.width, s.height]],
+      ['Resources', new Map<string, PdfObject>()],
+    ])).num);
+    out.syncPages(nums.map((n) => ref(n)));
+    renderSideBySide(out, plan);
+    return { document: out, comparison: plan.comparison };
   }
 
   /** Stamp a single source page onto many pages of this document as one shared

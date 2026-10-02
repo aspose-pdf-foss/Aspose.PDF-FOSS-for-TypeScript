@@ -180,6 +180,7 @@ flowchart TD
 - **Annotation text search (carried)** — `page.SearchAnnotationText(find)` finds text an annotation **carries** but never draws: its body (`/Contents`), author (`/T`), subject (`/Subj`) and rich content (`/RC`, an XHTML fragment reduced to plain text, with a line break between block elements). Each hit names the entry it matched. Searches every annotation, hidden ones included, and carries no geometry — the only box available would be the whole `/Rect`.
 - **Annotation text search (drawn)** — `page.SearchAnnotations(find)` finds text the page's annotations **draw** — a `/FreeText`'s visible words, a filled form field's value — which live in the annotation's `/AP` appearance stream and are invisible to `page.Search`. Returns `AnnotationMatch[]`: the annotation, the matched substring, and one page-space quad per line. Each annotation is assembled on its own, so a query never matches across two annotations or across an annotation and the page text beneath it; only annotations a static render would draw are searched. Takes the same `options.region`.
 - **Text replace** — `page.ReplaceText(find, replacement)` (or `doc.ReplaceText(...)` across all pages) substitutes matched text in place, re-encoding the replacement in the matched glyphs' own font and editing the content stream directly. It is constrained to the same font and encoding with **no layout reflow** (positioning is preserved, so a wider replacement may overlap and a narrower one may leave a gap), and throws `UnsupportedFeatureError` for Type0/composite fonts or characters the encoding can't represent. Returns the number of occurrences replaced.
+- **Text comparison** — `doc.CompareText(other, options?)` reports what changed between two documents as a list of equal, deleted and inserted runs, in reading order, with statistics and a `similarity` score. Each run is placed on its pages the way `Search` places a match — a deleted word in the first document and an inserted one in the second carry the same page-space quads `Search` would report for them — so a caller can highlight them. By default each document is read as one text, so a paragraph that reflows onto the next page is no change; `mode: 'pages'` compares page with page instead and reports a page only one document has as wholly inserted or deleted. Words are compared by default; `granularity: 'character'` finds the letters that changed inside a word, with whitespace collapsed (a moved line break is no change) or ignored. `ignoreCase`, a `region` to compare and `exclude` areas to skip use `Search`'s centroid rule. The search finds the fewest words deleted and inserted, and then — by default — folds a word two rewritten passages merely happen to share into the change around it, so a replaced sentence reads as one deletion and one insertion rather than being split around a lone `of`; `cleanup: 'none'` keeps the smallest diff. Past a search budget a stretch is reported as one deletion plus one insertion and `minimal` is false.
 - **Image extraction** — `page.Images` enumerates embedded image XObjects (descending into Form XObjects), exposing `Width`, `Height`, `Bits`, `ColorSpace`, and `Filter`. `img.Save()` hands the picture back as a file — bytes plus a media type, faithfully by default, so an unmasked JPEG is returned verbatim rather than re-encoded — and `{ format: 'png' | 'jpeg' }` forces an encoding. `RawData` returns the encoded stream bytes; `Decode()` returns decoded samples for `FlateDecode`/`LZWDecode`/ASCII-filter images (with predictors and filter chains), 1-bpp samples for `CCITTFaxDecode` (Group 3 1D/2D and Group 4), 8-bit samples for `JPXDecode` (JPEG 2000 — see *JPEG 2000 decoding* below), and passes JPEG (`DCTDecode`) bytes through. Image masks and `/SMask` are handled gracefully. Images can also be edited in place: `img.Replace(data)` swaps the picture for JPEG, PNG, BMP or TIFF bytes while keeping the placement, and `img.Remove()` drops the image from the page — every draw of it in the page's content and in the Form XObjects the page descends into, plus its `/XObject` resource entry. Both are scoped to the page the handle came from: an image shared with another page is copied rather than mutated on replace, and survives removal from one page while another still draws it, so a handle from `page.Images` never silently edits a page the caller was not looking at. The new image is stretched into the existing footprint, since the `cm` that sizes it lives in the content stream. `Remove({ sanitize: true })` additionally prunes every other resource name the page no longer references. Inline (`BI…EI`) images live in no object and so are absent from `page.Images`; `page.InlineImages` enumerates them separately and each handle can `Remove()` itself. That removes exactly one draw, because an inline image *is* one draw — and because a removal shifts the op indices of every later one, a handle taken before a removal is invalidated and throws rather than cutting the wrong picture. Remove one, enumerate again. Replacing an inline image is not supported.
 - **Redaction** — `page.Redact(rects, opts?)` (or `doc.Redact(page, rects, opts?)`) truly removes the text and images under one or more page-space rectangles — covered glyphs are dropped from the content stream (survivors keep their positions), fully-covered images are deleted, and the resources they orphan are pruned so the content is gone from the saved file, not merely hidden behind a box. An opaque marker rectangle (default black, configurable) is painted over each region; annotations covering the region are removed too (a covered form field goes whole, value included) unless `keepAnnotations` says otherwise; `scrubMetadata` also clears `/Info` + XMP. `page.RedactText(find | RegExp, opts?)` (and `doc.RedactText(...)`) redact **by content** — locating text with the same search as `page.Search` and removing every matched region through the same pipeline — and return the occurrence count. Redaction can also be **marked before it is applied**: `page.AddRedact(opts)` and `page.MarkRedactText(find, opts?)` add `/Redact` annotations carrying the overlay (`/IC` fill, `/OverlayText`, `/DA` style, `/Q`, `/Repeat`) without removing anything — the marked text is still extractable, and the mark draws as an outline rather than a filled box so it can never be mistaken for a finished redaction — and `page.ApplyRedactions(opts?)` (or `doc.ApplyRedactions(...)`) then destroys the marked content through the same pipeline, paints each mark's overlay (honoring an `/RO` overlay form when one is present), and removes the marks.
 - **Flatten** — `page.FlattenAnnotations()` / `doc.FlattenAnnotations()` bake each annotation's `/AP /N` appearance into the page content (as a Form XObject draw placed onto its `/Rect`) and drop the now-static object from `/Annots`; `doc.FlattenForm()` generates every field's appearance, bakes the widgets, and removes the `/AcroForm` so the form is no longer interactive. Per-object flattening (`field.Flatten()`, `annotation.Flatten()`) bakes one field or annotation and leaves the rest interactive. Hidden/NoView, `/Popup`, and annotations with no appearance to bake are left untouched — though "no appearance" now means fewer annotations than it used to, since a shape, text-markup, sticky-note, file-attachment, stamp or FreeText annotation that carries **no `/AP` at all** is drawn on the fly and so has one to bake. An `/AP` that is present but unusable is still left alone.
@@ -1583,6 +1584,48 @@ There is **no layout reflow**: positioning operators are preserved, so a wider
 replacement may overlap following text and a narrower one may leave a gap. A
 Type0/composite font, or a replacement character not representable in the font's
 encoding, throws `UnsupportedFeatureError`.
+
+### Compare Documents
+
+```ts
+const before = Document.Open(oldBytes), after = Document.Open(newBytes);
+const result = before.CompareText(after);
+for (const c of result.changes) {
+  if (c.op === 'delete') console.log('removed', c.oldText, 'on page', c.old[0]?.page);
+  if (c.op === 'insert') console.log('added', c.newText, 'on page', c.new[0]?.page);
+}
+console.log(result.stats.similarity);                    // 1 means identical text
+
+before.CompareText(after, { mode: 'pages' });             // page 1 vs page 1, ...
+before.CompareText(after, { granularity: 'character' });  // "colour" -> "color": delete "u"
+before.CompareText(after, { exclude: [[0, 0, 612, 50]] }); // skip a footer band
+
+const html = comparisonToHtml(result, { title: 'Contract v1 → v2', context: 10 });
+const md = comparisonToMarkdown(result);   // the ~~quick~~ **slow** brown fox
+const json = comparisonToJson(result, { spans: false });
+
+const { document: review } = before.CompareSideBySide(after);   // a new PDF to read
+const pixels = before.CompareRendering(after, { image: true });  // what changed in appearance
+for (const p of pixels.pages) if (p.changedPixels) writeFileSync(`diff-${p.newPage}.png`, p.image!);
+writeFileSync('review.pdf', review.Save());
+```
+
+Each change carries `TextSpan`s — page number, text and one quad per line — on the
+side it belongs to, so deletions can be marked on the first document and insertions
+on the second. `comparisonToHtml`, `comparisonToMarkdown` and `comparisonToJson` write a
+comparison out for reading or for another program; unchanged text is shown in the second
+document's spelling, and `context` cuts long unchanged stretches to a few words either side
+of each change. `CompareSideBySide` builds a new PDF for a reader: each page pair on one
+sheet, the first document's page on the left and the second's on the right, each deletion
+highlighted on the left and each insertion on the right with a note saying what changed
+(`marks: 'content'` draws translucent boxes instead, for viewers and printers that hide
+annotations). With `tagged: true` the result carries both documents' structure — each half of
+every sheet resolving to its own document's elements — with every mark an `/Annot` element
+whose alternate text says what changed, so a tagged pair compares into a tagged result. The
+comparison is of text only: a recoloured heading or a moved image
+with unchanged text is no change. `CompareRendering` covers that: it renders both documents and
+reports which pixels changed, as page-space regions and an optional difference image (the
+second document faded, changes in red) — where something changed, though not what.
 
 ### Redact Content
 
@@ -3009,7 +3052,7 @@ Budgets are in characters (`maxInputChars`, default 48,000 per request) because 
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 427 public types plus 150
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 441 public types plus 153
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -3033,6 +3076,10 @@ of these tables.
 | `CollectionView` | How a viewer presents the portfolio. |
 | `ColumnWidth` | A column-width spec: an absolute width in points (`fixed`), or a share of the leftover space after fixed columns are allotted (`fraction`). |
 | `CommitmentType` | Standard CAdES commitment-type identifiers, or a custom dotted OID string. |
+| `CompareTextOptions` | Options for `Document.CompareText`: `mode` (`document` or `pages`), `granularity` (`word` or `character`), `whitespace`, `ignoreCase`, `region`, `exclude`, `includeHidden`, `order`, `cleanup` (`semantic` or `none`), `maxCost`. |
+| `ComparisonHtmlOptions` | Options for `comparisonToHtml`: `context`, `fragment`, `title`. |
+| `ComparisonJsonOptions` | Options for `comparisonToJson`: `spans` (include page spans, default true), `indent`. |
+| `ComparisonReportOptions` | Options shared by the comparison writers: `context`, the unchanged words kept either side of a change before a stretch is cut to `…`. |
 | `ContentItem` | A marked-content reference owned by a structure element. |
 | `ConvertCategory` | Class in the PDF TypeScript API. |
 | `Decoration` | `true` uses the font's metrics and the text's own colour; `false` is off. |
@@ -3067,6 +3114,8 @@ of these tables.
 | `Page` | A single PDF page: a live, mutable handle over its real page dict. |
 | `PageFormat` | A page size in points (1/72"). |
 | `PageGraphics` | A buffered builder for drawing vector content onto a page. |
+| `PageRenderingComparison` | One page pair of a `CompareRendering`: `oldPage`/`newPage`, the compared `width`/`height` in pixels, `changedPixels`, `totalPixels`, `ratio`, `regions` in page space, and the PNG `image` when asked for. |
+| `PageTextComparison` | One page pair of a `pages`-mode comparison: `oldPage`/`newPage` (undefined where only one document has the page), `changes`, `stats`, `minimal`. |
 | `PathSegment` | Class with 8 properties. |
 | `PdfALevel` | Conformance target: part (1/2/3) + level (b/u/a). |
 | `PdfAction` | Any action this library models, for an annotation's /A. |
@@ -3075,6 +3124,8 @@ of these tables.
 | `PdfXLevel` | PDF/X conformance target. |
 | `PubSecRecipient` | Class with 4 properties. |
 | `QrEcc` | Class in the PDF TypeScript API. |
+| `RenderingCompareOptions` | Options for `Document.CompareRendering`: `dpi` (default 72), `tolerance` (per channel, 0..255, default 0), `mergeDistance` (points, default 6), `image`, `annotations`. |
+| `RenderingComparison` | The result of `Document.CompareRendering`: `pages`, totals `changedPixels`/`totalPixels`/`ratio`, and `identical`. |
 | `RGB` | An RGB colour in a structure attribute (`/BackgroundColor`, `/Color`, …): three components in 0..1. |
 | `Rect` | A page-space rectangle [x0,y0,x1,y1] (corners in any order). |
 | `ResetAction` | A ResetForm action: clear the named fields, or every field. |
@@ -3084,6 +3135,8 @@ of these tables.
 | `RowBuilder` | One row: an ordered list of cells plus an optional row-level style. |
 | `SaveOptions` | Options for Save/WriteTo. |
 | `Severity` | Class in the PDF TypeScript API. |
+| `SideBySideOptions` | Options for `Document.CompareSideBySide`: `compare` (the `CompareTextOptions`), `gap`, `marks` (`annotations` or `content`), `deleteColor`, `insertColor`, `tagged` (carry both documents' structure and tag the marks). |
+| `SideBySideResult` | The result of `Document.CompareSideBySide`: the new side-by-side `document` and the `comparison` its marks came from. |
 | `Signer` | Any accepted signer: a credential source, or a pre-resolved CmsSigner (certificate DER + `KeyObject`) for callers that already hold a key. |
 | `StdFont` | Class in the PDF TypeScript API. |
 | `StreamFilterName` | Byte-filters this pass can re-encode a stream into. |
@@ -3096,7 +3149,11 @@ of these tables.
 | `Table` | A reconstructed table: a rows×cells model with page-space quads and text, serializable to HTML or Markdown. |
 | `TableBuilder` | A page-independent table: ordered rows over shared text defaults. |
 | `Template` | A reusable piece of drawn content, placed on any number of pages from a single Form XObject. |
+| `TextChange` | One run of a text comparison: `op` (`equal`, `delete`, `insert`), `oldText`/`newText`, and `old`/`new` `TextSpan`s placing it on each document's pages. |
+| `TextComparison` | The result of `Document.CompareText`: its `granularity`, every run in reading order, `stats`, `minimal`, and `pages` in page-by-page mode. |
+| `TextComparisonStats` | Token totals of a comparison: `equal`, `deleted`, `inserted`, `changes` (change regions), `oldTokens`, `newTokens`, `similarity` (0..1). |
 | `TextFont` | Class with 6 methods and 10 properties. |
+| `TextSpan` | Where a compared run lies on one page: 1-based `page`, its `text`, and one page-space quad per line, as `Search` reports the same text. |
 | `TilingPattern` | A handle returned by `Document.NewTilingPattern`. |
 | `TimestampProvider` | A timestamp provider: given a DER `TimeStampReq`, return either the bare `TimeStampToken` (a CMS ContentInfo) or a full `TimeStampResp`. |
 | `UnsupportedFeatureError` | Class with 1 method. |
@@ -3724,6 +3781,9 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.SearchAnnotationText(find)` | Find a string/`RegExp` in the text the page's annotations **carry** — `/Contents`, `/T` (author), `/Subj` — → `AnnotationTextMatch[]` (`annot`, `key`, `value`, `text`). Searches **every** annotation, hidden ones included. No geometry and no options, deliberately |
 | `richTextToPlain(markup, opts?)` | The plain text of an XHTML rich-text fragment (`/RC`, `/RV`), or `undefined` when it will not parse. Never throws |
 | `page.ReplaceText(find, replacement, options?)` | Replace matches in place (same font/encoding, no reflow) → count. Takes `options.region` |
+| `doc.CompareText(other, options?)` | Compare two documents' text → `TextComparison`: equal/delete/insert runs placed on each document's pages, `stats` with a `similarity`, `minimal`. `mode: 'pages'` compares page with page; `granularity: 'character'`, `ignoreCase`, `region` and `exclude` scope what is compared |
+| `doc.CompareSideBySide(other, options?)` | A **new** Document setting each page pair side by side — this document left, `other` right — with deletions marked on the left and insertions on the right, as highlight annotations (default) or drawn boxes. Returns `{ document, comparison }`; neither input changes |
+| `doc.CompareRendering(other, options?)` | Compare how two documents RENDER, page by page → `RenderingComparison`: changed pixels, their ratio, changed regions in page space, and with `{ image: true }` a PNG difference image per page. `dpi`, `tolerance` and `mergeDistance` tune it; sees colour, image and line changes that `CompareText` cannot |
 | `doc.ReplaceText(find, replacement)` | `ReplaceText` across every page → total count |
 | `page.Redact(rects, opts?)` | Remove text/images under `[x0,y0,x1,y1]` regions, prune orphans, paint markers |
 | `doc.Redact(page, rects, opts?)` | Redact one page by 1-based number (convenience over `page.Redact`) |
@@ -3776,6 +3836,9 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `searchText` | Find every occurrence of `find` in the page's assembled text. |
 | `redactText` | Redact every match of a string or `RegExp` on a page. |
 | `replaceText` | Replace every match on a page, re-encoding in the run's own font without reflow. |
+| `comparisonToHtml` | Write a `TextComparison` as HTML: deletions in `<del>`, insertions in `<ins>`; a complete document with a summary line, or `{ fragment: true }` for the markup alone. |
+| `comparisonToMarkdown` | Write a `TextComparison` as GitHub-flavored Markdown: `~~deleted~~` and `**inserted**` words, or `<del>`/`<ins>` tags at character granularity. |
+| `comparisonToJson` | Write a `TextComparison` as JSON, with or without each change's page spans. |
 | `searchAnnotations` | Search the text an annotation DRAWS, inside its `/AP` appearance stream. |
 | `searchAnnotationText` | Search the text an annotation CARRIES — `/Contents`, `/T`, `/Subj`, `/RC`. |
 | `extractTables` | Reconstruct a page's tables — the free function behind `page.GetTables`. |
@@ -4113,6 +4176,8 @@ See [the docs](https://example.com).
 - **Artifact enumeration is read-only, and most artifacts declare nothing** — `page.Artifacts` reports scopes; it does not create, edit or remove them, and the writing side stays what it was (`BeginArtifact` and the `artifact: true` options emit a bare `/Artifact BMC` with no property list, so a document this library produces reports no `type`, `subtype` or declared `bbox`). A declared `/BBox` is reported verbatim: 32000-1 14.8.2.2 puts it in default user space, so one declared *inside* a Form XObject — rare, and ambiguous in the standard — is reported in that form's coordinates rather than the page's. A measured `bbox` covers every glyph, image and path the scope encloses, whether or not that content is ultimately visible: like `GetPaths`, the walk tracks no clip and no text render mode, so a clipped-away fill and text drawn in the invisible mode (an OCR layer) both count toward it.
 - **PDF/A-4 (ISO 19005-4:2020) is covered** for `'4'`, `'4e'` and `'4f'`, with the same curated posture: about twenty of its clauses are checked and roughly twenty-five are not — ICC profile internals, glyph presence and widths inside font programs, `.notdef` references, JPEG 2000 codestream internals, embedded CMap internals, byte-level file structure (binary comment, xref EOL, hex-string syntax, `obj`/`endobj` spacing, `/Length` accuracy, trailing bytes), undefined content operators, UTF-8 name validity, ActualText private-use values, DeviceN and Separation consistency, and CMYK overprint. Clause 6.9-3 (embedded files must themselves be PDF/A) is reported as a **warning** rather than checked, since this validator does not recursively validate embedded documents. Note PDF/A-4's rules are **not** a superset of parts 1–3 — `/ToUnicode` presence, `/CIDSet`, JavaScript actions and the `/Info`-versus-XMP consistency check all go silent at part 4 — so a document can fail at `'2u'` and pass at `'4'` for the same reason. The part-4 rules are transcribed from veraPDF's published validation profiles; there is no runnable oracle in this repository, so a passing report attests agreement with that transcription, not certified ISO 19005-4 conformance.
 - **Image extraction sees XObjects, not inline images** — `saveImagesFile` and `page.Images` enumerate image XObjects, descending into Form XObjects. An inline `BI … EI` image occupies no `/XObject` entry and has no stream object, so neither ever sees one and `InlineImageInfo` (which `page.InlineImages` returns) has no `Save`; extracting one means re-encoding samples that live in the content operator itself. The extension of every file written comes from the encoder's media type, so a document whose images cannot be encoded yields an empty directory and a populated `skipped` rather than files of the wrong kind.
+- **Text comparison compares text, not appearance** — `CompareText` diffs the words (or characters) each page shows, so a recoloured heading, a changed font or a moved image with unchanged text is no change, and text drawn as vector outlines or as an image is invisible to it. Reading order is `GetText`'s, so a document whose layout reorders the same words reports them as moved. Past the search budget (`maxCost`, 50 million steps by default) a stretch is reported as one deletion plus one insertion rather than the smallest edit, and `minimal` is false.
+- **Rendering comparison is pixel-exact by default** — `CompareRendering` compares this library's own renders of both documents, so it reports what changed in how the pages draw here; a font substituted the same way on both sides cancels out, and a difference only another viewer would show is invisible. Pages are aligned at the top left, so a page whose size changed differs wherever its content moved. Anti-aliased edges from documents written by different tools can differ by a few levels with nothing visibly changed; `tolerance` absorbs that.
 - **Text replace is same-font, no-reflow** — `ReplaceText` re-encodes the replacement in the matched glyphs' existing font and encoding and edits the content stream in place; it does not change fonts, embed glyphs, or re-lay-out text. Positioning operators are preserved, so a replacement of a different width may overlap following text or leave a gap. Type0/composite fonts, and any character the font's encoding can't represent, throw `UnsupportedFeatureError`.
 - **There is no printing subsystem, by decision** — this library writes PDFs; it does not drive printers. Aspose's Java build exposes a printing package (`PdfPrinterSettings`, `PrintPaperSize`, `DuplexKind` and the rest) because it maps onto `java.awt.print`, and Node has no equivalent to map onto: sending bytes to a physical device is the host application's job, through whatever spooler it already talks to. What a *document* can legitimately say about printing is print **intent**, and that ships in full — `SetViewerPreferences` writes `Duplex`, `PrintScaling`, `NumCopies`, `PrintPageRange`, `PrintArea`/`PrintClip` and `PickTrayByPDFSize`, which is 32000-1's whole print vocabulary (see [Viewer preferences](#set-viewer-preferences)). Expect "how do I print?" to land here: render with `page.ToImage()` and hand the raster to your platform's print path, or hand the PDF itself to a viewer.
 

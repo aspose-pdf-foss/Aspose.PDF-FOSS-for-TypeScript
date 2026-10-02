@@ -1876,6 +1876,18 @@ export function renderPageRegionToPng(doc: Document, page: Page, region: Rect, s
   return pageRegionRenderer(doc, page, scale)(region);
 }
 
+/** A page rendered to opaque 8-bit RGB at `scale` (pixels per point), with
+ *  the page-space → pixel matrix the render used — `renderCanvas`'s own
+ *  composition, so a caller mapping pixels back to the page cannot disagree
+ *  with where they were drawn. For `comparerendering.ts`. */
+export function renderPageRgb(
+  doc: Document, page: Page, scale: number, annotations = true,
+): { width: number; height: number; rgb: Uint8Array; device: Matrix } {
+  const canvas = renderCanvas(doc, page, { scale, annotations }, { skipGlyphs: false });
+  const device = mul(baseMatrix(page, 'crop').matrix, [scale, 0, 0, scale, 0, 0]);
+  return { width: canvas.w, height: canvas.h, rgb: canvas.toRgb(), device };
+}
+
 /** {@link renderPageRegionToPng} for many regions of one page: the page is
  *  rendered ONCE, on the first call, and every region is cropped from that
  *  canvas (`u0ec`). `GenerateAltText` asks for one crop per image-less

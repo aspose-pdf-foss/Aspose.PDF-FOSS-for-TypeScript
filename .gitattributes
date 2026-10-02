@@ -15,6 +15,11 @@ test/fixtures/jpeg/*.ppm binary
 # today only because one NUL happens to land in the sniff window. Say binary.
 test/fixtures/qpdf/*.pdf binary
 
+# Two Word 2010 revisions whose SHA-256 the comparison test pins: byte-exact or
+# worthless. Both happen to contain NUL bytes, so the sniff calls them binary
+# today; say so outright rather than relying on it.
+test/fixtures/compare/*.pdf binary
+
 # The WPT tree-construction corpus carries lone CR bytes inside #data payloads
 # (processing-instructions.dat's `<?hey\rthere=1?>` is one) and other bytes the
 # format deliberately makes unsafe. eol=lf normalization leaves a lone CR alone

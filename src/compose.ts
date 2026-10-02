@@ -44,8 +44,11 @@ function importGraphInto(target: Document, srcDoc: Document, root: PdfObject): P
 
 /** Matrix mapping the source CropBox (with /Rotate applied) into an upright
  *  form-space box anchored at the origin. /BBox stays = CropBox; consumers
- *  transform the BBox by this matrix to position the placement. */
-function importMatrix(rotate: number, box: number[]): Matrix {
+ *  transform the BBox by this matrix to position the placement.
+ *
+ *  @internal Exported for `comparesidebyside.ts`, which must move its marks by
+ *  exactly the transform its pages were placed by — one owner for that rule. */
+export function importMatrix(rotate: number, box: number[]): Matrix {
   const [x0, y0, x1, y1] = box;
   const w = x1 - x0, h = y1 - y0;
   const t: Matrix = [1, 0, 0, 1, -x0, -y0]; // CropBox origin -> (0,0)

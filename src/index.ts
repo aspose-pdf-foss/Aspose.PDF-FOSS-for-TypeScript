@@ -100,6 +100,13 @@ export type { RedactOptions } from './redact.js';
 export type { ApplyRedactionsOptions, MarkRedactTextOptions } from './redactapply.js';
 export { searchText, replaceText } from './textedit.js';
 export type { TextMatch, SearchOptions } from './textedit.js';
+export type {
+  CompareTextOptions, TextComparison, TextChange, TextSpan, TextComparisonStats, PageTextComparison,
+} from './compare.js';
+export { comparisonToHtml, comparisonToMarkdown, comparisonToJson } from './comparereport.js';
+export type { SideBySideOptions, SideBySideResult } from './comparesidebyside.js';
+export type { RenderingCompareOptions, RenderingComparison, PageRenderingComparison } from './comparerendering.js';
+export type { ComparisonReportOptions, ComparisonHtmlOptions, ComparisonJsonOptions } from './comparereport.js';
 export { searchAnnotations, searchAnnotationText } from './annotsearch.js';
 export type { AnnotationMatch, AnnotationTextMatch, AnnotationTextKey } from './annotsearch.js';
 export { richTextToPlain } from './richtext.js';

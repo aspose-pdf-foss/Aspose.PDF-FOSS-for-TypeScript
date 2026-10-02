@@ -8460,6 +8460,166 @@ Source (`src/`):
   stream. So its Huffman aggregate decodes from the segment's first byte. Do
   not cite it as agreeing. Still no real-world FILE uses the shape; one
   independent implementation agreeing is evidence, not conformance.
+- **textdiff.ts** — the token-level diff under document comparison
+  (`aq4a.1`): `diffSequences(a, b, key, opts)` returning equal/delete/insert
+  `DiffRun`s plus `minimal`, `diffStats` and `tokenizeWords`. Internal: nothing
+  is exported from `index.ts` until `aq4a.2`'s `CompareText` gives it a public
+  surface.
+  **Invariant:** a pure LEAF importing NOTHING, generic over the token type
+  and comparing by a caller's KEY — so a token carries its page, quad and style
+  while each side of an equal run keeps its OWN payload, paired index by index.
+  **Invariant:** the answer is MINIMAL — N + M − 2·LCS tokens edited — and the
+  suite checks that against an independent O(NM) LCS table over 400 seeded
+  random pairs, never against Myers itself (the differential-test rule).
+  **Invariant:** past `maxCost` diagonal steps a subproblem becomes a whole
+  delete plus a whole insert. Still CORRECT — both sides reassemble — but not
+  minimal, and `minimal: false` says so, so a caller can tell a rewrite from a
+  refused search. The common prefix and suffix are trimmed BEFORE any budget is
+  spent, so two long documents with one edit never hit it.
+  **Invariant:** between two equalities there is exactly ONE change region,
+  delete before insert (or `order: 'insert-first'`), however Myers interleaved
+  them — the deleted indices of one side are contiguous there, which is what
+  makes the collapse sound.
+  **Invariant:** a ONE-SIDED region slides as far LEFT as its tokens allow,
+  merging the equalities it separated: `a` + ins `x a` + `c` and ins `a x` +
+  `a c` are one edit, and two diffs must not differ by where Myers landed.
+  Sliding never changes the edited-token count.
+  **Note, measured:** all mutations redden but one, and that one is a
+  REDUNDANT PAIR — the budget is checked in both the forward and the reverse
+  loop of the middle snake, so removing either check alone stays green and
+  removing both reddens the budget case. Do not "simplify" one away.
+  **Invariant (`aq4a.6`):** `cleanup: 'semantic'` folds an equality STRICTLY
+  SHORTER than the edits on both sides of it (the larger of deletion and
+  insertion, per side) and steps back after each fold, since a grown region
+  may now outweigh the equality before it. It runs BEFORE `slide`. It is OFF
+  here — the minimality oracle is about this module — and ON by default in
+  `CompareText`. **Note, and the real-world fixture is what settled it:**
+  diff-match-patch's `<=` on characters is wrong on WORDS: a one-word
+  equality beside a one-word edit is a landmark, and `<=` merged a rewritten
+  paragraph with an unrelated `colour` -> `color` two words later.
+- **compare.ts** — `Document.CompareText` (`aq4a.2`): tokens from each page,
+  diffed by `textdiff.ts`, each run placed back on its pages as `TextSpan`s.
+  Imports `Document` as a TYPE only; `document.ts` imports it.
+  **Invariant:** a page is laid out by `Search`'s pipeline — glyphs filtered
+  by `centroidIn` (exported from `textedit.ts` for this, so region scoping has
+  ONE rule), `layoutLines`, a glyph ref per character — and a run is placed by
+  `buildMatch`. So a changed word's quads EQUAL what `Search` reports for that
+  word, which the suite asserts; a second placement rule is how a comparison
+  and a search come to highlight one word in two places.
+  **Invariant:** a token is a [start, end) range of ONE page's text, and a run
+  is split into one span per page, placed over the range from its first token
+  to its last — `buildMatch` skips the separators layout inserted and yields
+  one quad per line.
+  **Invariant:** in character-collapse DOCUMENT mode a page break is a
+  synthetic `' '` token with an EMPTY range (no span), because whitespace is a
+  token there and a page break is whitespace; words and ignored whitespace need
+  none. Without it `ab`|`cd` across two pages reads `abcd`.
+  **Invariant:** `whitespace` with word granularity THROWS rather than being
+  ignored — the accepted-and-ignored-key trap `textedit.ts` records for
+  `region`. Every option is validated before a page is read.
+  **Invariant:** comparison is of what the pages SHOW (`includeHidden` false),
+  the read-API default; `walkOpts` is the one negation.
+  **Note, measured:** all 17 mutations aimed at this module redden. Three
+  needed cases first — the `order` pass-through, `minimal` AND-ed across
+  pages, and the not-a-Document check, which `{}` passed BY ACCIDENT because
+  reading `.Pages` on it threw a `TypeError` anyway; the case asserts the
+  message now.
+- **comparereport.ts** — a `TextComparison` written out as HTML, Markdown or
+  JSON (`aq4a.3`). Pure over `compare.ts`'s result TYPES: no `Document`, so
+  it can only decide how to SHOW a comparison, never what changed.
+  **Invariant:** equal text is the SECOND document's spelling — the report
+  reads as the new version with deletions struck in place — and that holds on
+  the cut path too, which only `ignoreCase` plus `context` can see.
+  **Invariant:** word-level Markdown marks with `~~`/`**`, character-level
+  with raw `<del>`/`<ins>`. A word token holds no whitespace and sits between
+  spaces, so its delimiters always flank; a mark INSIDE a word beside
+  punctuation (`(colo~~u~~r)`) does not, and a tag is valid anywhere. Checked by
+  parsing the output with our own GFM parser, the `mdescape.ts` rule.
+  **Invariant:** text is escaped INSIDE a mark as well as outside it — a
+  changed `p*q*r` otherwise becomes emphasis. The `[c]` case alone could not
+  see this: an unescaped `[c]` with no reference definition reads the same.
+  **Invariant:** with no `context` nothing is cut. A run with no change on
+  either side keeps 0 + 0 words under any FINITE context, so an identical
+  comparison collapses to one `…` there — pinned as a decision — and without
+  the `Infinity` guard it collapsed even when the caller asked for everything.
+  **Note, measured:** all 20 mutations aimed at this module redden, two only
+  after the cases above were added.
+- **comparesidebyside.ts** — `Document.CompareSideBySide` (`aq4a.4`): plan
+  (validate, compare, lay out — allocates nothing) and render. Split like
+  `NUp`: `document.ts` allocates the sheets, since the page-tree helpers are
+  private to it. Imports `Document` as a TYPE only.
+  **Invariant:** a mark moves by EXACTLY the transform its page was placed by —
+  `compose.ts`'s `importMatrix` (CropBox origin, `/Rotate`), exported for
+  this, then the sheet offset. One owner, so a mark cannot drift from its word.
+  **Invariant:** tops are aligned, so a page's vertical offset depends on the
+  OTHER page on its sheet — and the per-sheet transform is only observable when
+  two sheets place a page differently. **Note, measured:** the "follows its own
+  sheet" case passed with every span on sheet 1's transform until the SECOND
+  document's page 2 was made taller; making the first document's taller sets
+  the sheet height and leaves its own offset at 0, which measures nothing.
+  **Note, and it is a trap for the next oracle:** `Search` cannot check a mark
+  on ROTATED text — its quad is the pen span plus the font size, not a
+  bounding box, and comes back zero-width at 90°. The rotated case asserts
+  hand-derived boxes instead; every upright case checks against `Search` on
+  the RESULT sheet, which reaches the text through the placed form's own
+  `/Matrix` rather than through this module.
+  **Note, measured:** all 17 mutations aimed at this module redden, two only
+  after the cases above were added.
+  **Invariant (`aq4a.7`):** a sheet has ONE MCID space under its
+  `/StructParents`, and both placed pages number from 0 — so with `tagged` the
+  RIGHT page's MCIDs are shifted past the left page's highest in its placed
+  copy: inline `/MCID` dicts (the stream is rewritten and replaced under its
+  own number, stream bytes being read-only), named `/Properties` entries
+  (shifted ONCE however many BDCs name one) and every nested form. The copies
+  are the sheet's own, `importPageAsXObject` having deep-copied them.
+  `structpreserve.ts` then clones the right page's elements with the same
+  offset: `PageOrigin.mcidOffset` moves the ParentTree slots and every MCID
+  kid, integer or MCR, by the offset of the page the kid belongs to — its
+  element's `/Pg`, else the nearest ancestor's — and a second origin on an
+  already-keyed page MERGES into its array. `PageOrigin.group` clones a
+  document compared with itself twice. With offset 0 and one origin per page
+  every other caller takes exactly its old path; the 20 structure-preservation
+  test files did not move.
+  **Note, and it is a DECISION:** a form-level `/StructParents` would give each
+  placed page its own MCID space (MCRs with `/Stm`), which is valid PDF and
+  needs no renumbering. It is not used because nothing in this library
+  resolves one — `untaggedContentRule`, `StructElement.GetText` and every
+  export read MCIDs through the PAGE's key — so that content would read as
+  untagged here. Supporting it is its own feature.
+  **Note, measured:** all 16 mutations aimed at `aq4a.7` redden, three only
+  after `test/helpers/build-tagged-mc-shapes-pdf.ts` existed — a named
+  property list, a nested form and an inherited `/Pg` are three routes an
+  MCID takes that nothing this library authors produces, so `AddMarkdown`
+  fixtures left all three renumbering paths unmeasured.
+- **pixeldiff.ts**, **comparerendering.ts** — graphical comparison
+  (`aq4a.5`), behind `Document.CompareRendering`. `pixeldiff.ts` is a LEAF
+  importing nothing (images in, numbers out); `comparerendering.ts` renders
+  through `raster.ts`'s `renderPageRgb` and imports `Document` as a TYPE.
+  **Invariant:** a region goes back to page space through the INVERSE of the
+  matrix the render itself used — `renderPageRgb` returns `renderCanvas`'s own
+  composition — so `/Rotate`, the CropBox origin and the dpi need no case.
+  Regions are in the SECOND document's page space (the first's when only it
+  has the page); the two differ only when page geometry does, which is the
+  fixture that pins it.
+  **Invariant:** grouping runs on a grid of `mergeDistance`-sized cells,
+  8-connected, with an explicit stack — never pairwise box merging, which is
+  quadratic in the specks a noisy difference produces, and never recursion,
+  which a page-sized change overflows. The box is the extent of the changed
+  PIXELS, not of the cells.
+  **Invariant:** `mergeDistance` is in POINTS and scaled by the dpi, so one
+  setting means one distance at any resolution — invisible at 72 dpi, where the
+  two units coincide; the 288-dpi case is what holds it.
+  **Invariant:** outside an image, and all of an absent one, is WHITE — what an
+  unpainted page shows — so a page only one document has is compared against a
+  blank page, and pages of different size against white margins.
+  **Invariant:** the difference image is the SECOND page faded, changes in
+  red. Only a difference WITHIN the tolerance can show which page is the base,
+  since every other difference is painted red either way.
+  **Note, measured, and the harness LIED first:** three mutations read green
+  because a test file had stopped PARSING (an apostrophe in an `it` title) and
+  a two-file vitest run still printed the other file's "passed". The harness
+  now refuses to call a run green unless every file loaded. All 17 mutations
+  redden, four only after cases were added for them.
 - **docmodel.ts** — the neutral document model behind every document exporter.
   `buildDocModel(doc, pages)` reconstructs pages as a `DocNode[]` tree from the
   tagged structure tree when the document has one, and from geometry plus
@@ -11018,6 +11178,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/zip/` | `PROVENANCE.md` | ZIP **input** from three writers that are not ours — libarchive (`tar.exe`), .NET Framework and `git archive`. Pins the two rules no builder fixture reaches on real bytes: sizes from the central directory (libarchive's data descriptors) and data located by the LOCAL extra length (libarchive's 32-vs-24). Also a bit-11 UTF-8 name and a backslash name (.NET) and an archive comment (git). The manifest's hashes come from the INPUTS, not the archives (`test/zipread-real.test.ts`) |
 | `fixtures/docx/` | `PROVENANCE.md` | DOCX from **Microsoft Word 2010** (Russian UI, COM automation, `scripts/gen-docx-word.ps1`, not run by `npm test`). `m2fp.2` uses it to anchor OPC reading on bytes we did not write — relationships out of Id order (`rId8` first), a content type answered by a `Default` — and resolves main document, styles, numbering, image and external hyperlink. Not byte-reproducible (Word stamps `docProps/core.xml`); the vendored file is the reference. Records for `m2fp.3` that a localized Word writes LOCALIZED style ids (`heading 1` is `w:styleId="1"`); its test is `test/opcread-docx.test.ts`. **The `m2fp.4` corpus:** five recipes written by BOTH Word 2010 (COM) and LibreOffice 26.8 (UNO, a pinned MSI unpacked outside the repo), `word2010-basic` included — styles, lists, tables, media, and the constructs `readDocx` only records — each READ by both applications into `<name>.word.json`/`<name>.lo.json` (`scripts/gen-docx-corpus.ps1`). `test/docx-corpus.test.ts` pins `disagreements.json` EXACTLY and holds `readDocx` to every value the two readers agree on; past a disagreement in LENGTH it compares elements only up to the shorter reading, while `readDocx`'s OWN length must fall between the two — the final review measured that without that bound a `readDocx` stopping at a section break or a merged cell passed exactly the files covering them. The readers disagree on five shapes, each a finding (a URL's trailing slash, TOC hyperlinks, headers of a linked section, a section-break paragraph, a covered merged cell). The corpus found `readDocx` silently dropping headers, footers, section breaks and revisions from its report, and nothing else. Beside it, `wml-oracle.docx` is OURS and `wml-oracle.json` is Word 2010's COMPUTED formatting of it through COM (`scripts/gen-wml-oracle.ps1`) — the oracle for `m2fp.3`'s style resolution, toggle XOR and list counters. It corrected no rule and confirmed every open question; it did teach the builder that Word refuses a theme lacking `a:clrScheme`/`a:fmtScheme` (`test/wml-oracle.test.ts`) |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
+| `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
 | `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |

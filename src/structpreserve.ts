@@ -7,6 +7,15 @@ export interface PageOrigin {
   srcDoc: Document;
   srcPageNum: number;   // source page object number in srcDoc
   newPageNum: number;   // resulting page object number in outDoc
+  /** Added to every MCID of this page — its ParentTree slots and the MCID kids
+   *  of the elements cloned for it — when its content was renumbered to share
+   *  a result page with another source page (`CompareSideBySide`, `aq4a.7`).
+   *  Default 0, which is what every other caller means. */
+  mcidOffset?: number;
+  /** Origins with one group are cloned as one structure. Default: the source
+   *  document. A document compared with ITSELF places each page twice, and the
+   *  second placement needs its own clone rather than the first one's. */
+  group?: object;
 }
 
 const asNum = (o: PdfObject): number | undefined => (typeof o === 'number' ? o : undefined);
@@ -24,20 +33,26 @@ interface OutTree {
   nums: PdfObject[];      // flat /ParentTree /Nums: [key, value, key, value, ...]
   nextKey: number;        // next /StructParents key to allocate
   roleMap: Map<string, string>;
+  /** Each result page's ParentTree array, by page object number — so a second
+   *  origin landing on a page already keyed MERGES into that page's array
+   *  instead of allocating a key the page's single /StructParents cannot hold. */
+  pageSlots: Map<number, PdfObject[]>;
 }
 
 /** Rebuild/extend outDoc's structure tree from the structure of the pages in
  *  `origins`. No-op when no source is tagged. */
 export function preserveStructure(outDoc: Document, origins: PageOrigin[]): void {
-  const bySrc = new Map<Document, PageOrigin[]>();
+  const bySrc = new Map<object, PageOrigin[]>();
   for (const o of origins) {
-    const list = bySrc.get(o.srcDoc) ?? [];
+    const key = o.group ?? o.srcDoc;
+    const list = bySrc.get(key) ?? [];
     list.push(o);
-    bySrc.set(o.srcDoc, list);
+    bySrc.set(key, list);
   }
 
   let tree: OutTree | undefined;
-  for (const [srcDoc, list] of bySrc) {
+  for (const list of bySrc.values()) {
+    const srcDoc = list[0].srcDoc;
     const srcRoot = srcDoc.GetStructTree();
     if (!srcDoc.IsTagged || srcRoot === null) continue;
     tree ??= openOutTree(outDoc);
@@ -58,11 +73,11 @@ function openOutTree(outDoc: Document): OutTree {
     const nextKey = asNum(outDoc.resolve(existing.get('ParentTreeNextKey'))) ?? maxKey(nums) + 1;
     const k = outDoc.resolve(existing.get('K'));
     const topK = isArray(k) ? [...k] : k != null ? [existing.get('K') as PdfObject] : [];
-    return { rootDict: existing, rootRef: existingRef, topK, nums, nextKey, roleMap: readRoleMap(outDoc, existing) };
+    return { rootDict: existing, rootRef: existingRef, topK, nums, nextKey, roleMap: readRoleMap(outDoc, existing), pageSlots: new Map() };
   }
   const rootDict: PdfDict = new Map([['Type', name('StructTreeRoot')]]);
   const rootRef = outDoc.allocObject(rootDict);
-  return { rootDict, rootRef, topK: [], nums: [], nextKey: 0, roleMap: new Map() };
+  return { rootDict, rootRef, topK: [], nums: [], nextKey: 0, roleMap: new Map(), pageSlots: new Map() };
 }
 
 function maxKey(nums: PdfObject[]): number {
@@ -82,13 +97,20 @@ function readRoleMap(doc: Document, rootDict: PdfDict): Map<string, string> {
 function cloneSource(outDoc: Document, srcDoc: Document, srcRootDict: PdfDict, origins: PageOrigin[], tree: OutTree): void {
   // src page obj num -> new page obj num (first occurrence wins; repeats untagged)
   const pageMap = new Map<number, number>();
-  for (const o of origins) if (!pageMap.has(o.srcPageNum)) pageMap.set(o.srcPageNum, o.newPageNum);
+  const offsets = new Map<number, number>(); // src page obj num -> MCID offset
+  for (const o of origins) {
+    if (pageMap.has(o.srcPageNum)) continue;
+    pageMap.set(o.srcPageNum, o.newPageNum);
+    offsets.set(o.srcPageNum, o.mcidOffset ?? 0);
+  }
+  const offsetOf = (srcPageNum: number | undefined): number =>
+    srcPageNum === undefined ? 0 : offsets.get(srcPageNum) ?? 0;
 
   const srcPt = srcDoc.resolve(srcRootDict.get('ParentTree'));
 
   // Phase 1 — mark keep-set + collect each page's MCID->element array.
   const keep = new Set<number>();
-  const pageArrays: { newPageNum: number; arr: PdfObject[] }[] = [];
+  const pageArrays: { newPageNum: number; arr: PdfObject[]; offset: number }[] = [];
   for (const [srcPageNum, newPageNum] of pageMap) {
     const srcPage = srcDoc.getObject(srcPageNum);
     const spKey = isDict(srcPage) ? asNum(srcDoc.resolve(srcPage.get('StructParents'))) : undefined;
@@ -96,7 +118,7 @@ function cloneSource(outDoc: Document, srcDoc: Document, srcRootDict: PdfDict, o
     const arr = srcDoc.resolve(lookupNumberTree(srcDoc, srcPt, spKey));
     if (!isArray(arr)) continue;
     for (const e of arr) if (isRef(e)) markKeep(srcDoc, e.num, keep);
-    pageArrays.push({ newPageNum, arr });
+    pageArrays.push({ newPageNum, arr, offset: offsetOf(srcPageNum) });
   }
 
   // Object-keyed structure (annotations via /StructParent). Build a survivor map
@@ -137,18 +159,35 @@ function cloneSource(outDoc: Document, srcDoc: Document, srcRootDict: PdfDict, o
   const cache = new Map<number, PdfRef>();   // src elem num -> new ref
   for (const k of childEntries(srcDoc, srcRootDict)) {
     if (isRef(k) && keep.has(k.num)) {
-      const r = cloneElem(outDoc, srcDoc, k.num, pageMap, keep, cache, objSurv, tree.rootRef);
+      const r = cloneElem(outDoc, srcDoc, k.num, pageMap, keep, cache, objSurv, tree.rootRef, 1, undefined, offsetOf);
       tree.topK.push(r);
     }
   }
 
   // Phase 3 — rebuild ParentTree entries with cloned refs + fresh keys.
-  for (const { newPageNum, arr } of pageArrays) {
+  for (const { newPageNum, arr, offset } of pageArrays) {
     const newArr = arr.map((e) => (isRef(e) && cache.has(e.num) ? cache.get(e.num)! : null));
-    const newKey = tree.nextKey++;
-    const newPage = outDoc.getObject(newPageNum);
-    if (isDict(newPage)) newPage.set('StructParents', newKey);
-    tree.nums.push(newKey, newArr);
+    let slot = tree.pageSlots.get(newPageNum);
+    if (slot === undefined && offset === 0) {
+      // The path every caller but CompareSideBySide takes, byte for byte.
+      const newKey = tree.nextKey++;
+      const newPage = outDoc.getObject(newPageNum);
+      if (isDict(newPage)) newPage.set('StructParents', newKey);
+      tree.nums.push(newKey, newArr);
+      tree.pageSlots.set(newPageNum, newArr);
+      continue;
+    }
+    if (slot === undefined) {
+      slot = [];
+      const newKey = tree.nextKey++;
+      const newPage = outDoc.getObject(newPageNum);
+      if (isDict(newPage)) newPage.set('StructParents', newKey);
+      tree.nums.push(newKey, slot);
+      tree.pageSlots.set(newPageNum, slot);
+    }
+    const target = slot;
+    newArr.forEach((v, i) => { target[i + offset] = v; });
+    for (let i = 0; i < target.length; i++) if (target[i] === undefined) target[i] = null;
   }
 
   // Phase 3b — object entries: allocate a key, set the annotation's
@@ -210,6 +249,7 @@ function cloneElem(
   outDoc: Document, srcDoc: Document, srcNum: number,
   pageMap: Map<number, number>, keep: Set<number>, cache: Map<number, PdfRef>,
   objSurv: Map<number, ObjSurv>, parentRef: PdfRef, depth = 1,
+  inheritedPg?: number, offsetOf: (srcPageNum: number | undefined) => number = () => 0,
 ): PdfRef {
   const hit = cache.get(srcNum);
   if (hit) return hit;
@@ -228,13 +268,16 @@ function cloneElem(
   clone.set('P', parentRef);
   const pg = src.get('Pg');
   if (isRef(pg) && pageMap.has(pg.num)) clone.set('Pg', ref(pageMap.get(pg.num)!));
+  // An integer MCID kid belongs to the element's page, which /Pg states or an
+  // ancestor's does (14.7.4.2) — the page whose MCID offset applies.
+  const ownPg = isRef(pg) ? pg.num : inheritedPg;
 
   const newK: PdfObject[] = [];
   for (const entry of childEntries(srcDoc, src)) {
     if (isRef(entry) && isStructElemNum(srcDoc, entry.num)) {
-      if (keep.has(entry.num)) newK.push(cloneElem(outDoc, srcDoc, entry.num, pageMap, keep, cache, objSurv, newRef, depth + 1));
+      if (keep.has(entry.num)) newK.push(cloneElem(outDoc, srcDoc, entry.num, pageMap, keep, cache, objSurv, newRef, depth + 1, ownPg, offsetOf));
     } else {
-      const item = remapContentItem(srcDoc, entry, pageMap, objSurv, srcNum);
+      const item = remapContentItem(srcDoc, entry, pageMap, objSurv, srcNum, ownPg, offsetOf);
       if (item !== undefined) newK.push(item);
     }
   }
@@ -248,8 +291,10 @@ function cloneElem(
 function remapContentItem(
   srcDoc: Document, entry: PdfObject, pageMap: Map<number, number>,
   objSurv: Map<number, ObjSurv>, ownerSrcNum: number,
+  ownPg?: number, offsetOf: (srcPageNum: number | undefined) => number = () => 0,
 ): PdfObject | undefined {
-  if (typeof entry === 'number') return entry; // MCID — content stream copied verbatim
+  // MCID — content stream copied verbatim, renumbered by the page's offset
+  if (typeof entry === 'number') return entry + offsetOf(ownPg);
   const d = srcDoc.resolve(entry);
   if (!isDict(d) || !isName(d.get('Type'))) return undefined;
   const type = (d.get('Type') as { name: string }).name;
@@ -258,6 +303,9 @@ function remapContentItem(
     if (isRef(pg) && !pageMap.has(pg.num)) return undefined; // MCR on a dropped page
     const copy = new Map(d);
     if (isRef(pg) && pageMap.has(pg.num)) copy.set('Pg', ref(pageMap.get(pg.num)!));
+    const mcid = srcDoc.resolve(d.get('MCID'));
+    const off = offsetOf(isRef(pg) ? pg.num : ownPg);
+    if (typeof mcid === 'number' && off !== 0) copy.set('MCID', mcid + off);
     return copy;
   }
   if (type === 'OBJR') {
