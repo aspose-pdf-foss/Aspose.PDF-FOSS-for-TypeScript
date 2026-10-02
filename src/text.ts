@@ -135,6 +135,9 @@ export interface Run {
    *  it ends. Columns then order right-to-left. */
   vertical?: boolean;
   endY?: number;
+  /** Baseline angle in radians, present only when the baseline is not
+   *  horizontal (w7jf); `endY` then carries the pen end's y. */
+  angle?: number;
 }
 
 /** A run carrying an optional provenance ref attached to each of its chars. */
@@ -151,7 +154,19 @@ export function runFromGlyph<T>(e: GlyphEvent, ref?: T): RefRun<T> {
     const cx = (x0 + x1) / 2;
     return { x: cx, endX: cx, y: y1, endY: y0, text: e.text, size: e.fontSize, vertical: true, ref };
   }
+  if (!isUpright(e.angle)) {
+    return { x: x0, endX: e.penEnd[0], y: y0, endY: e.penEnd[1], text: e.text, size: y1 - y0, angle: e.angle, ref };
+  }
   return { x: x0, endX: x1, y: y0, text: e.text, size: y1 - y0, ref };
+}
+
+/** Within ANGLE_TOL of horizontal: the tolerance fragment merging already uses. */
+const ANGLE_TOL = 0.01;
+const TWO_PI = 2 * Math.PI;
+const normAngle = (a: number): number => ((a % TWO_PI) + TWO_PI) % TWO_PI;
+function isUpright(a: number): boolean {
+  const n = normAngle(a);
+  return n < ANGLE_TOL || TWO_PI - n < ANGLE_TOL;
 }
 
 /** Lay runs out into lines (by Y) and order/space them (by X), returning the
@@ -161,6 +176,27 @@ export function runFromGlyph<T>(e: GlyphEvent, ref?: T): RefRun<T> {
 export function layoutLines<T>(runs: RefRun<T>[]): { text: string; refs: (T | undefined)[] } {
   const items = runs.filter((r) => r.text.length > 0);
   if (items.length === 0) return { text: '', refs: [] };
+
+  // One layout per baseline angle (w7jf): a stamp at 45 degrees and the body
+  // text under it have no common line order, so each reads in its own frame.
+  // Upright first, then each other angle in ascending order. An all-upright
+  // page has a single group and takes exactly the path it always took.
+  const angled = items.filter((r) => !r.vertical && r.angle !== undefined);
+  if (angled.length > 0) {
+    const groups = new Map<number, RefRun<T>[]>();
+    for (const r of angled) {
+      const key = Math.round(normAngle(r.angle!) / ANGLE_TOL);
+      const g = groups.get(key);
+      if (g) g.push(r); else groups.set(key, [r]);
+    }
+    const parts = [layoutLines(items.filter((r) => r.vertical || r.angle === undefined))];
+    for (const key of [...groups.keys()].sort((a, b) => a - b)) parts.push(layoutOneDirection(groups.get(key)!));
+    const kept = parts.filter((p) => p.text.length > 0);
+    return {
+      text: kept.map((p) => p.text).join('\n'),
+      refs: kept.flatMap((p, i) => (i === 0 ? p.refs : [undefined, ...p.refs])),
+    };
+  }
 
   const vertical = items.filter((r) => r.vertical);
   if (vertical.length === 0) return layoutOneDirection(items);
@@ -194,6 +230,14 @@ export function layoutLines<T>(runs: RefRun<T>[]): { text: string; refs: (T | un
  * differing between the two directions.
  */
 function axisKeys<T>(r: RefRun<T>): { line: number; start: number; end: number } {
+  // A run on a rotated baseline (w7jf) is projected onto that baseline: along
+  // it is start/end, across it is the line. At angle 0 this is the horizontal
+  // case below exactly, which is why an upright run never takes this branch.
+  if (r.angle !== undefined) {
+    const c = Math.cos(r.angle), s = Math.sin(r.angle);
+    const ey = r.endY ?? r.y;
+    return { line: r.x * s - r.y * c, start: r.x * c + r.y * s, end: r.endX * c + ey * s };
+  }
   return r.vertical
     ? { line: -r.x, start: -r.y, end: -(r.endY ?? r.y) }
     : { line: -r.y, start: r.x, end: r.endX };
@@ -262,6 +306,10 @@ export interface GlyphEvent {
   fontSize: number;
   /** Baseline angle in radians: atan2 of the text→device matrix x-basis. 0 = horizontal. */
   angle: number;
+  /** Device-space pen position after this glyph: where its advance ends.
+   *  For horizontal text `quad[2]` is its x; this carries the y as well, which
+   *  a run on a rotated baseline needs to know its own length (w7jf). */
+  penEnd: [number, number];
   text: string;
   /** Index within a TJ array element list; 0 for Tj/'/". */
   elementIndex: number;
@@ -900,7 +948,7 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
     if (hidden) continue;
     ctx.visitor.glyph?.({
       addr, font: st.font, quad, text: g.text,
-      fontSize: size, angle, elementIndex, byteStart: g.byteStart, byteLen: g.byteLen, advance, mcid,
+      fontSize: size, angle, penEnd: [endX, endY], elementIndex, byteStart: g.byteStart, byteLen: g.byteLen, advance, mcid,
       artifact: artScope ? true : undefined,
       artifactScope: artScope,
       vertical: g.vertical ? true : undefined,

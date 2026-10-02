@@ -14,6 +14,7 @@ import type { Table } from './tablemodel.js';
 import { dominantFragmentSize, headingRanks } from './textrank.js';
 import { StructElement, StructTreeRoot, type StructNode, type StructTextNode } from './struct.js';
 import { tableFromStruct } from './tablestruct.js';
+import { FigureContent, type PlacedImage } from './figurecontent.js';
 import {
   classifyBlock, pageMetrics, parseMarkerText, splitLineLinks,
   type ClassifyContext, type LineClass, type LineSegment, type LinkSpan, type Marker,
@@ -88,9 +89,6 @@ export interface DocFigure {
   sizes?: { width: number; height: number }[];
   tagged: boolean;
 }
-
-/** One image as it was actually placed on a page. */
-interface PlacedImage { stream: PdfStream; width: number; height: number }
 
 /** The drawn box of an image event, in points. */
 function placedSize(quad: [number, number, number, number]): { width: number; height: number } {
@@ -189,47 +187,13 @@ function isText(n: StructNode): n is StructTextNode {
   return !(n instanceof StructElement);
 }
 
-/** Walk state. `images` memoizes each page's MCID→image map, because a page with
- *  N figures would otherwise re-walk its whole content stream N times. Unlike a
- *  positional pairing this is keyed lookup, so it cannot drift out of step. */
+/** Walk state. `figures` answers which images a /Figure draws, memoized per
+ *  page (figurecontent.ts, shared with GenerateAltText) — keyed by MCID, so it
+ *  cannot drift out of step the way a positional pairing would. */
 interface Ctx {
   doc: Document;
   only: Page | undefined;
-  images: Map<Page, Map<number, PlacedImage[]>>;
-}
-
-/** The image XObjects drawn under each MCID on `page`, in content order.
- *  Inline images are absent: their samples live in the content op, not an
- *  object, so there is nothing for a serializer to encode. */
-function pageMcidImages(ctx: Ctx, page: Page): Map<number, PlacedImage[]> {
-  let map = ctx.images.get(page);
-  if (map) return map;
-  map = new Map<number, PlacedImage[]>();
-  visitContent(ctx.doc, page, {
-    image: (e) => {
-      if (e.mcid === undefined || !e.stream) return;
-      const placed: PlacedImage = { stream: e.stream, ...placedSize(e.quad) };
-      const list = map!.get(e.mcid);
-      if (list) list.push(placed);
-      else map!.set(e.mcid, [placed]);
-    },
-  }, SHOWN);
-  ctx.images.set(page, map);
-  return map;
-}
-
-/** Every image this element's marked content draws.
- *
- *  Recurses: a Figure's content is normally its own /K MCIDs, but nothing
- *  forbids nesting it under intermediate elements, and elementNode never
- *  descends into a Figure — so an image reached only that way would be lost. */
-function figureStreams(ctx: Ctx, el: StructElement, out: PlacedImage[]): void {
-  for (const item of el.ContentItems) {
-    if (item.kind !== 'mcid' || !item.page) continue;
-    if (ctx.only && item.page !== ctx.only) continue; // another page's half of a split figure
-    for (const s of pageMcidImages(ctx, item.page).get(item.mcid) ?? []) out.push(s);
-  }
-  for (const child of el.Children) figureStreams(ctx, child, out);
+  figures: FigureContent;
 }
 
 /** True when this element contributes any content on `only` (or `only` is undefined). */
@@ -393,8 +357,7 @@ function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
     return table ? { kind: 'table', table } : undefined;
   }
   if (type === 'Figure') {
-    const placed: PlacedImage[] = [];
-    figureStreams(ctx, el, placed);
+    const placed = ctx.figures.imagesOf(el);
     return {
       kind: 'figure', alt: el.Alt ?? el.ActualText ?? '',
       images: placed.map((p) => p.stream),
@@ -450,7 +413,7 @@ function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
 }
 
 function taggedModel(doc: Document, root: StructTreeRoot, only: Page | undefined): DocNode[] {
-  const ctx: Ctx = { doc, only, images: new Map() };
+  const ctx: Ctx = { doc, only, figures: new FigureContent(doc, only) };
   const out: DocNode[] = [];
   for (const child of root.Children) {
     const node = elementNode(ctx, child);

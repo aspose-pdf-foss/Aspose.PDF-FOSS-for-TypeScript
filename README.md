@@ -2932,11 +2932,84 @@ const fixed = doc.ToDocx({ mode: 'textbox' });  // .docx keeping each page's own
 
 </details>
 
+### Connect an AI Model
+
+AI features take a model you build and never call a default endpoint. `openAiModel` speaks the OpenAI chat-completions protocol, so it works with OpenAI and with local servers such as Ollama or vLLM:
+
+```ts
+import { openAiModel, type AiModel } from '@asposefoss/pdf';
+
+const model: AiModel = openAiModel('https://api.openai.com/v1', {
+  model: 'gpt-4o-mini',
+  apiKey: process.env.OPENAI_API_KEY,
+});
+// A local server needs no key: openAiModel('http://localhost:11434/v1', { model: 'llama3.2' })
+
+const { text, usage } = await model.complete({
+  messages: [{ role: 'user', content: 'Summarize PDF/A in one sentence.' }],
+  maxTokens: 200,
+});
+```
+
+Each attempt is bounded by `timeoutMs` (default 120 s) and `maxResponseBytes` (default 4 MiB). Rate limits and server errors (429, 500, 502, 503, 504), network errors and timeouts are retried up to `maxRetries` times (default 2), honouring `Retry-After`; a `Retry-After` longer than 30 s fails at once rather than being waited out. Pass credentials through `apiKey` or `headers`: a `baseUrl` carrying a user name, password, query or fragment is refused. Failures raise `AiServiceError`, which never contains your API key. A reply that hit `maxTokens` is an error rather than a silently truncated answer. To use another provider, implement `AiModel`'s single `complete` method yourself.
+
+### Make Scanned Pages Searchable
+
+`MakeSearchable` renders each image-only page, hands it to an OCR engine you supply, and writes the recognized text back as an invisible layer exactly over the words in the picture — so `GetText`, `Search`, copy-paste and indexers find them while the page looks unchanged:
+
+```ts
+import { Document, aiOcrEngine, openAiModel } from '@asposefoss/pdf';
+
+const doc = Document.Open(scanBytes);
+const engine = aiOcrEngine(openAiModel('https://api.openai.com/v1', {
+  model: 'gpt-4o', apiKey: process.env.OPENAI_API_KEY,
+}));
+const report = await doc.MakeSearchable(engine, { dpi: 200 });
+for (const p of report.pages) console.log(p.page, p.status, p.reason ?? '');
+const out = doc.Save();
+```
+
+Vision models read well but place boxes coarsely; for exact highlights plug in a dedicated OCR engine through the same interface:
+
+```ts
+import type { OcrEngine } from '@asposefoss/pdf';
+
+const tesseract: OcrEngine = {
+  async recognize(image) {
+    const words = await myTesseract(image.bytes); // your OCR call
+    return words.map((w) => ({ text: w.text, box: [w.x0, w.y0, w.x1, w.y1] }));
+  },
+};
+```
+
+Pages that already have text are skipped and reported unless `force: true` (which adds a layer and removes none). A page the engine fails on is reported and the run continues. The layer uses a built-in glyphless font, so every script extracts with no font files, and PDF/A and PDF/UA validation are unaffected; in a tagged document the layer is marked as an artifact. A document with signature fields is refused, since a new layer on every page would invalidate them.
+
+### Summarize, Ask and Describe Images
+
+Three more features take any `AiModel`. `Summarize` handles a document of any length — one request when it fits, otherwise the parts are summarized and the summaries combined. `Ask` ranks the document's passages against the question locally (no extra model calls), sends the best few, and returns the answer with the pages it cites; `found` is false when those passages do not contain it. `GenerateAltText` writes `/Alt` for every figure that lacks one — in an untagged document it describes each picture and then auto-tags the document:
+
+```ts
+import { Document, openAiModel } from '@asposefoss/pdf';
+
+const model = openAiModel('https://api.openai.com/v1', { model: 'gpt-4o', apiKey: process.env.OPENAI_API_KEY });
+const doc = Document.Open(bytes);
+
+const { text } = await doc.Summarize(model, { instructions: 'five bullet points' });
+const a = await doc.Ask(model, 'What is the warranty period?');
+console.log(a.found ? `${a.answer} (pages ${a.pages.join(', ')})` : 'not in the document');
+
+const report = await doc.GenerateAltText(model);
+for (const f of report.figures) console.log(f.page, f.status, f.alt ?? f.reason ?? '');
+const out = doc.Save();
+```
+
+Budgets are in characters (`maxInputChars`, default 48,000 per request) because the library does not know your model's tokenizer; lower it for a small local model. `Ask` ranks by shared words, so a question phrased very differently from the text may miss the passage that answers it. Identical pictures are described once. An author's `/Alt` is kept unless `overwrite: true`, and in a tagged document a picture the model calls decorative is reported, not re-tagged — so, writing nothing, it is asked about again on the next run, as is one whose request failed. A reply wrapped in a markdown code fence is accepted. `Ask` cites no pages when `found` is false, and refuses with a `RangeError` a question too long to leave room for one passage within `maxInputChars`. An untagged document with no pictures is left untagged.
+
 ## API Reference
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 405 public types plus 147
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 427 public types plus 150
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -3435,6 +3508,36 @@ of these tables.
 | `findIssuer` | Find the issuer certificate of `cert` among `pool` (subject == cert.issuer), or `cert` itself when self-issued / no better match is available. |
 | `vriKey` | The `/VRI` key for a signature: the uppercase base-16 SHA-1 of its `/Contents` value (the whole signature byte string, padding included). |
 
+### AI
+
+| Class | Description |
+|---|---|
+| `openAiModel(baseUrl, opts)` | An `AiModel` for any OpenAI-compatible server (OpenAI, Ollama, vLLM): POSTs to `<baseUrl>/chat/completions` over the built-in `fetch`, bounded by a timeout and a response-size cap, retrying 429/500/502/503/504, network errors and timeouts with `Retry-After`. No default endpoint. |
+| `OpenAiModelOptions` | Options for `openAiModel`: required `model`; `apiKey`, `headers`, `temperature`, `timeoutMs` (default 120,000), `maxResponseBytes` (default 4 MiB), `maxRetries` (default 2). |
+| `OcrEngine` | Recognizes the text in a page image: `recognize(image, { signal })` returns `OcrSpan`s. Implement it over Tesseract or a cloud OCR service, or use `aiOcrEngine`. |
+| `OcrImage` | A rendered page handed to an `OcrEngine`: PNG or JPEG `bytes`, `mediaType`, and its `width` and `height` in pixels. |
+| `OcrSpan` | One recognized run of text — a word or a line — with its `box` `[x0, y0, x1, y1]` in image pixels, origin top-left. |
+| `MakeSearchableOptions` | Options for `MakeSearchable`: `pages`, `force` (OCR pages that already have text), `dpi` (default 200), `signal`, `onPage`. |
+| `MakeSearchablePage` | One page's outcome: `status` `ocr`, `skipped` (`reason: 'has-text'`) or `failed` (`reason` the error), with `spans` written and `dropped`. |
+| `MakeSearchableReport` | What `MakeSearchable` did: one `MakeSearchablePage` per selected page. |
+| `aiOcrEngine(model, opts?)` | An `OcrEngine` over any `AiModel`: one request per page asking for lines and boxes on a 0–1000 grid, scaled to pixels; a reply wrapped in one markdown code fence is accepted, a malformed one throws `AiServiceError`. |
+| `AiOcrOptions` | Options for `aiOcrEngine`: a `language` hint for the prompt, and `maxTokens` (default 4096). |
+| `AiUsage` | Token counts summed across the requests one AI feature made: `inputTokens`, `outputTokens`. |
+| `SummarizeOptions` | Options for `Summarize`: `pages`, `instructions` (how the summary should read; sent in the final request only), `maxInputChars` (characters per request, default 48,000, at least 4,000), `signal`. |
+| `SummarizeResult` | What `Summarize` returned: the summary `text`, the number of `requests` made, and summed `usage`. |
+| `AskOptions` | Options for `Ask`: `pages`, `maxInputChars` (default 48,000), `maxChunks` (most excerpts sent, default 8), `signal`. |
+| `AskExcerpt` | One passage `Ask` sent to the model: its `page` and `text`. |
+| `AskResult` | What `Ask` returned: the `answer`, `found` (false when the passages did not contain it), the cited `pages` (each among those sent; none when `found` is false), the `excerpts` sent (most relevant first) and `usage`. |
+| `AltTextOptions` | Options for `GenerateAltText`: `pages` (tagged documents only), `overwrite` (replace an existing `/Alt`), `language`, `autoTag` (untagged documents: auto-tag with the descriptions, default true), `signal`, `onFigure`. |
+| `AltTextFigure` | One figure's outcome: its `page` and `status` — `described` (with the `alt` written), `decorative`, `skipped` or `failed` (with a `reason`). |
+| `AltTextReport` | What `GenerateAltText` did: one `AltTextFigure` per figure considered, the number of `requests` and summed `usage`. |
+| `AiModel` | A language model a caller configured and hands to an AI feature: one `complete(req)` method. Implement it to plug in any provider. |
+| `AiRequest` | What a feature asks an `AiModel`: `messages`, an optional JSON `schema` for the reply (not validated by the library), `maxTokens`, and a cancellation `signal`. |
+| `AiResponse` | An `AiModel`'s answer: `text`, plus token `usage` when the provider reports it. |
+| `AiMessage` | One chat message: a `role` (`system`, `user`, `assistant`) and string or part-list `content`. |
+| `AiContentPart` | One part of a message: `{ type: 'text', text }`, or `{ type: 'image', bytes, mediaType }` with PNG or JPEG bytes — never a URL. |
+| `AiServiceError` | An AI model service failed or answered unusably (status, refusal, truncation, malformed body, size cap, timeout); `status` is the HTTP status when one arrived. |
+
 ### Structure
 
 | Class | Description |
@@ -3685,7 +3788,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 > previous behaviour. Each handle exposes typed, mutable accessors (`Rect`,
 > `Color`, `Contents`, `Name`, `ModDate`, `Flags`, `Print`, `Hidden`, `Opacity`).
 
-Errors: `PdfParseError`, `UnsupportedFeatureError`, `InvalidPasswordError`, `ResourceLimitError`, `SeedValueError`.
+Errors: `PdfParseError`, `UnsupportedFeatureError`, `InvalidPasswordError`, `ResourceLimitError`, `SeedValueError`, `AiServiceError`.
 
 ### HTML
 
@@ -3915,7 +4018,7 @@ See [the docs](https://example.com).
 - **The package writer has no ZIP64**, so it refuses an archive above 4 GB or 65535 entries, and **Word compatibility is unverified in CI**: the tests prove the package is structurally conformant to ECMA-376, not that any particular consumer opens it.
 - **XMP writes are not type-checked against the predefined schemas** — `SetXmpValue` writes what it is given (a Bag to `dc:creator`, whose schema says Seq, is accepted); checking values against their schema types is a PDF/A validation layer not yet implemented.
 - **No CFF2 and no variable-font instancing, by decision** — the two halves are separate. *An embedded CFF2 program* (PDF 2.0's `/FontFile3 /Subtype /OpenType` carrying a `CFF2` table) is not read: there is no CFF2 charstring interpreter and no subsetting of an `ItemVariationStore`. Such a document still opens, and its text still extracts through `/Widths` and `/ToUnicode`, but its glyphs are not drawn from the program. `AddFont` does not accept a CFF2 font either; it throws `UnsupportedFeatureError` naming CFF2. *A variable font found on the system*, as a render substitute (`RegisterRenderFontFolder`) or through `LoadFontByName`, is used at its **default instance**. `fvar`, `gvar` and `avar` are not applied, and its named instances are not indexed as separate faces, so asking for Bold from a variable family gets the default face. A system face whose only outlines are CFF2 is left out of the index altogether, so a lookup falls through to the next usable face rather than choosing one it cannot draw. Few PDFs embed a CFF2 font today. Rendering through a Bahnschrift- or SF-style system face is the case that shows the limit: it draws in the family's default weight.
-- **Network calls only through a client you build, by decision** — the library never reaches a host on its own initiative, so opening, rendering, converting or exporting a document makes no network request, whatever URLs the document contains. A call happens only through a client object the caller constructs and hands in. Today that is `httpTimestampProvider(url)`, an RFC 3161 timestamp client over Node's built-in `fetch`, bounded by a timeout and a response-size cap. There is one narrow exception, and a caller opts into it by signing a prepared field: when a signature field's seed value **requires** a timestamp and the call brought no TSA, `Sign` builds that client for the field's own `/TimeStamp` URL, over http(s) only and never for a merely suggested URL. Every href an HTML, Markdown or SVG source names goes through your `resolveImage` instead. Future network-backed features follow the same rule, AI assistance included: they take a client or a callback you supply and never call a default endpoint.
+- **Network calls only through a client you build, by decision** — the library never reaches a host on its own initiative, so opening, rendering, converting or exporting a document makes no network request, whatever URLs the document contains. A call happens only through a client object the caller constructs and hands in. Today there are two: `httpTimestampProvider(url)`, an RFC 3161 timestamp client, and `openAiModel(baseUrl, opts)`, a chat-completions client for OpenAI-compatible servers — both over Node's built-in `fetch`, bounded by a timeout and a response-size cap, with no default endpoint. There is one narrow exception, and a caller opts into it by signing a prepared field: when a signature field's seed value **requires** a timestamp and the call brought no TSA, `Sign` builds that client for the field's own `/TimeStamp` URL, over http(s) only and never for a merely suggested URL. Every href an HTML, Markdown or SVG source names goes through your `resolveImage` instead. Future network-backed features follow the same rule, AI assistance included: they take a client or a callback you supply and never call a default endpoint.
 - **DOCX import is a documented subset, not a Word layout engine; legacy `.doc` is out of scope, by decision** — `AddDocx` maps WordprocessingML onto the same flow engine `AddHtml` and `AddMarkdown` use, so a document **reflows**: line and page breaks fall where this engine puts them, not where Word did, and a document relying on absolute positioning will not look the same. What renders: paragraphs and their resolved styles, headings by outline level, character formatting, numbered and bulleted lists with Word's own labels, tables with column spans and vertical merges, inline and block images (JPEG, PNG, BMP, TIFF), external hyperlinks, and the last section's page size and margins. What is **reported in `skipped` rather than drawn**: headers and footers, footnotes, endnotes and comments, text boxes and floating drawings (a floating picture is placed in line), section-level layout (columns, per-section page sizes — only the last section's geometry is used), tab stops (a tab is one space), internal hyperlinks and bookmarks, fields such as a table of contents (the stored result text is kept), tracked changes (shown as final text), table borders and column widths beyond the grid (every table draws a uniform 0.5pt grid), block structure inside a table cell (its paragraphs are joined by line breaks and a nested table is flattened), sub/superscript, EMF/WMF images, and a bullet glyph from Symbol or Wingdings (drawn as `•`). An empty paragraph's height is that of the default 10pt size, since the model does not carry the paragraph mark's own. There is **no oracle for the rendering**: the reader beneath it is checked against Word 2010 and LibreOffice on a vendored corpus and the spacing rule against Word through COM, while where the ink lands is held by hand-built cases. Legacy binary `.doc` is not read at all: its OLE compound-file container is a separate format that nothing else in the library needs.
 - **Document JavaScript is stored, never executed, by decision** — scripts are written and read (`SetJavaScript`, `GetJavaScripts`, JavaScript actions, and a field's `format`, `keystroke`, `validate` and `calculate` actions through `SetActions`), but the library runs none of them. XFA's FormCalc does not run either. Running script a document supplies is a security decision before it is an engineering one, and Node's `vm` module is not a sandbox. Calculations and formats are therefore **not run as JavaScript**. Instead, Acrobat's 17 standard AForm calls are **recognised by shape** — a script that is exactly one such call with literal arguments — and implemented natively when you opt in: `form.Recalculate()` for `AFSimple_Calculate` in `/CO` order, `{ format: true }` on `GenerateAppearances` and `FlattenForm` (and `field.FormattedValue`) for the format functions, `form.CheckValues()` and `form.EnforceRules` for the keystroke and validate rules. Without those calls nothing changes: a total keeps whatever value you write and appearances draw the stored value (`1234.5`, not `$1,234.50`). Any other script is reported, never run. The semantics are pdf.js's, checked against goldens generated from it, with three stated divergences: a date that does not match its picture exactly is left unformatted and rejected (pdf.js then guesses, defaulting to the current year), negative styles 1 and 3 get their parentheses but not their red colour, and `EnforceRules` accepts or rejects a value but never rewrites it. `Recalculate()` is not refused on a signed or certified document: changing `/V` is form filling, which DocMDP permits, so the caller decides.
 - **No lazy or streaming open, by decision** — `Document.Open` parses every object in the file (about 670 bytes each) and keeps the input bytes alive, because an encoded stream payload is a view into them rather than a copy. Stream payloads are *not* decoded on open: page content, images and fonts are decompressed only when something reads them, and the decoded bytes are not retained by the object model. So what separates this from a streaming opener (such as Aspose.PDF for Python's `open_streaming`) is the number of objects, not the size of the content. Lazy object parsing is declined because the whole-document operations depend on a fully materialized model: `Save()`'s mark-sweep and compact renumbering, the incremental-update delta that compares every object against the document as opened, and the all-objects validation scans. A partly parsed model would have to report objects nobody had looked at as unchanged, and that is exactly the assumption the incremental writer refuses to make for the objects it can see. To bound memory on large or untrusted input, lower `LoadLimits`' `maxObjects` and `maxFileBytes` (see *Open Untrusted PDFs Under Resource Limits*).

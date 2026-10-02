@@ -1,6 +1,6 @@
 export { defaultPrunePolicy } from './extractor.js';
 export type { PrunePolicy } from './extractor.js';
-export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, SeedValueError } from './errors.js';
+export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, SeedValueError, AiServiceError } from './errors.js';
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile, saveMarkdownFile, saveDocxFile,
@@ -228,6 +228,17 @@ export type {
 export type { FieldLock } from './siglock.js';
 export { httpTimestampProvider } from './tsahttp.js';
 export type { HttpTimestampOptions } from './tsahttp.js';
+export type { AiContentPart, AiMessage, AiRequest, AiResponse, AiModel } from './aimodel.js';
+export { openAiModel } from './aiopenai.js';
+export type { OpenAiModelOptions } from './aiopenai.js';
+export type { OcrEngine, OcrImage, OcrSpan } from './ocr.js';
+export type { MakeSearchableOptions, MakeSearchablePage, MakeSearchableReport } from './makesearchable.js';
+export { aiOcrEngine } from './aiocr.js';
+export type { AiOcrOptions } from './aiocr.js';
+export type { AiUsage } from './aimodel.js';
+export type { SummarizeOptions, SummarizeResult } from './aisummarize.js';
+export type { AskOptions, AskExcerpt, AskResult } from './aiask.js';
+export type { AltTextOptions, AltTextFigure, AltTextReport } from './aialttext.js';
 export type { Signer, PemSigner, Pkcs12Signer, ExternalSigner, SignerOptions } from './signer.js';
 export type { SigAlg, SignatureScheme, DigestAlgorithm } from './sigalg.js';
 export type {

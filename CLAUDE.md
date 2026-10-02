@@ -5062,6 +5062,26 @@ Source (`src/`):
   direction out under its own rule and emits the vertical body first — no single
   ordering is right for both, and interleaving by position drops a running head
   into the middle of a column.
+  **Invariant (`w7jf`):** the same rule covers a ROTATED baseline. A run whose
+  angle is not within 0.01 rad of horizontal carries `angle` and the pen end's
+  `endY` (`GlyphEvent.penEnd`), and `axisKeys` projects it onto its baseline;
+  `layoutLines` lays each angle out on its own — upright first, then each other
+  angle ascending — for the reason vertical text gets its own layout: lines in
+  two frames have no common order. Before this, everything was keyed on
+  page-space Y, so upright text on a `/Rotate 90` page read one glyph per line.
+  **Invariant:** an upright run takes exactly the path it always took — no
+  `angle`, no extra group — which is what kept every extraction, HTML,
+  Markdown and DOCX snapshot byte-identical through the change.
+  **Note, measured, and the fixtures that pin it are not the obvious ones:**
+  the grouping needs rotated lines whose keys STRADDLE an upright line's (at
+  270° a line's key is -x); a stamp beside body text sorts after it with or
+  without grouping. And the tolerance needs a run at 0.4°, not 0.2°: 0.2°
+  rounds to angle group 0 anyway, so only a run inside the tolerance but in
+  group 1 shows the tolerance doing anything. All five mutations redden in
+  `test/text-rotated-layout.test.ts`.
+  **Note:** `penEnd` exists because a horizontal glyph's `quad` keeps only the
+  pen END's x (`quad[2]`), so at 90° a run's length along its baseline cannot
+  be recovered from it.
 - **cidunicode.ts**, **cidunidata.ts** — CID→**Unicode**, the last step of
   reading CJK text. An `/Encoding` CMap gives code→CID, which draws the right
   glyph but says nothing about what character it is; when `/ToUnicode` is absent
@@ -9967,6 +9987,122 @@ Source (`src/`):
   streaming check reddens the chunked-response case.
   **Note:** the tests run a local `node:http` authority built on
   `buildTimeStampToken`, so the suite never touches the network.
+- **aimodel.ts**, **aiopenai.ts** — the AI model seam and its OpenAI-compatible
+  client (`3ywf.2`). `aimodel.ts` is a types-only LEAF importing nothing:
+  `AiModel` (one `complete` method), `AiRequest`, `AiResponse`, `AiMessage`,
+  `AiContentPart`. AI features (`3ywf.3`, `3ywf.4`) depend on it and never on
+  HTTP. `aiopenai.ts` is `openAiModel`, the second network client after
+  `tsahttp.ts` and built the same way — built-in `fetch`, a per-attempt
+  timeout, a response cap checked against `Content-Length` AND while
+  streaming.
+  **Invariant (`3ywf.1`):** no default endpoint — `baseUrl` and `model` are
+  required — and images are BYTES, never URLs, since a URL would have the
+  provider fetch what a document named.
+  **Invariant:** the library does NOT validate a reply against `schema`. A
+  general JSON Schema validator is a subsystem of its own; each feature
+  parses `text` and checks the exact shape it needs.
+  **Invariant:** `finish_reason: 'length'` THROWS — a truncated answer read as
+  whole is the silent failure this repo refuses.
+  **Invariant:** the API key is redacted from every message, including a
+  provider message that echoes it (OpenAI's 401 does).
+  **Invariant (final review):** `baseUrl` is refused at construction when it
+  carries credentials, a query or a fragment, and the refusal never quotes it.
+  Every error names the endpoint, and Node's `fetch` itself rejects a URL with
+  credentials by repeating it — so a password reached the message twice and
+  was then retried for nothing. Only `apiKey` is redacted; a secret passed
+  through `headers` is not.
+  **Invariant:** `max_tokens`, never `max_completion_tokens` — the widely
+  compatible field, though OpenAI's reasoning models reject it.
+  **Note:** retry timing is injectable through the internal
+  `createOpenAiModel`/`RetryTiming`, which `index.ts` does not export, so the
+  retry tests never sleep.
+- **aijson.ts** — a model's JSON reply parsed (`u0ec`): `parseJsonReply`, the
+  ONE place `Ask`, `GenerateAltText` and `aiOcrEngine` turn reply text into a
+  value. A leaf over `errors.js`.
+  **Invariant:** one markdown code fence spanning the WHOLE reply is stripped
+  before `JSON.parse`; JSON with prose around it is still refused. Three
+  copies of that rule is how one feature comes to accept a reply another fails.
+- **ocr.ts**, **glyphless.ts**, **ocrlayer.ts**, **makesearchable.ts**,
+  **aiocr.ts** — `doc.MakeSearchable` (`3ywf.3`): an invisible text layer over
+  image-only pages. `ocr.ts` is the seam (`OcrEngine`, a types-only leaf);
+  `glyphless.ts` the font; `ocrlayer.ts` the pure span → content-bytes step;
+  `makesearchable.ts` the only one holding a `Document`; `aiocr.ts` the
+  `AiModel` adapter.
+  **Invariant:** the page→pixel matrix is `ocrDeviceMatrix`, which is
+  `renderCanvas`'s composition (`baseMatrix` × scale) — one owner, so the
+  rendered image and the layer cannot disagree about where a pixel is. The
+  stretch lives in `Tm` (font size 1, uniform 0.5 em advance), so `/Rotate`
+  needs no special case.
+  **Invariant:** the glyphless font maps every code ≥ 1 to GID 1, NEVER 0 —
+  `NotdefUsed` does not exempt render mode 3 — and its `/BaseFont` carries no
+  subset tag, so PDF/A's `/CIDSet` rule does not apply.
+  **Invariant:** `GlyphlessCodes.encode` is ATOMIC: a string that would pass
+  65,535 distinct characters assigns nothing, so one oversized page fails
+  alone instead of poisoning every page after it.
+  **Invariant:** the font is allocated lazily and finished in a `finally`, so a
+  run writing nothing changes nothing and an aborted run still leaves a
+  complete `/ToUnicode` for the pages it wrote.
+  **Note on the oracle:** `test/make-searchable-geometry.test.ts` checks glyph
+  positions from the EXTRACTOR against a page-from-pixel table derived by hand
+  per `/Rotate`, never from `baseMatrix` — the inverse is checked against
+  something it does not compute.
+  **Note, a stated limit:** extraction here orders glyphs by x and does no
+  bidi, so right-to-left text written in logical order extracts correctly
+  here; other viewers may reorder it.
+- **aichunk.ts**, **bm25.ts**, **aisummarize.ts**, **aiask.ts**,
+  **aialttext.ts**, **figurecontent.ts** — `doc.Summarize`, `doc.Ask` and
+  `doc.GenerateAltText` (`3ywf.4`). `aichunk.ts` is the text pipeline (page
+  text → budgeted chunks and overlapping windows) and `bm25.ts` local ranking,
+  both pure; each feature module holds the `Document`. `figurecontent.ts` is
+  "which images and what extent does this structure element paint", extracted
+  from `docmodel.ts`.
+  **Invariant:** budgets are CHARACTERS — `AiModel` knows no tokenizer — and
+  `splitOversized` is the one rule both packers cut an oversized page by.
+  **Invariant:** `Summarize` sends `instructions` in the FINAL request only, and
+  bounds the reduce at 6 levels; past it one oversized request goes and the
+  model's refusal is the report, never a silent truncation. A level that does
+  not SHRINK the text ends the reduce early (`u0ec`) — the next would only
+  repeat it.
+  **Invariant (`u0ec`):** every hard cut goes through `aichunk.ts`'s `cutAt`,
+  which steps back off the middle of a surrogate pair — `splitOversized`,
+  both ends of a `windowPages` window, and the alt-text context trim. A lone
+  half is a character the model never sees and a string some APIs refuse.
+  **Invariant:** `Ask` drops a cited page that was not among the excerpts SENT —
+  a model cannot cite what it was not shown. It sends excerpts in document
+  order and returns them in rank order, both deliberately. `found: false`
+  cites NO pages, and a question that leaves no room for even one excerpt is a
+  `RangeError` before any request rather than an oversized one (`u0ec`).
+  **Invariant:** `GenerateAltText` dedupes by `imageKey` on ENCODED bytes, never
+  stream identity, and in an untagged document describes exactly the images
+  `AutoTag` asks about (top-level draws), then runs `AutoTag` with them —
+  which is also why `pages` is refused there: AutoTag tags every page and
+  would artifact the rest. A decorative verdict changes nothing in a TAGGED
+  document; re-tagging a `/Figure` as an artifact is the author's decision.
+  **Invariant (`u0ec`):** a FAILED description is not memoized, so a transient
+  error costs one figure rather than every figure sharing its picture; an
+  untagged document with no picture to describe is left UNTAGGED; and a page's
+  picture-less figures share ONE render (`raster.ts`'s `pageRegionRenderer`).
+  **Note, a decision rather than a gap:** a tagged figure judged decorative, or
+  whose request failed, is asked again on the next run — nothing is written
+  for it, so nothing records that it was asked.
+  **Invariant:** an abort that lands after the last request still stops the
+  run BEFORE `AutoTag` — it rewrites every page, so it must not start once the
+  caller has asked to stop. If `AutoTag` itself throws, the error propagates:
+  every description already reached the caller through `onFigure`, and a
+  partial tree on failure is `AutoTag`'s own pre-existing behaviour, not
+  something this module adds or rolls back.
+  **Invariant:** `figurecontent.ts` is the ONE owner of the figure → image
+  mapping; the HTML/Markdown/DOCX/EPUB exports and alt-text read it.
+  `test/html-identity.test.ts` and `test/docx-flow-identity.test.ts` are the
+  fence that the extraction moved nothing.
+  **Note, measured, and it covers NOTHING:** dropping the untagged path's
+  top-level filter (`addr.path.length === 0`) reddens no case — no fixture
+  draws a picture inside a Form XObject, so the filter's only effect there
+  (not spending a request on an image AutoTag never asks about) is unseen. It
+  is a COST rule held by matching AutoTag's own walk; do not cite the green
+  suite as covering it. The other seven mutations aimed at `3ywf.4` each
+  redden exactly the case built for them, and all eleven aimed at `u0ec`
+  redden (`test/ai-polish.test.ts`, `test/ai-alttext-crop-once.test.ts`).
 - **signature.ts**, **signer.ts**, **sigalg.ts**, **sigappearance.ts**,
   **sigplaceholder.ts**, **incremental.ts**, **pkcs12.ts**, **docmdp.ts** —
   digital signing (`Sign`/`Certify`): CMS/PAdES build, credential sources,
@@ -10918,8 +11054,10 @@ Two rules apply to these, both learned the hard way:
   `test/helpers/`; mirror existing builder/test style. Reach for a real-world
   fixture (above) only to validate a format against bytes we did not produce.
 - **Errors** — throw `PdfParseError`, `UnsupportedFeatureError`,
-  `InvalidPasswordError`, `ResourceLimitError` or `SeedValueError` (see
-  `errors.ts`); these are the public error types. A `SeedValueError` is for a
+  `InvalidPasswordError`, `ResourceLimitError`, `SeedValueError` or
+  `AiServiceError` (see `errors.ts`); these are the public error types. An
+  `AiServiceError` is for an AI model service that failed or answered
+  unusably (`3ywf.2`); `status` is the HTTP status when one arrived. A `SeedValueError` is for a
   signature field's seed value the signing call cannot honour (`puep.3`), and
   names the entry. A `ResourceLimitError` is for a `LoadLimits` bound only,
   never for damage.

@@ -14,7 +14,7 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const pstr = (s: string): PdfObject => ({ kind: 'string', bytes: enc(s) });
 const flate = (bytes: Uint8Array): Uint8Array => new Uint8Array(deflateSync(Buffer.from(bytes)));
 
-function flateStream(raw: Uint8Array, extra: Record<string, PdfObject> = {}): PdfStream {
+export function flateStream(raw: Uint8Array, extra: Record<string, PdfObject> = {}): PdfStream {
   const dict: PdfDict = new Map<string, PdfObject>([['Filter', name('FlateDecode')], ...Object.entries(extra)]);
   return { kind: 'stream', dict, raw: flate(raw) };
 }
@@ -60,7 +60,7 @@ function utf16beHex(s: string): string {
 }
 
 /** Build a /ToUnicode CMap mapping each CID (2-byte) to its Unicode text. */
-function buildToUnicode(entries: [number, string][]): Uint8Array {
+export function buildToUnicode(entries: [number, string][]): Uint8Array {
   const head =
     '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n' +
     '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n' +

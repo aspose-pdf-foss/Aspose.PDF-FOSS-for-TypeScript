@@ -52,6 +52,16 @@ export class SeedValueError extends Error {
     super(message); this.name = 'SeedValueError';
   }
 }
+/** An AI model service (`3ywf.2`) failed, or answered with something unusable:
+ *  a non-2xx status, a refusal, a reply cut off at the token limit, a body that
+ *  is not a chat completion, a response past the size cap, or no answer in
+ *  time. `status` is the HTTP status when a response arrived. The API key a
+ *  client was built with never appears in the message. */
+export class AiServiceError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message); this.name = 'AiServiceError';
+  }
+}
 export class InvalidPasswordError extends Error {
   constructor(message = 'PDF is password-protected: wrong or missing password') {
     super(message); this.name = 'InvalidPasswordError';

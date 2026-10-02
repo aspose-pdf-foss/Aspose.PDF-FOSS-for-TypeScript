@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import { Page } from './page.js';
 import { enc } from './serialize.js';
 import { name } from './types.js';
-import { Matrix, mul, apply, translate, invert } from './text.js';
+import { Matrix, mul, apply, translate, invert, type Rect } from './text.js';
 import { PdfDict, PdfStream, PdfObject, isStream, isDict, isArray, isName } from './types.js';
 import { Rgb, ColorConverter, resolveColorSpace } from './colorspace.js';
 import { parseFunction } from './pdffunction.js';
@@ -1863,6 +1863,50 @@ export function renderPageBackdropToPng(
 export function renderPageGraphicsToPng(
   doc: Document, page: Page, opts: ImageOptions = {}): Uint8Array {
   return renderPage(doc, page, opts, { skipGlyphs: true });
+}
+
+/** Render `page` at `scale` and crop to the page-space `region`, as an RGB PNG.
+ *  Undefined when the region lies off the page.
+ *
+ *  For `aialttext.ts`, which describes a figure that draws no image (a vector
+ *  chart) by showing the model the part of the page it occupies. The region is
+ *  mapped through the SAME device matrix the canvas was drawn with, so `/Rotate`
+ *  and an offset CropBox need no special case. */
+export function renderPageRegionToPng(doc: Document, page: Page, region: Rect, scale: number): Uint8Array | undefined {
+  return pageRegionRenderer(doc, page, scale)(region);
+}
+
+/** {@link renderPageRegionToPng} for many regions of one page: the page is
+ *  rendered ONCE, on the first call, and every region is cropped from that
+ *  canvas (`u0ec`). `GenerateAltText` asks for one crop per image-less
+ *  figure, and a page holding several used to be rendered once per figure. */
+export function pageRegionRenderer(doc: Document, page: Page, scale: number): (region: Rect) => Uint8Array | undefined {
+  let canvas: ReturnType<typeof renderCanvas> | undefined;
+  let rgb: Uint8Array | undefined;
+  const device = mul(baseMatrix(page, 'crop').matrix, [scale, 0, 0, scale, 0, 0]);
+  return (region) => {
+    canvas ??= renderCanvas(doc, page, { scale }, { skipGlyphs: false });
+    return cropToPng(canvas, () => (rgb ??= canvas!.toRgb()), device, region);
+  };
+}
+
+function cropToPng(
+  canvas: { w: number; h: number }, rgbOf: () => Uint8Array, device: Matrix, region: Rect,
+): Uint8Array | undefined {
+  const pts = [
+    apply(device, region[0], region[1]), apply(device, region[2], region[1]),
+    apply(device, region[0], region[3]), apply(device, region[2], region[3]),
+  ];
+  const x0 = Math.max(0, Math.floor(Math.min(...pts.map((p) => p[0]))));
+  const y0 = Math.max(0, Math.floor(Math.min(...pts.map((p) => p[1]))));
+  const x1 = Math.min(canvas.w, Math.ceil(Math.max(...pts.map((p) => p[0]))));
+  const y1 = Math.min(canvas.h, Math.ceil(Math.max(...pts.map((p) => p[1]))));
+  if (x1 <= x0 || y1 <= y0) return undefined;
+  const rgb = rgbOf();
+  const w = x1 - x0, h = y1 - y0;
+  const out = new Uint8Array(w * h * 3);
+  for (let y = 0; y < h; y++) out.set(rgb.subarray(((y0 + y) * canvas.w + x0) * 3, ((y0 + y) * canvas.w + x1) * 3), y * w * 3);
+  return encodePng(w, h, out, 'rgb');
 }
 
 /** Rasterize one Form XObject to straight-alpha sRGB RGBA, top-down, mapping

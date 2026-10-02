@@ -1,4 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
+// FIRST, and load-bearing: the mock below reaches `htmlfixed.ts` only if that
+// module's own `raster.js` import is what triggers the factory. Were another
+// module to trigger it first, the factory's `importActual` would evaluate
+// `htmlfixed.ts` inside its own import chain, binding it to the ACTUAL
+// rasterizer — the mock never fires and the degrade case renders fine. That
+// happened when `aialttext.ts` (3ywf.4) began importing `raster.js` from the
+// document graph; importing here makes the case independent of import order.
+import '../src/htmlfixed.js';
 import { Document } from '../src/document.js';
 import { renderPageGraphicsToPng } from '../src/raster.js';
 import { decodePng } from './helpers/decode-png.js';

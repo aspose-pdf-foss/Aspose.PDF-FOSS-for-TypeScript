@@ -9,6 +9,12 @@ import {
 import { decodeObjStm, ObjStmDamage } from './objstm.js';
 import { PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isStream, isName, isArray, isString, ref, name } from './types.js';
 import { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, rethrowLimit } from './errors.js';
+import { makeSearchable, type MakeSearchableOptions, type MakeSearchableReport } from './makesearchable.js';
+import { summarize, type SummarizeOptions, type SummarizeResult } from './aisummarize.js';
+import { ask, type AskOptions, type AskResult } from './aiask.js';
+import { generateAltText, type AltTextOptions, type AltTextReport } from './aialttext.js';
+import type { AiModel } from './aimodel.js';
+import type { OcrEngine } from './ocr.js';
 import { Metadata, MetadataUpdate, readMetadata, applyUpdate, decodePdfText, encodePdfText } from './metadata.js';
 import { StructTreeRoot } from './struct.js';
 import { renderDocumentToHtml, HtmlOptions } from './html.js';
@@ -1354,6 +1360,42 @@ export class Document {
     const st = this.resolve(stRef);
     if (!isDict(st)) return null;
     return new StructTreeRoot(this, st, isRef(stRef) ? stRef : undefined);
+  }
+
+  /** Add an invisible, exactly placed text layer to image-only pages so text
+   *  extraction, search and copy-paste find their words (`3ywf.3`). Each
+   *  selected page is rendered at `dpi` and handed to `engine`; the spans it
+   *  returns are written in render mode 3 over a built-in glyphless font, so
+   *  the page looks unchanged. Pages that already have text are skipped unless
+   *  `force`. A failing page is reported and the run continues; an abort
+   *  stops it. Refuses a document with signature fields. */
+  MakeSearchable(engine: OcrEngine, opts?: MakeSearchableOptions): Promise<MakeSearchableReport> {
+    return makeSearchable(this, engine, opts);
+  }
+
+  /** A summary of the selected pages from `model`. A document larger than one
+   *  request is summarized in parts and the parts combined. Throws on a
+   *  selection with no extractable text. */
+  Summarize(model: AiModel, opts?: SummarizeOptions): Promise<SummarizeResult> {
+    return summarize(this, model, opts);
+  }
+
+  /** An answer to `question` from `model`, drawn from the passages of the
+   *  selected pages that best match it (ranked locally), with the pages it
+   *  cites. `found` is false when those passages do not contain the answer,
+   *  and then no pages are cited. A question too long to leave room for one
+   *  passage within `maxInputChars` is a RangeError before any request. */
+  Ask(model: AiModel, question: string, opts?: AskOptions): Promise<AskResult> {
+    return ask(this, model, question, opts);
+  }
+
+  /** `/Alt` from `model` for every `/Figure` that lacks one. An untagged
+   *  document has its pictures described and is then auto-tagged with those
+   *  descriptions (`autoTag: false` refuses instead); one with no picture to
+   *  describe is left untagged. A failing figure is reported and the run
+   *  continues. Refuses a document with signature fields. */
+  GenerateAltText(model: AiModel, opts?: AltTextOptions): Promise<AltTextReport> {
+    return generateAltText(this, model, opts);
   }
 
   /** Validate the document against a curated, machine-checkable subset of

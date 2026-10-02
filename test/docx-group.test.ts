@@ -11,7 +11,7 @@ function g(
     addr: { path: [], streamIndex: 0, opIndex: 0 },
     font: { bold: false, italic: false } as unknown as GlyphEvent['font'],
     quad: [x, baseline, x + size * 0.5, baseline + size],
-    fontSize: size, angle: 0, text, elementIndex: 0,
+    fontSize: size, angle: 0, penEnd: [x + size * 0.5, baseline], text, elementIndex: 0,
     byteStart: 0, byteLen: 1, advance: 0.5,
     // groupGlyphs reads neither, so these synthetic glyphs carry a placeholder.
     // The fields are REQUIRED on GlyphEvent on purpose: the real walk must not
