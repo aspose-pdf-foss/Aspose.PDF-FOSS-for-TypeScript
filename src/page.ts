@@ -5,6 +5,7 @@ import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
 import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions } from './text.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
+import type { ReplaceTextOptions } from './replacefont.js';
 import { searchAnnotations, searchAnnotationText, type AnnotationMatch, type AnnotationTextMatch } from './annotsearch.js';
 import { measureText, stampText, stampTextBlock, StampOptions, TextBlockOptions, AuthoringFont } from './stamp.js';
 import { isTextRunList, type TextRun } from './textdecor.js';
@@ -580,13 +581,15 @@ export class Page {
   }
 
   /** Replace every occurrence of `find` (a literal string or RegExp) with
-   *  `replacement`, re-encoded in the matched text's own font and written in
-   *  place. There is no layout reflow: positioning is preserved, so a wider
-   *  replacement may overlap following text and a narrower one may leave a gap.
-   *  Throws `UnsupportedFeatureError` for a Type0/composite font or a replacement
-   *  character not representable in the font's encoding. Returns the number of
-   *  occurrences replaced. */
-  ReplaceText(find: string | RegExp, replacement: string, options?: SearchOptions): number {
+   *  `replacement`, written in place. There is no layout reflow: positioning is
+   *  preserved, so a wider replacement may overlap following text and a
+   *  narrower one may leave a gap. Each character is written in the matched
+   *  text's own font where it can draw it; otherwise in `options.fallbackFonts`
+   *  (and, with `matchRegisteredFonts`, first the same face from registered
+   *  folders). A character nothing can draw throws `UnsupportedFeatureError`,
+   *  or with `options.onUndrawable` is left out and reported. Returns the
+   *  number of occurrences found. */
+  ReplaceText(find: string | RegExp, replacement: string, options?: ReplaceTextOptions): number {
     return replaceText(this.doc, this, find, replacement, options);
   }
 

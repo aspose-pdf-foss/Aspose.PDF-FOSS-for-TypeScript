@@ -212,11 +212,11 @@ export type MarkRedactTextOptions =
 export function markRedactText(
   doc: Document, page: Page, find: string | RegExp, opts: MarkRedactTextOptions = {},
 ): number {
-  // `region` scopes the search only. Destructured out so it never reaches
-  // addRedact, which would carry it nowhere but would accept the key.
-  const { region, ...annotOpts } = opts;
+  // The search keys scope the search only. Destructured out so they never
+  // reach addRedact, which would carry them nowhere but would accept the keys.
+  const { region, ignoreCase, wholeWord, includeHidden: _hidden, ...annotOpts } = opts;
   // As `redactText`: a mark must cover hidden occurrences too.
-  const matches = searchText(doc, page, find, { region, includeHidden: true });
+  const matches = searchText(doc, page, find, { region, ignoreCase, wholeWord, includeHidden: true });
   for (const m of matches) {
     // One annotation per match: a match wrapping a line break spans several line
     // boxes, and those become several quads on the same mark, not several marks.

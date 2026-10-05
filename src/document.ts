@@ -41,6 +41,8 @@ import { parseRdfPacket } from './xmprdf.js';
 import { XmpValue, findXmpValue } from './xmpvalue.js';
 import { planSync, infoSide, xmpSide, mirroredField, type MetadataSyncReport, type SyncDirection } from './metasync.js';
 import { Page } from './page.js';
+import { planReplace } from './textedit.js';
+import { checkReplaceOptions, type ReplaceTextOptions } from './replacefont.js';
 import { stitchTables, type TableStitchOptions } from './tablestitch.js';
 import type { Table, TableExtractOptions } from './tablemodel.js';
 import type { Rect } from './text.js';
@@ -56,6 +58,7 @@ import {
   ColorConvertOptions, ColorConvertReport, ConvertColorsOptions,
 } from './colorconvert.js';
 import { flattenLayers, type FlattenLayersReport } from './ocflatten.js';
+import { sanitizeDocument, type SanitizeOptions, type SanitizeReport } from './sanitize.js';
 import {
   convertXfaToAcroForm,
   type XfaConvertOptions, type XfaConvertReport,
@@ -447,6 +450,11 @@ export class Document {
    *  live model is permanently behind the bytes for the signature object, so an
    *  incremental save is unsafe whether or not anything was edited after. */
   private signedInSession = false;
+  /** Set once {@link Sanitize} has run, and never cleared. An incremental save
+   *  APPENDS to the bytes this document was opened from, and those bytes still
+   *  hold everything Sanitize removed — so it is refused from then on, even
+   *  when this run found nothing, rather than trusting a count (`74mf.4`). */
+  private sanitizedInSession = false;
   /** Revisions the `/Prev` chain named on open, oldest first — exactly what
    *  `readXref` could read, and empty when it could not read anything.
    *
@@ -2013,6 +2021,28 @@ export class Document {
     return flattenLayers(this);
   }
 
+  /** Remove what this document carries beyond what it shows, in place, and
+   *  report what was removed: metadata (/Info and every XMP packet), every
+   *  action and script, attachments, annotations, the interactive form
+   *  (flattened), optional content (flattened) and private application data.
+   *  Every category is on by default; pass `false` for one to keep it. The
+   *  exception is `pagesToImages`, which replaces every page with its
+   *  rendering: it is lossy and must be asked for. A section of the report is
+   *  `undefined` when its toggle was off.
+   *
+   *  One-way: what is removed is gone from the next {@link Save}. Removing XMP
+   *  also removes any PDF/A or PDF/UA identification, so a conforming document
+   *  stops claiming conformance.
+   *
+   *  Throws TypeError for an unknown option or a non-boolean value, and
+   *  {@link UnsupportedFeatureError} for a signed document, both before
+   *  anything changes. */
+  Sanitize(opts: SanitizeOptions = {}): SanitizeReport {
+    const report = sanitizeDocument(this, opts);
+    this.sanitizedInSession = true;
+    return report;
+  }
+
   /** Convert this document's XFA form to a real `/AcroForm` field tree.
    *
    *  Fields whose template layout chain is positioned throughout get widgets
@@ -2082,6 +2112,11 @@ export class Document {
         + '/Contents exists only in the signed bytes, not in the live model, so an '
         + 'appended revision would overwrite it with an empty one. Save() first, '
         + 'reopen the result, then edit.');
+    if (this.sanitizedInSession)
+      throw new UnsupportedFeatureError(
+        'cannot save incrementally after Sanitize: an incremental update appends to '
+        + 'the bytes this document was opened from, which still contain everything '
+        + 'Sanitize removed. Save() without `incremental` writes a fresh file.');
     if (!this.originalBytes)
       throw new UnsupportedFeatureError(
         'cannot save incrementally: this document was authored in memory, '
@@ -2396,20 +2431,33 @@ export class Document {
   ): EmbeddedFont | undefined {
     const hit = this.ResolveFontByName(family, opts);
     if (!hit) return undefined;
+    return this.loadFaceFile(hit.path, hit.faceIndex, opts.shape);
+  }
 
-    // Keyed by path AND face: the faces of a collection share one path, so a
-    // path-only key hands back face 0's font for every face of the file and
-    // every glyph is then drawn from the wrong one, silently.
-    const key = `${hit.path}#${hit.faceIndex}`;
+  /** @internal The registered face whose PostScript name (`name` ID 6) is
+   *  EXACTLY `postScriptName`, through `LoadFontByName`'s memo, or `undefined`.
+   *  `ReplaceText({ matchRegisteredFonts })` uses it to find the face a subset
+   *  font was cut from (u3l5.2); a family match is a different face. */
+  fontByPostScriptName(postScriptName: string): EmbeddedFont | undefined {
+    for (const f of this.fontFolders) {
+      for (const face of indexFolder(f.dir, f.sniff)) {
+        if (face.names.postScriptName === postScriptName) return this.loadFaceFile(face.path, face.faceIndex, undefined);
+      }
+    }
+    return undefined;
+  }
+
+  /** Load one face of a font file once per document. Keyed by path AND face:
+   *  the faces of a collection share one path, so a path-only key hands back
+   *  face 0's font for every face of the file and every glyph is then drawn
+   *  from the wrong one, silently. */
+  private loadFaceFile(path: string, faceIndex: number, shape: boolean | undefined): EmbeddedFont | undefined {
+    const key = `${path}#${faceIndex}`;
     const already = this.fontsByPath.get(key);
     if (already) return already;
     let font: EmbeddedFont;
     try {
-      // AddFontOptions is passed field by field rather than spread: `opts` also
-      // carries weight and italic, which are selection inputs and mean nothing
-      // to AddFont.
-      font = this.AddFont(new Uint8Array(readFileSync(hit.path)),
-        { shape: opts.shape, faceIndex: hit.faceIndex });
+      font = this.AddFont(new Uint8Array(readFileSync(path)), { shape, faceIndex });
     } catch (caught) { rethrowLimit(caught);
       return undefined;   // readable enough to index, not enough to parse
     }
@@ -3706,10 +3754,23 @@ export class Document {
   }
 
   /** Replace every occurrence of `find` with `replacement` across all pages; see
-   *  `Page.ReplaceText`. Returns the total number of occurrences replaced. */
-  ReplaceText(find: string | RegExp, replacement: string): number {
+   *  `Page.ReplaceText`, whose options it takes. Every page is PLANNED before
+   *  any is changed, so a refusal leaves the whole document untouched. Returns
+   *  the total number of occurrences found. */
+  ReplaceText(find: string | RegExp, replacement: string, options?: ReplaceTextOptions): number {
+    const o = checkReplaceOptions(options);
+    // A dry plan of every page refuses before anything changes. Each page is
+    // then RE-planned just before it is applied: pages may reach one form
+    // through a shared /Resources dict, and applying page 1 repoints that form
+    // for page 2, so a plan made against the original would splice its stale
+    // byte offsets into the edited copy (u3l5.2 review).
+    this.Pages.forEach((p, i) => planReplace(this, p, i + 1, find, replacement, o));
     let total = 0;
-    for (const page of this.Pages) total += page.ReplaceText(find, replacement);
+    this.Pages.forEach((p, i) => {
+      const plan = planReplace(this, p, i + 1, find, replacement, o);
+      plan.apply();
+      total += plan.count;
+    });
     return total;
   }
 

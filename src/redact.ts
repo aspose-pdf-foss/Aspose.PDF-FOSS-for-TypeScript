@@ -28,6 +28,12 @@ export interface RedactOptions {
    *  `redactPage` takes explicit rects and never sees this). Same centroid rule
    *  as `SearchOptions.region`. */
   region?: Rect;
+  /** Match the search case-insensitively (`redactText` only); see
+   *  `SearchOptions.ignoreCase`. */
+  ignoreCase?: boolean;
+  /** Match whole words only (`redactText` only); see
+   *  `SearchOptions.wholeWord`. */
+  wholeWord?: boolean;
   /** Fill colour of the redaction marker box as [r, g, b] in 0..1 (default black). */
   color?: [number, number, number];
   /** Also clear document metadata (/Info + XMP) when true. */
@@ -560,11 +566,11 @@ export function redactText(
   // `region` scopes the search only. Destructured out rather than forwarded, so
   // it cannot reach redactPage — which takes explicit rects and would have
   // nothing to do with it, but would silently accept the key.
-  const { region, ...pageOpts } = opts;
+  const { region, ignoreCase, wholeWord, ...pageOpts } = opts;
   // Redaction acts on what the file CONTAINS, never on what a configuration
   // happens to show: redacting only the visible occurrences leaves the secret
   // in the bytes while reporting success.
-  const matches = searchText(doc, page, find, { region, includeHidden: true });
+  const matches = searchText(doc, page, find, { region, ignoreCase, wholeWord, includeHidden: true });
   if (matches.length === 0) return 0;
   const rects: Rect[] = matches.flatMap((m) => m.quads);
   redactPage(doc, page, rects, pageOpts);

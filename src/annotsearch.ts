@@ -88,7 +88,7 @@ export function searchAnnotations(
     const { text, refs } = layoutLines(runs);
     if (text.length === 0) continue;
     const annot = wrapAnnotation(doc, dict);
-    for (const [start, end] of findRanges(text, find)) {
+    for (const [start, end] of findRanges(text, find, opts)) {
       const m = buildMatch(text, refs, start, end);
       out.push({ annot, text: m.text, quads: m.quads });
     }

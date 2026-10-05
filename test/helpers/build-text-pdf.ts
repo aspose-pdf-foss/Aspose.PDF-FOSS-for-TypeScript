@@ -91,7 +91,7 @@ export function buildToUnicodePdf(stream: string, cmap: string): Uint8Array {
 /** Page with a Type0 Identity-H font + ToUnicode (2-byte codes). */
 export function buildType0Pdf(
   stream: string, cmap: string,
-  opts: { baseFont?: string; ordering?: string; toUnicode?: boolean } = {},
+  opts: { baseFont?: string; ordering?: string; toUnicode?: boolean; encoding?: string } = {},
 ): Uint8Array {
   // Defaults reproduce the pre-lqcs.2 strings EXACTLY, so every existing caller
   // is byte-identical.
@@ -103,11 +103,68 @@ export function buildType0Pdf(
     2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
     3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
     4: contentObj(stream),
-    5: `<< /Type /Font /Subtype /Type0 /BaseFont /${base} /Encoding /Identity-H /DescendantFonts [7 0 R]${tu} >>`,
+    5: `<< /Type /Font /Subtype /Type0 /BaseFont /${base} /Encoding /${opts.encoding ?? 'Identity-H'} /DescendantFonts [7 0 R]${tu} >>`,
     6: contentObj(cmap),
     7: `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${base} /CIDSystemInfo << /Registry (Adobe) /Ordering (${ordering}) /Supplement 0 >> >>`,
   };
   return serialize(objects, 7);
+}
+
+/** Page with a simple Helvetica `/F1` AND a Type0 Identity-H `/F2` carrying
+ *  `cmap` as its `/ToUnicode`: one line may switch between a font that can
+ *  re-encode text and one that cannot. */
+export function buildMixedType0Pdf(stream: string, cmap: string): Uint8Array {
+  const objects: Obj = {
+    1: `<< /Type /Catalog /Pages 2 0 R >>`,
+    2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
+    3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>`,
+    4: contentObj(stream),
+    5: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
+    6: `<< /Type /Font /Subtype /Type0 /BaseFont /AAAAAA+Foo /Encoding /Identity-H /DescendantFonts [8 0 R] /ToUnicode 7 0 R >>`,
+    7: contentObj(cmap),
+    8: `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /AAAAAA+Foo /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>`,
+  };
+  return serialize(objects, 8);
+}
+
+/** Page whose /Resources hold Helvetica `/F1` and a Form XObject `/Fm0`
+ *  showing `formStream`. `formFont: false` gives the form /Resources with no
+ *  /Font; `formResources: false` gives it no /Resources at all, so it inherits
+ *  the page's (7.8.3). */
+export function buildFormTextPdf(
+  pageStream: string, formStream: string,
+  opts: { formFont?: boolean; formResources?: boolean } = {},
+): Uint8Array {
+  const formRes = opts.formResources === false ? ''
+    : opts.formFont === false ? '/Resources << >> '
+    : '/Resources << /Font << /F1 5 0 R >> >> ';
+  const objects: Obj = {
+    1: `<< /Type /Catalog /Pages 2 0 R >>`,
+    2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
+    3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >> /Contents 4 0 R >>`,
+    4: contentObj(pageStream),
+    5: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
+    6: `<< /Type /XObject /Subtype /Form /BBox [0 0 300 300] ${formRes}/Length ${byteLen(formStream)} >>\nstream\n${formStream}\nendstream`,
+  };
+  return serialize(objects, 6);
+}
+
+/** Two pages sharing ONE indirect /Resources dict, each drawing the same Form
+ *  XObject `/Fm0` showing `formStream` — the header/footer shape. An edit to
+ *  the form through one page is visible through the other. */
+export function buildSharedFormPagesPdf(formStream: string): Uint8Array {
+  const objects: Obj = {
+    1: `<< /Type /Catalog /Pages 2 0 R >>`,
+    2: `<< /Type /Pages /Count 2 /Kids [3 0 R 8 0 R] /MediaBox [0 0 300 300] >>`,
+    3: `<< /Type /Page /Parent 2 0 R /Resources 7 0 R /Contents 4 0 R >>`,
+    4: contentObj('q /Fm0 Do Q'),
+    5: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
+    6: `<< /Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Length ${byteLen(formStream)} >>\nstream\n${formStream}\nendstream`,
+    7: `<< /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >>`,
+    8: `<< /Type /Page /Parent 2 0 R /Resources 7 0 R /Contents 9 0 R >>`,
+    9: contentObj('q /Fm0 Do Q'),
+  };
+  return serialize(objects, 9);
 }
 
 /** The /F1 font dict of a fixture built by this module, opened and resolved. */

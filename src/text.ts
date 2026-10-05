@@ -4,8 +4,8 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { ContentAddr } from './editcontent.js';
-import { PdfDict, PdfObject, PdfStream, isDict, isName, isArray, isString, isStream } from './types.js';
-import { parseContentStream, type ContentTokenBudget } from './content.js';
+import { PdfDict, PdfObject, PdfStream, isDict, isName, isArray, isString, isStream, name } from './types.js';
+import { parseContentStream, type ContentOp, type ContentTokenBudget } from './content.js';
 import { inflateStream } from './flate.js';
 import { TextFont, glyphDisplacement, tjShift } from './font.js';
 import {
@@ -172,7 +172,13 @@ function isUpright(a: number): boolean {
 /** Lay runs out into lines (by Y) and order/space them (by X), returning the
  *  assembled text plus, for every character, the ref of the run that produced
  *  it (`undefined` for inserted spaces and line breaks). The single source of
- *  truth behind both `assembleLines` and positioned text search. */
+ *  truth behind both `assembleLines` and positioned text search.
+ *
+ *  **Invariant:** `refs.length === text.length` — `refs[i]` is the glyph that
+ *  drew code unit `text[i]`, `undefined` for a space or line break inserted
+ *  here. An astral character gets TWO entries. Every consumer indexes `text`
+ *  by code unit, and one entry per code point put every later match on the
+ *  wrong glyphs. */
 export function layoutLines<T>(runs: RefRun<T>[]): { text: string; refs: (T | undefined)[] } {
   const items = runs.filter((r) => r.text.length > 0);
   if (items.length === 0) return { text: '', refs: [] };
@@ -278,7 +284,13 @@ function layoutOneDirection<T>(items: RefRun<T>[]): { text: string; refs: (T | u
           chars.push(' '); refs.push(undefined);
         }
       }
-      for (const ch of r.text) { chars.push(ch); refs.push(r.ref); }
+      // One ref per UTF-16 CODE UNIT, not per code point: `text` is indexed by
+      // code unit (findRanges, buildMatch, compare.ts), so a per-code-point
+      // ref list falls one behind after every astral character.
+      for (const ch of r.text) {
+        chars.push(ch);
+        for (let u = 0; u < ch.length; u++) refs.push(r.ref);
+      }
       prevEnd = k.end;
     }
     // Trim trailing whitespace on this line (mirrors /\s+$/).
@@ -373,6 +385,20 @@ export interface GlyphEvent {
    *  and its glyph program. Equal to `code` for a simple font and for
    *  `/Identity-H`; different for every other CMap. */
   cid: number;
+  /** The resource name `Tf` selected this glyph's font under, `''` when no
+   *  `Tf` did, and the size it stated (u3l5.2). REQUIRED, like `code`: a
+   *  replace that switches to another font writes `/tfKey tfSize Tf` to switch
+   *  back and must never guess. Note the key is resolved where the font was
+   *  SET — for a form inheriting the page's text state (mih4) that is not the
+   *  form's own resources. */
+  tfKey: string;
+  tfSize: number;
+  /** `Tc`, `Tw` and `Tz` (as a fraction, 1 = 100%) in force (u3l5.4).
+   *  REQUIRED, like `tfSize`: an edit that measures a replacement must apply
+   *  the same spacing the pen will, and must never guess. */
+  charSpacing: number;
+  wordSpacing: number;
+  hscale: number;
   /** `/ActualText`, `/Alt` and `/Lang` inherited from the marked-content stack
    *  — the innermost BDC in scope that states each key.
    *
@@ -386,7 +412,21 @@ export interface GlyphEvent {
    *  exactly that case — veraPDF's `containsStringKey` checks the inherited
    *  marked-content attribute BEFORE it looks at the structure element. */
   mcProps?: { actualText?: string; alt?: string; lang?: string };
+  /** The operators that re-establish the fill colour in force when this glyph
+   *  was shown (u3l5.3), for an edit that changes the colour and must put it
+   *  back. **Absent means the PDF initial fill**, DeviceGray black — `color`'s
+   *  rule, for `color`'s reason.
+   *
+   *  **Invariant:** `path` is the scope whose /Resources a colour-space NAME
+   *  in `ops` was looked up in. A form inherits its caller's fill, so a name
+   *  set on the page may not resolve inside the form; a consumer re-emitting
+   *  `ops` in another scope must check that every name is a device family
+   *  first. */
+  fillState?: FillState;
 }
+
+/** See `GlyphEvent.fillState`. */
+export interface FillState { ops: readonly ContentOp[]; path: readonly string[] }
 
 /** A placed image with provenance. */
 export interface ImageEvent {
@@ -479,6 +519,9 @@ const MAX_XOBJECT_DEPTH = 8;
 interface TextState {
   tm: Matrix; tlm: Matrix;
   font?: TextFont; fontSize: number;
+  /** The resource name the `Tf` that set `font` used (u3l5.2). Graphics state
+   *  like the font itself, so `q`/`Q` scope it and a form inherits it. */
+  fontKey?: string;
   charSp: number; wordSp: number; hscale: number; leading: number; rise: number;
   /** /Tr, the text rendering mode (32000-2 9.3.6). 0 is the initial value. */
   renderMode: number;
@@ -596,7 +639,13 @@ export function visitFormContent(
 /** The subset of the graphics state this walker threads: the CTM, the fill
  *  colour, the converter that resolves that colour's operands, and the text
  *  state parameters (`TextGState`). */
-interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; text: TextGState }
+interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; text: TextGState; fset?: FillState; fcs: FillCs }
+
+/** The `cs` that selected the current fill space and the scope it was named
+ *  in, so a later `sc`/`scn` records both (`GlyphEvent.fillState`). */
+interface FillCs { op?: ContentOp; path: readonly string[] }
+
+const csOp = (space: string): ContentOp => ({ operator: 'cs', operands: [name(space)] });
 
 const cl255 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
 
@@ -685,6 +734,7 @@ function walkScope(
   depth: number, seen: Set<PdfDict>,
   inheritedMcid?: number, inheritedArtifact?: ContentAddr,
   inheritedFill?: Rgb, inheritedMcProps?: McProps, inheritedText?: TextGState,
+  inheritedFillSet?: FillState,
 ): void {
   // (mih4) A form starts from the text state in force at its Do, COPIED, so
   // nothing it sets reaches back out to the caller.
@@ -693,6 +743,8 @@ function walkScope(
   let curCtm = baseCtm;
   let fill: Rgb | undefined = inheritedFill;
   let fillConv: ColorConverter = deviceGray();
+  let fillSet: FillState | undefined = inheritedFillSet;
+  let fillCs: FillCs = { path: [] };
   const fonts = resolveDict(ctx.doc, resources?.get('Font'));
   const xobjects = resolveDict(ctx.doc, resources?.get('XObject'));
   const properties = resolveDict(ctx.doc, resources?.get('Properties'));
@@ -736,10 +788,10 @@ function walkScope(
       const op = ops[opIndex];
       const addr: ContentAddr = { path, streamIndex, opIndex };
       switch (op.operator) {
-        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, text: saveTextState(st) }); break;
+        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, text: saveTextState(st), fset: fillSet, fcs: fillCs }); break;
         case 'Q': {
           const g = gsStack.pop();
-          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; Object.assign(st, g.text); }
+          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; Object.assign(st, g.text); fillSet = g.fset; fillCs = g.fcs; }
           break;
         }
         case 'cm': { const m = nums(op.operands); if (m.length === 6) curCtm = mul(m as Matrix, curCtm); break; }
@@ -748,20 +800,26 @@ function walkScope(
         // stroke-only text render modes, where reporting the fill costs a shade
         // rather than the glyph. Tracking the stroke too would double the
         // saved state for that one case.
-        case 'g': { const v = cl255(num(op.operands[0])); fill = paint([v, v, v]); break; }
+        case 'g': {
+          const v = cl255(num(op.operands[0])); fill = paint([v, v, v]);
+          fillSet = { ops: [op], path }; fillCs = { op: csOp('DeviceGray'), path: [] }; break;
+        }
         case 'rg': {
           const n = nums(op.operands);
           fill = paint([cl255(n[0] ?? 0), cl255(n[1] ?? 0), cl255(n[2] ?? 0)]);
+          fillSet = { ops: [op], path }; fillCs = { op: csOp('DeviceRGB'), path: [] };
           break;
         }
         case 'k': {
           const n = nums(op.operands);
           fill = paint(cmykToRgb(n[0] ?? 0, n[1] ?? 0, n[2] ?? 0, n[3] ?? 0));
+          fillSet = { ops: [op], path }; fillCs = { op: csOp('DeviceCMYK'), path: [] };
           break;
         }
         case 'cs': {
           fillConv = lookupFillCs(ctx.doc, resources, op.operands[0]);
           fill = paint(fillConv.initial());
+          fillCs = { op, path }; fillSet = { ops: [op], path };
           break;
         }
         case 'sc': case 'scn': {
@@ -769,6 +827,7 @@ function walkScope(
           // report, so fall back to whatever components came with it.
           const comps = nums(op.operands);
           fill = paint(comps.length ? fillConv.toRgb(comps) : [0, 0, 0]);
+          fillSet = { ops: fillCs.op ? [fillCs.op, op] : [op], path: fillCs.op ? fillCs.path : path };
           break;
         }
         case 'm': {
@@ -811,6 +870,7 @@ function walkScope(
               let tf = ctx.fontCache.get(fd);
               if (!tf) { tf = new TextFont(fd, (o) => ctx.doc.resolve(o), (s) => inflateStream(s as PdfStreamLike)); ctx.fontCache.set(fd, tf); }
               st.font = tf;
+              st.fontKey = fname.name;
             }
           }
           break;
@@ -819,12 +879,12 @@ function walkScope(
         case 'TD': { const [tx, ty] = nums(op.operands); st.leading = -ty; lineMove(st, tx, ty); break; }
         case 'Tm': { const m = nums(op.operands); if (m.length === 6) { st.tlm = m as Matrix; st.tm = m as Matrix; } break; }
         case 'T*': lineMove(st, 0, -st.leading); break;
-        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps); break;
-        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden, mcProps); break;
-        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps); break;
+        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
+        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
+        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
         case '"': {
           st.wordSp = num(op.operands[0]); st.charSp = num(op.operands[1]);
-          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps); break;
+          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
         }
         case 'BMC':
           mcidStack.push(activeMcid); artifactStack.push(artScope);
@@ -883,7 +943,7 @@ function walkScope(
             const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
             walkScope(ctx, [{ bytes: inflateStream(xo), streamIndex: 0 }],
               childRes, [...path, xn.name], childCtm, depth + 1, seen,
-              activeMcid, artScope, fill, mcProps, saveTextState(st));
+              activeMcid, artScope, fill, mcProps, saveTextState(st), fillSet);
             seen.delete(xo.dict);
           }
           break;
@@ -922,7 +982,7 @@ function lineMove(st: TextState, tx: number, ty: number): void {
  *  call outright would leave the pen where the hidden run began and misplace
  *  every visible glyph after it in the same text object — a quad that is wrong
  *  rather than absent, which is worse than the defect being fixed. */
-function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps): void {
+function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps, fillSet?: FillState): void {
   if (!isString(strObj) || !st.font) return;
   for (const g of st.font.decodeGlyphs(strObj.bytes)) {
     const startTm = st.tm;
@@ -954,17 +1014,20 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
       vertical: g.vertical ? true : undefined,
       color: fill,
       code: g.code, cid: g.cid,
+      tfKey: st.fontKey ?? '', tfSize: st.fontSize,
+      charSpacing: st.charSp, wordSpacing: st.wordSp, hscale: st.hscale,
       ...(st.renderMode !== 0 ? { renderMode: st.renderMode } : {}),
       ...(mcProps !== undefined ? { mcProps } : {}),
+      ...(fillSet !== undefined ? { fillState: fillSet } : {}),
     });
   }
 }
 
 /** Handle a TJ array: strings emit glyphs, numbers shift the text matrix. */
-function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps): void {
+function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps, fillSet?: FillState): void {
   if (!isArray(arrObj) || !st.font) return;
   arrObj.forEach((el, idx) => {
-    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden, mcProps);
+    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden, mcProps, fillSet);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, st.fontSize, st.hscale, st.font!.wmode === 1);
       st.tm = mul(translate(dx, dy), st.tm);

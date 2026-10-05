@@ -5174,6 +5174,12 @@ Source (`src/`):
   Each of its six cases carries a companion asserting the setting, UNSCOPED,
   does move a glyph, since two identical wrong answers would otherwise satisfy
   it. `Tf` counts: set OUTSIDE a text object it is text state too.
+  **Invariant (`u3l5.3`):** `GlyphEvent.fillState` is the OPERATORS that set
+  the fill in force and the scope PATH a colour-space name in them was looked
+  up in, absent for the initial fill (`color`'s rule). `g`/`rg`/`k` record a
+  synthetic device `cs` so a later `sc` records `[cs, sc]`; `q`/`Q` and a
+  form's `Do` carry it like `fill`. It exists so an edit can put a fill back
+  in its own colour space rather than as `color`'s RGB approximation.
   **Invariant (`mih4`):** a Form XObject INHERITS that same `TextGState` at
   `Do` — 8.10.1 draws a form in the graphics state in force there — as a COPY
   (`saveTextState` spread over `newState()`), so a `Ts` the form sets cannot
@@ -5253,6 +5259,71 @@ Source (`src/`):
   `redactPage` (which takes explicit rects) and `markRedactText` must not pass
   it to `addRedact` (which would carry it into an annotation dict); both would
   silently accept the key.
+  **Invariant (`u3l5.1`):** `ReplaceText` plans per CHARACTER and writes per
+  GLYPH. A glyph may draw several characters, so a glyph-level plan deleted
+  the half of a ligature outside the match (`ine` in `fine` gave `one`). A
+  touched glyph becomes the characters no match covers, each match's
+  replacement emitted at its ANCHOR — the first position a real glyph drew,
+  never a space layout inserted. Several matches in one glyph are one edit.
+  **Invariant:** everything encodes before anything is edited, and a glyph
+  left with no characters is NEVER encoded — its font may be Type0, which
+  cannot encode, and a match merely running into it must not throw. It also
+  makes an EMPTY replacement delete Type0 text, where it used to throw.
+  **Invariant:** a glyph that draws NO text (a ToUnicode gap, an ornament)
+  never enters `text`, so no match covers it by position. One lying between
+  two glyphs of the SAME match in one show string is swept into that match's
+  edit; one between two DIFFERENT matches is kept. The per-glyph plan first
+  left such a glyph's ink inside the replaced word — the final review found it,
+  and the old min-to-max byte range had removed it.
+  **Invariant (`u3l5.1`, `text.ts`):** `layoutLines`' `refs` has one entry
+  per UTF-16 CODE UNIT; it had one per code point, so every position after an
+  astral character named the next glyph — in `Search`, `ReplaceText`,
+  `SearchAnnotations` and `CompareText` alike.
+  **Invariant:** a TJ kern is dropped only between ONE match's first and last
+  elements AND when every string between them is wholly matched. Layout sorts
+  by position, so stream order can differ from reading order, and the guard is
+  what keeps a kern positioning unmatched text. A `Tj` the edits emptied is
+  removed; an emptied `TJ`, `'` or `"` is kept, since each still moves the pen.
+  **Note, measured, and the obvious fixture is a false witness:** two matches
+  inside one ligature (`/[fi]/` on `fi`) PASSED the old per-glyph code, its two
+  identical full-glyph edits splicing to `aa` by luck. The fixture needs a
+  residue as well — `/f/` on an `ffi` glyph — to see the merge rule at all.
+  **Note, measured:** 12 of 15 mutations redden. The three green ones are each
+  held by something other than the suite: the `if (any)` commit guard
+  (`commit` with nothing set already writes nothing); counting a glyph only
+  partly inside a match toward the kern guard (every fixture glyph is wholly
+  in or out); and `emptiedTj`'s "was non-empty" test (an empty `Tj` has no
+  glyphs, so no edit can reach it). Do not read the green suite as covering
+  any of the three.
+  **Note (`u3l5.2`):** `ReplaceText` is PLAN then APPLY — `planReplace`
+  mutates nothing and `doc.ReplaceText` plans every page before applying any.
+  **Invariant, and the final review found it CRITICAL:** `doc.ReplaceText`
+  makes a DRY plan of every page for the refusal, then RE-PLANS each page just
+  before applying it — it never applies a plan made before an earlier page was
+  applied. Pages may reach one form through a shared indirect /Resources dict,
+  and applying page 1 repoints that form for page 2 as well; a stale plan
+  splices old byte offsets into the edited copy (`aXbXc` → `aYYYYYYYc`).
+  `buildSharedFormPagesPdf` is the fixture; applying the dry plans reddens 2.
+  Which font each written character takes is `replacefont.ts`'s; splitting a
+  show operator around a foreign run is `showsplit.ts`'s.
+  **Invariant (`u3l5.3`):** `ignoreCase` and `wholeWord` are SEARCH options with
+  ONE owner, `findRanges`, so `Search`, `SearchAnnotations`, `RedactText`,
+  `MarkRedactText` and `ReplaceText` cannot disagree about a match. The two
+  redaction entries destructure them OUT before forwarding, `region`'s rule.
+  A match `wholeWord` rejects resumes ONE code unit on, never past its end:
+  in `ba a a` the whole-word `a a` starts inside the rejected one.
+  **Note, measured, and the obvious fixture is a false witness:** forwarding
+  the keys from `MarkRedactText` stayed GREEN against `Cat concat`, where both
+  readings find exactly one `cat`. `Cat CAT concat` gives 2 against 1.
+  **Invariant (`u3l5.3`):** `font`/`fontSize`/`color` style the REPLACEMENT
+  ONLY, as a `RunStyle` on its runs; `pushRun` merges runs only of one style,
+  which only a LIGATURE can see (residue and replacement in one glyph's edit).
+  `fontSize` is points AS RENDERED (`× tfSize / fontSize`). The colour is
+  restored by re-emitting `GlyphEvent.fillState` — the `cs` included, so a
+  spot or CMYK fill stays one — and is REFUSED where that names a colour
+  space set in another scope (`/P0` set on the page, text in a form), since
+  the name would not resolve there. A font or size change needs `canSwitch`;
+  colour alone does not, and writes no `Tf`. Both refusals are at PLAN time.
   **annotsearch.ts** — search the text an annotation *draws*
   (`Page.SearchAnnotations`): the words inside its `/AP` appearance stream, a
   `/FreeText`'s visible text or a filled form field's value, which
@@ -5316,6 +5387,66 @@ Source (`src/`):
   what surfaced `vvft` — an orphaned widget then survived `Redact` entirely.
   Fixed; the orphan shapes are covered by `test/redact-orphan-widget.test.ts`
   and the rule is recorded under `redactannots.ts` above.
+- **replaceadjust.ts** — what the rest of a line does when a replacement
+  changes its width (`u3l5.4`, `ReplaceTextOptions.adjust`). Pure over glyph
+  events and planned edits; `textedit.ts`'s `planLineAdjust` measures each
+  edit and reads the scope's ops (read-only) for pen breaks.
+  **Invariant:** TWO shifts per glyph. The NATURAL one is what the edits
+  already do — the pen is relative, so a glyph in an edit's pen CHAIN moves
+  by its delta, and `PEN_RESET` (`BT ET Td TD Tm T* ' "`) starts a chain
+  again, since each sets the pen from the line matrix no kern moves. The
+  DESIRED one is the mode's, by READING order on the layout line. A `TJ`
+  kern goes only where they differ, so text no edit reaches is untouched and
+  `'shiftRest'` on a single `Tj` is byte-identical to `'none'`.
+  **Invariant:** an edit's delta is what it WRITES (`runsAdvance`, the same
+  arithmetic as `glyphDisplacement`, styled size included) minus EVERY glyph
+  in its byte range and the TJ kerns its match dropped. The test oracle is
+  the walker's own pen: a follower in a separate operator must land where
+  one in the SAME operator does, under `Tc`/`Tw`/`Tz` and a scaled CTM.
+  **Invariant:** under `'spaceWidth'` a gap is a RUN of spaces, counted at
+  its first, and gives at most `GAP_SHRINK` (half) of the NARROWEST gap after
+  the edit; the remainder shifts the rest of the line. Per-space counting
+  lets a double space give both halves and close.
+  **Note, measured, and two fixtures were false witnesses:** a lone double
+  space cannot separate per-run from per-space counting (both give the same
+  total), and a double space beside a NARROWER single cannot see whether the
+  run is measured to its last space. Each has its own fixture. And a test's
+  `xOf(doc, 'e')` once read the `e` of "one" for the line end — pick a glyph
+  that occurs once.
+- **replacefont.ts**, **showsplit.ts** — which font each character of a
+  replacement is written in, and one show operator rewritten around a run in
+  another font (`u3l5.2`). Both pure: `replacefont.ts` takes a `TextFont` and
+  authoring fonts, `showsplit.ts` takes `ContentOp`s and already-encoded
+  pieces; `textedit.ts` holds the `Document`.
+  **Invariant:** tier A is `TextFont.drawCode` — a code qualifies only when it
+  DECODES back to the character and, for an embedded program, selects a glyph
+  the program defines (`glyphDefined` in font.ts: gid 0 is missing except in a
+  Type 1 program; an emptied glyph — a zero-length `glyf` slot, or a CFF or
+  Type 1 charstring drawing no path, which is what `Optimize` itself leaves —
+  is missing except for whitespace). That
+  is what stops a subset font drawing a blank for a character its encoding
+  maps and its program dropped. A Type0 font answers only under
+  `/Identity-H`/`-V`, where a code is its CID and its byte width is known.
+  **Invariant:** the tiers are per CHARACTER, in order — the original font,
+  then with `matchRegisteredFonts` the same face by EXACT PostScript name
+  (`Document.fontByPostScriptName`, sharing `LoadFontByName`'s memo), then
+  `fallbackFonts` — so only what the original cannot draw changes face.
+  **Invariant:** only a scope whose OWN /Resources map the glyph's `Tf` key to
+  the glyph's font may switch. A form without /Resources inherits its
+  parent's, so registering a font there means a fresh dict that hides the rest;
+  a font inherited from the page (mih4) has a `tfKey` the form cannot name.
+  `GlyphEvent.tfKey`/`tfSize` exist for the restoring `Tf`.
+  **Invariant:** a foreign run is encoded at APPLY time, never in the plan —
+  `EmbeddedFont.encode` records glyph usage for subsetting, and a refused plan
+  must record nothing. Undrawable reports are emitted at apply time too.
+  **Note, a trap for tests:** an `EmbeddedFont`'s Type0 dict is reserved empty
+  and filled only by Save's finalize pass, so text drawn in one — a fallback
+  run included — decodes as garbage on the LIVE document. Assert extracted
+  text after `Document.Open(doc.Save())`.
+  **Note, measured:** all 20 mutations run across `u3l5.2` redden. Two more
+  were NOT run, being unobservable by construction, and are held by reasoning: reporting undrawable text
+  at plan time rather than apply time (no later refusal follows a report), and
+  encoding foreign runs at plan time (no assertion reads `usedGids`).
 - **richlayout.ts** — rich text drawn: a FreeText's `/RC` (`v0tz.3`) and, since
   `v0tz.5`, a rich-text FIELD's `/RV`.
   `parseRichText` turns the markup plus the `/DS` default style into
@@ -5767,6 +5898,64 @@ Source (`src/`):
   measured, that reddens 2. Note a mere subtag match is NOT the exact one
   `/Preferred` asks about — `en-GB` against an `en` group leaves the preferred
   fallback on too, which is asserted directly.
+- **sanitize.ts** — `doc.Sanitize()` (`74mf.1`): one call removing metadata,
+  actions, attachments, annotations, the form and the layers, with a report.
+  It COMPOSES `ocflatten.ts`, `flatten.ts`, `embeddedfile.ts`,
+  `Page.RemoveAnnotation` and `ClearMetadata`; what is its own is the action
+  sweep and the report.
+  **Invariant:** the categories do not overlap. The annotation sweep never
+  touches a widget (`forms` owns those) or a `/FileAttachment` (`attachments`
+  owns those), and a popup whose parent is kept stays. That rule is what makes
+  every order except layers-first irrelevant. Layers-first is REASONED, not
+  measured: no fixture hides a widget.
+  **Invariant:** a GoTo `/A` on a link or outline item becomes `/Dest` (the
+  destination is not an action and holds no script), and every other `/A` goes.
+  The field-tree `/AA` walk is NOT redundant with the annotation walk: a
+  non-terminal field node is in no `/Annots`.
+  **Note, measured:** the signed-document refusal is masked by
+  `flattenLayers`' own one while `layers` is on. The case that pins it passes
+  `layers: false`. All 15 mutations redden.
+  **Invariant (`74mf.2`):** `privateData` walks EVERY object for
+  `/PieceInfo`, not the catalog tree, because a form XObject's is reached only
+  through `/Resources`; Save()'s mark-sweep drops what that orphans.
+  `/LastModified` goes only beside a removed `/PieceInfo`, since it dates
+  that and nothing else. Both rules are mutation-checked (10 of 10 redden).
+  **Note (`74mf.5`), and it is INFERENCE rather than a vendored file:** Acrobat's
+  embedded search index is the catalog's `/PieceInfo /SearchIndex` (`PDXFile`, a
+  `%PDX-3.2` stream, plus `IndexFile`/`Index1File` `.idx` data). That is
+  read off the strings of Acrobat DC 26.1's `Search.api`, where its embed code
+  names `PieceInfo`, `SearchIndex`, `IsFreshIndex`, `ModID`, `PDXFile` and
+  `IndexFile` together. The install on this machine runs in Reader mode and
+  refuses IAC, so no indexed file could be produced. The removal needs no rule
+  of its own, since all of `/PieceInfo` goes; only the `searchIndex` report
+  flag depends on the key. The `EmbeddedFiles` string in that binary sits in
+  a list of plug-in dependency names and does NOT mean the index is an
+  attachment.
+  **Invariant (`74mf.3`):** `pagesToImages` keeps NO text layer of its own.
+  One derived from the page's extracted text would carry the white-on-white,
+  covered and clipped text that rasterizing exists to destroy. The text layer
+  is `MakeSearchable`'s job, which OCRs the rendering. The page DICT is kept,
+  so destinations and labels stay valid. The image goes through
+  `invert(device)` from `renderPageRgb`, the render's own matrix, which is
+  what makes `/Rotate` and an off-origin crop box need no case. The render
+  leaves annotations out because surviving annotations still draw.
+  **Note, measured:** 14 of 14 mutations redden. The first sweep reported
+  every one GREEN because the harness ran the wrong test file. A later one
+  reported a syntax-breaking mutation GREEN, because a file that does not load
+  reports no FAILED tests. The harness now calls that LOAD-ERROR and carries a
+  syntax probe.
+  **Invariant (`74mf.4`):** after `Sanitize`, `Save({ incremental: true })`
+  REFUSES (`sanitizedInSession`, never cleared, set even when nothing was
+  found). An append keeps the opened bytes, which hold everything removed.
+  `test/sanitize-saved-bytes.test.ts` judges removal by the SAVED file, never
+  the live model. It searches the raw bytes, every object re-serialized and
+  every stream DECODED, with hex and UTF-16 spellings. A raw search alone cannot
+  see a deflated attachment and passes whether or not it leaked, so each check
+  carries a POSITIVE CONTROL over the unsanitized file.
+  **Note, measured, a REDUNDANT PAIR:** removing the `/EmbeddedFiles` entries
+  one by one and then deleting the branch each clear the tree alone. Breaking
+  either reddens nothing; breaking both reddens 7. The branch delete is there
+  for entries a by-name removal cannot address, and no fixture has one.
 - **ocflatten.ts** — `doc.FlattenLayers()` (`q1g2.6`): keep only what the
   configuration SHOWS, then take the vocabulary away. Hidden marked-content
   spans are DELETED from the streams they sit in, hidden XObject draws and

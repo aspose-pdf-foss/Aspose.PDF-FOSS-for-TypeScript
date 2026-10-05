@@ -77,6 +77,11 @@ flowchart TD
   pixels and content tokens, and a file past a bound raises `ResourceLimitError` naming the limit
   instead of exhausting memory. It reduces known amplification; it is not a sandbox — see
   *Scope and Limitations*.
+- Remove hidden data in one call: `doc.Sanitize()` strips metadata (`/Info` and every XMP
+  packet), every action and script, attachments and annotations, private application data and
+  thumbnails, and flattens the form and the optional content, then reports what each category
+  removed. Opt in to `pagesToImages` to replace every page with its rendering, which also removes
+  what a page hides in its own content. Any category can be kept.
 - Open PDFs protected with the standard security handler — RC4, AES-128 or AES-256 — and write
   encrypted output the same way, or as an `/Adobe.PubSec` certificate envelope for RSA/EC
   recipients. Digital signatures (`await doc.Sign(signer, opts?)`/`doc.Certify`) support the
@@ -176,10 +181,10 @@ flowchart TD
 - **Vector path extraction** — `page.GetPaths()` returns the page's painted vector graphics as positioned `PagePath[]`: each carries its subpaths (lines + cubic beziers, `re` normalized to a closed rectangle, `v`/`y` normalized to full cubics) in the drawing stream's user space, the CTM in effect at paint time, a device-space bounding box (including bezier control points), resolved fill/stroke color (sRGB `[r,g,b]` 0–255) with its colorspace family (`DeviceRGB`/`DeviceCMYK`/`ICCBased`/`Separation`/`Indexed`/`Pattern`/…), the fill rule (`nonzero`/`evenodd`), stroke line width (device units), clip usage (`W`/`W*`), and marked-content `mcid`/`artifact`. One `PagePath` is emitted per paint op (`S`/`f`/`B`/…; a clip-only `W n` too). Descends into nested Form XObjects. Shadings/gradients are reported as `space:'Pattern'` (not evaluated); dash arrays, line caps, and joins are out of scope. A path painted inside a hidden optional-content section — or by a form XObject the configuration hides — is absent, `{ includeHidden: true }` reports it, and the same applies to the ruling lines `GetTables` detects from.
 - **Image extraction to disk** — `saveImagesFile(inputPath, outDir, options?)` writes every embedded image as a file: `img-1.jpg`, `img-2.png`, … in document order, **with the extension always taken from the encoder's media type rather than from the source image**, since JPEG bytes under a `.png` give a file no viewer opens. Encoding is `ImageInfo.Save`’s, so the default is faithful and an unmasked `DCTDecode` is extracted byte for byte; pass `format: 'png'` or `'jpeg'` to force one. One file per *distinct* picture — identity is a hash of the encoded bytes, so a logo drawn on forty pages is written once. Returns `{ written, skipped }`: a picture that will not encode names itself, its page and its reason in `skipped` while its neighbours are still written.
 - **Artifact enumeration** — `page.Artifacts` lists the `/Artifact` marked-content scopes a page declares: decoration (running heads, rules, page backgrounds) that carries no meaning and that a screen reader skips. Each `PageArtifact` reports what the artifact says about itself — `type` (`Pagination`/`Layout`/`Page`/`Background`), `subtype` (`Header`/`Footer`/`Watermark`), `attached` edges, and the raw `properties` dict for keys the model does not name — plus `addr`, the `ContentAddr` naming the opening `BMC`/`BDC` (with the XObject chain for one inside a form) and `parent` for a nested scope. `bbox` is the declared `/BBox` where there is one and the measured extent of the enclosed ink where there is not, `bboxSource` saying which; an artifact that draws nothing reports no `bbox` at all. Descends into Form XObjects. Read-only — this is the read side of the `artifact: true` marking the authoring APIs already take.
-- **Text search** — `page.Search(find)` locates a literal string or `RegExp` over the same word/line assembly as `GetText`, returning `TextMatch[]` — each with the matched substring, one page-space quad per line it spans, and the underlying glyph `hits` (op provenance). A `RegExp` is always applied globally; matches can span inferred spaces and line breaks. Pass `options.region` to restrict the search to a page-space rectangle — a glyph is in or out by its quad **centroid**, the same rule `GetTables` uses, and the filter runs *before* line assembly, so a match straddling the boundary is not found at all rather than partially. The region flows through `ReplaceText`, `RedactText` and `MarkRedactText`, which all search the same way — but *not* the optional-content rule: `Search` skips a hidden layer as `GetText` does, while those three always include it, so redaction cannot quietly remove less than it was asked to. `options.includeHidden` makes `Search` agree with them.
+- **Text search** — `page.Search(find)` locates a literal string or `RegExp` over the same word/line assembly as `GetText`, returning `TextMatch[]` — each with the matched substring, one page-space quad per line it spans, and the underlying glyph `hits` (op provenance). A `RegExp` is always applied globally; matches can span inferred spaces and line breaks. Pass `options.region` to restrict the search to a page-space rectangle — a glyph is in or out by its quad **centroid**, the same rule `GetTables` uses, and the filter runs *before* line assembly, so a match straddling the boundary is not found at all rather than partially. The region flows through `ReplaceText`, `RedactText` and `MarkRedactText`, which all search the same way — but *not* the optional-content rule: `Search` skips a hidden layer as `GetText` does, while those three always include it, so redaction cannot quietly remove less than it was asked to. `options.includeHidden` makes `Search` agree with them. `options.ignoreCase` matches letters regardless of case (a `RegExp` gains the `i` flag), and `options.wholeWord` accepts a match only where the characters either side are not letters, digits, combining marks or `_`; both flow through the same three entry points.
 - **Annotation text search (carried)** — `page.SearchAnnotationText(find)` finds text an annotation **carries** but never draws: its body (`/Contents`), author (`/T`), subject (`/Subj`) and rich content (`/RC`, an XHTML fragment reduced to plain text, with a line break between block elements). Each hit names the entry it matched. Searches every annotation, hidden ones included, and carries no geometry — the only box available would be the whole `/Rect`.
 - **Annotation text search (drawn)** — `page.SearchAnnotations(find)` finds text the page's annotations **draw** — a `/FreeText`'s visible words, a filled form field's value — which live in the annotation's `/AP` appearance stream and are invisible to `page.Search`. Returns `AnnotationMatch[]`: the annotation, the matched substring, and one page-space quad per line. Each annotation is assembled on its own, so a query never matches across two annotations or across an annotation and the page text beneath it; only annotations a static render would draw are searched. Takes the same `options.region`.
-- **Text replace** — `page.ReplaceText(find, replacement)` (or `doc.ReplaceText(...)` across all pages) substitutes matched text in place, re-encoding the replacement in the matched glyphs' own font and editing the content stream directly. It is constrained to the same font and encoding with **no layout reflow** (positioning is preserved, so a wider replacement may overlap and a narrower one may leave a gap), and throws `UnsupportedFeatureError` for Type0/composite fonts or characters the encoding can't represent. Returns the number of occurrences replaced.
+- **Text replace** — `page.ReplaceText(find, replacement)` (or `doc.ReplaceText(...)` across all pages) substitutes matched text in place, re-encoding the replacement in the matched glyphs' own font and editing the content stream directly. A match may start or end inside a glyph that draws several characters — a `fi` ligature — and only the matched characters change: the rest of that glyph is re-encoded beside the replacement. A match spanning several show operators puts its replacement where it starts; the others lose only the matched text, with a `Tj` left empty removed and the kerning between replaced glyphs dropped. It is constrained to the same font and encoding with **no layout reflow** (positioning is preserved, so a wider replacement may overlap and a narrower one may leave a gap), and writes each character in the first font that can draw it — the matched glyph's own (verified against its embedded program, and through `/ToUnicode` for an `/Identity-H` Type0 font), then with `matchRegisteredFonts` the same face from registered folders, then `options.fallbackFonts` — switching font with `Tf` around each foreign run and back straight after. A character no font can draw throws `UnsupportedFeatureError`, or with `options.onUndrawable` is left out and reported. `options.adjust` keeps the rest of the line in step when the replacement's width differs: `'shiftRest'` moves everything after it on its line, and `'spaceWidth'` takes the difference out of the word gaps after it (each giving at most half its width) so the line keeps its end; both insert `TJ` kerns, measured with the matched text's own `Tc`, `Tw` and `Tz`. `options.font`, `options.fontSize` (points as rendered) and `options.color` style the replacement alone: the font and size switch with `Tf` and back, and the colour is set with `rg` and the previous fill put back afterwards in its own colour space. A font or size change where no font can be named, or a colour whose previous fill was set through a named colour space in another scope, is refused before anything changes. `doc.ReplaceText` takes the same options and changes nothing unless every page succeeds. Returns the number of occurrences replaced.
 - **Text comparison** — `doc.CompareText(other, options?)` reports what changed between two documents as a list of equal, deleted and inserted runs, in reading order, with statistics and a `similarity` score. Each run is placed on its pages the way `Search` places a match — a deleted word in the first document and an inserted one in the second carry the same page-space quads `Search` would report for them — so a caller can highlight them. By default each document is read as one text, so a paragraph that reflows onto the next page is no change; `mode: 'pages'` compares page with page instead and reports a page only one document has as wholly inserted or deleted. Words are compared by default; `granularity: 'character'` finds the letters that changed inside a word, with whitespace collapsed (a moved line break is no change) or ignored. `ignoreCase`, a `region` to compare and `exclude` areas to skip use `Search`'s centroid rule. The search finds the fewest words deleted and inserted, and then — by default — folds a word two rewritten passages merely happen to share into the change around it, so a replaced sentence reads as one deletion and one insertion rather than being split around a lone `of`; `cleanup: 'none'` keeps the smallest diff. Past a search budget a stretch is reported as one deletion plus one insertion and `minimal` is false.
 - **Image extraction** — `page.Images` enumerates embedded image XObjects (descending into Form XObjects), exposing `Width`, `Height`, `Bits`, `ColorSpace`, and `Filter`. `img.Save()` hands the picture back as a file — bytes plus a media type, faithfully by default, so an unmasked JPEG is returned verbatim rather than re-encoded — and `{ format: 'png' | 'jpeg' }` forces an encoding. `RawData` returns the encoded stream bytes; `Decode()` returns decoded samples for `FlateDecode`/`LZWDecode`/ASCII-filter images (with predictors and filter chains), 1-bpp samples for `CCITTFaxDecode` (Group 3 1D/2D and Group 4), 8-bit samples for `JPXDecode` (JPEG 2000 — see *JPEG 2000 decoding* below), and passes JPEG (`DCTDecode`) bytes through. Image masks and `/SMask` are handled gracefully. Images can also be edited in place: `img.Replace(data)` swaps the picture for JPEG, PNG, BMP or TIFF bytes while keeping the placement, and `img.Remove()` drops the image from the page — every draw of it in the page's content and in the Form XObjects the page descends into, plus its `/XObject` resource entry. Both are scoped to the page the handle came from: an image shared with another page is copied rather than mutated on replace, and survives removal from one page while another still draws it, so a handle from `page.Images` never silently edits a page the caller was not looking at. The new image is stretched into the existing footprint, since the `cm` that sizes it lives in the content stream. `Remove({ sanitize: true })` additionally prunes every other resource name the page no longer references. Inline (`BI…EI`) images live in no object and so are absent from `page.Images`; `page.InlineImages` enumerates them separately and each handle can `Remove()` itself. That removes exactly one draw, because an inline image *is* one draw — and because a removal shifts the op indices of every later one, a handle taken before a removal is invalidated and throws rather than cutting the wrong picture. Remove one, enumerate again. Replacing an inline image is not supported.
 - **Redaction** — `page.Redact(rects, opts?)` (or `doc.Redact(page, rects, opts?)`) truly removes the text and images under one or more page-space rectangles — covered glyphs are dropped from the content stream (survivors keep their positions), fully-covered images are deleted, and the resources they orphan are pruned so the content is gone from the saved file, not merely hidden behind a box. An opaque marker rectangle (default black, configurable) is painted over each region; annotations covering the region are removed too (a covered form field goes whole, value included) unless `keepAnnotations` says otherwise; `scrubMetadata` also clears `/Info` + XMP. `page.RedactText(find | RegExp, opts?)` (and `doc.RedactText(...)`) redact **by content** — locating text with the same search as `page.Search` and removing every matched region through the same pipeline — and return the occurrence count. Redaction can also be **marked before it is applied**: `page.AddRedact(opts)` and `page.MarkRedactText(find, opts?)` add `/Redact` annotations carrying the overlay (`/IC` fill, `/OverlayText`, `/DA` style, `/Q`, `/Repeat`) without removing anything — the marked text is still extractable, and the mark draws as an outline rather than a filled box so it can never be mistaken for a finished redaction — and `page.ApplyRedactions(opts?)` (or `doc.ApplyRedactions(...)`) then destroys the marked content through the same pipeline, paints each mark's overlay (honoring an `/RO` overlay form when one is present), and removes the marks.
@@ -1576,14 +1581,46 @@ reducing that to searchable plain text needs a rule this does not yet have.
 const doc = Document.Open(bytes);
 const n = doc.Pages[0].ReplaceText('Draft', 'Final');   // one page -> count replaced
 doc.ReplaceText(/\bv1\b/, 'v2');                         // every page, RegExp ok
+
+// Characters the matched font cannot draw go to fallback fonts, in order.
+const lib = doc.AddFont(readFileSync('LiberationSans-Regular.ttf'));
+doc.ReplaceText('Draft', 'Ωmega', { fallbackFonts: [lib, 'Helvetica'] });
+
+// Or to the very face a subset was cut from, found in a registered folder.
+doc.RegisterFontFolder('./fonts');
+doc.ReplaceText('Draft', 'Final', { matchRegisteredFonts: true });
+
+// Whole words in any case, written in red bold at 14pt.
+doc.ReplaceText('draft', 'FINAL', {
+  ignoreCase: true, wholeWord: true,
+  font: 'Helvetica-Bold', fontSize: 14, color: [1, 0, 0],
+});
+
+// Keep the line from overlapping: move what follows, or let the word gaps take it.
+doc.ReplaceText('Draft', 'Final version', { adjust: 'shiftRest' });
+doc.ReplaceText('Draft', 'Final version', { adjust: 'spaceWidth' });
 ```
 
-`ReplaceText` substitutes matched text in place, re-encoding the replacement in
-the matched glyphs' **same font and encoding** and rewriting the content stream.
+`ReplaceText` substitutes matched text in place, writing each character in the
+matched glyphs' **own font** wherever that font really draws it, and rewriting the
+content stream.
 There is **no layout reflow**: positioning operators are preserved, so a wider
-replacement may overlap following text and a narrower one may leave a gap. A
-Type0/composite font, or a replacement character not representable in the font's
-encoding, throws `UnsupportedFeatureError`.
+replacement may overlap following text and a narrower one may leave a gap. A character
+the matched font cannot draw — its code would not decode back to it, or a subset
+never embedded its glyph — is written in `fallbackFonts` (or, with
+`matchRegisteredFonts`, first the same face from a registered folder), with a `Tf`
+switch around it and back. A character nothing can draw throws
+`UnsupportedFeatureError` and changes nothing; pass `onUndrawable` to leave it
+out and be told instead. `font`, `fontSize` and `color` restyle the replacement
+only; the text around it keeps its own font, size and colour.
+
+By default text after the match in the same show operator moves with it while
+text positioned on its own does not, so a wider replacement can run into the next
+word. `adjust: 'shiftRest'` moves everything after the replacement on its line by
+the difference. `adjust: 'spaceWidth'` takes the difference out of the word gaps
+after it, so the line keeps its end; a gap gives up at most half its width, and
+what the gaps cannot absorb shifts the rest of the line. Both write `TJ` kerns
+and never re-lay-out the paragraph.
 
 ### Compare Documents
 
@@ -2748,6 +2785,50 @@ const { skipped } = await htmlFileToPdf('page.html', 'out.pdf', { format: PageFo
 const docx = await docxFileToPdf('report.docx', 'report.pdf');
 ```
 
+### Remove Hidden Data
+
+`Sanitize` removes what a document carries beyond what it shows, in place. Every category is on
+by default; pass `false` for one to keep it.
+
+```typescript
+import { Document } from '@asposefoss/pdf';
+
+const doc = Document.OpenFile('contract.pdf');
+const report = doc.Sanitize({ annotations: false }); // keep comments, remove the rest
+console.log(report.metadata);  // { info: true, xmp: 1 }
+console.log(report.actions);   // { openAction: true, documentJavaScripts: 2, … }
+console.log(report.forms);     // { widgets: 14 } — field values baked into the page
+doc.WriteTo('contract-clean.pdf');
+```
+
+`privateData` covers what no viewer shows at all: `/PieceInfo` application data on the
+catalog, pages and form XObjects, page thumbnails, web-capture data and the `/Perms` dictionary
+that grants Reader usage rights. Acrobat's embedded search index, a word index of the document's
+text, lives in the catalog's `/PieceInfo` as `/SearchIndex`, so it goes too, and the report's
+`privateData.searchIndex` says when one was there.
+
+`pagesToImages` is the one category off by default, because it is lossy. It replaces every
+page's content with its rendering, which removes what a page hides in its own content: white text
+on white, text under an image, glyphs clipped away. Each page keeps its size, rotation and every
+link or bookmark that points at it; kept annotations stay annotations and are not baked in. No
+text layer is kept, since one built from the page's own text would carry exactly the hidden text
+being removed — run `MakeSearchable` afterwards to OCR the rendering instead:
+
+```typescript
+doc.Sanitize({ pagesToImages: { dpi: 200, format: 'jpeg', quality: 80 } });
+await doc.MakeSearchable(engine); // every page is now image-only, so it reads them all
+```
+
+Save the result with a plain `Save()` or `WriteTo()`. That writes a fresh file holding only
+what the document still reaches, so earlier revisions and removed objects are gone. After
+`Sanitize`, `Save({ incremental: true })` is refused: an incremental update appends to the
+bytes the document was opened from, and those still hold everything that was removed.
+
+A GoTo action on a link or bookmark becomes a plain destination, so navigation survives while
+the action does not; every other action and every `/AA` goes. A section of the report is
+`undefined` when its category was kept. Removing XMP also removes any PDF/A or PDF/UA
+identification. A signed document is refused, as is an unknown option, before anything changes.
+
 ### Optimize Fonts, Images and Structure
 
 `doc.Optimize(opts?)` shrinks the live model in place; the next `Save()` writes
@@ -3052,7 +3133,7 @@ Budgets are in characters (`maxInputChars`, default 48,000 per request) because 
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 441 public types plus 153
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 447 public types plus 153
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -3337,9 +3418,14 @@ of these tables.
 | `ResolvedFamily` | A family with all four faces filled. |
 | `ResolvedPadding` | Padding with every side settled to a number. |
 | `RevocationMaterial` | Raw revocation material for one certificate (DER bytes, as fetched). |
+| `ReplaceAdjust` | What the rest of a line does when a replacement changes its width: `'none'`, `'shiftRest'` or `'spaceWidth'`. |
+| `ReplaceTextOptions` | `ReplaceText` options: `region`, `ignoreCase`, `wholeWord`, `fallbackFonts`, `matchRegisteredFonts`, `onUndrawable`, the replacement's `font`, `fontSize` and `color`, and `adjust`. |
 | `RevocationResult` | Interface with 2 properties. |
 | `RowOptions` | `addRow` options: the row-level text style plus row-only geometry. |
-| `SearchOptions` | Scope for a text search. |
+| `PagesToImagesOptions` | How `Sanitize({ pagesToImages })` renders: `dpi` (default 150), `format` (`'flate'` or `'jpeg'`), `quality`. |
+| `SanitizeOptions` | Which categories `Sanitize` removes; each defaults to `true` except the lossy `pagesToImages`. |
+| `SanitizeReport` | What each `Sanitize` category removed; `undefined` for a category that was kept. |
+| `SearchOptions` | Scope for a text search: `region`, `includeHidden`, `ignoreCase`, `wholeWord`. |
 | `SeedCertRequirement` | A certificate seed-value entry that has a `/Cert /Ff` bit: `subject`, `issuer`, `subjectDN`, `keyUsage`, `url`. |
 | `SeedCertValue` | A certificate seed value (`/Cert`): allowed signer and issuer certificates, subject DN attributes, key-usage profiles and an enrolment URL. |
 | `SeedDigestMethod` | A `/DigestMethod` a seed value may name: `SHA1`, `SHA256`, `SHA384`, `SHA512`, `RIPEMD160`. |
@@ -3375,6 +3461,7 @@ of these tables.
 | `TrailerChoice` | What trailer synthesis chose. |
 | `TstInfo` | Interface with 6 properties. |
 | `UncoloredTilingPattern` | A tiling pattern whose colour is supplied at use time. |
+| `UndrawableText` | A match `ReplaceText` could not fully draw: `page` (1-based), `match`, and the `missing` characters. |
 | `UnembeddedFont` | A Standard-14 font whose embedded program `Optimize({ unembedStandard14 })` removed, with the bytes that freed. |
 | `UnembedSkip` | A Standard-14 font `Optimize({ unembedStandard14 })` declined to unembed, and why. |
 | `UnrecognisedScript` | A field script that is not one recognised AForm call for its trigger (`keystroke`, `validate` or `calculate`): reported, never run. |
@@ -3776,18 +3863,18 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.Artifacts` | The `/Artifact` marked-content scopes the page declares as `PageArtifact[]` (`type`/`subtype`/`attached`/`properties` from the property list, `bbox` + `bboxSource` declared or measured, `addr`, `parent`; descends into Form XObjects; `[]` if none) |
 | `page.GetTables(options?)` | Reconstruct tables as `Table[]` (`rowCount`, `colCount`, `rows` → `TableCell[]` with `row`/`col`/`rowSpan`/`colSpan`/`quad`/`text`/`tables`), each with `toHtml()` / `toMarkdown()`. Tagged PDFs are read from the `/Table` structure tree automatically (adding `isHeader`/`scope`/`id`/`headers` per cell, section per row, table `summary`, and `tables` for nested tables inside a cell, with `toHtml()` emitting `<thead>`/`<tbody>`/`<th scope>`/`<caption>` and nested `<table>`s); untagged pages fall back to geometry. `options.region` limits extraction, `options.structure = 'off'` forces geometry-only, `options.includeHidden` detects from content a hidden optional-content layer covers; `[]` if none. Rotated/skewed tables (ruled and borderless) are detected too: the geometry runs in the table's upright frame and `Table.angle` (radians, 0 for axis-aligned) records the rotation |
 | `doc.GetTables(options?)` | Extract tables from every page and stitch cross-page continuations into single `Table[]` (`pageSpans` records the contributing page rectangles); `{ stitch: false }` returns the flat per-page list. Same `options` as `page.GetTables` |
-| `page.Search(find, options?)` | Find a string/`RegExp` → `TextMatch[]` (`text`, per-line `quads`, glyph `hits`). `options.region` restricts the search to a page-space rect; `options.includeHidden` also reports matches on a hidden optional-content layer, which the **edit** entries (`ReplaceText`, `RedactText`, `MarkRedactText`) always do |
+| `page.Search(find, options?)` | Find a string/`RegExp` → `TextMatch[]` (`text`, per-line `quads`, glyph `hits`). `options.region` restricts the search to a page-space rect; `options.ignoreCase` and `options.wholeWord` change how it matches; `options.includeHidden` also reports matches on a hidden optional-content layer, which the **edit** entries (`ReplaceText`, `RedactText`, `MarkRedactText`) always do |
 | `page.SearchAnnotations(find, options?)` | Find a string/`RegExp` in the text the page's annotations **draw** (`/AP` appearance streams) → `AnnotationMatch[]` (`annot`, `text`, per-line `quads`), in `/Annots` order. Same `options.region`. Only annotations a static render would draw are searched (not Hidden, NoView or `/Popup`); a match carries no glyph `hits` |
 | `page.SearchAnnotationText(find)` | Find a string/`RegExp` in the text the page's annotations **carry** — `/Contents`, `/T` (author), `/Subj` — → `AnnotationTextMatch[]` (`annot`, `key`, `value`, `text`). Searches **every** annotation, hidden ones included. No geometry and no options, deliberately |
 | `richTextToPlain(markup, opts?)` | The plain text of an XHTML rich-text fragment (`/RC`, `/RV`), or `undefined` when it will not parse. Never throws |
-| `page.ReplaceText(find, replacement, options?)` | Replace matches in place (same font/encoding, no reflow) → count. Takes `options.region` |
+| `page.ReplaceText(find, replacement, options?)` | Replace matches in place (no reflow) → count found. `options` is `ReplaceTextOptions`: `region`, `ignoreCase`, `wholeWord`, `fallbackFonts`, `matchRegisteredFonts`, `onUndrawable`, `font`, `fontSize`, `color`, `adjust` |
 | `doc.CompareText(other, options?)` | Compare two documents' text → `TextComparison`: equal/delete/insert runs placed on each document's pages, `stats` with a `similarity`, `minimal`. `mode: 'pages'` compares page with page; `granularity: 'character'`, `ignoreCase`, `region` and `exclude` scope what is compared |
 | `doc.CompareSideBySide(other, options?)` | A **new** Document setting each page pair side by side — this document left, `other` right — with deletions marked on the left and insertions on the right, as highlight annotations (default) or drawn boxes. Returns `{ document, comparison }`; neither input changes |
 | `doc.CompareRendering(other, options?)` | Compare how two documents RENDER, page by page → `RenderingComparison`: changed pixels, their ratio, changed regions in page space, and with `{ image: true }` a PNG difference image per page. `dpi`, `tolerance` and `mergeDistance` tune it; sees colour, image and line changes that `CompareText` cannot |
-| `doc.ReplaceText(find, replacement)` | `ReplaceText` across every page → total count |
+| `doc.ReplaceText(find, replacement, options?)` | `ReplaceText` across every page, same options; every page is planned before any changes → total count |
 | `page.Redact(rects, opts?)` | Remove text/images under `[x0,y0,x1,y1]` regions, prune orphans, paint markers |
 | `doc.Redact(page, rects, opts?)` | Redact one page by 1-based number (convenience over `page.Redact`) |
-| `page.RedactText(find, opts?)` | Redact every occurrence of a string/RegExp on the page; returns the count. `opts.region` scopes the search |
+| `page.RedactText(find, opts?)` | Redact every occurrence of a string/RegExp on the page; returns the count. `opts.region`, `opts.ignoreCase` and `opts.wholeWord` scope the search |
 | `doc.RedactText(find, opts?)` | Redact every occurrence across all pages; returns the total count |
 | `page.AddRedact(opts)` | Add a `/Redact` **mark** over a region (removes nothing until applied) |
 | `page.MarkRedactText(find, opts?)` | Mark every occurrence of a string/RegExp; returns the count |
@@ -3805,6 +3892,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.ConvertToGrayscale(opts?)` | The named shorthand for `{ to: 'gray' }` → `ColorConvertReport` |
 | `doc.ConvertColors({ to, quality? })` | Convert content, images, shadings and annotations to `'gray'`/`'rgb'`/`'cmyk'` in place → `ColorConvertReport` |
 | `doc.FlattenLayers()` | Keep only what the default optional-content configuration shows, then delete the hidden spans, the surviving `/OC` wrappers and keys, and `/OCProperties` → `FlattenLayersReport` (`pagesChanged`, `hiddenSections`, `unwrappedSections`, `hiddenDraws`, `removedXObjects`, `hiddenAnnotations`, `unresolved`). One-way; throws `UnsupportedFeatureError` on a signed document |
+| `doc.Sanitize(opts?)` | Remove hidden data in place — `metadata`, `actions`, `attachments`, `annotations`, `forms` (flattened), `layers` (flattened), `privateData` (`/PieceInfo`, `/Thumb`, `/SpiderInfo`, page `/ID`, `/Perms`), each on by default, plus opt-in `pagesToImages` (`{ dpi?, format?, quality? }`), which replaces every page with its rendering and drops the structure tree → `SanitizeReport`, a section per category, `undefined` when kept. Throws `TypeError` for an unknown option and `UnsupportedFeatureError` on a signed document, before changing anything; afterwards `Save({ incremental: true })` is refused |
 | `doc.ConvertXfaToAcroForm(opts?)` | Convert an XFA form to a real `/AcroForm`: widgets with rects where the template's layout chain is positioned throughout, geometry-less field dicts otherwise; removes `/XFA` + `/NeedsRendering` unless `{ removeXfa: false }` → `XfaConvertReport` (`fields`, `skipped`, `dataOnly`). Throws `UnsupportedFeatureError` on a signed document |
 | `doc.AutoTag(opts?)` | Infer a `/StructTreeRoot` (headings/paragraphs/figures/tables) from layout; marks Tagged; returns per-type counts |
 | `element.MarkContent(page, region)` | Tag existing page content under a structure element (returns the MCID) |
@@ -4178,7 +4266,7 @@ See [the docs](https://example.com).
 - **Image extraction sees XObjects, not inline images** — `saveImagesFile` and `page.Images` enumerate image XObjects, descending into Form XObjects. An inline `BI … EI` image occupies no `/XObject` entry and has no stream object, so neither ever sees one and `InlineImageInfo` (which `page.InlineImages` returns) has no `Save`; extracting one means re-encoding samples that live in the content operator itself. The extension of every file written comes from the encoder's media type, so a document whose images cannot be encoded yields an empty directory and a populated `skipped` rather than files of the wrong kind.
 - **Text comparison compares text, not appearance** — `CompareText` diffs the words (or characters) each page shows, so a recoloured heading, a changed font or a moved image with unchanged text is no change, and text drawn as vector outlines or as an image is invisible to it. Reading order is `GetText`'s, so a document whose layout reorders the same words reports them as moved. Past the search budget (`maxCost`, 50 million steps by default) a stretch is reported as one deletion plus one insertion rather than the smallest edit, and `minimal` is false.
 - **Rendering comparison is pixel-exact by default** — `CompareRendering` compares this library's own renders of both documents, so it reports what changed in how the pages draw here; a font substituted the same way on both sides cancels out, and a difference only another viewer would show is invisible. Pages are aligned at the top left, so a page whose size changed differs wherever its content moved. Anti-aliased edges from documents written by different tools can differ by a few levels with nothing visibly changed; `tolerance` absorbs that.
-- **Text replace is same-font, no-reflow** — `ReplaceText` re-encodes the replacement in the matched glyphs' existing font and encoding and edits the content stream in place; it does not change fonts, embed glyphs, or re-lay-out text. Positioning operators are preserved, so a replacement of a different width may overlap following text or leave a gap. Type0/composite fonts, and any character the font's encoding can't represent, throw `UnsupportedFeatureError`.
+- **Text replace does not reflow, and does not re-subset** — `ReplaceText` edits the content stream in place and never re-lays-out text: positioning operators are preserved, so a replacement of a different width may overlap following text or leave a gap. `adjust` fixes that within the line only — a paragraph is not re-wrapped — and is refused for vertical text; the rest of the line is found through the page's text layout, so with `region` set, text outside the region is not moved. It writes in the matched font where that font can draw, and otherwise switches to a fallback or registered font for those characters; it never adds glyphs to the document's own embedded subset. A Type0 font is re-encoded only under `/Identity-H` or `/Identity-V`. A Form XObject without its own `/Resources`, or one whose font was set outside it, cannot take a font switch, so characters there must be drawable in the original font, and its replacement cannot change font or size. A replacement `color` puts the previous fill back by re-emitting the operators that set it, so a fill set through a named colour space outside the Form XObject the text is in cannot be restored there and is refused; the stroke colour of stroked text is not changed.
 - **There is no printing subsystem, by decision** — this library writes PDFs; it does not drive printers. Aspose's Java build exposes a printing package (`PdfPrinterSettings`, `PrintPaperSize`, `DuplexKind` and the rest) because it maps onto `java.awt.print`, and Node has no equivalent to map onto: sending bytes to a physical device is the host application's job, through whatever spooler it already talks to. What a *document* can legitimately say about printing is print **intent**, and that ships in full — `SetViewerPreferences` writes `Duplex`, `PrintScaling`, `NumCopies`, `PrintPageRange`, `PrintArea`/`PrintClip` and `PickTrayByPDFSize`, which is 32000-1's whole print vocabulary (see [Viewer preferences](#set-viewer-preferences)). Expect "how do I print?" to land here: render with `page.ToImage()` and hand the raster to your platform's print path, or hand the PDF itself to a viewer.
 
 </details>

@@ -18,6 +18,7 @@ function g(
     // be able to forget them, since a consumer that re-derives a code from
     // byteStart/byteLen gets every non-Identity CMap silently wrong.
     code: 0, cid: 0,
+    tfKey: 'F1', tfSize: size, charSpacing: 0, wordSpacing: 0, hscale: 1,
     ...extra,
   };
 }

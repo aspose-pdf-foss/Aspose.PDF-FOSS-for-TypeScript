@@ -169,6 +169,33 @@ export function buildSimpleTtfPdf(o: SimpleTtfOptions = {}): Uint8Array {
   return serializeDocument(objects, new Map<string, PdfObject>([['Root', ref(1, 0)]]));
 }
 
+/** A PDF showing `body` in a simple /Type1 font that embeds `program` (a
+ *  .t1/.pfa/.pfb) as /FontFile, WinAnsi-encoded. The program goes in as RAW
+ *  stream bytes: `NimbusSans-Regular.t1`'s eexec section is binary, so a
+ *  string-built fixture would corrupt it. */
+export function buildType1EmbeddedPdf(body: string, program: Uint8Array): Uint8Array {
+  const objects = new Map<number, PdfObject>();
+  objects.set(6, { kind: 'stream', dict: new Map<string, PdfObject>([['Length', program.length]]), raw: program });
+  objects.set(7, new Map<string, PdfObject>([
+    ['Type', name('FontDescriptor')], ['FontName', name('NimbusSans-Regular')],
+    ['Flags', 32], ['FontBBox', [0, -200, 1000, 900]], ['ItalicAngle', 0],
+    ['Ascent', 900], ['Descent', -200], ['CapHeight', 700], ['StemV', 80],
+    ['FontFile', ref(6, 0)],
+  ]));
+  objects.set(4, new Map<string, PdfObject>([
+    ['Type', name('Font')], ['Subtype', name('Type1')], ['BaseFont', name('NimbusSans-Regular')],
+    ['Encoding', name('WinAnsiEncoding')], ['FontDescriptor', ref(7, 0)],
+  ]));
+  objects.set(3, { kind: 'stream', dict: new Map<string, PdfObject>([['Length', body.length]]), raw: enc(body) });
+  objects.set(2, new Map<string, PdfObject>([
+    ['Type', name('Page')], ['Parent', ref(8, 0)], ['MediaBox', [0, 0, 612, 792]], ['Contents', ref(3, 0)],
+    ['Resources', new Map<string, PdfObject>([['Font', new Map<string, PdfObject>([['F1', ref(4, 0)]])]])],
+  ]));
+  objects.set(8, new Map<string, PdfObject>([['Type', name('Pages')], ['Kids', [ref(2, 0)]], ['Count', 1]]));
+  objects.set(1, new Map<string, PdfObject>([['Type', name('Catalog')], ['Pages', ref(8, 0)]]));
+  return serializeDocument(objects, new Map<string, PdfObject>([['Root', ref(1, 0)]]));
+}
+
 export interface SimpleCffOptions {
   /** The font dict's /Encoding value. Omitted entirely when undefined, which
    *  hands the CFF's built-in encoding the decision. */

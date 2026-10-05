@@ -11,7 +11,7 @@ import { CidCMap, parseCidCMap } from './cidcmap.js';
 import { getPredefinedCMap } from './predefcmap.js';
 import { CidToUnicode, getCidToUnicode } from './cidunicode.js';
 import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
-import { gidForProgram, gidForCid, loadEmbeddedProgram, programAdvance } from './glyphprogram.js';
+import { gidForProgram, gidForCid, loadEmbeddedProgram, programAdvance, type EmbeddedProgram } from './glyphprogram.js';
 
 type Resolve = (o: PdfObject | undefined) => PdfObject;
 type Inflate = (s: { dict: PdfDict; raw: Uint8Array }) => Uint8Array;
@@ -268,6 +268,16 @@ export class TextFont {
   private readonly loadProgramWidths?: () => ((code: number) => number | undefined) | undefined;
   private programWidthFn?: (code: number) => number | undefined;
   private programWidthInit = false;
+  /** Type0 under `/Identity-H` or `/Identity-V`: a code IS its CID, two bytes. */
+  private identityEnc = false;
+  /** Builds the "does the embedded program define this glyph" test; unset for
+   *  a font that cannot have one (Type 3). */
+  private loadPresence?: () => ((code: number, cid: number, text: string) => boolean) | undefined;
+  /** The built test, or `null` when nothing is embedded — such a font is
+   *  trusted by its encoding, since the viewer supplies the face. */
+  private presenceFn?: ((code: number, cid: number, text: string) => boolean) | null;
+  /** `/ToUnicode` inverted for single-character entries, codes ascending. */
+  private tuInverse?: Map<string, number[]>;
   private inverse?: Map<string, number>;              // Unicode -> code (simple fonts, lazy)
 
   /** The font dictionary this is a view over.
@@ -304,6 +314,9 @@ export class TextFont {
       const widths = this.encoding?.codespaces.map((c) => c.nbytes) ?? [];
       this.codeWidth = widths.length ? Math.min(...widths) : this.toUnicode?.codeWidth ?? 2;
       this.wmode = this.encoding?.wmode ?? 0;
+      const encName = resolve(dict.get('Encoding'));
+      this.identityEnc = isName(encName) && (encName.name === 'Identity-H' || encName.name === 'Identity-V');
+      this.loadPresence = () => buildCidPresence(dict, resolve, inflate);
       const wt = parseType0Widths(dict, resolve);
       this.widths = wt.widths;
       this.defaultWidth = wt.dw;
@@ -329,8 +342,10 @@ export class TextFont {
       } else { this.hasWidths = false; this.stdWidths = std14Widths(this.name, this.simple); }
       const simple = this.simple;
       this.loadProgramWidths = () => buildProgramWidths(dict, resolve, inflate, simple);
+      this.loadPresence = () => buildSimplePresence(dict, resolve, inflate);
       if (isName(subtype) && subtype.name === 'Type3') {
         this.type3 = parseType3(dict, resolve);
+        this.loadPresence = undefined;   // a Type 3 glyph is a content stream, not a program
         this.widthScale = this.type3.fontMatrix[0];
       }
     }
@@ -530,6 +545,60 @@ export class TextFont {
       out.push(code);
     }
     return Uint8Array.from(out);
+  }
+
+  /**
+   * The bytes that draw `ch` (one code point) in THIS font, or `undefined`
+   * when none do (u3l5.2).
+   *
+   * **Invariant:** a code qualifies only when it DECODES back to exactly `ch`
+   * through this font's own decoder AND, for an embedded program, selects a
+   * glyph the program defines. The round trip is the criterion — a code that
+   * would not extract as `ch` is the wrong code however it was found — and the
+   * presence test is what stops a SUBSET font accepting a character its
+   * encoding maps and its program never embedded, which drew a blank.
+   *
+   * Candidates are the encoding inverse (simple fonts) and the inverse of the
+   * single-character `/ToUnicode` entries. A Type0 font answers ONLY under
+   * `/Identity-H`/`-V`, where a code is its CID and is two bytes; any other
+   * CMap declines, since writing a code needs its byte width.
+   */
+  drawCode(ch: string): Uint8Array | undefined {
+    for (const code of this.candidateCodes(ch)) {
+      if (this.textOf(code, code) !== ch) continue;
+      if (!this.definesGlyph(code, code, ch)) continue;
+      return this.isType0 ? Uint8Array.of((code >> 8) & 0xff, code & 0xff) : Uint8Array.of(code);
+    }
+    return undefined;
+  }
+
+  private candidateCodes(ch: string): number[] {
+    const out: number[] = [];
+    if (!this.isType0) {
+      const c = this.encodeChar(ch);
+      if (c !== undefined) out.push(c);
+    } else if (!this.identityEnc) return out;
+    const max = this.isType0 ? 0xffff : 0xff;
+    for (const c of this.toUnicodeInverse().get(ch) ?? []) if (c <= max && !out.includes(c)) out.push(c);
+    return out;
+  }
+
+  private toUnicodeInverse(): Map<string, number[]> {
+    if (!this.tuInverse) {
+      const inv = new Map<string, number[]>();
+      for (const [code, u] of this.toUnicode?.entries() ?? []) {
+        const l = inv.get(u);
+        if (l) l.push(code); else inv.set(u, [code]);
+      }
+      for (const l of inv.values()) l.sort((a, b) => a - b);
+      this.tuInverse = inv;
+    }
+    return this.tuInverse;
+  }
+
+  private definesGlyph(code: number, cid: number, text: string): boolean {
+    if (this.presenceFn === undefined) this.presenceFn = this.loadPresence?.() ?? null;
+    return this.presenceFn === null || this.presenceFn(code, cid, text);
   }
 
   /** Decode bytes into one record per character code (positions, em-widths). */
@@ -896,22 +965,45 @@ function parseSimpleWidths(
  * {@link glyphNameResolver} over the font's `/Encoding`, with the program's own
  * encoding beneath it.
  */
-function buildProgramWidths(
-  dict: PdfDict, resolve: Resolve, inflate: Inflate, simple: (string | undefined)[] | undefined,
-): ((code: number) => number | undefined) | undefined {
+/** A simple font's embedded program and its code -> glyph-name route, or
+ *  `undefined` when it embeds none we can read. One loader for widths and for
+ *  glyph presence (u3l5.2), so the two cannot disagree about which glyph a
+ *  code is. */
+function loadSimpleProgram(
+  dict: PdfDict, resolve: Resolve, inflate: Inflate,
+): { prog: EmbeddedProgram; nameForCode: (code: number) => string | undefined } | undefined {
   const prog = loadEmbeddedProgram(dict.get('FontDescriptor'), resolve, inflate);
   if (!prog.sfnt && !prog.cff && !prog.type1) return undefined;
   const nameForCode = glyphNameResolver(
     resolveSimpleEncoding(dict, resolve), prog.type1?.builtinEncodingNames(),
   );
+  return { prog, nameForCode };
+}
+
+function buildProgramWidths(
+  dict: PdfDict, resolve: Resolve, inflate: Inflate, simple: (string | undefined)[] | undefined,
+): ((code: number) => number | undefined) | undefined {
+  const p = loadSimpleProgram(dict, resolve, inflate);
+  if (!p) return undefined;
   const cache = new Map<number, number | undefined>();
   return (code) => {
     if (cache.has(code)) return cache.get(code);
-    const gid = gidForProgram(prog, code, simple?.[code & 0xff] ?? '', nameForCode);
-    const w = gid === undefined ? undefined : programAdvance(prog, gid);
+    const gid = gidForProgram(p.prog, code, simple?.[code & 0xff] ?? '', p.nameForCode);
+    const w = gid === undefined ? undefined : programAdvance(p.prog, gid);
     cache.set(code, w);
     return w;
   };
+}
+
+/** Whether the simple font's embedded program defines a glyph for `code`,
+ *  read as the character `text` (u3l5.2). `undefined` when nothing is
+ *  embedded. */
+function buildSimplePresence(
+  dict: PdfDict, resolve: Resolve, inflate: Inflate,
+): ((code: number, cid: number, text: string) => boolean) | undefined {
+  const p = loadSimpleProgram(dict, resolve, inflate);
+  if (!p) return undefined;
+  return (code, _cid, text) => glyphDefined(p.prog, gidForProgram(p.prog, code, text, p.nameForCode), text);
 }
 
 /** Parse the descendant CIDFont's /W array (+ /DW default) for a Type0 font.
@@ -968,13 +1060,27 @@ function parseType0Widths(
 function buildCidProgramWidths(
   dict: PdfDict, resolve: Resolve, inflate: Inflate,
 ): ((cid: number) => number | undefined) | undefined {
+  const p = loadCidProgram(dict, resolve, inflate);
+  if (!p) return undefined;
+  const cache = new Map<number, number | undefined>();
+  return (cid) => {
+    if (cache.has(cid)) return cache.get(cid);
+    const w = programAdvance(p.prog, gidForCid(p.prog, cid, p.cidToGid));
+    cache.set(cid, w);
+    return w;
+  };
+}
+
+/** A composite font's descendant program and `/CIDToGIDMap`, or `undefined`
+ *  when it embeds none we can read. */
+function loadCidProgram(
+  dict: PdfDict, resolve: Resolve, inflate: Inflate,
+): { prog: EmbeddedProgram; cidToGid: Uint8Array | undefined } | undefined {
   const desc = resolve(dict.get('DescendantFonts'));
   const cidFont = isArray(desc) ? resolve(desc[0]) : undefined;
   if (!isDict(cidFont)) return undefined;
-
   const prog = loadEmbeddedProgram(cidFont.get('FontDescriptor'), resolve, inflate);
   if (!prog.sfnt && !prog.cff && !prog.type1) return undefined;
-
   // /CIDToGIDMap is a stream of 2-byte gids, or the name /Identity. An
   // unreadable stream degrades to Identity rather than to no widths at all.
   let cidToGid: Uint8Array | undefined;
@@ -982,12 +1088,41 @@ function buildCidProgramWidths(
   if (isStream(c2g)) {
     try { cidToGid = inflate(c2g as { dict: PdfDict; raw: Uint8Array }); } catch (caught) { rethrowLimit(caught); cidToGid = undefined; }
   }
+  return { prog, cidToGid };
+}
 
-  const cache = new Map<number, number | undefined>();
-  return (cid) => {
-    if (cache.has(cid)) return cache.get(cid);
-    const w = programAdvance(prog, gidForCid(prog, cid, cidToGid));
-    cache.set(cid, w);
-    return w;
-  };
+/** Whether the composite font's embedded program defines the glyph `cid`
+ *  selects (u3l5.2). `undefined` when nothing is embedded. */
+function buildCidPresence(
+  dict: PdfDict, resolve: Resolve, inflate: Inflate,
+): ((code: number, cid: number, text: string) => boolean) | undefined {
+  const p = loadCidProgram(dict, resolve, inflate);
+  if (!p) return undefined;
+  return (_code, cid, text) => glyphDefined(p.prog, gidForCid(p.prog, cid, p.cidToGid), text);
+}
+
+/** Whether `gid` is a real glyph of `prog` for the character `text`.
+ *
+ *  **Invariant (u3l5.2):** gid 0 is `.notdef` in an sfnt or a CFF and so
+ *  missing — but a Type 1 program numbers glyphs by order of appearance, and
+ *  its gid 0 is an ordinary glyph (`NimbusSans-Regular.t1` lists `/A`
+ *  first). A subset that keeps glyph numbering blanks a dropped glyph — zero
+ *  length in glyf, an empty charstring in CFF or Type 1 — and whitespace
+ *  legitimately has no outline, so an empty glyph is missing only for text
+ *  that draws ink. */
+function glyphDefined(prog: EmbeddedProgram, gid: number | undefined, text: string): boolean {
+  if (gid === undefined) return false;
+  if (gid === 0 && !prog.type1) return false;
+  const count = prog.sfnt?.numGlyphs ?? prog.cff?.numGlyphs;
+  if (count !== undefined && count > 0 && gid >= count) return false;
+  // An emptied slot: zero length in glyf, a charstring drawing no path in a CFF
+  // or a Type 1 program (what `Optimize` and other renumber-free subsetters
+  // leave). Whitespace legitimately draws nothing, so only ink-bearing text can
+  // miss.
+  if (/^\s+$/u.test(text)) return true;
+  const sf = prog.sfnt;
+  if (sf && sf.outlines === 'glyf' && gid + 1 < sf.loca.length && sf.loca[gid] === sf.loca[gid + 1]) return false;
+  if (prog.cff && prog.cff.glyphPath(gid).length === 0) return false;
+  if (prog.type1 && prog.type1.glyphPath(gid).length === 0) return false;
+  return true;
 }

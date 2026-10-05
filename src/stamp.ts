@@ -40,7 +40,7 @@ export const AUTHORING_FONTS: readonly StdFont[] = [
 export type AuthoringFont = StdFont | EmbeddedFont;
 
 /** Resolve an authoring `font` option to its measuring/encoding driver. */
-function driverFor(font: AuthoringFont): FontDriver {
+export function driverFor(font: AuthoringFont): FontDriver {
   return font instanceof EmbeddedFont ? font.driver() : winAnsiDriver(font);
 }
 
@@ -174,13 +174,17 @@ function isFontWinAnsi(doc: Document, d: PdfDict, font: StdFont): boolean {
   return isName(bf) && bf.name === font && isName(en) && en.name === 'WinAnsiEncoding';
 }
 
-/** Register (or reuse) `font` on the page; returns its resource key. Standard-14
- *  faces become a WinAnsi Type1 dict; an embedded handle reserves a Type0 object
- *  (filled by the document's finalize pass at Save) shared across all its draws. */
+/** Register (or reuse) `font` on the page; returns its resource key. */
 function registerFont(doc: Document, page: Page, font: AuthoringFont): string {
-  const res = ensureOwnResources(doc, page);
-  const fonts = ensureOwnSubdict(doc, res, 'Font');
+  return registerFontIn(doc, ensureOwnSubdict(doc, ensureOwnResources(doc, page), 'Font'), font);
+}
 
+/** Register (or reuse) `font` in a `/Font` resource dict the caller owns —
+ *  a page's or a Form XObject's (u3l5.2) — and return its key. Standard-14
+ *  faces become a WinAnsi Type1 dict; an embedded handle reserves a Type0
+ *  object (filled by the document's finalize pass at Save) shared across all
+ *  its draws. One owner of "reuse the key when this font is already there". */
+export function registerFontIn(doc: Document, fonts: PdfDict, font: AuthoringFont): string {
   if (font instanceof EmbeddedFont) {
     if (font.objNum === undefined) font.objNum = doc.allocObject(new Map<string, PdfObject>()).num;
     for (const [k, v] of fonts) if (isRef(v) && v.num === font.objNum) return k;
