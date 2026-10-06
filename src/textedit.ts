@@ -6,21 +6,22 @@ import type { Page } from './page.js';
 import type { GlyphEvent, Rect, RefRun } from './text.js';
 import { visitContent, layoutLines, runFromGlyph, walkOpts, contentStreamBytes } from './text.js';
 import { inflateStream } from './flate.js';
-import { planAdjustment, runsAdvance, glyphAdvance, type AdjustEdit, type ShowInsert, type ChainGap } from './replaceadjust.js';
+import { planAdjustment, runsAdvance, runUnits, splitRuns, glyphAdvance, type AdjustEdit, type ShowInsert, type ChainGap } from './replaceadjust.js';
 import { EditableContent } from './editcontent.js';
 import { findParagraph, untaggedKeys, MOVABLE_ANNOTS, type Paragraph, type Rect as ParaRect } from './reflowpara.js';
-import { wrapParagraph } from './reflowwrap.js';
+import { wrapParagraph, type HyphenWrap, type WrapUnit, type LineBox } from './reflowwrap.js';
+import { hyphenator, resolveHyphenation, type Hyphenator } from './hyphenate.js';
 import { regenerateAppearance } from './annotdraw.js';
 import type { ContentAddr } from './editcontent.js';
 import { ContentOp, parseContentStream } from './content.js';
 import { PdfObject, PdfDict, isString, isArray, isDict, isStream, isName, isRef, name, type PdfStream } from './types.js';
-import type { ReplaceTextOptions, Run, RunStyle, UndrawableText, UnreflowableReason, UnreflowableText } from './replacefont.js';
+import type { FontTiers, ReplaceTextOptions, Run, RunStyle, UndrawableText, UnreflowableReason, UnreflowableText } from './replacefont.js';
 import { assignRuns, checkReplaceOptions, pushRun } from './replacefont.js';
 import { splitShowOp, type FontRestore, type ShowPiece } from './showsplit.js';
 import { driverFor, registerFontIn, type AuthoringFont } from './stamp.js';
 import { ensureOwnResources, ensureOwnSubdict } from './pagecontent.js';
 import type { EmbeddedFont } from './embeddedfont.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 
 /** A positioned text match. `quads` is one page-space box per line the match
  *  spans; `hits` are the glyph events behind the match (op provenance for S2). */
@@ -245,6 +246,10 @@ interface StrEdit {
   elementIndex: number; start: number; end: number; runs: Run[];
   /** The edit's first glyph and the [pos, endPos) of the text it rewrote. */
   anchor: GlyphEvent; pos: number; endPos: number;
+  /** Where a reflow hyphenated the edit's own text (6y39): a hyphen after unit
+   *  `unit` of `runUnits(runs, anchor)`, the rest at `tail`, moved there by
+   *  `tm` (set by `writeReflow`). Ascending by `unit`. */
+  breaks?: { unit: number; hyphen: Run; tail: [number, number]; tm?: ContentOp }[];
 }
 
 /** True when an edit cannot be a byte splice: a run in another font, or a
@@ -352,6 +357,9 @@ export interface DecorateContext {
   pieces: readonly RestylePiece[];
   /** Reflow targets (glyph origin incl. rise, device space); empty without reflow. */
   targets: ReadonlyMap<GlyphEvent, [number, number]>;
+  /** Each glyph's drawn extent per line after a hyphenated reflow, hyphen
+   *  included (6y39); empty without one. */
+  boxes: ReadonlyMap<GlyphEvent, readonly LineBox[]>;
   /** How far along its baseline (device units) each glyph's start moves
    *  without reflow: the width changes of the edits before it in its pen chain
    *  and the kerns `adjust` inserts before it. */
@@ -622,8 +630,9 @@ export function planReplace(
   const unreflowable: UnreflowableText[] = [];
   const annotWrites: (() => void)[] = [];
   const targets = new Map<GlyphEvent, [number, number]>();
+  const boxes = new Map<GlyphEvent, LineBox[]>();
   if (opts.adjust === 'reflow') {
-    planReflow(doc, page, pageNumber, streams, streamFor, all, text, refs, covered, spans, inks, anchored, unreflowable, annotWrites, targets, opts);
+    planReflow(doc, page, pageNumber, streams, streamFor, all, text, refs, covered, spans, inks, anchored, unreflowable, annotWrites, targets, opts, { tiersFor, canSwitch }, boxes);
   }
 
   let drawCount: Map<string, number> | undefined;
@@ -642,7 +651,7 @@ export function planReplace(
       if (list) list.push(...ops); else m.set(addr.opIndex, [...ops]);
     };
     restyle.decorate({
-      pageNumber, pieces: restylePieces, targets, shifts: naturalShifts(all, streams, chainGapFor(doc, page)),
+      pageNumber, pieces: restylePieces, targets, boxes, shifts: naturalShifts(all, streams, chainGapFor(doc, page)),
       scopeOps: (path) => readScopeOps(doc, page, path),
       fillOps: (g) => paint.restore(g, false),
       drawings: (g) => {
@@ -774,7 +783,7 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>, c
       out.push(...(before.get(i) ?? []));
       const e = perOp.get(i) ?? [], k = kerns.get(i) ?? [], ins = inserts.get(i) ?? [];
       if (e.length === 0 && k.length === 0 && ins.length === 0) out.push(op);
-      else if (ins.length > 0 || e.some(hasForeign)) {
+      else if (ins.length > 0 || e.some(hasForeign) || e.some((x) => x.breaks)) {
         out.push(...splitShowOp(op, showPieces(op, e, k, keyFor, ins), restore.get(i) ?? NO_RESTORE));
       } else {
         const next = spliceShowOp(op, e, k);
@@ -835,6 +844,17 @@ function showPieces(
     : [op.operands[op.operator === '"' ? 2 : 0]];
   const drop = op.operator === 'TJ' ? droppedKerns(els, kerns) : new Set<number>();
   const pieces: ShowPiece[] = [];
+  const runPiece = (r: Run, anchor: GlyphEvent): ShowPiece => {
+    if (r.font === 'original' && r.style === undefined) return { kind: 'bytes', bytes: r.bytes };
+    const size = r.style?.size;
+    return {
+      kind: 'foreign',
+      ...(r.font === 'original'
+        ? { bytes: r.bytes }
+        : { key: keyFor(r.font), ...encodeForeign(r.font, r.text, anchor.wordSpacing, size ?? anchor.tfSize) }),
+      size, fill: r.style?.fill, stroke: r.style?.stroke,
+    };
+  };
   els.forEach((el, idx) => {
     if (!isString(el)) { if (!drop.has(idx)) pieces.push({ kind: 'kern', value: el }); return; }
     // Edits and inserted kerns in byte order; a kern at an edit's start goes
@@ -846,24 +866,20 @@ function showPieces(
     const kernsUpTo = (at: number): void => {
       for (; ki < kernsHere.length && kernsHere[ki].byteStart <= at; ki++) {
         pieces.push({ kind: 'bytes', bytes: el.bytes.subarray(pos, kernsHere[ki].byteStart) });
-        pieces.push(kernsHere[ki].piece);
+        const pc = kernsHere[ki].piece;
+        pieces.push(pc.kind === 'run' ? runPiece(pc.run, pc.anchor) : pc);
         pos = kernsHere[ki].byteStart;
       }
     };
     for (const x of mine) {
       kernsUpTo(x.start);
       pieces.push({ kind: 'bytes', bytes: el.bytes.subarray(pos, x.start) });
-      for (const r of x.runs) {
-        if (r.font === 'original' && r.style === undefined) { pieces.push({ kind: 'bytes', bytes: r.bytes }); continue; }
-        const size = r.style?.size;
-        pieces.push({
-          kind: 'foreign',
-          ...(r.font === 'original'
-            ? { bytes: r.bytes }
-            : { key: keyFor(r.font), ...encodeForeign(r.font, r.text, x.anchor.wordSpacing, size ?? x.anchor.tfSize) }),
-          size, fill: r.style?.fill, stroke: r.style?.stroke,
-        });
-      }
+      const segs = x.breaks ? splitRuns(x.runs, x.anchor, x.breaks.map((b) => b.unit + 1)) : [x.runs];
+      segs.forEach((seg, si) => {
+        for (const r of seg) pieces.push(runPiece(r, x.anchor));
+        const b = x.breaks?.[si];
+        if (b) { pieces.push(runPiece(b.hyphen, x.anchor)); pieces.push({ kind: 'op', op: b.tm! }); }
+      });
       pos = x.end;
     }
     kernsUpTo(el.bytes.length);
@@ -1068,7 +1084,8 @@ function planReflow(
   all: readonly GlyphEvent[], text: string, refs: readonly (GlyphEvent | undefined)[],
   covered: Uint8Array, spans: Map<GlyphEvent, [number, number]>, inks: readonly ParaRect[],
   anchored: [number, number][], unreflowable: UnreflowableText[], annotWrites: (() => void)[],
-  targetsOut: Map<GlyphEvent, [number, number]>, opts: ReplaceTextOptions,
+  targetsOut: Map<GlyphEvent, [number, number]>, opts: ReplaceTextOptions, faces: ReflowFaces,
+  boxesOut: Map<GlyphEvent, LineBox[]> = new Map(),
 ): void {
   const gap = chainGapFor(doc, page);
   const annots = annotRects(doc, page);
@@ -1098,6 +1115,24 @@ function planReflow(
     const e = editOfGlyph.get(g);
     if (!e) return glyphAdvance(g);
     return g === e.anchor ? runsAdvance(e.runs, e.anchor) : 0;
+  };
+
+  const h = opts.hyphenate;
+  /** The paragraph's hyphenator, or undefined: off, or no bundled language. */
+  const hyphenFor = (anchor: GlyphEvent): { h: Hyphenator; manual: boolean } | undefined => {
+    if (h === undefined || h === false) return undefined;
+    try {
+      const r = resolveHyphenation(h, h.lang === undefined ? langAt(doc, page, anchor) : undefined);
+      return { h: hyphenator(r), manual: r.mode === 'manual' };
+    } catch (e) {
+      rethrowLimit(e);
+      return undefined;   // no language, or none with patterns: whole words
+    }
+  };
+  const hyphenRuns = new Map<GlyphEvent, Run | undefined>();
+  const hyphenOf = (g: GlyphEvent): Run | undefined => {
+    if (!hyphenRuns.has(g)) hyphenRuns.set(g, hyphenRunFor(g, faces));
+    return hyphenRuns.get(g);
   };
 
   // One paragraph per distinct key, with the matches it holds.
@@ -1155,17 +1190,92 @@ function planReflow(
         leads.set(g, e && g !== e.anchor ? 0 : g.quad[0] - w.glyphs[i - 1].penEnd[0]);
       }
     }
+    const hy = hyphenFor(anchor);
+    const hyphenWrap: HyphenWrap | undefined = hy && {
+      hyphenator: hy.h, manual: hy.manual,
+      unitsOf: (g): WrapUnit[] => {
+        const e = editOfGlyph.get(g);
+        if (e && g !== e.anchor) return [];
+        if (e) {
+          // An edit's units are its characters: a replacement may split too.
+          return runUnits(e.runs, g).map((u) => {
+            const run = hyphenRunFor(g, faces, e.runs[u.run]);
+            return { text: u.text, width: u.width, hyphen: run && runsAdvance([run], g) };
+          });
+        }
+        const run = hyphenOf(g);
+        return [{ text: g.text, width: advanceOf(g), hyphen: run && runsAdvance([run], g) }];
+      },
+      // A hyphen glyph an edit rewrote is the edit's; any other may go.
+      canSuppress: (g) => !editOfGlyph.has(g),
+    };
     const wrap = wrapParagraph({
       para: p, advanceOf, leadOf: (g) => leads.get(g) ?? 0,
       firstEdited: editedWords[0], lastEdited: editedWords[editedWords.length - 1],
+      hyphen: hyphenWrap,
     });
 
     if (wrap.addedLines > 0 && !roomBelow(p, wrap.lowest, all, inks, annots, crop)) { refuse('no-room'); continue; }
-    writeReflow(p, wrap.targets, all, gap, editOfGlyph, advanceOf, streamFor);
+    // A line-end hyphen the rejoin no longer needs becomes an empty edit over
+    // its bytes: it draws nothing, advances nothing, and is not a match.
+    for (const h of wrap.suppressed) {
+      const e: StrEdit = { elementIndex: h.elementIndex, start: h.byteStart, end: h.byteStart + h.byteLen, runs: [], anchor: h, pos: -1, endPos: -1 };
+      const { perOp } = streamFor(h.addr);
+      const list = perOp.get(h.addr.opIndex);
+      if (list) list.push(e); else perOp.set(h.addr.opIndex, [e]);
+      editOfGlyph.set(h, e);
+    }
+    const hyphenAfter = new Map<GlyphEvent, Run>();
+    for (const b of wrap.breaks) {
+      if (b.own) continue;                       // the original hyphen stays
+      const e = editOfGlyph.get(b.glyph);
+      const units = e ? runUnits(e.runs, b.glyph) : undefined;
+      // A break exists only where a face does.
+      const run = (e ? hyphenRunFor(b.glyph, faces, e.runs[units![b.unit].run]) : hyphenOf(b.glyph))!;
+      if (run.font !== 'original') streamFor(b.glyph.addr).restore.set(b.glyph.addr.opIndex, { key: b.glyph.tfKey, size: b.glyph.tfSize });
+      if (e && b.unit < units!.length - 1) (e.breaks ??= []).push({ unit: b.unit, hyphen: run, tail: b.tail! });
+      else hyphenAfter.set(b.glyph, run);
+    }
+    writeReflow(p, wrap.targets, all, gap, editOfGlyph, advanceOf, streamFor, wrap.boxes, hyphenAfter);
     for (const [g, tg] of wrap.targets) targetsOut.set(g, tg);
+    for (const [g, bx] of wrap.boxes) boxesOut.set(g, bx);
     for (const g of p.members) placed.set(glyphKey(g), linear(g));
-    moveAnnotQuads(doc, page, p, wrap.targets, advanceOf, annotWrites, annotPlan);
+    moveAnnotQuads(doc, page, p, wrap.targets, advanceOf, annotWrites, annotPlan, wrap.boxes, new Set(wrap.suppressed));
   }
+}
+
+/** The fonts a reflow may draw a hyphen in (6y39). */
+interface ReflowFaces { tiersFor(g: GlyphEvent): FontTiers; canSwitch(g: GlyphEvent): boolean }
+
+/** The run that draws '-' after a unit of `g`, in the unit's own face first
+ *  (`unitRun`'s foreign font, else `g`'s font through `drawCode`), then the
+ *  registered same face and `fallbackFonts` where `g`'s scope can switch font.
+ *  It carries the unit's style, so a styled replacement's hyphen matches it.
+ *  Undefined: no face draws '-', and the point is skipped. */
+function hyphenRunFor(g: GlyphEvent, faces: ReflowFaces, unitRun?: Run): Run | undefined {
+  const style = unitRun?.style;
+  if (unitRun && unitRun.font !== 'original') {
+    return driverFor(unitRun.font).probe('-') > 0 ? { font: unitRun.font, text: '-', style } : undefined;
+  }
+  const bytes = g.font.drawCode('-');
+  if (bytes) return { font: 'original', bytes, style };
+  if (!faces.canSwitch(g)) return undefined;
+  const t = faces.tiersFor(g);
+  const f = [t.registered, ...t.fallbacks].find((x): x is AuthoringFont => x !== undefined && driverFor(x).probe('-') > 0);
+  return f === undefined ? undefined : { font: f, text: '-', style };
+}
+
+/** The language a reflowed paragraph hyphenates in: the anchor glyph's
+ *  structure element's, which falls back to the catalog's, or the catalog's
+ *  on an untagged page. */
+function langAt(doc: Document, page: Page, g: GlyphEvent): string | undefined {
+  const root = doc.GetStructTree();
+  const sp = doc.resolve(page.Dict.get('StructParents'));
+  if (root && typeof sp === 'number' && g.mcid !== undefined && g.addr.path.length === 0) {
+    const el = root.ElementFor(sp, g.mcid);
+    if (el) return el.EffectiveLang;
+  }
+  return doc.Lang;
 }
 
 /** Block-level structure types: a paragraph is the nearest of these above a
@@ -1214,6 +1324,7 @@ function writeReflow(
   p: Paragraph, targets: Map<GlyphEvent, [number, number]>, all: readonly GlyphEvent[],
   gap: (a: ContentAddr, b: ContentAddr) => ChainGap, editOfGlyph: Map<GlyphEvent, StrEdit>,
   advanceOf: (g: GlyphEvent) => number, streamFor: (a: ContentAddr) => StreamEdits,
+  boxes: ReadonlyMap<GlyphEvent, readonly LineBox[]> = new Map(), hyphenAfter: ReadonlyMap<GlyphEvent, Run> = new Map(),
 ): void {
   const insert = (g: GlyphEvent, piece: ShowInsert['piece']) => {
     const e = editOfGlyph.get(g);
@@ -1272,7 +1383,21 @@ function writeReflow(
       const per = g.fontSize * g.hscale;
       insert(g, { kind: 'kern', value: Math.round(-(t[0] - st.pen[0]) * 1000 / per * 1000) / 1000 });
     }
-    st.pen = [t[0] + advanceOf(g), t[1]];
+    if (e?.breaks) {
+      for (const br of e.breaks) br.tm = tmFor(g, br.tail[0], br.tail[1]);
+      st.dirty = true;
+    }
+    const hr = hyphenAfter.get(g);
+    if (hr) {
+      const e2 = editOfGlyph.get(g);
+      const ins: ShowInsert = { addr: g.addr, elementIndex: g.elementIndex, byteStart: e2 ? e2.end : g.byteStart + g.byteLen, piece: { kind: 'run', run: hr, anchor: g } };
+      const map = streamFor(g.addr).inserts;
+      const list = map.get(g.addr.opIndex);
+      if (list) list.push(ins); else map.set(g.addr.opIndex, [ins]);
+    }
+    const bx = boxes.get(g);
+    const lastBox = bx?.[bx.length - 1];
+    st.pen = lastBox ? [lastBox.x + lastBox.width, lastBox.y] : [t[0] + advanceOf(g), t[1]];
   }
   for (const st of state.values()) {
     if (st.lastMember && st.dirty) after(st.lastMember, { operator: 'Tm', operands: [...st.lastMember.tlm] });
@@ -1304,6 +1429,7 @@ function moveAnnotQuads(
   doc: Document, page: Page, p: Paragraph, targets: Map<GlyphEvent, [number, number]>,
   advanceOf: (g: GlyphEvent) => number, annotWrites: (() => void)[],
   plan: Map<PdfDict, ParaRect[]>,
+  boxes: ReadonlyMap<GlyphEvent, readonly LineBox[]> = new Map(), gone: ReadonlySet<GlyphEvent> = new Set(),
 ): void {
   const annots = doc.resolve(page.Dict.get('Annots'));
   if (!isArray(annots)) return;
@@ -1326,18 +1452,22 @@ function moveAnnotQuads(
       const r = rect as number[];
       areas.push([Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])]);
     } else continue;
-    const mine = [...p.members].filter((g) => g.text.trim() !== '');
+    const mine = [...p.members].filter((g) => g.text.trim() !== '' && !gone.has(g));
     const covered = mine.filter((g) => areas.some((r) => centroidIn(r, g.quad)));
     if (covered.length === 0) continue;
     if (covered.every((g) => { const t = targets.get(g); return !t || (t[0] === g.quad[0] && t[1] === g.quad[1]); })) continue;
     // Group by target baseline, then one quad per line.
     const byLine = new Map<number, ParaRect>();
+    // A word split by a hyphenated reflow has a box on each line it sits on,
+    // the head's reaching over its hyphen (6y39).
     for (const g of covered) {
       const t = targets.get(g) ?? [g.quad[0], g.quad[1]];
-      const key = Math.round(t[1] * 1000);
-      const box: ParaRect = [t[0], t[1], t[0] + advanceOf(g), t[1] + g.fontSize];
-      const cur = byLine.get(key);
-      byLine.set(key, cur ? [Math.min(cur[0], box[0]), Math.min(cur[1], box[1]), Math.max(cur[2], box[2]), Math.max(cur[3], box[3])] : box);
+      for (const b of boxes.get(g) ?? [{ x: t[0], y: t[1], width: advanceOf(g) }]) {
+        const key = Math.round(b.y * 1000);
+        const box: ParaRect = [b.x, b.y, b.x + b.width, b.y + g.fontSize];
+        const cur = byLine.get(key);
+        byLine.set(key, cur ? [Math.min(cur[0], box[0]), Math.min(cur[1], box[1]), Math.max(cur[2], box[2]), Math.max(cur[3], box[3])] : box);
+      }
     }
     // **Invariant (u3l5.11):** only the quads over THIS paragraph are replaced;
     // one over another paragraph is kept, and the annotation's areas are

@@ -1,6 +1,7 @@
 import { encodeWinAnsi } from './encoding.js';
 import { measure, StdFont } from './metrics.js';
 import { lineBreakPrefix, LBRK } from './linebreak.js';
+import type { Hyphenator } from './hyphenate.js';
 import { lineBox, type LineItem } from './linebox.js';
 
 /** A font abstraction the layout/stamping engine measures and encodes through,
@@ -172,7 +173,14 @@ const EPS = 1e-9;
  *  Lines are lists of these rather than one contiguous span, because the engine
  *  COLLAPSES runs of spaces — `a  b` lays out as `a b`. A span-based line would
  *  preserve the double space and move the bytes of every existing caller. */
-interface Unit { start: number; end: number; spaceBefore: boolean }
+interface Unit {
+  start: number; end: number; spaceBefore: boolean;
+  /** Ends at a hyphenation point: a '-' is drawn after it (v9j3.2). */
+  hyphen?: boolean;
+  /** The WHOLE word's hyphenation points, as positions in `text`, shared by
+   *  the word's tails so a tail is never re-analysed as a word of its own. */
+  word?: readonly number[];
+}
 
 interface WrappedLine {
   units: Unit[];
@@ -286,6 +294,7 @@ function* breakOverwideWord(
 export function layoutRuns(
   runs: readonly LayoutRun[], boxWidth: number, boxHeight: number,
   leading: number, blockFontSize: number, firstLineIndent = 0,
+  hyphenation?: Hyphenator,
 ): RunLayoutResult {
   // An atomic wider than the box scales BOTH dimensions down — the rule
   // flow.ts's image() already applies to a block image, so it is one rule
@@ -338,6 +347,13 @@ export function layoutRuns(
     return lo;
   };
 
+  // **Invariant (v9j3.2):** with hyphenation ON a soft hyphen has no width and
+  // draws nothing; it stays in `text`, so the remainder carries it on. OFF,
+  // `visible` is the identity and none of the hyphenation code below runs.
+  const SHY = '­';
+  const visible = (s: string): string =>
+    hyphenation !== undefined && s.includes(SHY) ? s.split(SHY).join('') : s;
+
   /** Width of the joined text's [from, to) span, each part in its own run's size. */
   const spanWidth = (from: number, to: number): number => {
     let w = 0;
@@ -353,7 +369,7 @@ export function layoutRuns(
       const run = scaled[r];
       w += isAtomicRun(run)
         ? run.atomic.width
-        : run.driver.measure(text.slice(i, j), run.fontSize);
+        : run.driver.measure(visible(text.slice(i, j)), run.fontSize);
       i = j;
     }
     return w;
@@ -381,6 +397,50 @@ export function layoutRuns(
     if (k < 0) return 0;
     const r = scaled[k] as TextLayoutRun;
     return r.driver.measure(' ', r.fontSize);
+  };
+
+  /** The run a hyphen after character `at - 1` is drawn in — that character's
+   *  — or -1 when it is an atomic or its font cannot draw '-'. */
+  const hyphenRun = (at: number): number => {
+    const r = owner(at - 1);
+    const run = scaled[r];
+    return isAtomicRun(run) || run.driver.probe('-') === 0 ? -1 : r;
+  };
+  const hyphenWidth = (r: number): number => {
+    const run = scaled[r] as TextLayoutRun;
+    return run.driver.measure('-', run.fontSize);
+  };
+  /** A unit's width, its drawn hyphen included. */
+  const unitWidth = (u: Unit): number =>
+    spanWidth(u.start, u.end) + (u.hyphen ? hyphenWidth(hyphenRun(u.end)) : 0);
+  /** The whole word's points, as positions in `text`, computed once per word. */
+  const wordPoints = (u: Unit): readonly number[] =>
+    u.word ?? hyphenation!.points(text.slice(u.start, u.end)).map((p) => u.start + p);
+  /** The end of the longest head of `u` ending at a hyphenation point that
+   *  fits `room` with its hyphen — the RIGHTMOST such point — or undefined.
+   *
+   *  **Invariant (v9j3.2 review):** the points are the WHOLE word's, carried
+   *  on the unit, never the tail's own — a tail analysed as a word fires
+   *  word-start patterns at a false boundary and draws breaks the word does
+   *  not allow. And the scan is ASCENDING with the width accumulated piece by
+   *  piece, stopping once past the room: width is monotonic in the prefix, so
+   *  the cost is the head, not points x word — measured x7.9 per doubling and
+   *  9 s at 8,000 characters before (the `lqs1` class). */
+  const hyphenHead = (u: Unit, room: number, pts: readonly number[]): number | undefined => {
+    let lo = 0, hi = pts.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (pts[mid] <= u.start) lo = mid + 1; else hi = mid; }
+    let best: number | undefined;
+    let w = 0;
+    let from = u.start;
+    for (let k = lo; k < pts.length && pts[k] < u.end; k++) {
+      const at = pts[k];
+      w += spanWidth(from, at);
+      from = at;
+      if (w > room) break;
+      const r = hyphenRun(at);
+      if (r >= 0 && w + hyphenWidth(r) <= room) best = at;
+    }
+    return best;
   };
 
   /** The items on a line, for linebox.ts. A text piece contributes its font
@@ -525,17 +585,71 @@ export function layoutRuns(
       // (`lqs1`): an over-wide word may be longer than the page, and the
       // remainder is re-flowed, so materializing every piece re-splits the
       // whole word once per page.
-      const units: Iterable<Unit> = spanWiderThan(i, j, boxWidth)
+      // With hyphenation the word stays ONE unit: the loop below splits it at
+      // hyphenation points against the room actually left, and only what no
+      // point can split goes through the plain split (v9j3.2). Pre-cutting it
+      // here, against the whole box, strands the line before it and can put
+      // two cut pieces on one line with a hyphen between them.
+      const units: Iterable<Unit> = hyphenation === undefined && spanWiderThan(i, j, boxWidth)
         ? overwideUnits(i, j, spaceBefore)
         : [{ start: i, end: j, spaceBefore }];
-      for (const u of units) {
-        if (cur.length === 0) { cur = [u]; curWidth = spanWidth(u.start, u.end); continue; }
-        const sep = u.spaceBefore ? spaceWidth(cur[cur.length - 1].end - 1) : 0;
-        const next = curWidth + sep + spanWidth(u.start, u.end);
-        if (next <= limit()) { cur.push(u); curWidth = next; continue; }
-        if (!keep(cur, false, cur[0].start)) break para;
-        cur = [u];
-        curWidth = spanWidth(u.start, u.end);
+      for (const u0 of units) {
+        // A head that ends at a hyphenation point leaves a TAIL, which goes
+        // through the same test on the next line (v9j3.2). Off, no unit
+        // carries `hyphen`, `unitWidth` is `spanWidth` and `at` stays
+        // undefined, so this is the loop it always was.
+        let pending: Unit | undefined = u0;
+        // The plain UAX #14 pieces of a word no hyphenation point could split,
+        // pulled lazily so `break para` stops the split where it stands (`lqs1`).
+        let plain: Iterator<Unit> | undefined;
+        for (;;) {
+          let u: Unit;
+          let fromPlain = false;
+          if (pending !== undefined) { u = pending; pending = undefined; }
+          else if (plain !== undefined) {
+            const n = plain.next();
+            if (n.done) break;
+            u = n.value;
+            fromPlain = true;
+          } else break;
+          const hy = hyphenation !== undefined && !fromPlain;
+          if (cur.length === 0) {
+            if (hy && spanWiderThan(u.start, u.end, limit())) {
+              const pts = wordPoints(u);
+              const at = hyphenHead(u, limit(), pts);
+              if (at !== undefined) {
+                if (!keep([{ start: u.start, end: at, spaceBefore: u.spaceBefore, hyphen: true }], false, u.start)) break para;
+                pending = { start: at, end: u.end, spaceBefore: false, word: pts };
+                continue;
+              }
+              plain = overwideUnits(u.start, u.end, u.spaceBefore);
+              continue;
+            }
+            cur = [u];
+            curWidth = unitWidth(u);
+            continue;
+          }
+          const sep = u.spaceBefore ? spaceWidth(cur[cur.length - 1].end - 1) : 0;
+          const next = curWidth + sep + unitWidth(u);
+          if (next <= limit()) { cur.push(u); curWidth = next; continue; }
+          const pts = hy ? wordPoints(u) : undefined;
+          const at = pts ? hyphenHead(u, limit() - curWidth - sep, pts) : undefined;
+          if (at !== undefined) {
+            cur.push({ start: u.start, end: at, spaceBefore: u.spaceBefore, hyphen: true });
+            if (!keep(cur, false, cur[0].start)) break para;
+            cur = [];
+            curWidth = 0;
+            pending = { start: at, end: u.end, spaceBefore: false, word: pts };
+            continue;
+          }
+          if (!keep(cur, false, cur[0].start)) break para;
+          // Off — and for a plain piece — the unit opens the next line, as it
+          // always did. On, it is offered to the empty line, which may split it.
+          if (!hy) { cur = [u]; curWidth = unitWidth(u); continue; }
+          cur = [];
+          curWidth = 0;
+          pending = pts ? { ...u, word: pts } : u;
+        }
       }
       i = j;
     }
@@ -575,8 +689,13 @@ export function layoutRuns(
       while (i < u.end) {
         const r = owner(i);
         const j = Math.max(i + 1, Math.min(u.end, runAt[r + 1]));
-        push(r, text.slice(i, j));
+        const t = visible(text.slice(i, j));
+        if (t !== '') push(r, t);
         i = j;
+      }
+      if (u.hyphen) {
+        const r = hyphenRun(u.end);
+        if (r >= 0) push(r, '-');
       }
     }
     return out;
@@ -659,8 +778,9 @@ function concatBytes(segments: LaidSegment[]): Uint8Array {
 export function layoutText(
   text: string, driver: FontDriver, fontSize: number,
   boxWidth: number, boxHeight: number, leading: number,
+  hyphenation?: Hyphenator,
 ): LayoutResult {
   const { lines, remainder } = layoutRuns(
-    [{ text, driver, fontSize }], boxWidth, boxHeight, leading, fontSize);
+    [{ text, driver, fontSize }], boxWidth, boxHeight, leading, fontSize, 0, hyphenation);
   return { lines, remainder: remainder.map((s) => s.text).join('') };
 }

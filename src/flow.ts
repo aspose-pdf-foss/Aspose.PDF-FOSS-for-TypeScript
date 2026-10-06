@@ -1,3 +1,4 @@
+import { resolveHyphenation, type HyphenationOptions } from './hyphenate.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
@@ -89,6 +90,11 @@ export interface FlowOptions {
    *  least one line beneath it in the current column. Default true. Overridable
    *  per heading via {@link FlowHeadingOptions.keepWithNext}. */
   keepHeadingsWithNext?: boolean;
+  /** Hyphenate every paragraph, list and Markdown block of this flow (v9j3.2).
+   *  An element's own `hyphenate` wins; `false` turns it off for that element.
+   *  `lang`, when unstated, is this flow's own `lang`. Tables state their own
+   *  (`createTable({ hyphenate })`). Default: off. */
+  hyphenate?: HyphenationOptions;
 }
 
 /** Resolved, validated flow geometry (identical on every page). @internal */
@@ -231,6 +237,9 @@ export interface FlowParagraphOptions {
    *  Opt-in: a caller who passes nothing gets the previous silence. Fires once,
    *  at BUILD time, from the builder this option was handed to. */
   onUndrawable?: (u: Undrawable) => void;
+  /** Break words across lines with a drawn hyphen (v9j3.2). `false` overrides
+   *  a flow-wide default. Default: off. */
+  hyphenate?: HyphenationOptions | false;
 }
 
 /** A paragraph's indent, validated and resolved to numbers. @internal */
@@ -265,6 +274,7 @@ function paragraphOptions(o: FlowParagraphOptions): TextBlockOptions {
     // Only when stated, so a paragraph with no first-line indent hands the
     // block exactly the options it always did (m2fp.5).
     ...(o.indent?.firstLine ? { firstLineIndent: o.indent.firstLine } : {}),
+    ...(o.hyphenate ? { hyphenate: o.hyphenate } : {}),
   };
 }
 
@@ -364,6 +374,7 @@ function reportCoverage(
  *  {@link Flow.AddParagraph}; use it to compose the `blocks` of a list item or
  *  the contents of a block quote. */
 export function paragraph(text: FlowText, o: FlowParagraphOptions = {}): FlowElement[] {
+  if (o.hyphenate !== undefined && o.hyphenate !== false) resolveHyphenation(o.hyphenate);
   const ind = normalizeIndent(o);
   reportCoverage(text, o.font ?? 'Helvetica', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
@@ -443,6 +454,9 @@ export interface FlowListOptions {
   spaceBefore?: number;
   /** Gap below the whole list (dropped at a column top). >= 0. Default 0. */
   spaceAfter?: number;
+  /** Break item bodies across lines with a drawn hyphen (v9j3.2). `false`
+   *  overrides a flow-wide default. Default: off. */
+  hyphenate?: HyphenationOptions | false;
   /** Body alignment. Default 'left'. */
   align?: 'left' | 'center' | 'right' | 'justify';
   /** Drop the list below the floats on the given side(s) before placing it.
@@ -456,6 +470,7 @@ export interface FlowListOptions {
 
 /** Resolved, validated list options (shared by every item of one list). @internal */
 interface NormalizedListOptions {
+  hyphenate?: HyphenationOptions;
   ordered: boolean;
   start: number;
   bulletOverride?: string;   // explicit bullet text, or undefined → vector cycle
@@ -583,7 +598,9 @@ function normalizeListOptions(o: FlowListOptions): NormalizedListOptions {
   validateDecoration('underline', o.underline);
   validateDecoration('strikethrough', o.strikethrough);
   validateBackground('background', o.background);
+  if (o.hyphenate !== undefined && o.hyphenate !== false) resolveHyphenation(o.hyphenate);
   return {
+    hyphenate: o.hyphenate || undefined,
     ordered, start, bulletOverride: o.bullet, font, fontSize, color: o.color, leading: o.leading,
     underline: o.underline, strikethrough: o.strikethrough, background: o.background,
     align: o.align, markerGap: 0.5 * fontSize, itemSpacing, spaceBefore, spaceAfter, indentOverride,
@@ -657,6 +674,7 @@ function bodyOptions(o: NormalizedListOptions): TextBlockOptions {
     font: o.font, fontSize: o.fontSize, color: o.color,
     align: o.align, leading: o.leading,
     underline: o.underline, strikethrough: o.strikethrough, background: o.background,
+    ...(o.hyphenate ? { hyphenate: o.hyphenate } : {}),
   };
 }
 
@@ -1283,6 +1301,7 @@ export class Flow {
   private readonly tagged: boolean;
   private readonly lang?: string;
   private readonly keepHeadingsWithNext: boolean;
+  private readonly hyphenate?: HyphenationOptions;
   private rendered = false;
 
   constructor(private readonly doc: Document, options?: FlowOptions) {
@@ -1303,11 +1322,26 @@ export class Flow {
     if (options?.keepHeadingsWithNext !== undefined && typeof options.keepHeadingsWithNext !== 'boolean')
       throw new TypeError('keepHeadingsWithNext must be a boolean');
     this.keepHeadingsWithNext = options?.keepHeadingsWithNext ?? true;
+    if (options?.hyphenate !== undefined) {
+      resolveHyphenation(options.hyphenate, options.lang);
+      this.hyphenate = options.hyphenate.lang === undefined && options.lang !== undefined
+        ? { ...options.hyphenate, lang: options.lang } : options.hyphenate;
+    }
+  }
+
+  /** An element's options with the flow's hyphenation default applied (v9j3.2):
+   *  its own value wins, `false` included; a value without `lang` takes the
+   *  flow's. */
+  private withHyphenation<T extends { hyphenate?: HyphenationOptions | false }>(o: T): T {
+    if (o.hyphenate === false) return o;
+    if (o.hyphenate === undefined) return this.hyphenate ? { ...o, hyphenate: this.hyphenate } : o;
+    return o.hyphenate.lang === undefined && this.lang !== undefined
+      ? { ...o, hyphenate: { ...o.hyphenate, lang: this.lang } } : o;
   }
 
   /** Append a word-wrapped paragraph. Chainable. */
   AddParagraph(text: FlowText, options: FlowParagraphOptions = {}): this {
-    this.items.push(...paragraph(text, options));
+    this.items.push(...paragraph(text, this.withHyphenation(options)));
     return this;
   }
 
@@ -1328,7 +1362,7 @@ export class Flow {
    *  • ◦ ▪ (drawn as vector shapes). An item's `ordered`/`bullet`/`start` override
    *  its own sub-list. Chainable. */
   AddList(items: FlowListNode[], options: FlowListOptions = {}): this {
-    this.items.push(...list(items, options));
+    this.items.push(...list(items, this.withHyphenation(options)));
     return this;
   }
 
@@ -1394,7 +1428,11 @@ export class Flow {
    *  image whose destination could not be resolved), and without it a caller
    *  cannot tell a dropped table from an empty document. */
   AddMarkdown(src: string | MdDocument, options: MarkdownFlowOptions = {}): MarkdownResult {
-    const { elements, skipped } = markdownElements(src, options);
+    // (v9j3.2) The flow's hyphenation default reaches Markdown it adds.
+    // The same rule as AddParagraph and AddList: its own value wins, false
+    // included, and one without a lang takes the flow's (v9j3.2 review).
+    const o = this.withHyphenation(options);
+    const { elements, skipped } = markdownElements(src, o);
     this.items.push(...elements);
     return { skipped };
   }

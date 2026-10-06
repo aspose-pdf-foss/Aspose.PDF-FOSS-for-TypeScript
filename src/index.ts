@@ -115,6 +115,8 @@ export type { AnnotationMatch, AnnotationTextMatch, AnnotationTextKey } from './
 export { richTextToPlain } from './richtext.js';
 export type { TextFont } from './font.js';
 export type { StampOptions, TextBlockOptions, AuthoringFont } from './stamp.js';
+export type { HyphenationOptions } from './hyphenate.js';
+export { hyphenationLanguages } from './hyphenate.js';
 export type { TextRun } from './textdecor.js';
 export type {
   Decoration, DecorationStyle, Background, BackgroundStyle, DecorationOptions,

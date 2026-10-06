@@ -7,6 +7,8 @@ import type { TextFont } from './font.js';
 import type { ContentOp } from './content.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { AUTHORING_FONTS, driverFor, type AuthoringFont } from './stamp.js';
+import { resolveHyphenation, type HyphenationOptions } from './hyphenate.js';
+import { rethrowLimit } from './errors.js';
 
 /** Options for `ReplaceText` on a page or a document. */
 export interface ReplaceTextOptions extends SearchOptions {
@@ -53,6 +55,15 @@ export interface ReplaceTextOptions extends SearchOptions {
    *  reflowed; its matches are then replaced without reflow. Without it such
    *  a call throws `UnsupportedFeatureError` and changes nothing. */
   onUnreflowable?: (r: UnreflowableText) => void;
+  /** With `adjust: 'reflow'`, break a word that no longer fits at a
+   *  hyphenation point and draw a hyphen (6y39) — the engine `AddTextBlock`
+   *  uses, so `{ lang }` hyphenates by Liang patterns and `{ mode: 'manual' }`
+   *  only at soft hyphens. Without `lang` each paragraph uses its own
+   *  language — its structure element's /Lang, then the document's — and a
+   *  paragraph whose language has no bundled patterns reflows whole words.
+   *  A hyphen a reflow no longer needs at a line end is removed when the
+   *  patterns confirm it was a break. Default off. */
+  hyphenate?: HyphenationOptions | false;
 }
 
 /** See `ReplaceTextOptions.adjust`. */
@@ -118,6 +129,21 @@ export function checkReplaceOptions(opts: ReplaceTextOptions | undefined, label 
   if (o.onUnreflowable !== undefined) {
     if (typeof o.onUnreflowable !== 'function') throw new TypeError(`${label}: onUnreflowable must be a function`);
     if (o.adjust !== 'reflow') throw new TypeError(`${label}: onUnreflowable applies only with adjust: 'reflow'`);
+  }
+  if (o.hyphenate !== undefined && o.hyphenate !== false) {
+    if (o.adjust !== 'reflow') throw new RangeError(`${label}: hyphenate applies only with adjust: 'reflow'`);
+    // A missing lang is resolved per paragraph from the document, so only the
+    // OTHER fields are validated against a stand-in language here.
+    const h = o.hyphenate as unknown;
+    const stated = typeof h === 'object' && h !== null && !Array.isArray(h) && (h as HyphenationOptions).lang !== undefined;
+    try {
+      resolveHyphenation(h, stated ? undefined : 'en-US');
+    } catch (e) {
+      rethrowLimit(e);
+      if (e instanceof TypeError) throw new TypeError(`${label}: ${e.message}`);
+      if (e instanceof RangeError) throw new RangeError(`${label}: ${e.message}`);
+      throw e;
+    }
   }
   for (const k of ['matchRegisteredFonts', 'ignoreCase', 'wholeWord'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') throw new TypeError(`${label}: ${k} must be a boolean`);

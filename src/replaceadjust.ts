@@ -39,7 +39,9 @@ export interface AdjustPlan {
  *  kern (u3l5.4) or an operator such as a `Tm` (u3l5.5). */
 export interface ShowInsert {
   addr: ContentAddr; elementIndex: number; byteStart: number;
-  piece: { kind: 'kern'; value: number } | { kind: 'op'; op: ContentOp };
+  piece: { kind: 'kern'; value: number } | { kind: 'op'; op: ContentOp }
+    /** A hyphen the reflow draws after a glyph (6y39), written in `anchor`'s text state. */
+    | { kind: 'run'; run: Run; anchor: GlyphEvent };
 }
 
 /** What lies between two glyphs of one scope in content order: nothing that
@@ -90,6 +92,77 @@ export function runsAdvance(runs: readonly Run[], anchor: GlyphEvent): number {
     }
   }
   return total;
+}
+
+/** One drawn unit of an edit's runs (6y39): a decoded glyph of an
+ *  original-font run, or a code point of a foreign one, with its device
+ *  advance under `anchor`'s text state.
+ *
+ *  **Invariant:** the widths sum EXACTLY to `runsAdvance(runs, anchor)` — the
+ *  same arithmetic per unit — so a hyphenated wrap measures an edit as the
+ *  unhyphenated one does. */
+export interface RunUnit { text: string; width: number; run: number }
+
+export function runUnits(runs: readonly Run[], anchor: GlyphEvent): RunUnit[] {
+  const tfs = Math.abs(anchor.tfSize);
+  const out: RunUnit[] = [];
+  if (tfs === 0) {
+    runs.forEach((r, ri) => {
+      const texts = r.font === 'original' ? anchor.font.decodeGlyphs(r.bytes).map((gl) => gl.text) : [...r.text];
+      for (const t of texts) out.push({ text: t, width: 0, run: ri });
+    });
+    return out;
+  }
+  const unit = (anchor.fontSize / tfs) * anchor.hscale;
+  runs.forEach((r, ri) => {
+    const size = Math.abs(r.style?.size ?? anchor.tfSize);
+    if (r.font === 'original') {
+      for (const gl of anchor.font.decodeGlyphs(r.bytes)) {
+        out.push({ text: gl.text, run: ri, width: (gl.width * size + anchor.charSpacing + (gl.isWordSpace ? anchor.wordSpacing : 0)) * unit });
+      }
+    } else {
+      const d = driverFor(r.font);
+      for (const ch of r.text) {
+        out.push({ text: ch, run: ri, width: (d.measure(ch, size) + anchor.charSpacing + (ch === ' ' ? anchor.wordSpacing : 0)) * unit });
+      }
+    }
+  });
+  return out;
+}
+
+/** `runs` cut before each unit index in `cuts` (ascending, strictly inside),
+ *  so `splitRuns(r, a, cuts).flat()` draws what `r` draws. An original-font
+ *  run is cut at a decoded glyph's byte boundary, a foreign one at a code
+ *  point; each part keeps its run's style. */
+export function splitRuns(runs: readonly Run[], anchor: GlyphEvent, cuts: readonly number[]): Run[][] {
+  const parts: Run[][] = [[]];
+  let u = 0;
+  let next = 0;
+  const cutHere = () => { while (next < cuts.length && cuts[next] === u) { parts.push([]); next++; } };
+  for (const r of runs) {
+    if (r.font === 'original') {
+      let from = 0;
+      for (const gl of anchor.font.decodeGlyphs(r.bytes)) {
+        if (next < cuts.length && cuts[next] === u && gl.byteStart > from) {
+          parts[parts.length - 1].push({ ...r, bytes: r.bytes.slice(from, gl.byteStart) });
+          from = gl.byteStart;
+        }
+        cutHere();
+        u++;
+      }
+      if (from < r.bytes.length) parts[parts.length - 1].push(from === 0 ? r : { ...r, bytes: r.bytes.slice(from) });
+    } else {
+      let acc = '';
+      for (const ch of r.text) {
+        if (next < cuts.length && cuts[next] === u && acc !== '') { parts[parts.length - 1].push({ ...r, text: acc }); acc = ''; }
+        cutHere();
+        acc += ch;
+        u++;
+      }
+      if (acc !== '') parts[parts.length - 1].push(acc === r.text ? r : { ...r, text: acc });
+    }
+  }
+  return parts;
 }
 
 /**

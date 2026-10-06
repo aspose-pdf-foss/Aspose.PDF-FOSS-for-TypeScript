@@ -9,6 +9,7 @@
  *  document (see markdown.ts), so damage shows up as literal text; the only
  *  TypeErrors come from the caller's own options. */
 
+import { resolveHyphenation, type HyphenationOptions } from './hyphenate.js';
 import { parseMarkdown, type MarkdownOptions } from './markdown.js';
 import type {
   MdBlock, MdCodeBlock, MdDocument, MdHeading, MdImage, MdInline, MdItem, MdList, MdParagraph,
@@ -51,6 +52,10 @@ export interface MarkdownFlowOptions extends MarkdownOptions {
    *  `Render` runs. One record per block and kind, however many levels of
    *  nesting squeezed it. */
   onSkipped?: (construct: string) => void;
+  /** Hyphenate paragraphs, list items and table cells (v9j3.2). Headings and
+   *  code blocks never hyphenate. `false` opts out of a flow's default.
+   *  Default: off. */
+  hyphenate?: HyphenationOptions | false;
 }
 
 /** What a Markdown entry point reports. */
@@ -191,7 +196,7 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
         font: c.st.family.regular, fontSize: c.st.fontSize, color: c.st.color,
         leading: c.st.leading, align: c.st.align,
         spaceBefore: extraBefore, spaceAfter: c.st.paragraphSpacing,
-        onUndrawable: undrawableSink(c),
+        onUndrawable: undrawableSink(c), hyphenate: c.opts.hyphenate,
       });
   }
   const content = inlineRuns(n.children, c.st,
@@ -206,6 +211,7 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
     spaceBefore: extraBefore,
     spaceAfter: c.st.paragraphSpacing,
     onUndrawable: undrawableSink(c),
+    hyphenate: c.opts.hyphenate,
   });
 }
 
@@ -303,6 +309,7 @@ function listElements(n: MdList, c: Ctx, extraBefore: number): FlowElement[] {
     spaceBefore: c.st.list.spaceBefore + extraBefore,
     spaceAfter: c.st.list.spaceAfter + c.st.paragraphSpacing,
     onUndrawable: undrawableSink(c),
+    hyphenate: c.opts.hyphenate,
   });
 }
 
@@ -328,6 +335,7 @@ function mdTable(n: MdTable, c: Ctx): TableBuilder {
     padding: st.padding,
     border,
     outerBorder: border,
+    hyphenate: c.opts.hyphenate || undefined,
   });
   const body = { family: c.st.family, fontSize: st.fontSize };
   // A header cell selects from the heading family, so its bold face matches
@@ -422,6 +430,7 @@ export function markdownElements(
   if (options.resolveImage !== undefined && typeof options.resolveImage !== 'function')
     throw new TypeError('resolveImage must be a function');
   checkOnSkipped(options);
+  if (options.hyphenate !== undefined && options.hyphenate !== false) resolveHyphenation(options.hyphenate);
   // Validate the whole style before building anything, so a rejected call
   // leaves the document byte-identical.
   const st = resolveMarkdownStyle(options.style);

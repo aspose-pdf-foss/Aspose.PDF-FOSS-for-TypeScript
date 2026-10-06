@@ -1,3 +1,4 @@
+import { resolveHyphenation, hyphenator, type HyphenationOptions } from './hyphenate.js';
 import {
   AuthoringFont, validateFont, resolveAtomics,
   type AtomicSpec, type BlockAtomic,
@@ -99,6 +100,9 @@ export interface CellTextOptions {
   /** Inner padding, scalar or per side. Default 2pt. Sizes the text box in both
    *  directions, so it feeds row height as well as wrapping width. */
   padding?: Padding;
+  /** Break the cell's words across lines with a drawn hyphen (v9j3.2).
+   *  Cascades table → row → cell. Default: off. */
+  hyphenate?: HyphenationOptions;
 }
 
 /** Table-level defaults; the cascade root, plus table-only fields. */
@@ -205,6 +209,7 @@ export interface ResolvedStyle {
   strikethrough?: Decoration;
   textBackground?: Background;
   padding: ResolvedPadding;
+  hyphenate?: HyphenationOptions;
 }
 
 const EMPTY = new Uint8Array(0);
@@ -306,6 +311,7 @@ export function resolveCellStyle(
     strikethrough: o.strikethrough ?? row.strikethrough ?? table.strikethrough,
     textBackground: o.textBackground ?? row.textBackground ?? table.textBackground,
     padding: resolvePadding(o.padding, row.padding, tablePadding, table.padding),
+    hyphenate: o.hyphenate ?? row.hyphenate ?? table.hyphenate,
   };
 }
 
@@ -384,6 +390,7 @@ function validateStyleOpts(o: CellTextOptions): void {
   validateDecoration('underline', o.underline);
   validateDecoration('strikethrough', o.strikethrough);
   validateBackground('textBackground', o.textBackground);
+  if (o.hyphenate !== undefined) resolveHyphenation(o.hyphenate);
 }
 
 /** Validate one column-width spec and return a normalized single-key copy, so
@@ -769,14 +776,16 @@ export class TableBuilder {
             fontSize: run.fontSize ?? st.fontSize,
           }))
           : [{ text: cell.text, driver: measuringDriverFor(st.font), fontSize: st.fontSize }];
+        // (v9j3.2) Measured with the hyphenator it is painted with.
+        const hy = st.hyphenate ? hyphenator(resolveHyphenation(st.hyphenate)) : undefined;
         const res = cell.atomics === undefined && !isTextRunList(cell.text)
           // No atomics and a plain string: the pre-existing path, kept so a
           // cell that states none is byte-identical to what it measured before.
-          ? layoutText(cell.text, measuringDriverFor(st.font), st.fontSize, innerWidth, Infinity, st.leading)
+          ? layoutText(cell.text, measuringDriverFor(st.font), st.fontSize, innerWidth, Infinity, st.leading, hy)
           : layoutRuns(
             weaveByBeforeRun(pieces, cell.atomics,
               (a) => ({ atomic: { width: a.width, height: a.height, align: a.align } })),
-            innerWidth, Infinity, st.leading, st.fontSize);
+            innerWidth, Infinity, st.leading, st.fontSize, 0, hy);
         // Sum the line bands rather than lineCount * leading: a cell run larger
         // than the cell's font size claims a taller band, and a row sized on the
         // flat product would let its glyphs spill out of the row.

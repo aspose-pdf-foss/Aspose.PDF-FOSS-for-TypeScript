@@ -6,6 +6,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { ContentAddr } from './editcontent.js';
 import type { AuthoringFont } from './stamp.js';
+import type { HyphenationOptions } from './hyphenate.js';
 import {
   checkReplaceOptions, type ReplaceAdjust, type ReplaceTextOptions, type UndrawableText, type UnreflowableText,
 } from './replacefont.js';
@@ -45,6 +46,8 @@ export interface RestyleTextOptions {
   onUndrawable?: (r: UndrawableText) => void;
   adjust?: ReplaceAdjust;
   onUnreflowable?: (r: UnreflowableText) => void;
+  /** See `ReplaceTextOptions.hyphenate`. */
+  hyphenate?: HyphenationOptions | false;
 }
 
 /** Validate a restyle before any page is read. @internal */
@@ -182,75 +185,91 @@ export function planDecorations(doc: Document, style: TextRestyle, opts: Replace
     // Width as drawn after the restyle: the piece's written runs, else its glyphs.
     const written = piece.runs?.filter((r) => r.style !== undefined || r.font !== 'original');
     const width = written && written.length > 0 ? runsAdvance(written, g) : piece.glyphs.reduce((s, x) => s + glyphAdvance(x), 0);
-    // The frame: Tm x CTM with its scale removed, at the baseline origin.
-    const m: Matrix = mul(g.tm, g.ctm);
-    const [bx, by] = apply(m, 0, 0);
-    const t = ctx.targets.get(g);
-    const sx = Math.hypot(m[0], m[1]) || 1, sy = Math.hypot(m[2], m[3]) || 1;
-    // Without a reflow target, the piece starts where the edits and kerns
-    // before it in its pen chain moved it, along its own baseline.
-    const shift = t ? 0 : ctx.shifts.get(g) ?? 0;
-    const ox = t ? t[0] - (g.quad[0] - bx) : bx + shift * m[0] / sx;
-    const oy = t ? t[1] - (g.quad[1] - by) : by + shift * m[1] / sx;
-    const cm = mul([m[0] / sx, m[1] / sx, m[2] / sy, m[3] / sy, ox, oy], invert(g.ctm));
+    /** Paint the decorations for a run of the piece starting at `gx`, drawn
+     *  from `t` (a reflow target; absent, where its pen chain put it) and
+     *  `width` wide. */
+    const decorateAt = (gx: GlyphEvent, t: [number, number] | undefined, width: number): void => {
+      // The frame: Tm x CTM with its scale removed, at the baseline origin.
+      const m: Matrix = mul(gx.tm, gx.ctm);
+      const [bx, by] = apply(m, 0, 0);
+      const sx = Math.hypot(m[0], m[1]) || 1, sy = Math.hypot(m[2], m[3]) || 1;
+      // Without a reflow target, the piece starts where the edits and kerns
+      // before it in its pen chain moved it, along its own baseline.
+      const shift = t ? 0 : ctx.shifts.get(gx) ?? 0;
+      const ox = t ? t[0] - (gx.quad[0] - bx) : bx + shift * m[0] / sx;
+      const oy = t ? t[1] - (gx.quad[1] - by) : by + shift * m[1] / sx;
+      const cm = mul([m[0] / sx, m[1] / sx, m[2] / sy, m[3] / sy, ox, oy], invert(g.ctm));
 
-    let vm = opts.font !== undefined ? vmetricsFor(opts.font) : vmCache.get(g.font.dict);
-    if (!vm) { vm = documentVMetrics(doc, g); vmCache.set(g.font.dict, vm); }
-    const d = resolveDecor(style, opts.color ?? (g.color ? [g.color[0] / 255, g.color[1] / 255, g.color[2] / 255] : [0, 0, 0]), opts.fontSize ?? g.fontSize, vm);
-    if (!d) continue;
-    const box = [{ x: 0, baseline: 0, width }];
-    const { beneath } = decorRects(box, d);
-    // **Invariant (u3l5.12):** a rule in the TEXT's colour is drawn with the
-    // text's own fill operators re-emitted, never `GlyphEvent.color`'s RGB
-    // approximation, so a CMYK, spot or pattern fill stays one. A rule with a
-    // colour of its own, or under a replacement `color`, keeps its `rg`.
-    const rule = (which: 'underline' | 'strikethrough'): ContentOp[] => {
-      const body = decorRects(box, { [which]: d[which] }).above;
-      if (!body) return [];
-      const ops = parseContentStream(new TextEncoder().encode(body));
-      const own = style[which];
-      const textColoured = opts.color === undefined && (own === true || (typeof own === 'object' && own.color === undefined));
-      return textColoured ? ops.flatMap((o) => (o.operator === 'rg' ? ctx.fillOps(g) : [o])) : ops;
-    };
-    const above = [...rule('underline'), ...rule('strikethrough')];
-    const wrap = (body: string | ContentOp[]): ContentOp[] => {
-      const core: ContentOp[] = [
-        { operator: 'q', operands: [] },
-        { operator: 'cm', operands: cm.map(r6) },
-        ...(typeof body === 'string' ? parseContentStream(new TextEncoder().encode(body)) : body),
-        { operator: 'Q', operands: [] },
-      ];
-      return tagged
-        ? [{ operator: 'BMC', operands: [name('Artifact')] }, ...core, { operator: 'EMC', operands: [] }]
-        : core;
-    };
-    // An artifact may not sit inside structure content (ISO 14289-1 7.1), so
-    // in a tagged document the paint goes outside the outermost structure
-    // sequence enclosing the text object — before its BDC, after its EMC.
-    // An optional-content or artifact sequence is kept around it: the
-    // decoration belongs to the same layer, and nesting artifacts is legal.
-    // **Invariant (u3l5.12):** that sequence may open in an EARLIER content
-    // stream and close in a later one — a page's /Contents array is one
-    // stream as far as marked content goes — so positions span streams.
-    let before: Pos = at.bt, after: Pos = at.et;
-    if (tagged) {
-      const open = enclosingStructure(scope, at.bt);
-      if (open !== undefined) {
-        const close = matchingEmc(scope, open);
-        if (close === undefined) {
-          throw new UnsupportedFeatureError(
-            `RestyleText: ${pageLabel(ctx.pageNumber)}: the marked content holding a match is never closed, so its decoration has nowhere to go`);
+      let vm = opts.font !== undefined ? vmetricsFor(opts.font) : vmCache.get(g.font.dict);
+      if (!vm) { vm = documentVMetrics(doc, g); vmCache.set(g.font.dict, vm); }
+      const d = resolveDecor(style, opts.color ?? (g.color ? [g.color[0] / 255, g.color[1] / 255, g.color[2] / 255] : [0, 0, 0]), opts.fontSize ?? g.fontSize, vm);
+      if (!d) return;
+      const box = [{ x: 0, baseline: 0, width }];
+      const { beneath } = decorRects(box, d);
+      // **Invariant (u3l5.12):** a rule in the TEXT's colour is drawn with the
+      // text's own fill operators re-emitted, never `GlyphEvent.color`'s RGB
+      // approximation, so a CMYK, spot or pattern fill stays one. A rule with a
+      // colour of its own, or under a replacement `color`, keeps its `rg`.
+      const rule = (which: 'underline' | 'strikethrough'): ContentOp[] => {
+        const body = decorRects(box, { [which]: d[which] }).above;
+        if (!body) return [];
+        const ops = parseContentStream(new TextEncoder().encode(body));
+        const own = style[which];
+        const textColoured = opts.color === undefined && (own === true || (typeof own === 'object' && own.color === undefined));
+        return textColoured ? ops.flatMap((o) => (o.operator === 'rg' ? ctx.fillOps(g) : [o])) : ops;
+      };
+      const above = [...rule('underline'), ...rule('strikethrough')];
+      const wrap = (body: string | ContentOp[]): ContentOp[] => {
+        const core: ContentOp[] = [
+          { operator: 'q', operands: [] },
+          { operator: 'cm', operands: cm.map(r6) },
+          ...(typeof body === 'string' ? parseContentStream(new TextEncoder().encode(body)) : body),
+          { operator: 'Q', operands: [] },
+        ];
+        return tagged
+          ? [{ operator: 'BMC', operands: [name('Artifact')] }, ...core, { operator: 'EMC', operands: [] }]
+          : core;
+      };
+      // An artifact may not sit inside structure content (ISO 14289-1 7.1), so
+      // in a tagged document the paint goes outside the outermost structure
+      // sequence enclosing the text object — before its BDC, after its EMC.
+      // An optional-content or artifact sequence is kept around it: the
+      // decoration belongs to the same layer, and nesting artifacts is legal.
+      // **Invariant (u3l5.12):** that sequence may open in an EARLIER content
+      // stream and close in a later one — a page's /Contents array is one
+      // stream as far as marked content goes — so positions span streams.
+      let before: Pos = at.bt, after: Pos = at.et;
+      if (tagged) {
+        const open = enclosingStructure(scope, at.bt);
+        if (open !== undefined) {
+          const close = matchingEmc(scope, open);
+          if (close === undefined) {
+            throw new UnsupportedFeatureError(
+              `RestyleText: ${pageLabel(ctx.pageNumber)}: the marked content holding a match is never closed, so its decoration has nowhere to go`);
+          }
+          before = open;
+          after = close;
         }
-        before = open;
-        after = close;
       }
+      const addr = (p: Pos): ContentAddr => ({ path: g.addr.path, streamIndex: p.stream, opIndex: p.op });
+      if (beneath) ctx.before(addr(before), wrap(beneath));
+      if (above.length > 0) {
+        if (clips) ctx.before(addr(before), wrap(above));
+        else ctx.after(addr(after), wrap(above));
+      }
+    };
+    // A piece a hyphenated reflow split is decorated once per line it sits
+    // on, the head through its hyphen (6y39).
+    const lineBoxes = piece.glyphs.flatMap((x) => (ctx.boxes.get(x) ?? []).map((bx) => ({ g: x, b: bx })));
+    if (lineBoxes.length === 0) { decorateAt(g, ctx.targets.get(g), width); continue; }
+    const byY = new Map<number, { g: GlyphEvent; x: number; y: number; right: number }>();
+    for (const { g: x, b: bx } of lineBoxes) {
+      const k = Math.round(bx.y * 1000);
+      const cur = byY.get(k);
+      if (!cur) byY.set(k, { g: x, x: bx.x, y: bx.y, right: bx.x + bx.width });
+      else { cur.right = Math.max(cur.right, bx.x + bx.width); if (bx.x < cur.x) { cur.x = bx.x; cur.g = x; } }
     }
-    const addr = (p: Pos): ContentAddr => ({ path: g.addr.path, streamIndex: p.stream, opIndex: p.op });
-    if (beneath) ctx.before(addr(before), wrap(beneath));
-    if (above.length > 0) {
-      if (clips) ctx.before(addr(before), wrap(above));
-      else ctx.after(addr(after), wrap(above));
-    }
+    for (const l of byY.values()) decorateAt(l.g, [l.x, l.y], l.right - l.x);
   }
 }
 

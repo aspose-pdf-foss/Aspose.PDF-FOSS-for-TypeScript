@@ -235,7 +235,7 @@ function paintPlaced(
       color: p.style.color, align: p.style.align, valign: p.style.valign,
       underline: p.style.underline, strikethrough: p.style.strikethrough,
       background: p.style.textBackground, tag: p.struct,
-      atomics: p.atomics,
+      atomics: p.atomics, hyphenate: p.style.hyphenate,
     };
     // Two identical arms: TypeScript resolves an overloaded call by picking one
     // signature, and a `string | TextRun[]` argument matches neither. The same

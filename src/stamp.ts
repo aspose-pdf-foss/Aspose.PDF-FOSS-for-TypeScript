@@ -10,6 +10,7 @@ import {
 import { EmbeddedFont } from './embeddedfont.js';
 import { emitLine } from './otemit.js';
 import { shapeText, type ShapeOpts } from './shape.js';
+import { resolveHyphenation, hyphenator, type HyphenationOptions, type Hyphenator } from './hyphenate.js';
 import { enc, serializeString } from './serialize.js';
 import type { StructElement } from './struct.js';
 import { buildImageXObject, drawBuiltImage, type BuiltImage } from './imageembed.js';
@@ -425,6 +426,9 @@ export interface TextBlockOptions extends Omit<StampOptions, 'align' | 'rotate'>
    *  left of the box. Run content only — the flow layer turns a string into one
    *  run when it states this. Default 0. */
   firstLineIndent?: number;
+  /** Break words across lines with a drawn hyphen (v9j3.2). Default: off —
+   *  output is then byte-identical to before the option existed. */
+  hyphenate?: HyphenationOptions;
 }
 
 interface NormalizedBlockOptions {
@@ -438,6 +442,8 @@ interface NormalizedBlockOptions {
   rotate: number;
   behind: boolean;
   decor: ResolvedDecor | undefined;
+  /** The resolved hyphenator, or undefined when off (v9j3.2). */
+  hyphen?: Hyphenator;
 }
 
 /** Wrap an already-laid block body in a rotation about (`px`, `py`), or return
@@ -507,7 +513,10 @@ function normalizeBlockOptions(o: TextBlockOptions): NormalizedBlockOptions {
   if (o.firstLineIndent !== undefined && (typeof o.firstLineIndent !== 'number' || !Number.isFinite(o.firstLineIndent)))
     throw new TypeError('firstLineIndent must be a finite number');
   const decor = resolveDecor(o, color, fontSize, vmetricsFor(font));
-  return { font, fontSize, color, opacity, align, valign, leading, rotate, behind, decor };
+  // (v9j3.2) Validated here, before anything is drawn; undefined keeps every
+  // layout call on its pre-hyphenation path.
+  const hyphen = o.hyphenate === undefined ? undefined : hyphenator(resolveHyphenation(o.hyphenate));
+  return { font, fontSize, color, opacity, align, valign, leading, rotate, behind, decor, hyphen };
 }
 
 /** One run with every inherited property filled in and its driver built. */
@@ -1070,7 +1079,7 @@ export function flowTextBlock(
     const ro: NormalizedBlockOptions =
       o.align === 'justify' && !justifiable(resolved) ? { ...o, align: 'left' } : o;
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0);
+      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0, ro.hyphen);
     if (lines.length > 0) {
       const fontKeys = resolved.map((r) => registerFont(doc, page, r.font));
       const gsKey = ro.opacity < 1 ? registerExtGState(doc, page, ro.opacity) : undefined;
@@ -1138,7 +1147,7 @@ export function flowTextBlock(
     const so = shapeOptsFrom(options);
     const driver = shapedDriver(font, so);
     if (drawsNothing(text, driver)) return { remainder: null, usedHeight: 0 };
-    const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading);
+    const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading, o.hyphen);
     if (lines.length > 0) {
       const fontKey = registerFont(doc, page, font);
       const gsKey = o.opacity < 1 ? registerExtGState(doc, page, o.opacity) : undefined;
@@ -1149,7 +1158,7 @@ export function flowTextBlock(
   }
   const driver = driverFor(o.font);
   if (drawsNothing(text, driver)) return { remainder: null, usedHeight: 0 };
-  const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading);
+  const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading, o.hyphen);
   if (lines.length > 0) {
     const fontKey = registerFont(doc, page, o.font);
     const gsKey = o.opacity < 1 ? registerExtGState(doc, page, o.opacity) : undefined;
@@ -1180,7 +1189,7 @@ export function measureTextBlock(
     const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
     if (nothingDrawable(resolved)) return { usedHeight: 0, remainder: null };
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0);
+      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0, o.hyphen);
     const rest = sliceContent(remainder, content, atomicOf, resolved);
     return {
       usedHeight: linesHeight(lines),
@@ -1192,7 +1201,7 @@ export function measureTextBlock(
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
   else driver = driverFor(o.font);
   if (drawsNothing(content, driver)) return { usedHeight: 0, remainder: null };
-  const { lines, remainder } = layoutText(content, driver, o.fontSize, width, availHeight, o.leading);
+  const { lines, remainder } = layoutText(content, driver, o.fontSize, width, availHeight, o.leading, o.hyphen);
   return { usedHeight: linesHeight(lines), remainder: remainder === '' ? null : remainder };
 }
 
@@ -1217,7 +1226,7 @@ export function wrapLines(
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
   else driver = driverFor(o.font);
   if (drawsNothing(text, driver)) return [];
-  const { lines } = layoutText(text, driver, o.fontSize, width, Infinity, o.leading);
+  const { lines } = layoutText(text, driver, o.fontSize, width, Infinity, o.leading, o.hyphen);
   return lines.map((l) => ({ text: l.text, width: l.width }));
 }
 
