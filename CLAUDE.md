@@ -5174,6 +5174,8 @@ Source (`src/`):
   Each of its six cases carries a companion asserting the setting, UNSCOPED,
   does move a glyph, since two identical wrong answers would otherwise satisfy
   it. `Tf` counts: set OUTSIDE a text object it is text state too.
+  **Invariant (u3l5.5):** `tm` is the text matrix at the glyph's START, so
+  `apply(mul(tm, ctm), 0, rise)` is its origin — the corner of `quad`.
   **Invariant (`u3l5.3`):** `GlyphEvent.fillState` is the OPERATORS that set
   the fill in force and the scope PATH a colour-space name in them was looked
   up in, absent for the initial fill (`color`'s rule). `g`/`rg`/`k` record a
@@ -5242,6 +5244,15 @@ Source (`src/`):
   carried it, which is exactly what `docmodel.ts`'s untagged builder reads. The
   tolerance must stay loose enough that a kerned pair still merges, which
   `test/text-fragments.test.ts` asserts beside the split.
+  **Invariant (`567g`):** a merge across a gap over a quarter em, with no
+  space either side, INSERTS a space — `layoutLines`' own rule, so a
+  fragment's text agrees with `GetText`. The merge tolerance (half an em) is
+  wider than a word space, so words separated by a TJ kern or a `Td` with no
+  space glyph read as one word in every fragment-based API — including the
+  lines our own reflow writes. **Note, measured:** the whole suite stayed
+  green when this changed, the identity fences included: no fixture had a
+  word gap without a space glyph. `test/text-fragment-spaces.test.ts` holds
+  the rule, the guard against doubling a space and the boundary.
   **textedit.ts** — string/`RegExp` search
   (`Search`/`searchText`) and same-font, no-reflow `ReplaceText`.
   **Invariant:** `SearchOptions.region` uses `extractTables`' containment rule —
@@ -5320,10 +5331,22 @@ Source (`src/`):
   which only a LIGATURE can see (residue and replacement in one glyph's edit).
   `fontSize` is points AS RENDERED (`× tfSize / fontSize`). The colour is
   restored by re-emitting `GlyphEvent.fillState` — the `cs` included, so a
-  spot or CMYK fill stays one — and is REFUSED where that names a colour
-  space set in another scope (`/P0` set on the page, text in a form), since
-  the name would not resolve there. A font or size change needs `canSwitch`;
+  spot or CMYK fill stays one. A font or size change needs `canSwitch`;
   colour alone does not, and writes no `Tf`. Both refusals are at PLAN time.
+  **Invariant (`u3l5.9`):** text whose render mode STROKES (1, 2, 5, 6) also
+  gets `RG` and its stroke put back, from `GlyphEvent.strokeState` —
+  `visitContent` tracks the stroke's OPERATORS only, never an RGB, so the
+  saved state grows by two fields. Fill-only text gets no stroke operator,
+  which is what keeps it byte-identical. A colour space or pattern NAME set in
+  another scope (`/P0` on the page, text in a form) is restored by COPYING its
+  entry into the form's own /Resources (`PaintRestorer`): nothing when the name
+  already means the same object there (an inheriting form), else the key that
+  names the object, else a fresh `CSn`/`Pn` reserved against the plan's other
+  copies. The key is chosen at PLAN time and written at APPLY through the
+  EditableContent's copy-on-write, so a refused plan still writes nothing.
+  Each of those three choices, and the stroke, reddens its own case in
+  `test/replace-options.test.ts`; the fresh-key case needs the form to hold a
+  DIFFERENT `/CS0`, or re-emitting the name unchanged passes.
   **annotsearch.ts** — search the text an annotation *draws*
   (`Page.SearchAnnotations`): the words inside its `/AP` appearance stream, a
   `/FreeText`'s visible text or a filled form field's value, which
@@ -5387,6 +5410,148 @@ Source (`src/`):
   what surfaced `vvft` — an orphaned widget then survived `Redact` entirely.
   Fixed; the orphan shapes are covered by `test/redact-orphan-widget.test.ts`
   and the rule is recorded under `redactannots.ts` above.
+- **reflowpara.ts**, **reflowwrap.ts** — `ReplaceText({ adjust: 'reflow' })`
+  (`u3l5.5`). `reflowpara.ts` finds the paragraph around an edit — members,
+  words, lines, gaps, pitch, alignment — or a refusal reason; `reflowwrap.ts`
+  wraps its words to target origins. Both pure; `textedit.ts`'s `planReflow`
+  writes the targets.
+  **Invariant:** words go through `layoutRuns` as ATOMIC boxes with each gap a
+  one-space run measured at that gap, so the one wrapping engine breaks only
+  BETWEEN words — and a replacement holding spaces is ONE word. The oracle is
+  `AddTextBlock` itself, with that replacement's spaces written as U+00A0
+  (same advance, never a break, never `Tw`): what the spec says it is.
+  **Invariant, and the plan had it wrong:** the wrap box is the widest original
+  line, NOT the producer's box. `AddTextBlock`'s rect is `[x, y, w, h]`, and a
+  ragged block's 200pt box is nowhere on the page, so the left-aligned oracle
+  compares against a fresh block in the MEASURED box. A justified block's lines
+  reach the real box, so its oracle keeps it. The box gets `BOX_SLACK` (1e-3):
+  re-summing the widest line's advances landed ulps past its own edge and
+  broke a line the producer did not.
+  **Invariant:** nothing is re-encoded. A moved word gets an absolute `Tm` —
+  its own scale, the translation solved through the inverse CTM — or a `TJ`
+  kern. After a relative pen reset the natural position is the original one
+  only while none of our `Tm`s is in force in that text object (`dirty`), and
+  before the next NON-member glyph a `Tm` restores the last member's line
+  matrix, so a following paragraph placed by `Td` does not move. An ABSOLUTE
+  reset (`BT ET Tm`) clears `dirty` — a byte-economy rule, held by "writes no
+  Tm for a converged line its own BT already places".
+  **Invariant (final review):** the writer's pen CARRIES the original offset
+  from the previous glyph's pen end to this one's origin — a producer's TJ
+  kern — and the wrap places a moved word with its own internal offsets
+  (`leadOf`), 0 for a glyph inside a match since its kerns are dropped with
+  it. Without either, every kept TJ kern was answered with a second equal one,
+  on lines the edit never moved; every pre-review fixture was `AddTextBlock`
+  output or a plain `Tj`, so nothing saw it.
+  **Invariant (final review):** a member glyph is written ONCE. A form drawn
+  twice is one stream, so its second drawing is skipped when its CTM differs
+  only by a translation and refused (`scopes`) otherwise — u3l5.4's `placed`.
+  **Invariant (final review):** a word gap over two em refuses
+  (`foreign-ink`): `layoutLines` joins every glyph on one baseline, so two
+  columns sharing baselines arrive as one paragraph with the gutter as a gap.
+  And `upright` requires EQUAL axis scale, the spec's rule, since a kern is
+  sized by one font size. A moved markup annotation's `/AP` is regenerated
+  (`regenerateAppearance`); left alone a viewer stretches it over the new rect.
+  **Invariant:** a target includes the glyph's RISE (its offset from its
+  original line's baseline), because a `Tm` is solved from a quad that does.
+  A raised glyph that only FOLLOWS in a chain keeps its `Ts` either way, so
+  only a raised word that STARTS a moved line can see it.
+  **Invariant:** wrapping starts at the first EDITED line and stops at
+  CONVERGENCE; a producer's breaks need not be greedy, so re-wrapping from line
+  0 would change lines the edit never touched. **Note, measured:** the plan's
+  convergence fixture was AddTextBlock output, which IS greedy, so disabling
+  convergence stayed GREEN; the fixture now ends on a short line a greedy wrap
+  would pull up.
+  **Invariant:** the paragraph key is the block-level structure element on a
+  tagged page and `groupLineBlocks` otherwise — the ONE grouping
+  `extractStructured` uses. Everything is decided while PLANNING; annotation
+  quads are written by closures `apply` runs.
+  **Invariant (`u3l5.11`):** `groupLineBlocks` splits on LEFT edges, so a
+  centred or right-aligned paragraph's short last line used to be a block of
+  its own and growth was refused `no-room`. `untaggedKeys` joins a ONE-line
+  block to the block above when that block has two or more lines sharing a
+  centre (or right edge) the line shares too, at the same pitch and size.
+  **Note, measured, and the obvious fixture cannot see the alignment test:** a
+  caption far below fails the PITCH test first, so merging regardless of
+  alignment stayed green until a line sat directly under a ragged-left
+  paragraph at its own pitch.
+  And with two lines `lefts.slice(1)` is one value and agrees with itself, so
+  the left test also needs every left to agree.
+  **Invariant (`u3l5.11`):** a match crossing two paragraph keys reflows EVERY
+  paragraph it touches — the other one only lost text and closes up — where
+  only the anchor's used to be, leaving a hole unreported. An annotation's
+  areas are planned ONCE across paragraphs (`annotPlan`): each paragraph
+  replaces only the quads over its own glyphs, and the annotation is written
+  once. `roomBelow` counts annotations below too, a `/Popup` excepted.
+  **Note, measured:** 12 of 13 mutations redden. Inserting at `g.byteStart`
+  rather than the edit's `start` is EQUIVALENT — an edit opens at its anchor
+  glyph's own `byteStart` — and the spelling stays as the honest statement.
+- **textrestyle.ts** — `page.RestyleText` / `doc.RestyleText` (`u3l5.6`): the
+  entry points, validation, document-font metrics and the decoration plan.
+  Colour, size and font go through `planReplace`'s RESTYLE mode.
+  **Invariant:** a restyle cuts each match into PIECES at every change of
+  show-string element and writes each piece as its own text, so nothing moves
+  to another operator. A replacement stays ONE piece at its anchor (u3l5.1).
+  **Invariant:** decorations are `textdecor.ts`'s — `resolveDecor` and
+  `decorRects`, unchanged — so a restyled word and an authored one decorate by
+  one rule; the oracle is `AddText` with the same options.
+  **Invariant:** the paint goes in the text's OWN scope, the background
+  immediately before the text object's `BT` and the rules immediately after its
+  `ET`, each in `q <frame> cm … Q` where the frame is the glyph's `Tm x CTM`
+  with its scale removed, at the BASELINE origin (rise excluded), so rotated,
+  scaled and form-drawn text is decorated in place and nothing leaks.
+  **Invariant:** a glyph is edited, and a piece decorated, ONCE by its place in
+  the content: a form drawn twice is one stream. `ReplaceText` wrote a
+  replacement twice there until `u3l5.6`.
+  **Invariant:** everything is planned before anything is written —
+  `RestyleRequest.decorate` runs inside `planReplace` and only queues
+  operators; a refusal throws from there.
+  **Note, measured:** all 12 planned mutations redden, two only after
+  fixtures were built for them. Decoration-only rewriting nothing is
+  invisible on WinAnsi text, whose re-encoding gives the same bytes; it needs
+  a Type0 font under a non-Identity CMap, which `ReplaceText` cannot encode
+  into (an Identity-H one re-encodes fine and measured nothing). The frame's
+  scale removal needs a scaled CTM; every other fixture draws at scale 1.
+  **Invariant (final review):** without a reflow target a piece starts where
+  the edits and `adjust` kerns BEFORE it in its pen chain moved it —
+  `textedit.ts`'s `naturalShifts`, handed over as `DecorateContext.shifts` —
+  or a second resized match on a line is underlined 26pt to the left of its
+  glyphs. Every pre-review fixture restyled one match.
+  **Invariant (final review):** in a tagged document the paint goes OUTSIDE
+  the outermost structure sequence around the text object (before its BDC,
+  after its EMC), since an artifact may not sit inside structure content; an
+  `/OC` or `/Artifact` sequence is kept around it. Our own `ValidatePdfUa`
+  does not see the nesting, so the test reads the operator stack.
+  **Invariant (final review):** `doc.RestyleText` remembers each form it
+  restyled (`RestyleRequest.skipForms`, by stream identity after apply): pages
+  sharing one /Resources dict reach the SAME form, and re-planning page 2
+  finds the restyled text still matching. `doc.ReplaceText` cannot hit this,
+  since its replaced text no longer matches.
+  **Note, a trap:** `GlyphEvent.color` is RGB in 0..255, while every
+  authoring colour is 0..1; `resolveDecor` still gets it divided by 255,
+  but since `u3l5.12` a TEXT-coloured rule swaps that `rg` for the fill's
+  own operators (`DecorateContext.fillOps`, u3l5.9's `PaintRestorer`, so a
+  colour named outside a form is copied in). A rule with its own colour, or
+  under a replacement `color`, keeps its `rg`.
+  **Invariant (`u3l5.12`):** in a text object that CLIPS (`Tr` 4-7 on its
+  anchor or any `Tr` inside it) the rules go BEFORE `BT`, under the glyphs.
+  The clip `ET` commits would cut a rule drawn after it to the glyph
+  outlines, and a `q`/`Q` around the text object would end a clip that
+  later content relies on.
+  **Invariant (`u3l5.12`):** the text object is found by tracking `BT`/`ET`
+  from the scope's start (`textObject`), never by the nearest operator
+  either side: a show op OUTSIDE any text object, in a malformed stream,
+  attached to the previous one. Outside one, the op itself is both ends. The
+  enclosing structure sequence is searched across ALL the scope's streams
+  (`Pos` = stream + op), since a page's /Contents array is one stream for
+  marked content.
+  **Invariant (`u3l5.12`):** a decoration in a Form XObject drawn N times
+  shows in every drawing, so fewer than N pieces at that content place
+  (`DecorateContext.drawings`) is refused rather than marking text nobody
+  matched. Rewriting colour or size in a shared form is not refused: that is
+  `ReplaceText`'s own edited-once rule.
+  **Note, measured:** the in-object `Tr` test needed its own fixture — a
+  matched run in mode 0 after a clipping run — since when the match itself
+  clips, the anchor's own mode already decides.
 - **replaceadjust.ts** — what the rest of a line does when a replacement
   changes its width (`u3l5.4`, `ReplaceTextOptions.adjust`). Pure over glyph
   events and planned edits; `textedit.ts`'s `planLineAdjust` measures each
@@ -5413,6 +5578,31 @@ Source (`src/`):
   run is measured to its last space. Each has its own fixture. And a test's
   `xOf(doc, 'e')` once read the `e` of "one" for the line end — pick a glyph
   that occurs once.
+  **Invariant (`u3l5.10`):** a Form XObject drawn twice gets ONE `AdjustEdit`
+  PER DRAWING, each measured against that drawing's own glyphs. The old
+  `removed` summed every glyph in the byte range across `all`, which counts
+  both drawings and doubles what the edit removed — measured: 29.304 where
+  37.312 is right. A drawing begins wherever content order stops increasing
+  (`after` in `planAdjustment`, and the member scan in `planLineAdjust`):
+  the second drawing's glyphs sit at the SAME op as the first's, so
+  `chainGapFor` reads `'none'` there and a chain would carry the first
+  drawing's shift into the second.
+  **Invariant (`u3l5.10`):** every place a drawing is corrected — ZERO
+  included — is recorded, and a second drawing asking for a different kern
+  there is a CONFLICT, refused with `UnsupportedFeatureError`. Recording only
+  the nonzero kerns misses the commonest case: two drawings on one line,
+  where the first asks for nothing and the second for a shift.
+  **Invariant (`u3l5.10`):** `region` scopes the SEARCH, never the line.
+  `pageLayout` builds the whole-page layout from the SAME walk (`whole`), and
+  `planLineAdjust` carries each match over by glyph and offset; a space
+  layout inserted between two glyphs of one match stays covered, or
+  `spaceWidth` counts it as a word gap. Re-walking the page instead finds
+  NOTHING — a second walk makes new `GlyphEvent` objects, and every map here
+  is keyed by identity.
+  **Note, measured:** two of the six mutations stayed green until their
+  fixtures existed — the member scan needs the two drawings BACK TO BACK
+  (page text between them ends the scan anyway), and the inserted-space
+  rule needs a match spanning a space layout inserted.
 - **replacefont.ts**, **showsplit.ts** — which font each character of a
   replacement is written in, and one show operator rewritten around a run in
   another font (`u3l5.2`). Both pure: `replacefont.ts` takes a `TextFont` and
@@ -5443,6 +5633,13 @@ Source (`src/`):
   and filled only by Save's finalize pass, so text drawn in one — a fallback
   run included — decodes as garbage on the LIVE document. Assert extracted
   text after `Document.Open(doc.Save())`.
+  **Invariant (`u3l5.8`):** a foreign run in an EMBEDDED face is written as
+  Type0 2-byte codes, which `Tw` never reaches (only the one-byte code 32
+  does), so where `Tw` is in force `encodeForeign` writes it as a `TJ` with a
+  kern of `-Tw x 1000 / Tf size` after each space, and `runsAdvance` counts
+  those spaces for every face. The two halves are one rule: drop the kern and
+  the run is drawn narrow, drop the count and `adjust` moves the rest by what
+  was not drawn. Each reddens its own case in `test/replace-fallback.test.ts`.
   **Note, measured:** all 20 mutations run across `u3l5.2` redden. Two more
   were NOT run, being unobservable by construction, and are held by reasoning: reporting undrawable text
   at plan time rather than apply time (no later refusal follows a report), and

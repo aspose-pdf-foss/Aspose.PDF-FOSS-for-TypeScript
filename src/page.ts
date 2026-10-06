@@ -6,6 +6,7 @@ import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
 import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions } from './text.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
 import type { ReplaceTextOptions } from './replacefont.js';
+import { restyleText, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
 import { searchAnnotations, searchAnnotationText, type AnnotationMatch, type AnnotationTextMatch } from './annotsearch.js';
 import { measureText, stampText, stampTextBlock, StampOptions, TextBlockOptions, AuthoringFont } from './stamp.js';
 import { isTextRunList, type TextRun } from './textdecor.js';
@@ -591,6 +592,17 @@ export class Page {
    *  number of occurrences found. */
   ReplaceText(find: string | RegExp, replacement: string, options?: ReplaceTextOptions): number {
     return replaceText(this.doc, this, find, replacement, options);
+  }
+
+  /** Change how matched text LOOKS without changing what it says (u3l5.6):
+   *  `style.color`, `fontSize` and `font` rewrite each match in place — colour
+   *  alone keeps the original glyph bytes — and `underline`, `strikethrough`
+   *  and `background` decorate it with `AddText`'s geometry. `options` take
+   *  `ReplaceText`'s search, font-fallback and `adjust` options. A match that
+   *  cannot be restyled throws `UnsupportedFeatureError` and changes nothing.
+   *  Returns the number of matches. */
+  RestyleText(find: string | RegExp, style: TextRestyle, options?: RestyleTextOptions): number {
+    return restyleText(this.doc, this, find, style, options);
   }
 
   /** Rendered width of `text` in points at `fontSize` (default 12) for `font`:

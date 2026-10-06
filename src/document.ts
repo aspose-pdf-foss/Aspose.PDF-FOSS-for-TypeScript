@@ -43,6 +43,7 @@ import { planSync, infoSide, xmpSide, mirroredField, type MetadataSyncReport, ty
 import { Page } from './page.js';
 import { planReplace } from './textedit.js';
 import { checkReplaceOptions, type ReplaceTextOptions } from './replacefont.js';
+import { restyleDocument, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
 import { stitchTables, type TableStitchOptions } from './tablestitch.js';
 import type { Table, TableExtractOptions } from './tablemodel.js';
 import type { Rect } from './text.js';
@@ -3772,6 +3773,13 @@ export class Document {
       total += plan.count;
     });
     return total;
+  }
+
+  /** Restyle every match across all pages; see `Page.RestyleText`. Every page
+   *  is PLANNED before any is changed, so a refusal leaves the whole document
+   *  untouched. Returns the total number of matches. */
+  RestyleText(find: string | RegExp, style: TextRestyle, options?: RestyleTextOptions): number {
+    return restyleDocument(this, find, style, options);
   }
 
   /** Compare this document's text with `other`'s: what was deleted, what was

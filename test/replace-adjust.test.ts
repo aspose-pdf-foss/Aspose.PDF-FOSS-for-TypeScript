@@ -3,7 +3,7 @@ import { Document } from '../src/document.js';
 import { parseContentStream } from '../src/content.js';
 import { UnsupportedFeatureError } from '../src/errors.js';
 import { visitContent, type GlyphEvent } from '../src/text.js';
-import { buildSimpleTextPdf, buildType0Pdf } from './helpers/build-text-pdf.js';
+import { buildSimpleTextPdf, buildType0Pdf, buildFormTextPdf } from './helpers/build-text-pdf.js';
 
 const open = (stream: string) => Document.Open(buildSimpleTextPdf(stream));
 const glyphs = (doc: Document): GlyphEvent[] => {
@@ -237,5 +237,77 @@ describe('adjust refusals and validation (u3l5.4)', () => {
     const doc = open('BT /F1 12 Tf 20 250 Td (aXb) Tj ET');
     expect(() => doc.Pages[0].ReplaceText('X', 'Y', { adjust: 'shift' as never })).toThrow(RangeError);
     expect(() => doc.Pages[0].ReplaceText('X', 'Y', { adjust: 1 as never })).toThrow(TypeError);
+  });
+});
+
+describe('adjust: a Form XObject drawn twice (u3l5.10)', () => {
+  // The form shows "aX"; the page draws it twice, each drawing followed on
+  // its own line by page text. Replacing X with WWWW widens BOTH drawings, so
+  // both tails move — by the drawing's own change, not twice what X removed.
+  const FORM = 'BT /F1 12 Tf 20 250 Td (aX) Tj ET';
+  const delta = W12(4 * 944 - 667);
+  const twice = (secondCm: string) => Document.Open(buildFormTextPdf(
+    `q /Fm0 Do Q BT /F1 12 Tf 80 250 Td (tail) Tj ET q ${secondCm} cm /Fm0 Do Q BT /F1 12 Tf 80 150 Td (tail) Tj ET`, FORM));
+
+  it('moves the rest of each drawing\'s line by that drawing\'s change', () => {
+    const doc = twice('1 0 0 1 0 -100');
+    doc.Pages[0].ReplaceText('X', 'WWWW', { adjust: 'shiftRest' });
+    expect(xOf(doc, 't', 0)).toBeCloseTo(80 + delta, 3);
+    expect(xOf(doc, 't', 1)).toBeCloseTo(80 + delta, 3);
+  });
+
+  it('measures each drawing alone when the two are drawn back to back', () => {
+    // Nothing between the two Do's: the second drawing's glyphs follow the
+    // first's in the same op, and must not be counted into its edit.
+    const doc = Document.Open(buildFormTextPdf(
+      'q /Fm0 Do Q q 1 0 0 1 0 -100 cm /Fm0 Do Q BT /F1 12 Tf 80 250 Td (tail) Tj ET BT /F1 12 Tf 80 150 Td (tail) Tj ET', FORM));
+    doc.Pages[0].ReplaceText('X', 'WWWW', { adjust: 'shiftRest' });
+    expect(xOf(doc, 't', 0)).toBeCloseTo(80 + delta, 3);
+    expect(xOf(doc, 't', 1)).toBeCloseTo(80 + delta, 3);
+  });
+
+  it('refuses when two drawings on one line would need different kerns in their shared stream', () => {
+    const doc = Document.Open(buildFormTextPdf('q /Fm0 Do Q q 1 0 0 1 100 0 cm /Fm0 Do Q', FORM));
+    const before = doc.Save();
+    expect(() => doc.Pages[0].ReplaceText('X', 'WWWW', { adjust: 'shiftRest' }))
+      .toThrow(/Form XObject drawn more than once/);
+    expect(doc.Save()).toEqual(before);
+  });
+});
+
+describe('adjust: region scopes the search, not the line (u3l5.10)', () => {
+  it('moves the rest of the line beyond the region edge', () => {
+    const doc = open('BT /F1 12 Tf 20 250 Td (aX) Tj 60 0 Td (tail) Tj ET');
+    expect(xOf(doc, 't')).toBeCloseTo(80, 3);
+    expect(doc.Pages[0].ReplaceText('X', 'WWWW', { adjust: 'shiftRest', region: [0, 200, 50, 300] })).toBe(1);
+    expect(xOf(doc, 't')).toBeCloseTo(80 + W12(4 * 944 - 667), 3);
+  });
+
+  it('still finds nothing beyond the region', () => {
+    const doc = open('BT /F1 12 Tf 20 250 Td (aX) Tj 60 0 Td (tXil) Tj ET');
+    expect(doc.Pages[0].ReplaceText('X', 'WWWW', { adjust: 'shiftRest', region: [0, 200, 50, 300] })).toBe(1);
+    expect(doc.Pages[0].GetText()).toBe('aWWWW tXil');
+  });
+
+  it('does not count a space layout inserted inside a match as a word gap', () => {
+    const src = 'BT /F1 12 Tf 20 250 Td (a) Tj 10 0 Td (X) Tj 40 0 Td (b c) Tj ET';
+    const doc = open(src);
+    expect(doc.Pages[0].GetText()).toBe('a X b c');
+    doc.Pages[0].ReplaceText('a X', 'WW', { adjust: 'spaceWidth', region: [0, 200, 50, 300] });
+    const whole = open(src);
+    whole.Pages[0].ReplaceText('a X', 'WW', { adjust: 'spaceWidth' });
+    expect(xOf(doc, 'b')).toBeCloseTo(xOf(whole, 'b'), 4);
+  });
+
+  it('takes the word gaps beyond the region under spaceWidth', () => {
+    // "aX" then "b c" drawn later; both gaps lie outside the region, and
+    // each gives half of the wider W, so b moves and the line end stays.
+    const doc = open('BT /F1 12 Tf 20 250 Td (aX) Tj 40 0 Td (b c) Tj ET');
+    const b0 = xOf(doc, 'b');
+    doc.Pages[0].ReplaceText('X', 'W', { adjust: 'spaceWidth', region: [0, 200, 50, 300] });
+    const whole = open('BT /F1 12 Tf 20 250 Td (aX) Tj 40 0 Td (b c) Tj ET');
+    whole.Pages[0].ReplaceText('X', 'W', { adjust: 'spaceWidth' });
+    expect(xOf(doc, 'b')).toBeCloseTo(xOf(whole, 'b'), 4);
+    expect(xOf(doc, 'b')).toBeCloseTo(b0 + W12(944 - 667) / 2, 3);
   });
 });

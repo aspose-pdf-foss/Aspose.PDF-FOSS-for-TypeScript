@@ -3,6 +3,7 @@
 // content stream and allocates nothing, and hands back the TJ kerns to insert.
 import type { GlyphEvent } from './text.js';
 import type { ContentAddr } from './editcontent.js';
+import type { ContentOp } from './content.js';
 import type { ReplaceAdjust, Run } from './replacefont.js';
 import { driverFor } from './stamp.js';
 
@@ -20,10 +21,32 @@ export interface AdjustEdit {
   /** [pos, endPos) in the page's assembled text: the characters it rewrote. */
   pos: number;
   endPos: number;
+  /** The glyphs it rewrote, in THIS drawing (u3l5.10): a Form XObject drawn
+   *  twice is one stream, and each drawing gets an edit of its own. */
+  members: readonly GlyphEvent[];
 }
 
-/** A TJ kern to insert before the glyph at `byteStart` of `elementIndex`. */
-export interface KernInsert { addr: ContentAddr; elementIndex: number; byteStart: number; value: number }
+/** What `planAdjustment` decided. */
+export interface AdjustPlan {
+  inserts: ShowInsert[];
+  /** Places where two drawings of one Form XObject asked for DIFFERENT kerns
+   *  in the one stream they share (u3l5.10). Nonzero means no single answer
+   *  is right for both, and the caller refuses. */
+  conflicts: number;
+}
+
+/** A piece to write before the glyph at `byteStart` of `elementIndex`: a TJ
+ *  kern (u3l5.4) or an operator such as a `Tm` (u3l5.5). */
+export interface ShowInsert {
+  addr: ContentAddr; elementIndex: number; byteStart: number;
+  piece: { kind: 'kern'; value: number } | { kind: 'op'; op: ContentOp };
+}
+
+/** What lies between two glyphs of one scope in content order: nothing that
+ *  moves the pen (`'none'`, they are CHAINED), only operators positioning
+ *  relative to the line matrix (`'relative'`: `Td TD T* ' "`), or at least one
+ *  that sets it outright (`'absolute'`: `BT ET Tm`, or going backwards). */
+export type ChainGap = 'none' | 'relative' | 'absolute';
 
 /** The page's assembled text, as the adjustment needs it. */
 export interface AdjustLayout {
@@ -59,9 +82,10 @@ export function runsAdvance(runs: readonly Run[], anchor: GlyphEvent): number {
       }
     } else {
       // A Standard-14 face writes one byte a character, so its spaces take
-      // `Tw`; an embedded face is written as Type0 2-byte codes, which do not.
+      // `Tw`; an embedded face is written as Type0 2-byte codes, which do not,
+      // so the writer adds a kern of exactly `Tw` after each (u3l5.8).
       const chars = [...r.text];
-      const spaces = typeof r.font === 'string' ? chars.filter((c) => c === ' ').length : 0;
+      const spaces = chars.filter((c) => c === ' ').length;
       total += (driverFor(r.font).measure(r.text, size) + chars.length * anchor.charSpacing + spaces * anchor.wordSpacing) * unit;
     }
   }
@@ -74,7 +98,7 @@ export function runsAdvance(runs: readonly Run[], anchor: GlyphEvent): number {
  * **Invariant:** it compares two shifts per glyph. The NATURAL shift is what
  * the edits already do: a show operator's pen is relative, so everything after
  * an edit in its pen CHAIN — the same operator, or a later one with no
- * positioning operator between (`breaks`) — already moves by the edit's delta,
+ * positioning operator between (`gap`) — already moves by the edit's delta,
  * and a `Td`/`Tm`/`T*`/`BT` starts again from zero. The DESIRED shift is the
  * mode's. A kern is inserted only where the two differ, so text no edit
  * reaches is never touched, and a chain whose natural shift is already right
@@ -85,11 +109,21 @@ export function runsAdvance(runs: readonly Run[], anchor: GlyphEvent): number {
  * order — a word placed before an edit in the stream but after it on the page
  * — is shifted by where it reads, which is what "the rest of the line" means.
  */
+/** True when `b` comes after `a` in content order within one scope: a later
+ *  stream, op, show-string element or byte. */
+function after(a: GlyphEvent, b: GlyphEvent): boolean {
+  const x = a.addr, y = b.addr;
+  if (y.streamIndex !== x.streamIndex) return y.streamIndex > x.streamIndex;
+  if (y.opIndex !== x.opIndex) return y.opIndex > x.opIndex;
+  if (b.elementIndex !== a.elementIndex) return b.elementIndex > a.elementIndex;
+  return b.byteStart > a.byteStart;
+}
+
 export function planAdjustment(
   mode: ReplaceAdjust, glyphs: readonly GlyphEvent[], edits: readonly AdjustEdit[],
-  layout: AdjustLayout, breaks: (a: ContentAddr, b: ContentAddr) => boolean,
-): KernInsert[] {
-  if (mode === 'none' || edits.length === 0) return [];
+  layout: AdjustLayout, gap: (a: ContentAddr, b: ContentAddr) => ChainGap,
+): AdjustPlan {
+  if (mode === 'none' || edits.length === 0) return { inserts: [], conflicts: 0 };
   const { text, covered, posOf, refs } = layout;
 
   // Per position: the line it is on and how many word gaps precede it. A gap
@@ -149,41 +183,47 @@ export function planAdjustment(
     return s;
   };
 
-  // Which edit, if any, rewrote a given glyph: by its op, element and bytes.
+  // Which edit, if any, rewrote a given glyph — in ITS drawing (u3l5.10).
   const opKey = (a: ContentAddr, el: number) => `${a.path.join('\0')}|${a.streamIndex}|${a.opIndex}|${el}`;
-  const byOp = new Map<string, AdjustEdit[]>();
-  for (const e of edits) {
-    const k = opKey(e.anchor.addr, e.elementIndex);
-    const l = byOp.get(k);
-    if (l) l.push(e); else byOp.set(k, [e]);
-  }
-  const editOf = (g: GlyphEvent): AdjustEdit | undefined =>
-    byOp.get(opKey(g.addr, g.elementIndex))?.find((e) => g.byteStart >= e.start && g.byteStart < e.end);
+  const editByGlyph = new Map<GlyphEvent, AdjustEdit>();
+  for (const e of edits) for (const m of e.members) editByGlyph.set(m, e);
 
-  const out: KernInsert[] = [];
+  const out: ShowInsert[] = [];
+  let conflicts = 0;
   const seenEdit = new Set<AdjustEdit>();
-  const placed = new Set<string>();
+  // **Invariant (u3l5.10):** a Form XObject drawn twice is ONE stream, so a
+  // kern written there moves BOTH drawings. Every place a drawing is
+  // corrected — zero included — is recorded, and a second drawing asking for
+  // a different value there is a conflict the caller refuses, never a quiet
+  // "first drawing decides".
+  const asked = new Map<string, number>();
   // Per scope: the shift the pen carries and the last glyph seen there. A form
   // keeps its own chain, so its glyphs interleaved with the page's break none.
   const chain = new Map<string, { carried: number; last: GlyphEvent }>();
   const correct = (g: GlyphEvent, el: number, byte: number, want: number, st: { carried: number }) => {
-    const c = want - st.carried;
     const per = g.fontSize * g.hscale;
-    if (Math.abs(c) < 1e-6 || per === 0) return;
+    const units = per === 0 ? 0 : (want - st.carried) / per;   // text space, comparable across drawings
     const key = `${opKey(g.addr, el)}|${byte}`;
-    // A form drawn twice is one stream: its first drawing decides.
-    if (placed.has(key)) return;
-    placed.add(key);
-    out.push({ addr: g.addr, elementIndex: el, byteStart: byte, value: Math.round(-c * 1000 / per * 1000) / 1000 });
+    const prev = asked.get(key);
+    if (prev !== undefined) {
+      if (Math.abs(prev - units) > 1e-6) conflicts++;
+      st.carried = want;
+      return;
+    }
+    asked.set(key, units);
+    if (Math.abs(units * per) < 1e-6) return;
+    out.push({ addr: g.addr, elementIndex: el, byteStart: byte, piece: { kind: 'kern', value: Math.round(-units * 1000 * 1000) / 1000 } });
     st.carried = want;
   };
   for (const g of glyphs) {
     const scope = g.addr.path.join('\0');
     let st = chain.get(scope);
-    if (!st || breaks(st.last.addr, g.addr)) st = { carried: 0, last: g };
+    // A form drawn again starts again from its first glyph: a glyph that does
+    // not come AFTER the last one in the stream begins a new drawing (u3l5.10).
+    if (!st || !after(st.last, g) || gap(st.last.addr, g.addr) !== 'none') st = { carried: 0, last: g };
     chain.set(scope, st);
     st.last = g;
-    const e = editOf(g);
+    const e = editByGlyph.get(g);
     if (e) {
       if (seenEdit.has(e)) continue;
       seenEdit.add(e);
@@ -195,5 +235,5 @@ export function planAdjustment(
     if (p === undefined) continue;   // draws no text: rides along with its chain
     correct(g, g.elementIndex, g.byteStart, desired(p), st);
   }
-  return out;
+  return { inserts: out, conflicts };
 }

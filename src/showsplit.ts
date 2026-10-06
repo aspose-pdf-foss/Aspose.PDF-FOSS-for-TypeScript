@@ -10,13 +10,20 @@ export type ShowPiece =
   | { kind: 'kern'; value: PdfObject }
   | {
     kind: 'foreign'; bytes: Uint8Array;
+    /** Written as this `TJ` array instead of `bytes` when set: the same
+     *  bytes with kerns between them (u3l5.8). */
+    tj?: PdfObject[];
     /** The font to switch to; absent keeps the operator's own (u3l5.3). */
     key?: string;
     /** The `Tf` size; absent keeps the original size. */
     size?: number;
     /** A fill to set before the run and the operators that restore the old. */
     fill?: { set: ContentOp; restore: readonly ContentOp[] };
-  };
+    /** The same for the stroke colour, for text whose render mode strokes (u3l5.9). */
+    stroke?: { set: ContentOp; restore: readonly ContentOp[] };
+  }
+  /** An operator written between two pieces, such as a `Tm` (u3l5.5). */
+  | { kind: 'op'; op: ContentOp };
 
 /** The `Tf` that puts the original font back: its resource key and size. */
 export interface FontRestore { key: string; size: number }
@@ -67,6 +74,7 @@ export function splitShowOp(op: ContentOp, pieces: ShowPiece[], restore: FontRes
     first = false;
   };
   for (const p of pieces) {
+    if (p.kind === 'op') { flush(); out.push(p.op); continue; }
     if (p.kind === 'foreign') {
       flush();
       // A `Tf` only when the font or the size changes: a colour-only run
@@ -74,10 +82,12 @@ export function splitShowOp(op: ContentOp, pieces: ShowPiece[], restore: FontRes
       const switches = (p.key !== undefined && p.key !== restore.key)
         || (p.size !== undefined && p.size !== restore.size);
       if (p.fill) out.push(p.fill.set);
+      if (p.stroke) out.push(p.stroke.set);
       if (switches) out.push({ operator: 'Tf', operands: [name(p.key ?? restore.key), p.size ?? restore.size] });
-      out.push({ operator: 'Tj', operands: [str(p.bytes)] });
+      out.push(p.tj ? { operator: 'TJ', operands: [p.tj] } : { operator: 'Tj', operands: [str(p.bytes)] });
       if (switches) out.push({ operator: 'Tf', operands: [name(restore.key), restore.size] });
       if (p.fill) out.push(...p.fill.restore);
+      if (p.stroke) out.push(...p.stroke.restore);
     } else if (p.kind === 'kern') {
       cur.push(p.value);
     } else if (p.bytes.length > 0) {

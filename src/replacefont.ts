@@ -43,17 +43,40 @@ export interface ReplaceTextOptions extends SearchOptions {
    *  after the replacement on its line, so the line keeps its end. A gap gives up
    *  at most half its width, so words never touch; what the gaps cannot absorb
    *  — all of it, with no gap after the replacement — shifts the rest of the
-   *  line as under `'shiftRest'`. */
+   *  line as under `'shiftRest'`. `'reflow'` (u3l5.5) re-wraps every
+   *  paragraph a match touches by moving its existing glyphs between lines,
+   *  growing only into free space below it; a paragraph that cannot be
+   *  reflowed safely throws `UnsupportedFeatureError`, or with
+   *  `onUnreflowable` is replaced without reflow and reported. */
   adjust?: ReplaceAdjust;
+  /** With `adjust: 'reflow'`, called once per paragraph that cannot be
+   *  reflowed; its matches are then replaced without reflow. Without it such
+   *  a call throws `UnsupportedFeatureError` and changes nothing. */
+  onUnreflowable?: (r: UnreflowableText) => void;
 }
 
 /** See `ReplaceTextOptions.adjust`. */
-export type ReplaceAdjust = 'none' | 'shiftRest' | 'spaceWidth';
-const ADJUSTS: readonly ReplaceAdjust[] = ['none', 'shiftRest', 'spaceWidth'];
+export type ReplaceAdjust = 'none' | 'shiftRest' | 'spaceWidth' | 'reflow';
+const ADJUSTS: readonly ReplaceAdjust[] = ['none', 'shiftRest', 'spaceWidth', 'reflow'];
+
+/** Why a paragraph could not be reflowed (u3l5.5). */
+export type UnreflowableReason =
+  | 'vertical' | 'rotated' | 'scopes' | 'interleaved' | 'foreign-ink'
+  | 'annotation' | 'pitch' | 'no-room' | 'not-found';
+
+/** A paragraph `adjust: 'reflow'` declined; its matches were replaced
+ *  without reflow. */
+export interface UnreflowableText {
+  /** 1-based page number, or 0 for a page outside `doc.Pages` (a template's page). */
+  page: number;
+  /** The first match in the paragraph. */
+  match: string;
+  reason: UnreflowableReason;
+}
 
 /** A match some of whose characters no available font could draw. */
 export interface UndrawableText {
-  /** 1-based page number. */
+  /** 1-based page number, or 0 for a page outside `doc.Pages` (a template's page). */
   page: number;
   /** The matched text. */
   match: string;
@@ -63,39 +86,44 @@ export interface UndrawableText {
 
 /** Validate `opts` before any page is read; `TypeError` for the wrong kind of
  *  thing, so a typo such as `fallbackFonts: 'Helvetica'` cannot silently mean
- *  "no fallback". */
-export function checkReplaceOptions(opts: ReplaceTextOptions | undefined): ReplaceTextOptions {
+ *  "no fallback". `label` names the calling API in every message
+ *  (`RestyleText` shares these options, u3l5.6). */
+export function checkReplaceOptions(opts: ReplaceTextOptions | undefined, label = 'ReplaceText'): ReplaceTextOptions {
   const o = opts ?? {};
-  if (typeof o !== 'object' || o === null) throw new TypeError('ReplaceText options must be an object');
+  if (typeof o !== 'object' || o === null) throw new TypeError(`${label} options must be an object`);
   const isFont = (f: unknown): boolean => f instanceof EmbeddedFont
     || (typeof f === 'string' && (AUTHORING_FONTS as readonly string[]).includes(f));
   if (o.fallbackFonts !== undefined) {
-    if (!Array.isArray(o.fallbackFonts)) throw new TypeError('ReplaceText: fallbackFonts must be an array of fonts');
+    if (!Array.isArray(o.fallbackFonts)) throw new TypeError(`${label}: fallbackFonts must be an array of fonts`);
     for (const f of o.fallbackFonts) {
-      if (!isFont(f)) throw new TypeError(`ReplaceText: fallbackFonts entry ${String(f)} is neither a Standard-14 authoring face nor a font from AddFont`);
+      if (!isFont(f)) throw new TypeError(`${label}: fallbackFonts entry ${String(f)} is neither a Standard-14 authoring face nor a font from AddFont`);
     }
   }
   if (o.font !== undefined && !isFont(o.font))
-    throw new TypeError(`ReplaceText: font ${String(o.font)} is neither a Standard-14 authoring face nor a font from AddFont`);
+    throw new TypeError(`${label}: font ${String(o.font)} is neither a Standard-14 authoring face nor a font from AddFont`);
   if (o.fontSize !== undefined) {
-    if (typeof o.fontSize !== 'number') throw new TypeError('ReplaceText: fontSize must be a number');
-    if (!Number.isFinite(o.fontSize) || o.fontSize <= 0) throw new RangeError(`ReplaceText: fontSize must be positive, got ${o.fontSize}`);
+    if (typeof o.fontSize !== 'number') throw new TypeError(`${label}: fontSize must be a number`);
+    if (!Number.isFinite(o.fontSize) || o.fontSize <= 0) throw new RangeError(`${label}: fontSize must be positive, got ${o.fontSize}`);
   }
   if (o.color !== undefined) {
     if (!Array.isArray(o.color) || o.color.length !== 3 || o.color.some((c) => typeof c !== 'number'))
-      throw new TypeError('ReplaceText: color must be [r, g, b]');
-    if (o.color.some((c) => !(c >= 0 && c <= 1))) throw new RangeError('ReplaceText: color components must be in 0..1');
+      throw new TypeError(`${label}: color must be [r, g, b]`);
+    if (o.color.some((c) => !(c >= 0 && c <= 1))) throw new RangeError(`${label}: color components must be in 0..1`);
   }
   if (o.adjust !== undefined) {
-    if (typeof o.adjust !== 'string') throw new TypeError('ReplaceText: adjust must be a string');
+    if (typeof o.adjust !== 'string') throw new TypeError(`${label}: adjust must be a string`);
     if (!(ADJUSTS as readonly string[]).includes(o.adjust))
-      throw new RangeError(`ReplaceText: adjust must be one of ${ADJUSTS.join(', ')}, got ${o.adjust}`);
+      throw new RangeError(`${label}: adjust must be one of ${ADJUSTS.join(', ')}, got ${o.adjust}`);
+  }
+  if (o.onUnreflowable !== undefined) {
+    if (typeof o.onUnreflowable !== 'function') throw new TypeError(`${label}: onUnreflowable must be a function`);
+    if (o.adjust !== 'reflow') throw new TypeError(`${label}: onUnreflowable applies only with adjust: 'reflow'`);
   }
   for (const k of ['matchRegisteredFonts', 'ignoreCase', 'wholeWord'] as const) {
-    if (o[k] !== undefined && typeof o[k] !== 'boolean') throw new TypeError(`ReplaceText: ${k} must be a boolean`);
+    if (o[k] !== undefined && typeof o[k] !== 'boolean') throw new TypeError(`${label}: ${k} must be a boolean`);
   }
   if (o.onUndrawable !== undefined && typeof o.onUndrawable !== 'function')
-    throw new TypeError('ReplaceText: onUndrawable must be a function');
+    throw new TypeError(`${label}: onUndrawable must be a function`);
   return o;
 }
 
@@ -113,6 +141,8 @@ export type Run =
 export interface RunStyle {
   size?: number;
   fill?: { set: ContentOp; restore: readonly ContentOp[] };
+  /** The same for the stroke, set only for text whose render mode strokes. */
+  stroke?: { set: ContentOp; restore: readonly ContentOp[] };
 }
 
 /** The fonts a character may be written in, in tier order. `original` is

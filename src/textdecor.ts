@@ -1,6 +1,7 @@
 import { EmbeddedFont } from './embeddedfont.js';
 import { num } from './pagecontent.js';
 import type { AuthoringFont } from './stamp.js';
+import type { SfntFont } from './sfnt.js';
 
 /** A font's vertical metrics as em fractions: baseline = 0, positive up.
  *  `descent` is negative. Scale by fontSize for points. */
@@ -16,7 +17,7 @@ export interface VMetrics {
 }
 
 /** Used when a font supplies nothing usable (no `post`, no OS/2, zeroed entries). */
-const FALLBACK: VMetrics = {
+export const FALLBACK_VMETRICS: VMetrics = {
   ascent: 0.75, descent: -0.25, xHeight: 0.5,
   underlineOffset: -0.1, underlineThickness: 0.05,
   strikeOffset: 0.25, strikeThickness: 0.05,
@@ -37,7 +38,7 @@ const STD14_UL_POSITION = -100;
 const STD14_UL_THICKNESS = 50;
 
 /** The AFMs carry no strikeout entry; half the cap height is the usual choice. */
-function std14VMetrics(font: string): VMetrics {
+export function std14VMetricsFor(font: string): VMetrics {
   const fam = font.startsWith('Times') ? 'Times'
     : font.startsWith('Courier') ? 'Courier' : 'Helvetica';
   const v = STD14_V[fam];
@@ -56,25 +57,25 @@ function std14VMetrics(font: string): VMetrics {
  *  than emit a zero-thickness rule that paints nothing. */
 const or = (v: number, dflt: number): number => (v ? v : dflt);
 
-function embeddedVMetrics(f: EmbeddedFont): VMetrics {
-  const s = f.sfnt;
+/** Vertical metrics from an sfnt program's own `post`/OS/2 tables, per em. */
+export function sfntVMetrics(s: SfntFont): VMetrics {
   const upem = s.unitsPerEm || 1000;
-  const ut = or(s.underlineThickness / upem, FALLBACK.underlineThickness);
+  const ut = or(s.underlineThickness / upem, FALLBACK_VMETRICS.underlineThickness);
   return {
-    ascent: or(s.ascent / upem, FALLBACK.ascent),
+    ascent: or(s.ascent / upem, FALLBACK_VMETRICS.ascent),
     // Some fonts store a positive descender; normalize the sign so the
     // background rect always extends downward from the baseline.
-    descent: -Math.abs(or(s.descent / upem, FALLBACK.descent)),
+    descent: -Math.abs(or(s.descent / upem, FALLBACK_VMETRICS.descent)),
     // OS/2 version 1 and earlier carry no sxHeight at all. Estimate from the
     // ascent rather than a flat constant, so an unusual font still scales: the
     // three Standard-14 families sit at xHeight/ascent = 0.73, 0.66, 0.68, so
     // 0.7 lands within a thousandth of Helvetica's real 0.523. Half the ascent
     // would give 0.375, below every real x-height.
-    xHeight: or(s.xHeight / upem, or(s.ascent / upem, FALLBACK.ascent) * 0.7),
-    underlineOffset: or(s.underlinePosition / upem, FALLBACK.underlineOffset),
+    xHeight: or(s.xHeight / upem, or(s.ascent / upem, FALLBACK_VMETRICS.ascent) * 0.7),
+    underlineOffset: or(s.underlinePosition / upem, FALLBACK_VMETRICS.underlineOffset),
     underlineThickness: ut,
     strikeOffset: or(s.strikeoutPosition / upem,
-      or(s.capHeight / upem / 2, FALLBACK.strikeOffset)),
+      or(s.capHeight / upem / 2, FALLBACK_VMETRICS.strikeOffset)),
     strikeThickness: or(s.strikeoutSize / upem, ut),
   };
 }
@@ -82,7 +83,7 @@ function embeddedVMetrics(f: EmbeddedFont): VMetrics {
 /** Vertical metrics for an authoring font: AFM constants for a Standard-14
  *  face, the font's own `post`/OS/2 tables for an embedded handle. */
 export function vmetricsFor(font: AuthoringFont): VMetrics {
-  return font instanceof EmbeddedFont ? embeddedVMetrics(font) : std14VMetrics(font);
+  return font instanceof EmbeddedFont ? sfntVMetrics(font.sfnt) : std14VMetricsFor(font);
 }
 
 /** A rule drawn beneath (underline) or through (strikethrough) the text. */

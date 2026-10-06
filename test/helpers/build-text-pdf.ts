@@ -133,20 +133,27 @@ export function buildMixedType0Pdf(stream: string, cmap: string): Uint8Array {
  *  the page's (7.8.3). */
 export function buildFormTextPdf(
   pageStream: string, formStream: string,
-  opts: { formFont?: boolean; formResources?: boolean } = {},
+  opts: {
+    formFont?: boolean; formResources?: boolean;
+    /** Extra entries in the page's and the form's /Resources (u3l5.9). */
+    pageRes?: string; formRes?: string;
+    /** Extra objects, numbered from 7. */
+    extra?: string[];
+  } = {},
 ): Uint8Array {
   const formRes = opts.formResources === false ? ''
-    : opts.formFont === false ? '/Resources << >> '
-    : '/Resources << /Font << /F1 5 0 R >> >> ';
+    : opts.formFont === false ? `/Resources << ${opts.formRes ?? ''} >> `
+    : `/Resources << /Font << /F1 5 0 R >> ${opts.formRes ?? ''} >> `;
   const objects: Obj = {
     1: `<< /Type /Catalog /Pages 2 0 R >>`,
     2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
-    3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >> /Contents 4 0 R >>`,
+    3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> ${opts.pageRes ?? ''} >> /Contents 4 0 R >>`,
     4: contentObj(pageStream),
     5: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
     6: `<< /Type /XObject /Subtype /Form /BBox [0 0 300 300] ${formRes}/Length ${byteLen(formStream)} >>\nstream\n${formStream}\nendstream`,
   };
-  return serialize(objects, 6);
+  (opts.extra ?? []).forEach((o, i) => { objects[7 + i] = o; });
+  return serialize(objects, 6 + (opts.extra?.length ?? 0));
 }
 
 /** Two pages sharing ONE indirect /Resources dict, each drawing the same Form

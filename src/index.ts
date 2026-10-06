@@ -101,7 +101,8 @@ export type { RedactOptions } from './redact.js';
 export type { ApplyRedactionsOptions, MarkRedactTextOptions } from './redactapply.js';
 export { searchText, replaceText } from './textedit.js';
 export type { TextMatch, SearchOptions } from './textedit.js';
-export type { ReplaceTextOptions, ReplaceAdjust, UndrawableText } from './replacefont.js';
+export type { ReplaceTextOptions, ReplaceAdjust, UndrawableText, UnreflowableText, UnreflowableReason } from './replacefont.js';
+export type { TextRestyle, RestyleTextOptions } from './textrestyle.js';
 export type {
   CompareTextOptions, TextComparison, TextChange, TextSpan, TextComparisonStats, PageTextComparison,
 } from './compare.js';

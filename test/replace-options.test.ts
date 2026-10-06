@@ -5,6 +5,7 @@ import { UnsupportedFeatureError } from '../src/errors.js';
 import { findRanges } from '../src/textedit.js';
 import { visitContent, type GlyphEvent } from '../src/text.js';
 import { isName } from '../src/types.js';
+import { renderPageRgb } from '../src/raster.js';
 import { buildAnnotTextPdf } from './helpers/build-annot-text-pdf.js';
 import { buildSimpleTextPdf, buildFormTextPdf, buildMultiPageTextPdf, buildToUnicodePdf } from './helpers/build-text-pdf.js';
 
@@ -139,11 +140,113 @@ describe('ReplaceText styles the replacement (u3l5.3)', () => {
     expect(colorOf(doc, 'b')).toEqual([0, 0, 255]);
   });
 
-  it('refuses to restore a named space set in another scope, changing nothing', () => {
+  it('refuses to restore a name the scope that set it does not hold, changing nothing', () => {
     const doc = Document.Open(buildFormTextPdf('/Pattern cs /P0 scn /Fm0 Do', LINE('aXb')));
     const before = doc.Save();
-    expect(() => doc.Pages[0].ReplaceText('X', 'Y', { color: [1, 0, 0] })).toThrow(UnsupportedFeatureError);
+    expect(() => doc.Pages[0].ReplaceText('X', 'Y', { color: [1, 0, 0] })).toThrow(/\/P0 is not in the scope/);
     expect(doc.Save()).toEqual(before);
+  });
+});
+
+describe('ReplaceText restores a colour named in another scope (u3l5.9)', () => {
+  // Index 1 is green on the page; the form's own /CS0 is a DIFFERENT space,
+  // whose index 1 is red — so a restore that re-emitted `/CS0` unchanged, or
+  // overwrote the form's entry, draws the text after the replacement red.
+  const GREEN = '/ColorSpace << /CS0 [/Indexed /DeviceRGB 1 <0000FF00FF00>] >>';
+  const RED = '/ColorSpace << /CS0 [/Indexed /DeviceRGB 1 <FF0000FF0000>] >>';
+  const formRes = (doc: Document) => {
+    const xo = doc.resolve((doc.resolve(doc.Pages[0].Resources!.get('XObject')) as Map<string, unknown>).get('Fm0') as never) as { dict: Map<string, unknown> };
+    return doc.resolve(xo.dict.get('Resources') as never) as Map<string, unknown>;
+  };
+  it('copies the colour space into the form under a fresh key when its own name is taken', () => {
+    const doc = Document.Open(buildFormTextPdf('/CS0 cs 1 sc /Fm0 Do', LINE('aXb'), { pageRes: GREEN, formRes: RED }));
+    expect(colorOf(doc, 'b')).toEqual([0, 255, 0]);
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [0, 0, 1] });
+    expect(colorOf(doc, 'Y')).toEqual([0, 0, 255]);
+    expect(colorOf(doc, 'b')).toEqual([0, 255, 0]);
+    const cs = doc.resolve(formRes(doc).get('ColorSpace') as never) as Map<string, unknown>;
+    expect([...cs.keys()]).toEqual(['CS0', 'CS1']);
+    expect(colorOf(Document.Open(doc.Save()), 'b')).toEqual([0, 255, 0]);
+  });
+
+  it('reuses the key that already names the same object in the form', () => {
+    const doc = Document.Open(buildFormTextPdf('/CS0 cs 1 sc /Fm0 Do', LINE('aXb'), {
+      pageRes: '/ColorSpace << /CS0 7 0 R >>', formRes: '/ColorSpace << /Mine 7 0 R >>',
+      extra: ['[/Indexed /DeviceRGB 1 <0000FF00FF00>]'],
+    }));
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [0, 0, 1] });
+    expect(colorOf(doc, 'b')).toEqual([0, 255, 0]);
+    const cs = doc.resolve(formRes(doc).get('ColorSpace') as never) as Map<string, unknown>;
+    expect([...cs.keys()]).toEqual(['Mine']);
+  });
+
+  it('copies nothing for a form that inherits the page resources', () => {
+    const doc = Document.Open(buildFormTextPdf('/CS0 cs 1 sc /Fm0 Do', LINE('aXb'), { pageRes: GREEN, formResources: false }));
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [0, 0, 1] });
+    expect(colorOf(doc, 'b')).toEqual([0, 255, 0]);
+  });
+
+  it('copies a pattern named on the page into the form', () => {
+    const tile = '0 0 1 rg 0 0 5 5 re f';
+    const doc = Document.Open(buildFormTextPdf('/Pattern cs /P0 scn /Fm0 Do', LINE('aXb'), {
+      pageRes: '/Pattern << /P0 7 0 R >>',
+      extra: [`<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << >> /Length ${tile.length} >>\nstream\n${tile}\nendstream`],
+    }));
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [1, 0, 0] });
+    const pat = doc.resolve(formRes(doc).get('Pattern') as never) as Map<string, { num: number }>;
+    expect([...pat.keys()]).toEqual(['P0']);
+    expect(pat.get('P0')!.num).toBe(7);
+    const reopened = Document.Open(doc.Save());
+    expect(reopened.Pages[0].GetText()).toBe('aYb');
+  });
+
+});
+
+describe('ReplaceText colours the stroke of stroked text (u3l5.9)', () => {
+  // 48pt, stroked blue: the replacement must be stroked red, and what follows
+  // stroked blue again.
+  const STROKED = (mode: number) => `0 0 1 RG 2 w BT /F1 48 Tf ${mode} Tr 20 200 Td (aXb) Tj ET`;
+  const inkIn = (doc: Document, ch: string, pred: (r: number, g: number, b: number) => boolean): number => {
+    const q = glyphs(doc).find((g) => g.text === ch)!.quad;
+    const { width, rgb, device } = renderPageRgb(doc, doc.Pages[0], 1);
+    const [x0, y0] = [q[0] * device[0] + q[1] * device[2] + device[4], q[0] * device[1] + q[1] * device[3] + device[5]];
+    const [x1, y1] = [q[2] * device[0] + q[3] * device[2] + device[4], q[2] * device[1] + q[3] * device[3] + device[5]];
+    let n = 0;
+    // Inset by 3px: a neighbour's 2pt stroke reaches across the shared edge.
+    for (let y = Math.floor(Math.min(y0, y1)) + 3; y < Math.ceil(Math.max(y0, y1)) - 3; y++) {
+      for (let x = Math.floor(Math.min(x0, x1)) + 3; x < Math.ceil(Math.max(x0, x1)) - 3; x++) {
+        const i = (y * width + x) * 3;
+        if (pred(rgb[i], rgb[i + 1], rgb[i + 2])) n++;
+      }
+    }
+    return n;
+  };
+  const red = (r: number, g: number, b: number) => r > 180 && g < 90 && b < 90;
+  const blue = (r: number, g: number, b: number) => b > 180 && r < 90 && g < 90;
+
+  it('sets and restores the stroke colour for stroke-only text', () => {
+    const doc = plain(STROKED(1));
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [1, 0, 0] });
+    const t = ops(doc).map(opText);
+    const at = t.indexOf('1 0 0 rg');
+    expect(t.slice(at, at + 5)).toEqual(['1 0 0 rg', '1 0 0 RG', '… Tj', '0 g', '0 0 1 RG']);
+    expect(inkIn(doc, 'Y', red)).toBeGreaterThan(20);
+    expect(inkIn(doc, 'Y', blue)).toBe(0);
+    expect(inkIn(doc, 'b', blue)).toBeGreaterThan(20);
+    expect(inkIn(doc, 'b', red)).toBe(0);
+  });
+
+  it('colours both for fill-and-stroke text', () => {
+    const doc = plain(STROKED(2));
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [1, 0, 0] });
+    expect(ops(doc).map(opText)).toContain('1 0 0 RG');
+    expect(inkIn(doc, 'Y', blue)).toBe(0);
+  });
+
+  it('writes no stroke operators for text that only fills', () => {
+    const doc = plain(STROKED(0));
+    doc.Pages[0].ReplaceText('X', 'Y', { color: [1, 0, 0] });
+    expect(ops(doc).map(opText).filter((s) => s.endsWith(' RG'))).toEqual(['0 0 1 RG']);
   });
 
   it('restores a named space set in the same scope', () => {

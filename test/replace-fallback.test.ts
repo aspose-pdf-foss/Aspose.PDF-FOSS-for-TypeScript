@@ -106,6 +106,44 @@ describe('ReplaceText tier B: fallback fonts', () => {
   });
 });
 
+describe('ReplaceText: word spacing on a two-byte fallback run (u3l5.8)', () => {
+  // `Tw` applies only to the ONE-BYTE code 32, and an embedded fallback is
+  // written as Type0 2-byte codes. The oracle is the same edit under `Tw 0`:
+  // with `Tw 6` the replacement's one space must be exactly 6 points wider.
+  const run = (tw: number, adjust?: 'shiftRest') => {
+    const doc = plain(`BT /F1 12 Tf ${tw} Tw 20 250 Td (aX) Tj 40 0 Td (t) Tj ET`);
+    doc.Pages[0].ReplaceText('X', 'c d', { font: doc.AddFont(LIB), adjust });
+    return doc;
+  };
+  const xOf = (doc: Document, s: string): number => Document.Open(doc.Save()).Pages[0].Search(s)[0].quads[0][0];
+
+  it('spaces the run as the text it replaced', () => {
+    expect(xOf(run(6), 'd') - xOf(run(0), 'd')).toBeCloseTo(6, 6);
+  });
+
+  it('measures the run as drawn, so shiftRest moves the rest by the same', () => {
+    expect(xOf(run(6, 'shiftRest'), 't') - xOf(run(0, 'shiftRest'), 't')).toBeCloseTo(6, 6);
+  });
+
+  it('writes the kern after the space in a TJ, and nothing new without Tw', () => {
+    const tj = ops(run(6)).find((op) => op.operator === 'TJ')!.operands[0] as PdfObject[];
+    expect(tj.filter((x) => typeof x === 'number')).toEqual([-500]);
+    expect(ops(run(0)).some((op) => op.operator === 'TJ')).toBe(false);
+  });
+});
+
+describe('ReplaceText on a page outside the page tree (u3l5.8)', () => {
+  it('names the page by kind, not as page 0', () => {
+    const doc = Document.New(PageFormat.A4);
+    const t = doc.NewTemplate(200, 100);
+    t.page.AddText('aXb', 10, 50);
+    expect(() => t.page.ReplaceText('X', OMEGA)).toThrow(/a page outside the page tree/);
+    const seen: UndrawableText[] = [];
+    t.page.ReplaceText('X', OMEGA, { onUndrawable: (r) => seen.push(r) });
+    expect(seen.map((r) => r.page)).toEqual([0]);
+  });
+});
+
 describe('ReplaceText: scopes that cannot switch font', () => {
   it('cannot switch in a form whose font is inherited from the page', () => {
     const doc = Document.Open(buildFormTextPdf('BT /F1 12 Tf ET /Fm0 Do', 'BT 20 250 Td (aXb) Tj ET', { formFont: false }));

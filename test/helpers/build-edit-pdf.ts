@@ -33,6 +33,24 @@ export function buildMultiStreamPage(streams: string[]): Uint8Array {
   return serialize(objects, 4 + streams.length);
 }
 
+/** A TAGGED page whose /Contents is an array of the given streams: one /P
+ *  element owning MCID 0 (u3l5.12). The streams decide where its BDC and EMC
+ *  fall, so a structure sequence can open in one and close in another. */
+export function buildTaggedMultiStreamPage(streams: string[]): Uint8Array {
+  const refs = streams.map((_, i) => `${8 + i} 0 R`).join(' ');
+  const objects: Record<number, string> = {
+    1: `<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R /MarkInfo << /Marked true >> >>`,
+    2: `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 300] >>`,
+    3: `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /StructParents 0 /Contents [${refs}] >>`,
+    4: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
+    5: `<< /Type /StructTreeRoot /K 6 0 R /ParentTree 7 0 R >>`,
+    6: `<< /Type /StructElem /S /P /P 5 0 R /Pg 3 0 R /K 0 >>`,
+    7: `<< /Nums [0 [6 0 R]] >>`,
+  };
+  streams.forEach((s, i) => { objects[8 + i] = streamObj(s); });
+  return serialize(objects, 7 + streams.length);
+}
+
 /** One page whose /Resources declares two Helvetica fonts (/F1, /F2); the given
  *  content stream decides which are actually referenced via Tf. */
 export function buildTwoFontPage(stream: string): Uint8Array {

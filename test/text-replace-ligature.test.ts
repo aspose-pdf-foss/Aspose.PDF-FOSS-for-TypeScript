@@ -101,8 +101,15 @@ describe('replaceText inside a ligature', () => {
     const doc = ligDoc('BT /F1 12 Tf 20 250 Td (ab) Tj 40 0 Td (ab) Tj ET');
     expect(textOf(doc)).toBe('ab ab');
     const before = doc.Pages[0].Contents;
-    replaceText(doc, doc.Pages[0], ' ', 'X');
+    // Nothing was replaced, so nothing is counted (u3l5.7).
+    expect(replaceText(doc, doc.Pages[0], ' ', 'X')).toBe(0);
     expect(doc.Pages[0].Contents).toEqual(before);
+  });
+
+  it('counts only the matches that edited something', () => {
+    const doc = ligDoc('BT /F1 12 Tf 20 250 Td (ab) Tj 40 0 Td (ab) Tj ET');
+    expect(replaceText(doc, doc.Pages[0], / |a/, 'X')).toBe(2);
+    expect(textOf(doc)).toBe('Xb Xb');
   });
 });
 
@@ -144,6 +151,15 @@ describe('replaceText removes an emptied Tj', () => {
     expect(replaceText(doc, doc.Pages[0], 'Hello', 'Bye')).toBe(1);
     expect(opsOf(doc).filter((op) => op.operator === 'Tj')).toHaveLength(1);
     expect(textOf(doc)).toBe('Bye');
+  });
+
+  it('draws what follows an emptied Tj where the pen leaves the replacement', () => {
+    // Helvetica 12pt: "Bye" advances (667 + 500 + 556) * 12 / 1000 = 20.676.
+    const doc = plainDoc('BT /F1 12 Tf 20 250 Td (Hel) Tj (lo) Tj (X) Tj ET');
+    expect(replaceText(doc, doc.Pages[0], 'Hello', 'Bye')).toBe(1);
+    expect(opsOf(doc).filter((op) => op.operator === 'Tj')).toHaveLength(2);
+    expect(doc.Pages[0].Search('Bye')[0].quads[0][0]).toBeCloseTo(20, 3);
+    expect(doc.Pages[0].Search('X')[0].quads[0][0]).toBeCloseTo(40.676, 3);
   });
 
   it('removes an emptied Tj even when it held the anchor', () => {
@@ -188,6 +204,24 @@ describe('replaceText and glyphs that draw no text', () => {
     expect(textOf(d)).toBe('abcd');
     expect(replaceText(d, d.Pages[0], /ab|cd/, 'X')).toBe(2);
     expect(shown(d)).toEqual(["X'X"]);
+  });
+
+  const tjDoc = (arr: string) => Document.Open(buildToUnicodePdf(`BT /F1 12 Tf 20 250 Td ${arr} TJ ET`, cmap));
+
+  it('drops kerns around a string holding a text-less glyph the match swept in', () => {
+    const d = tjDoc('[<48> -50 <65276C> -50 <6C6F>]');   // H | e <27> l | l o
+    expect(textOf(d)).toBe('Hello');
+    expect(replaceText(d, d.Pages[0], 'Hello', 'Bye')).toBe(1);
+    expect(numbersIn(tjArray(d))).toEqual([]);
+    expect(shown(d)).toEqual(['Bye', '', '']);
+  });
+
+  it('keeps kerns around a text-less glyph at a string edge, which still draws', () => {
+    const d = tjDoc('[<48> -50 <2765> -50 <6C6C6F>]');   // H | <27> e | l l o
+    expect(textOf(d)).toBe('Hello');
+    expect(replaceText(d, d.Pages[0], 'Hello', 'Bye')).toBe(1);
+    expect(numbersIn(tjArray(d))).toEqual([-50, -50]);
+    expect(shown(d)).toEqual(['Bye', "'", '']);
   });
 });
 

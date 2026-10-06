@@ -399,6 +399,14 @@ export interface GlyphEvent {
   charSpacing: number;
   wordSpacing: number;
   hscale: number;
+  /** The text matrix at this glyph's START, the line matrix and the CTM in
+   *  force (u3l5.5). REQUIRED: an edit that moves a glyph writes a `Tm` with
+   *  this glyph's own scale and a solved translation, and restores the line
+   *  matrix after a paragraph, so it must never guess them. The glyph's
+   *  origin is `apply(mul(tm, ctm), 0, rise)`, which is `quad`'s corner. */
+  tm: Matrix;
+  tlm: Matrix;
+  ctm: Matrix;
   /** `/ActualText`, `/Alt` and `/Lang` inherited from the marked-content stack
    *  — the innermost BDC in scope that states each key.
    *
@@ -423,6 +431,10 @@ export interface GlyphEvent {
    *  `ops` in another scope must check that every name is a device family
    *  first. */
   fillState?: FillState;
+  /** The operators that re-establish the STROKE colour in force (u3l5.9),
+   *  under `fillState`'s rules: absent means the initial stroke, DeviceGray
+   *  black, and `path` is where a colour-space name in `ops` was looked up. */
+  strokeState?: FillState;
 }
 
 /** See `GlyphEvent.fillState`. */
@@ -639,7 +651,7 @@ export function visitFormContent(
 /** The subset of the graphics state this walker threads: the CTM, the fill
  *  colour, the converter that resolves that colour's operands, and the text
  *  state parameters (`TextGState`). */
-interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; text: TextGState; fset?: FillState; fcs: FillCs }
+interface GState { ctm: Matrix; fill?: Rgb; conv: ColorConverter; text: TextGState; fset?: FillState; fcs: FillCs; sset?: FillState; scs: FillCs }
 
 /** The `cs` that selected the current fill space and the scope it was named
  *  in, so a later `sc`/`scn` records both (`GlyphEvent.fillState`). */
@@ -734,7 +746,7 @@ function walkScope(
   depth: number, seen: Set<PdfDict>,
   inheritedMcid?: number, inheritedArtifact?: ContentAddr,
   inheritedFill?: Rgb, inheritedMcProps?: McProps, inheritedText?: TextGState,
-  inheritedFillSet?: FillState,
+  inheritedFillSet?: FillState, inheritedStrokeSet?: FillState,
 ): void {
   // (mih4) A form starts from the text state in force at its Do, COPIED, so
   // nothing it sets reaches back out to the caller.
@@ -745,6 +757,10 @@ function walkScope(
   let fillConv: ColorConverter = deviceGray();
   let fillSet: FillState | undefined = inheritedFillSet;
   let fillCs: FillCs = { path: [] };
+  // (u3l5.9) The stroke's operators only — no colour is reported for a stroke,
+  // so it needs no converter, just what re-establishes it.
+  let strokeSet: FillState | undefined = inheritedStrokeSet;
+  let strokeCs: FillCs = { path: [] };
   const fonts = resolveDict(ctx.doc, resources?.get('Font'));
   const xobjects = resolveDict(ctx.doc, resources?.get('XObject'));
   const properties = resolveDict(ctx.doc, resources?.get('Properties'));
@@ -788,12 +804,22 @@ function walkScope(
       const op = ops[opIndex];
       const addr: ContentAddr = { path, streamIndex, opIndex };
       switch (op.operator) {
-        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, text: saveTextState(st), fset: fillSet, fcs: fillCs }); break;
+        case 'q': gsStack.push({ ctm: curCtm, fill, conv: fillConv, text: saveTextState(st), fset: fillSet, fcs: fillCs, sset: strokeSet, scs: strokeCs }); break;
         case 'Q': {
           const g = gsStack.pop();
-          if (g) { curCtm = g.ctm; fill = g.fill; fillConv = g.conv; Object.assign(st, g.text); fillSet = g.fset; fillCs = g.fcs; }
+          if (g) {
+            curCtm = g.ctm; fill = g.fill; fillConv = g.conv; Object.assign(st, g.text); fillSet = g.fset; fillCs = g.fcs;
+            strokeSet = g.sset; strokeCs = g.scs;
+          }
           break;
         }
+        case 'G': strokeSet = { ops: [op], path }; strokeCs = { op: { operator: 'CS', operands: [name('DeviceGray')] }, path: [] }; break;
+        case 'RG': strokeSet = { ops: [op], path }; strokeCs = { op: { operator: 'CS', operands: [name('DeviceRGB')] }, path: [] }; break;
+        case 'K': strokeSet = { ops: [op], path }; strokeCs = { op: { operator: 'CS', operands: [name('DeviceCMYK')] }, path: [] }; break;
+        case 'CS': strokeCs = { op, path }; strokeSet = { ops: [op], path }; break;
+        case 'SC': case 'SCN':
+          strokeSet = { ops: strokeCs.op ? [strokeCs.op, op] : [op], path: strokeCs.op ? strokeCs.path : path };
+          break;
         case 'cm': { const m = nums(op.operands); if (m.length === 6) curCtm = mul(m as Matrix, curCtm); break; }
         case 'w': lineWidth = num(op.operands[0]); break;
         // Fill colour only: a glyph's ink is its fill except under the
@@ -879,12 +905,12 @@ function walkScope(
         case 'TD': { const [tx, ty] = nums(op.operands); st.leading = -ty; lineMove(st, tx, ty); break; }
         case 'Tm': { const m = nums(op.operands); if (m.length === 6) { st.tlm = m as Matrix; st.tm = m as Matrix; } break; }
         case 'T*': lineMove(st, 0, -st.leading); break;
-        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
-        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
-        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
+        case 'Tj': emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet, strokeSet); break;
+        case 'TJ': emitGlyphArray(ctx, st, op.operands[0], curCtm, addr, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet, strokeSet); break;
+        case "'": lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[0], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet, strokeSet); break;
         case '"': {
           st.wordSp = num(op.operands[0]); st.charSp = num(op.operands[1]);
-          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet); break;
+          lineMove(st, 0, -st.leading); emitGlyphs(ctx, st, op.operands[2], curCtm, addr, 0, activeMcid, artScope, fill, oc.hidden, mcProps, fillSet, strokeSet); break;
         }
         case 'BMC':
           mcidStack.push(activeMcid); artifactStack.push(artScope);
@@ -943,7 +969,7 @@ function walkScope(
             const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
             walkScope(ctx, [{ bytes: inflateStream(xo), streamIndex: 0 }],
               childRes, [...path, xn.name], childCtm, depth + 1, seen,
-              activeMcid, artScope, fill, mcProps, saveTextState(st), fillSet);
+              activeMcid, artScope, fill, mcProps, saveTextState(st), fillSet, strokeSet);
             seen.delete(xo.dict);
           }
           break;
@@ -982,7 +1008,7 @@ function lineMove(st: TextState, tx: number, ty: number): void {
  *  call outright would leave the pen where the hidden run began and misplace
  *  every visible glyph after it in the same text object — a quad that is wrong
  *  rather than absent, which is worse than the defect being fixed. */
-function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps, fillSet?: FillState): void {
+function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, addr: ContentAddr, elementIndex: number, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps, fillSet?: FillState, strokeSet?: FillState): void {
   if (!isString(strObj) || !st.font) return;
   for (const g of st.font.decodeGlyphs(strObj.bytes)) {
     const startTm = st.tm;
@@ -1016,18 +1042,20 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
       code: g.code, cid: g.cid,
       tfKey: st.fontKey ?? '', tfSize: st.fontSize,
       charSpacing: st.charSp, wordSpacing: st.wordSp, hscale: st.hscale,
+      tm: startTm, tlm: st.tlm, ctm,
       ...(st.renderMode !== 0 ? { renderMode: st.renderMode } : {}),
       ...(mcProps !== undefined ? { mcProps } : {}),
       ...(fillSet !== undefined ? { fillState: fillSet } : {}),
+      ...(strokeSet !== undefined ? { strokeState: strokeSet } : {}),
     });
   }
 }
 
 /** Handle a TJ array: strings emit glyphs, numbers shift the text matrix. */
-function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps, fillSet?: FillState): void {
+function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix, addr: ContentAddr, mcid?: number, artScope?: ContentAddr, fill?: Rgb, hidden?: boolean, mcProps?: McProps, fillSet?: FillState, strokeSet?: FillState): void {
   if (!isArray(arrObj) || !st.font) return;
   arrObj.forEach((el, idx) => {
-    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden, mcProps, fillSet);
+    if (isString(el)) emitGlyphs(ctx, st, el, ctm, addr, idx, mcid, artScope, fill, hidden, mcProps, fillSet, strokeSet);
     else if (typeof el === 'number') {
       const [dx, dy] = tjShift(el, st.fontSize, st.hscale, st.font!.wmode === 1);
       st.tm = mul(translate(dx, dy), st.tm);
@@ -1169,6 +1197,13 @@ function buildFragments(glyphs: GlyphEvent[], spans?: [number, number][]): TextF
       && Math.abs(cur.line - k.line) <= Math.max(2, 0.5 * e.fontSize)
       && Math.abs(k.start - cur.end) <= 0.5 * e.fontSize;
     if (cur && sameStyle) {
+      // **Invariant (567g):** a word gap made by a kern or a `Td` rather than a
+      // space glyph is still a word gap. The merge tolerance (half an em) is
+      // wider than a word space, so without this two words drawn with no
+      // space character between them read as one in every fragment-based
+      // API. The rule is `layoutLines`' own — over a quarter em, no space
+      // either side — so a fragment's text agrees with `GetText`.
+      if (k.start - cur.end > 0.25 * e.fontSize && !cur.text.endsWith(' ') && !e.text.startsWith(' ')) cur.text += ' ';
       cur.text += e.text;
       // A column grows *downward*, so its box extends at quad[1]; a horizontal
       // line's origin corner is left where the first glyph put it, exactly as
@@ -1355,6 +1390,27 @@ function bbox(quads: [number, number, number, number][]): [number, number, numbe
   ];
 }
 
+/** For each line, top to bottom, the index of the paragraph-like block it
+ *  belongs to: a new block starts at a baseline drop over 1.6 line heights or
+ *  a left-edge shift over 2. The ONE rule `extractStructured` and
+ *  `ReplaceText({ adjust: 'reflow' })` share, so the two cannot disagree about
+ *  what a paragraph is. */
+export function groupLineBlocks(lines: readonly { quad: [number, number, number, number] }[]): number[] {
+  const out: number[] = [];
+  let block = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      const prev = lines[i - 1].quad, line = lines[i].quad;
+      const size = Math.max(prev[3] - prev[1], line[3] - line[1]) || 1;
+      const gap = prev[1] - line[1];
+      const indent = Math.abs(line[0] - prev[0]);
+      if (gap > 1.6 * size || indent > 2 * size) block++;
+    }
+    out.push(block);
+  }
+  return out;
+}
+
 /** Assemble positioned fragments into lines (by baseline) and paragraph-like
  *  blocks (by vertical gap and left-edge alignment), ordered top-to-bottom. */
 export function extractStructured(
@@ -1411,28 +1467,15 @@ export function extractStructured(
   }
   closeLine();
 
-  // Group lines into blocks by vertical gap and left-edge alignment.
+  const blockOf = groupLineBlocks(lines);
   const blocks: TextBlock[] = [];
-  let group: TextLine[] = [];
-  const closeBlock = () => {
-    if (group.length === 0) return;
-    blocks.push({
-      text: group.map((l) => l.text).join('\n'),
-      quad: bbox(group.map((l) => l.quad)), lines: group,
-    });
-    group = [];
-  };
-  for (const line of lines) {
-    if (group.length > 0) {
-      const prev = group[group.length - 1];
-      const size = Math.max(prev.quad[3] - prev.quad[1], line.quad[3] - line.quad[1]) || 1;
-      const gap = prev.quad[1] - line.quad[1];           // baseline drop (positive going down)
-      const indent = Math.abs(line.quad[0] - prev.quad[0]);
-      if (gap > 1.6 * size || indent > 2 * size) closeBlock();
-    }
-    group.push(line);
+  for (let i = 0; i < lines.length;) {
+    let j = i;
+    while (j < lines.length && blockOf[j] === blockOf[i]) j++;
+    const group = lines.slice(i, j);
+    blocks.push({ text: group.map((l) => l.text).join('\n'), quad: bbox(group.map((l) => l.quad)), lines: group });
+    i = j;
   }
-  closeBlock();
   return blocks;
 }
 

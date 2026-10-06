@@ -6,12 +6,15 @@ import type { Page } from './page.js';
 import type { GlyphEvent, Rect, RefRun } from './text.js';
 import { visitContent, layoutLines, runFromGlyph, walkOpts, contentStreamBytes } from './text.js';
 import { inflateStream } from './flate.js';
-import { planAdjustment, runsAdvance, glyphAdvance, type AdjustEdit, type KernInsert } from './replaceadjust.js';
+import { planAdjustment, runsAdvance, glyphAdvance, type AdjustEdit, type ShowInsert, type ChainGap } from './replaceadjust.js';
 import { EditableContent } from './editcontent.js';
+import { findParagraph, untaggedKeys, MOVABLE_ANNOTS, type Paragraph, type Rect as ParaRect } from './reflowpara.js';
+import { wrapParagraph } from './reflowwrap.js';
+import { regenerateAppearance } from './annotdraw.js';
 import type { ContentAddr } from './editcontent.js';
 import { ContentOp, parseContentStream } from './content.js';
-import { PdfObject, PdfDict, isString, isArray, isDict, isStream, isName } from './types.js';
-import type { ReplaceTextOptions, Run, RunStyle, UndrawableText } from './replacefont.js';
+import { PdfObject, PdfDict, isString, isArray, isDict, isStream, isName, isRef, name, type PdfStream } from './types.js';
+import type { ReplaceTextOptions, Run, RunStyle, UndrawableText, UnreflowableReason, UnreflowableText } from './replacefont.js';
 import { assignRuns, checkReplaceOptions, pushRun } from './replacefont.js';
 import { splitShowOp, type FontRestore, type ShowPiece } from './showsplit.js';
 import { driverFor, registerFontIn, type AuthoringFont } from './stamp.js';
@@ -82,7 +85,7 @@ export function centroidIn(region: Rect, q: Rect): boolean {
 export function searchText(
   doc: Document, page: Page, find: string | RegExp, opts: SearchOptions = {},
 ): TextMatch[] {
-  const { text, refs } = pageText(doc, page, opts);
+  const { text, refs } = pageLayout(doc, page, opts);
   if (text.length === 0) return [];
   return findRanges(text, find, opts).map(([start, end]) => buildMatch(text, refs, start, end));
 }
@@ -91,38 +94,59 @@ export function searchText(
  *  it (`undefined` for a space or line break layout inserted). The ONE layout
  *  `Search` and `ReplaceText` read, so the two cannot disagree about where a
  *  match is. */
-function pageText(
+/** @internal — exported for tests. */
+export function pageLayout(
   doc: Document, page: Page, opts: SearchOptions,
-): { text: string; refs: (GlyphEvent | undefined)[]; all: GlyphEvent[] } {
+): { text: string; refs: (GlyphEvent | undefined)[]; all: GlyphEvent[]; inks: Rect[]; whole: () => { text: string; refs: (GlyphEvent | undefined)[] } } {
   const runs: RefRun<GlyphEvent>[] = [];
+  const wholeRuns: RefRun<GlyphEvent>[] = [];   // ignoring region, from the same glyph objects (u3l5.10)
   const all: GlyphEvent[] = [];   // every glyph, in content order (u3l5.4)
+  const inks: Rect[] = [];   // images and paths, for reflow's free-space rules (u3l5.5)
   const region = opts.region;
   visitContent(doc, page, {
     glyph: (e) => {
       all.push(e);
       if (!e.text) return;
+      if (region) wholeRuns.push(runFromGlyph(e, e));
       if (region && !centroidIn(region, e.quad)) return;
       runs.push(runFromGlyph(e, e));
     },
+    image: (e) => inks.push(e.quad),
+    path: (e) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const [ax, ay, bx, by] of e.segments) {
+        x0 = Math.min(x0, ax, bx); y0 = Math.min(y0, ay, by);
+        x1 = Math.max(x1, ax, bx); y1 = Math.max(y1, ay, by);
+      }
+      if (x0 <= x1) inks.push([x0, y0, x1, y1]);
+    },
   }, walkOpts(opts));
-  return { ...layoutLines(runs), all };
+  const layout = layoutLines(runs);
+  return { ...layout, all, inks, whole: () => (region ? layoutLines(wholeRuns) : layout) };
 }
 
 /** The /Font dict of the scope at `path`, or `undefined` when that scope holds
  *  no /Resources of its OWN (a form without one uses its parent's, 7.8.3, and
  *  registering a font there would need a fresh dict that hides the rest). */
 function scopeFonts(doc: Document, page: Page, path: readonly string[]): PdfDict | undefined {
+  const fonts = doc.resolve(scopeResources(doc, page, path, false)?.get('Font'));
+  return isDict(fonts) ? fonts : undefined;
+}
+
+/** The /Resources the scope at `path` looks names up in. With `inherit`, a
+ *  form without its own uses its parent's, as `visitContent` reads it;
+ *  without, such a form answers `undefined`. */
+function scopeResources(doc: Document, page: Page, path: readonly string[], inherit: boolean): PdfDict | undefined {
   let res = page.Resources;
   for (const n of path) {
     const xobjs = doc.resolve(res?.get('XObject'));
     const xo = isDict(xobjs) ? doc.resolve(xobjs.get(n)) : undefined;
     if (!isStream(xo)) return undefined;
     const own = doc.resolve(xo.dict.get('Resources'));
-    if (!isDict(own)) return undefined;
-    res = own;
+    if (isDict(own)) res = own;
+    else if (!inherit) return undefined;
   }
-  const fonts = doc.resolve(res?.get('Font'));
-  return isDict(fonts) ? fonts : undefined;
+  return res;
 }
 
 /** Yield [start, end) char ranges for each non-overlapping match.
@@ -246,14 +270,25 @@ interface StreamEdits {
   kerns: Map<number, KernSpan[]>;
   /** The `Tf` that restores each operator's original font after a foreign run. */
   restore: Map<number, FontRestore>;
-  /** Kerns `adjust` inserts before glyphs no edit touches (u3l5.4). */
-  inserts: Map<number, KernInsert[]>;
+  /** Kerns `adjust` inserts before glyphs no edit touches (u3l5.4), and
+   *  operators the reflow writes before a glyph (u3l5.5). */
+  inserts: Map<number, ShowInsert[]>;
+  /** Operators written AFTER an operator (u3l5.5). */
+  after: Map<number, ContentOp[]>;
+  /** Operators written BEFORE an operator (u3l5.6). */
+  before: Map<number, ContentOp[]>;
 }
 
 /** The text-positioning operators after which a show operator's pen no longer
  *  follows the one before: each sets the pen from the line matrix, which no
  *  kern moves. */
 const PEN_RESET = new Set(['BT', 'ET', 'Td', 'TD', 'Tm', 'T*', "'", '"']);
+
+/** How an error names a page: `page N`, or — for a page outside `doc.Pages`,
+ *  such as a template's, whose number is 0 — which kind of page it is (u3l5.8). */
+export function pageLabel(pageNumber: number): string {
+  return pageNumber > 0 ? `page ${pageNumber}` : 'a page outside the page tree';
+}
 
 function streamKey(addr: ContentAddr): string {
   return `${addr.path.join('\0')}${addr.streamIndex}`;
@@ -262,7 +297,12 @@ function streamKey(addr: ContentAddr): string {
 /** Replace every occurrence of `find` with `replacement`, written in place
  *  through the F1 op-list. No layout reflow: positioning operators are
  *  preserved, so a wider replacement may overlap and a narrower one may leave
- *  a gap. Returns the number of occurrences found.
+ *  a gap. Returns the number of occurrences replaced — a match made only of
+ *  spaces layout inserted draws nothing, edits nothing and is not counted.
+ *
+ *  Removing a `Tj` the edit emptied shifts the index of every later operator in
+ *  its stream, so a `ContentAddr` (or `TextMatch.hits`) taken before the call
+ *  may name a different operator afterwards: search again after editing.
  *
  *  **Invariant (u3l5.1):** the edit is planned per CHARACTER and written per
  *  GLYPH. A glyph may draw several characters — a ligature draws `fi` — so a
@@ -292,38 +332,108 @@ export function replaceText(
   return plan.count;
 }
 
+/** @internal A restyle request (u3l5.6): each match is rewritten as its OWN
+ *  text, piece by piece, styled through `opts.font`/`fontSize`/`color`. */
+export interface RestyleRequest {
+  /** False for a decoration-only restyle: no character is rewritten. */
+  rewrite: boolean;
+  /** Plans decorations once the text plan (reflow included) is known; throws
+   *  to refuse, before anything changes. */
+  decorate?: (ctx: DecorateContext) => void;
+  /** Form streams an earlier page of the same call already restyled: a match
+   *  inside one is skipped. Pages sharing one /Resources dict reach the SAME
+   *  form, so re-planning page 2 after page 1 was applied finds the restyled
+   *  text still matching and would restyle it again. */
+  skipForms?: ReadonlySet<PdfStream>;
+}
+export interface RestylePiece { anchor: GlyphEvent; glyphs: GlyphEvent[]; runs?: Run[] }
+export interface DecorateContext {
+  pageNumber: number;
+  pieces: readonly RestylePiece[];
+  /** Reflow targets (glyph origin incl. rise, device space); empty without reflow. */
+  targets: ReadonlyMap<GlyphEvent, [number, number]>;
+  /** How far along its baseline (device units) each glyph's start moves
+   *  without reflow: the width changes of the edits before it in its pen chain
+   *  and the kerns `adjust` inserts before it. */
+  shifts: ReadonlyMap<GlyphEvent, number>;
+  /** The parsed ops of the scope at `path`, per stream, read-only. */
+  scopeOps(path: readonly string[]): ContentOp[][];
+  /** The operators that set `g`'s fill, valid in `g`'s own scope — a colour
+   *  named outside a form is copied in, as a replacement colour's restore
+   *  does (u3l5.9). `0 g` for the initial fill. */
+  fillOps(g: GlyphEvent): ContentOp[];
+  /** How many times the page draws the content place `g` stands at: more
+   *  than one for a Form XObject drawn more than once (u3l5.12). */
+  drawings(g: GlyphEvent): number;
+  before(addr: ContentAddr, ops: readonly ContentOp[]): void;
+  after(addr: ContentAddr, ops: readonly ContentOp[]): void;
+}
+
 /** A planned replacement on one page: nothing is mutated until `apply`. */
-export interface ReplacePlan { count: number; apply(): void }
+export interface ReplacePlan {
+  count: number;
+  apply(): void;
+  /** The scope paths a restyle wrote into (u3l5.6), for `skipForms`. */
+  restyledPaths?: (readonly string[])[];
+}
 
 /** Plan a replacement on one page, mutating NOTHING (u3l5.2): search, assign
  *  each written character a font, encode what is in the original font.
  *  `doc.ReplaceText` plans every page before applying any, so a refusal on one
  *  page leaves the others untouched. */
 export function planReplace(
-  doc: Document, page: Page, pageNumber: number, find: string | RegExp, replacement: string,
+  doc: Document, page: Page, pageNumber: number, find: string | RegExp, replacement: string | RestyleRequest,
   opts: ReplaceTextOptions,
 ): ReplacePlan {
   // An EDIT acts on what the file CONTAINS. Rewriting only the occurrences a
   // viewer is currently shown would leave the rest behind, so a caller's own
   // `includeHidden` cannot narrow this below true.
-  const { text, refs, all } = pageText(doc, page, { ...opts, includeHidden: true });
+  const { text, refs, all, inks, whole } = pageLayout(doc, page, { ...opts, includeHidden: true });
   const ranges = text.length === 0 ? [] : findRanges(text, find, opts);
   if (ranges.length === 0) return { count: 0, apply: () => {} };
 
   // The character plan: which positions a match covers, and where each
   // match's replacement is emitted.
   const covered = new Uint8Array(text.length);
-  const matchAt = new Int32Array(text.length).fill(-1);   // which match covers a position
+  const matchAt = new Int32Array(text.length).fill(-1);   // which piece covers a position
   const insertAt = new Map<number, string>();
+  const restyle = typeof replacement === 'string' ? undefined : replacement;
+  // **Invariant (u3l5.6):** a restyle rewrites each match WHERE ITS GLYPHS ARE,
+  // so a match is cut into pieces at every change of show-string element and
+  // each piece is written as its own text. A replacement is one piece, emitted
+  // at the match's anchor (u3l5.1). Positions layout inserted end a piece.
+  const pieces: [number, number, number][] = [];   // [start, end, match index]
+  ranges.forEach(([s, e], m) => {
+    if (!restyle) { pieces.push([s, e, m]); return; }
+    let ps = -1;
+    let key = '';
+    for (let p = s; p <= e; p++) {
+      const g = p < e ? refs[p] : undefined;
+      const k = g ? `${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}` : '';
+      if (ps >= 0 && k !== key) { pieces.push([ps, p, m]); ps = -1; }
+      if (g && ps < 0) { ps = p; key = k; }
+    }
+  });
   const anchored: [number, number][] = [];
-  for (const [s, e] of ranges) {
+  const matchOfPiece: number[] = [];
+  const inked = new Set<number>();   // matches with at least one glyph that drew text
+  for (const [s, e, m] of pieces) {
     let anchor = s;
     while (anchor < e && refs[anchor] === undefined) anchor++;
     if (anchor === e) continue;   // only characters layout inserted: no ink to rewrite
-    covered.fill(1, s, e);
-    matchAt.fill(anchored.length, s, e);
-    insertAt.set(anchor, replacement);
+    inked.add(m);
+    const ap = refs[anchor]!.addr.path;
+    if (restyle?.skipForms && ap.length > 0) {
+      const form = scopeStream(doc, page, ap);
+      if (form && restyle.skipForms.has(form)) continue;
+    }
+    if (!restyle || restyle.rewrite) {
+      covered.fill(1, s, e);
+      matchAt.fill(anchored.length, s, e);
+      insertAt.set(anchor, restyle ? text.slice(s, e) : (replacement as string));
+    }
     anchored.push([s, e]);
+    matchOfPiece.push(m);
   }
 
   // Each glyph's contiguous span of positions in `text`.
@@ -338,7 +448,7 @@ export function planReplace(
   const streamFor = (addr: ContentAddr): StreamEdits => {
     const sk = streamKey(addr);
     let s = streams.get(sk);
-    if (!s) { s = { addr, perOp: new Map(), kerns: new Map(), restore: new Map(), inserts: new Map() }; streams.set(sk, s); }
+    if (!s) { s = { addr, perOp: new Map(), kerns: new Map(), restore: new Map(), inserts: new Map(), after: new Map(), before: new Map() }; streams.set(sk, s); }
     return s;
   };
   const editsFor = (addr: ContentAddr): StrEdit[] => {
@@ -383,18 +493,24 @@ export function planReplace(
   // needs a scope that can name a font (`canSwitch`); a colour needs a fill
   // that can be put back where the replacement is written.
   const styled = opts.font !== undefined || opts.fontSize !== undefined || opts.color !== undefined;
+  const paint = new PaintRestorer(doc, page, pageNumber);
   const styleOf = (g: GlyphEvent): RunStyle | undefined => {
     if (!styled) return undefined;
     if ((opts.font !== undefined || opts.fontSize !== undefined) && !canSwitch(g)) {
       throw new UnsupportedFeatureError(
-        `ReplaceText: page ${pageNumber}: cannot change the font or size of text in a scope without its own /Resources naming its font`);
+        `ReplaceText: ${pageLabel(pageNumber)}: cannot change the font or size of text in a scope without its own /Resources naming its font`);
     }
     const style: RunStyle = {};
     // Points as rendered: the ratio of the Tf size to the device size is the
     // scaling the matched text already has.
     if (opts.fontSize !== undefined) style.size = g.fontSize !== 0 ? opts.fontSize * g.tfSize / g.fontSize : opts.fontSize;
     if (opts.color !== undefined) {
-      style.fill = { set: { operator: 'rg', operands: [...opts.color] }, restore: restoreFill(g, pageNumber) };
+      style.fill = { set: { operator: 'rg', operands: [...opts.color] }, restore: paint.restore(g, false) };
+      // (u3l5.9) Text whose render mode strokes is coloured by its stroke too;
+      // fill-only text gets no stroke operators, so its output does not move.
+      if (STROKING_MODES.has(g.renderMode ?? 0)) {
+        style.stroke = { set: { operator: 'RG', operands: [...opts.color] }, restore: paint.restore(g, true) };
+      }
     }
     return style;
   };
@@ -402,6 +518,9 @@ export function planReplace(
   // Every glyph that drew text, grouped by the show string it came from and
   // walked in byte order.
   const byElement = new Map<string, { g: GlyphEvent; gs: number; ge: number }[]>();
+  /** Bytes of text-less glyphs a match's edit swept in, per show string and
+   *  match: they are removed with it, so they count toward "wholly matched". */
+  const swept = new Map<string, number>();
   for (const [g, [gs, ge]] of spans) {
     const key = `${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}`;
     const list = byElement.get(key);
@@ -409,12 +528,18 @@ export function planReplace(
   }
   for (const list of byElement.values()) {
     list.sort((a, b) => a.g.byteStart - b.g.byteStart);
+    const edited = new Set<number>();
     let open: StrEdit | undefined;
     let openEnd = -1;   // position just past the open edit's last glyph
     for (const { g, gs, ge } of list) {
       let touched = false;
       for (let p = gs; p < ge && !touched; p++) touched = covered[p] === 1;
       if (!touched) { open = undefined; continue; }
+      // **Invariant (u3l5.6):** a form drawn twice is ONE stream, so its glyph
+      // at this byte has already been edited by the first drawing's match.
+      // Editing it again wrote the replacement twice.
+      if (edited.has(g.byteStart)) continue;
+      edited.add(g.byteStart);
       // Each written piece is attributed to a match: a replacement to the match
       // anchored at that position, residue to the first match touching the glyph.
       let owner = -1;
@@ -444,6 +569,8 @@ export function planReplace(
       // inside a word — and the edit is extended over its bytes. One between
       // two different matches, or beside an unmatched character, is kept.
       if (open && matchAt[openEnd - 1] !== -1 && matchAt[openEnd - 1] === matchAt[gs]) {
+        const sk = `${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}|${matchAt[gs]}`;
+        swept.set(sk, (swept.get(sk) ?? 0) + g.byteStart - open.end);
         for (const r of runs) pushRun(open.runs, r);
         open.end = g.byteStart + g.byteLen;
         open.endPos = ge;
@@ -460,7 +587,12 @@ export function planReplace(
   // between them is wholly matched by that match. Reading order comes from
   // layout, which sorts by position, so it can differ from stream order — and
   // a kern that positions text OUTSIDE the match must survive.
-  for (const [s, e] of anchored) {
+  //
+  // **Invariant (u3l5.7):** a text-less glyph the match's edit swept in counts
+  // as matched — its bytes go with the edit — so a string holding one inside a
+  // word is still wholly matched and the kerns around it are dropped. One the
+  // edit did NOT sweep (at an element's edge) still draws, and keeps its kerns.
+  for (const [k, [s, e]] of anchored.entries()) {
     const perOp = new Map<string, { addr: ContentAddr; span: KernSpan }>();
     for (let p = s; p < e; p++) {
       const g = refs[p];
@@ -475,44 +607,156 @@ export function planReplace(
       span.hi = Math.max(span.hi, g.elementIndex);
       if (gs >= s && ge <= e) span.matched.set(g.elementIndex, (span.matched.get(g.elementIndex) ?? 0) + g.byteLen);
     }
-    for (const { addr, span } of perOp.values()) {
+    for (const [key, { addr, span }] of perOp) {
       if (span.hi - span.lo < 2) continue;   // adjacent elements: nothing between them
+      for (const [j, n] of span.matched) span.matched.set(j, n + (swept.get(`${key}|${j}|${k}`) ?? 0));
       const { kerns } = streamFor(addr);
       const list = kerns.get(addr.opIndex);
       if (list) list.push(span); else kerns.set(addr.opIndex, [span]);
     }
   }
 
-  if (opts.adjust !== undefined && opts.adjust !== 'none') {
-    planLineAdjust(doc, page, pageNumber, opts.adjust, streams, streamFor, all, text, refs, covered, spans);
+  if (opts.adjust === 'shiftRest' || opts.adjust === 'spaceWidth') {
+    planLineAdjust(doc, page, pageNumber, opts.adjust, streams, streamFor, all, text, refs, covered, spans, matchAt, opts.region ? whole() : undefined, chainGapFor(doc, page));
+  }
+  const unreflowable: UnreflowableText[] = [];
+  const annotWrites: (() => void)[] = [];
+  const targets = new Map<GlyphEvent, [number, number]>();
+  if (opts.adjust === 'reflow') {
+    planReflow(doc, page, pageNumber, streams, streamFor, all, text, refs, covered, spans, inks, anchored, unreflowable, annotWrites, targets, opts);
   }
 
+  let drawCount: Map<string, number> | undefined;
+  const placeKey = (g: GlyphEvent) => `${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}|${g.byteStart}`;
+  if (restyle?.decorate) {
+    const editByAnchor = new Map<GlyphEvent, StrEdit>();
+    for (const s of streams.values()) for (const list of s.perOp.values()) for (const e of list) editByAnchor.set(e.anchor, e);
+    const restylePieces: RestylePiece[] = anchored.map(([s, e]) => {
+      const gs: GlyphEvent[] = [];
+      for (let p = s; p < e; p++) { const g = refs[p]; if (g && gs[gs.length - 1] !== g) gs.push(g); }
+      return { anchor: gs[0], glyphs: gs, runs: editByAnchor.get(gs[0])?.runs };
+    });
+    const push = (map: 'before' | 'after') => (addr: ContentAddr, ops: readonly ContentOp[]): void => {
+      const m = streamFor(addr)[map];
+      const list = m.get(addr.opIndex);
+      if (list) list.push(...ops); else m.set(addr.opIndex, [...ops]);
+    };
+    restyle.decorate({
+      pageNumber, pieces: restylePieces, targets, shifts: naturalShifts(all, streams, chainGapFor(doc, page)),
+      scopeOps: (path) => readScopeOps(doc, page, path),
+      fillOps: (g) => paint.restore(g, false),
+      drawings: (g) => {
+        if (!drawCount) {
+          drawCount = new Map();
+          for (const x of all) drawCount.set(placeKey(x), (drawCount.get(placeKey(x)) ?? 0) + 1);
+        }
+        return drawCount.get(placeKey(g)) ?? 1;
+      },
+      before: push('before'), after: push('after'),
+    });
+  }
   const undrawable: UndrawableText[] = [];
-  anchored.forEach(([s, e], k) => {
-    if (missing[k].length > 0) undrawable.push({ page: pageNumber, match: text.slice(s, e), missing: [...new Set(missing[k])] });
+  const missingByMatch = new Map<number, string[]>();
+  anchored.forEach((_, k) => {
+    if (missing[k].length === 0) return;
+    const list = missingByMatch.get(matchOfPiece[k]);
+    if (list) list.push(...missing[k]); else missingByMatch.set(matchOfPiece[k], [...missing[k]]);
   });
+  for (const [m, chars] of missingByMatch) {
+    undrawable.push({ page: pageNumber, match: text.slice(ranges[m][0], ranges[m][1]), missing: [...new Set(chars)] });
+  }
   if (undrawable.length > 0 && !opts.onUndrawable) {
     const chars = [...new Set(undrawable.flatMap((u) => u.missing))];
     throw new UnsupportedFeatureError(
-      `ReplaceText: page ${pageNumber}: no available font can draw ${chars.map((c) => JSON.stringify(c)).join(', ')}`);
+      `ReplaceText: ${pageLabel(pageNumber)}: no available font can draw ${chars.map((c) => JSON.stringify(c)).join(', ')}`);
   }
   return {
-    count: ranges.length,
+    // **Invariant (u3l5.7):** a match made only of spaces layout inserted draws
+    // nothing and edits nothing, so it is not counted. A match in a form an
+    // earlier page already restyled IS: it shows the restyled text (u3l5.6).
+    count: inked.size,
+    restyledPaths: restyle ? [...new Map(anchored.map(([s]) => {
+      let a = s;
+      while (refs[a] === undefined) a++;
+      const p = refs[a]!.addr.path;
+      return [p.join('\0'), [...p]] as const;
+    })).values()].filter((p) => p.length > 0) : undefined,
     apply: () => {
-      applyEdits(doc, page, streams.values());
+      applyEdits(doc, page, streams.values(), paint.copies);
+      for (const w of annotWrites) w();
       for (const u of undrawable) opts.onUndrawable?.({ ...u, missing: [...u.missing] });
+      for (const u of unreflowable) opts.onUnreflowable?.({ ...u });
     },
   };
+}
+
+/**
+ * Where each glyph's START moves along its baseline once the planned edits are
+ * written, without reflow (u3l5.6): a pen is relative, so an edit that changes
+ * width moves everything after it in its CHAIN by the difference, and a kern
+ * `adjust` inserts moves the glyph it precedes and the rest of the chain. A
+ * positioning operator between two glyphs starts the chain again.
+ *
+ * **Invariant:** the edit's own anchor does not move — its new width moves
+ * what follows it — and every original glyph in an edit's byte range gives up
+ * its advance, since the edit's runs replace all of them.
+ */
+function naturalShifts(
+  all: readonly GlyphEvent[], streams: Map<string, StreamEdits>,
+  gap: (a: ContentAddr, b: ContentAddr) => ChainGap,
+): Map<GlyphEvent, number> {
+  const editsAt = new Map<string, StrEdit[]>();
+  const kernAt = new Map<string, number>();
+  for (const s of streams.values()) {
+    for (const [op, list] of s.perOp) {
+      for (const e of list) {
+        const k = `${streamKey(s.addr)}|${op}|${e.elementIndex}`;
+        const l = editsAt.get(k);
+        if (l) l.push(e); else editsAt.set(k, [e]);
+      }
+    }
+    for (const [op, list] of s.inserts) {
+      for (const ins of list) {
+        if (ins.piece.kind !== 'kern') continue;
+        const k = `${streamKey(s.addr)}|${op}|${ins.elementIndex}|${ins.byteStart}`;
+        kernAt.set(k, (kernAt.get(k) ?? 0) + ins.piece.value);
+      }
+    }
+  }
+  const out = new Map<GlyphEvent, number>();
+  const state = new Map<string, { last?: GlyphEvent; shift: number }>();
+  for (const g of all) {
+    const scope = g.addr.path.join('\0');
+    let st = state.get(scope);
+    if (!st) { st = { shift: 0 }; state.set(scope, st); }
+    if (!st.last || gap(st.last.addr, g.addr) !== 'none') st.shift = 0;
+    st.last = g;
+    const k = kernAt.get(`${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}|${g.byteStart}`);
+    if (k) st.shift += -k / 1000 * g.fontSize * g.hscale;
+    out.set(g, st.shift);
+    const e = editsAt.get(`${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}`)
+      ?.find((x) => g.byteStart >= x.start && g.byteStart < x.end);
+    if (e) {
+      if (g === e.anchor) st.shift += runsAdvance(e.runs, g);
+      st.shift -= glyphAdvance(g);
+    }
+  }
+  return out;
 }
 
 /** Write the planned edits through one `EditableContent` and commit it. An
  *  operator whose edits carry a run in another font is SPLIT around it
  *  (`splitShowOp`); every other operator takes u3l5.1's byte splice, which is
  *  what keeps a replacement the original font can draw byte-identical. */
-function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>): void {
+function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>, copies: readonly ResourceCopy[] = []): void {
   const ec = new EditableContent(doc, page);
   let any = false;
-  for (const { addr, perOp, kerns, restore, inserts } of streams) {
+  // (u3l5.9) Resource entries a restore names, written into the form's own
+  // /Resources — reached through the EditableContent, after its copy-on-write.
+  for (const c of copies) {
+    ensureOwnSubdict(doc, ec.ownXObjectResources(c.path), c.category).set(c.key, c.value);
+  }
+  for (const { addr, perOp, kerns, restore, inserts, after, before } of streams) {
     any = true;
     const ops = addr.path.length === 0 ? ec.topOps(addr.streamIndex) : ec.xobjectOps(addr.path);
     let fonts: PdfDict | undefined;
@@ -527,14 +771,16 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>): 
     };
     const out: ContentOp[] = [];
     ops.forEach((op, i) => {
+      out.push(...(before.get(i) ?? []));
       const e = perOp.get(i) ?? [], k = kerns.get(i) ?? [], ins = inserts.get(i) ?? [];
-      if (e.length === 0 && k.length === 0 && ins.length === 0) { out.push(op); return; }
-      if (ins.length > 0 || e.some(hasForeign)) {
+      if (e.length === 0 && k.length === 0 && ins.length === 0) out.push(op);
+      else if (ins.length > 0 || e.some(hasForeign)) {
         out.push(...splitShowOp(op, showPieces(op, e, k, keyFor, ins), restore.get(i) ?? NO_RESTORE));
-        return;
+      } else {
+        const next = spliceShowOp(op, e, k);
+        if (!emptiedTj(op, next)) out.push(next);
       }
-      const next = spliceShowOp(op, e, k);
-      if (!emptiedTj(op, next)) out.push(next);
+      out.push(...(after.get(i) ?? []));
     });
     if (addr.path.length === 0) ec.setTopOps(addr.streamIndex, out);
     else ec.setXobjectOps(addr.path, out);
@@ -542,12 +788,47 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>): 
   if (any) ec.commit();
 }
 
+/** A foreign run's bytes — and, when its spaces must be widened, the `TJ`
+ *  array that does it.
+ *
+ *  **Invariant (u3l5.8):** a space takes `Tw` only as the ONE-BYTE code 32
+ *  (32000-1 9.3.3), and an embedded fallback is written as Type0 2-byte codes,
+ *  so where word spacing is in force — justified text — its spaces would come
+ *  out narrower than the original font's around them. Each is followed by a
+ *  kern of `-Tw × 1000 / Tf size`, which moves the pen by exactly `Tw`, so the
+ *  run is spaced as the text it replaced. A Standard-14 face is written one
+ *  byte a character and gets `Tw` itself. `runsAdvance` measures the same. */
+function encodeForeign(
+  font: AuthoringFont, text: string, wordSpacing: number, tfSize: number,
+): { bytes: Uint8Array; tj?: PdfObject[] } {
+  const driver = driverFor(font);
+  if (typeof font === 'string' || wordSpacing === 0 || tfSize === 0 || !text.includes(' ')) {
+    return { bytes: driver.encode(text) };
+  }
+  const kern = -wordSpacing * 1000 / tfSize;
+  const tj: PdfObject[] = [];
+  const chunks: Uint8Array[] = [];
+  const parts = text.split(' ');
+  parts.forEach((part, i) => {
+    const seg = i < parts.length - 1 ? `${part} ` : part;
+    if (seg === '') return;
+    const bytes = driver.encode(seg);
+    chunks.push(bytes);
+    tj.push({ kind: 'string', bytes });
+    if (i < parts.length - 1) tj.push(kern);
+  });
+  const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) { bytes.set(c, at); at += c.length; }
+  return { bytes, tj };
+}
+
 /** What a show operator draws after its edits, as `splitShowOp` pieces. A
  *  foreign run is encoded HERE, at apply time, so a refused plan records no
  *  glyph usage on an embedded fallback. */
 function showPieces(
   op: ContentOp, edits: StrEdit[], kerns: KernSpan[], keyFor: (f: AuthoringFont) => string,
-  inserts: readonly KernInsert[] = [],
+  inserts: readonly ShowInsert[] = [],
 ): ShowPiece[] {
   const els: PdfObject[] = op.operator === 'TJ'
     ? (isArray(op.operands[0]) ? op.operands[0] : [])
@@ -565,7 +846,7 @@ function showPieces(
     const kernsUpTo = (at: number): void => {
       for (; ki < kernsHere.length && kernsHere[ki].byteStart <= at; ki++) {
         pieces.push({ kind: 'bytes', bytes: el.bytes.subarray(pos, kernsHere[ki].byteStart) });
-        pieces.push({ kind: 'kern', value: kernsHere[ki].value });
+        pieces.push(kernsHere[ki].piece);
         pos = kernsHere[ki].byteStart;
       }
     };
@@ -574,12 +855,13 @@ function showPieces(
       pieces.push({ kind: 'bytes', bytes: el.bytes.subarray(pos, x.start) });
       for (const r of x.runs) {
         if (r.font === 'original' && r.style === undefined) { pieces.push({ kind: 'bytes', bytes: r.bytes }); continue; }
+        const size = r.style?.size;
         pieces.push({
           kind: 'foreign',
           ...(r.font === 'original'
             ? { bytes: r.bytes }
-            : { key: keyFor(r.font), bytes: driverFor(r.font).encode(r.text) }),
-          size: r.style?.size, fill: r.style?.fill,
+            : { key: keyFor(r.font), ...encodeForeign(r.font, r.text, x.anchor.wordSpacing, size ?? x.anchor.tfSize) }),
+          size, fill: r.style?.fill, stroke: r.style?.stroke,
         });
       }
       pos = x.end;
@@ -601,11 +883,25 @@ const NO_RESTORE: FontRestore = { key: '', size: 0 };
  * REMOVES — every glyph in its byte range, the text-less ones it swept in
  * included, and the TJ kerns dropped inside its match. Measuring only the
  * matched characters misses both, and the line then lands off by a kern.
+ *
+ * **Invariant (u3l5.10):** a Form XObject drawn twice is ONE stream, so one
+ * edit rewrites both drawings. Each drawing gets an `AdjustEdit` of its own,
+ * measured against THAT drawing's glyphs — summing every glyph in the byte
+ * range counted both drawings and doubled what the edit removed — so the
+ * rest of each drawing's line moves. Where the drawings would need different
+ * kerns in the stream they share, the call is refused.
+ *
+ * **Invariant (u3l5.10):** `region` scopes the SEARCH, never the line. The
+ * line is the whole page's layout, with each match carried over to it, so the
+ * text after a match is moved whether or not it lies inside the region.
  */
 function planLineAdjust(
   doc: Document, page: Page, pageNumber: number, mode: 'shiftRest' | 'spaceWidth',
   streams: Map<string, StreamEdits>, streamFor: (a: ContentAddr) => StreamEdits,
-  all: readonly GlyphEvent[], text: string, refs: readonly (GlyphEvent | undefined)[], covered: Uint8Array, spans: Map<GlyphEvent, [number, number]>,
+  all: readonly GlyphEvent[], text: string, refs: readonly (GlyphEvent | undefined)[], covered: Uint8Array,
+  spans: Map<GlyphEvent, [number, number]>, matchAt: Int32Array,
+  wholeLayout: { text: string; refs: readonly (GlyphEvent | undefined)[] } | undefined,
+  gap: (a: ContentAddr, b: ContentAddr) => ChainGap,
 ): void {
   const opsCache = new Map<string, ContentOp[][]>();
   const opsOf = (path: readonly string[]): ContentOp[][] => {
@@ -614,29 +910,77 @@ function planLineAdjust(
     if (!ops) { ops = readScopeOps(doc, page, path); opsCache.set(key, ops); }
     return ops;
   };
-  const edits: { edit: StrEdit; addr: ContentAddr; adj: AdjustEdit }[] = [];
+
+  // The line layout: the whole page's, and the search's carried over to it.
+  const full = wholeLayout ?? { text, refs };
+  const spansF = new Map<GlyphEvent, [number, number]>();
+  full.refs.forEach((g, i) => {
+    if (!g) return;
+    const sp = spansF.get(g);
+    if (sp) sp[1] = i + 1; else spansF.set(g, [i, i + 1]);
+  });
+  let coveredF = covered;
+  if (wholeLayout) {
+    coveredF = new Uint8Array(full.text.length);
+    const matchF = new Int32Array(full.text.length).fill(-1);
+    for (let q = 0; q < text.length; q++) {
+      const g = refs[q];
+      const a = g && spans.get(g), b = g && spansF.get(g);
+      if (!a || !b) continue;
+      const f = b[0] + (q - a[0]);
+      if (f < b[1]) { coveredF[f] = covered[q]; matchF[f] = matchAt[q]; }
+    }
+    // A space layout inserted INSIDE a match: both neighbours in one match.
+    for (let f = 0; f < full.text.length; f++) {
+      if (full.refs[f] !== undefined) continue;
+      let a = f - 1, b = f + 1;
+      while (a >= 0 && full.refs[a] === undefined) a--;
+      while (b < full.text.length && full.refs[b] === undefined) b++;
+      if (a >= 0 && b < full.text.length && matchF[a] !== -1 && matchF[a] === matchF[b]) coveredF[f] = 1;
+    }
+  }
+
+  const index = new Map<GlyphEvent, number>();
+  all.forEach((g, i) => index.set(g, i));
+  const sameOp = (a: GlyphEvent, b: GlyphEvent): boolean =>
+    a.addr.opIndex === b.addr.opIndex && a.addr.streamIndex === b.addr.streamIndex
+    && a.elementIndex === b.elementIndex && a.addr.path.join('\0') === b.addr.path.join('\0');
+
+  const edits: { edit: StrEdit; addr: ContentAddr; adjs: AdjustEdit[] }[] = [];
   for (const s of streams.values()) {
     for (const [opIndex, list] of s.perOp) {
       for (const edit of list) {
         if (edit.anchor.vertical) {
-          throw new UnsupportedFeatureError(`ReplaceText: page ${pageNumber}: adjust does not apply to vertical text`);
+          throw new UnsupportedFeatureError(`ReplaceText: ${pageLabel(pageNumber)}: adjust does not apply to vertical text`);
         }
         const addr = { ...s.addr, opIndex };
-        let removed = 0;
-        for (const g of all) {
-          if (g.addr.opIndex === opIndex && g.addr.streamIndex === addr.streamIndex
-            && g.addr.path.join('\0') === addr.path.join('\0') && g.elementIndex === edit.elementIndex
-            && g.byteStart >= edit.start && g.byteStart < edit.end) removed += glyphAdvance(g);
+        const adjs: AdjustEdit[] = [];
+        // One drawing per glyph standing where the anchor stands in the stream.
+        for (const anchor of all) {
+          if (!sameOp(anchor, edit.anchor) || anchor.byteStart !== edit.anchor.byteStart) continue;
+          const members: GlyphEvent[] = [];
+          let removed = 0;
+          const from = index.get(anchor)!;
+          for (let j = from; j < all.length && sameOp(all[j], anchor) && (j === from || all[j].byteStart > all[j - 1].byteStart); j++) {
+            const g = all[j];
+            if (g.byteStart < edit.start || g.byteStart >= edit.end) continue;
+            members.push(g);
+            removed += glyphAdvance(g);
+          }
+          const pos = spansF.get(anchor)?.[0];
+          const last = [...members].reverse().find((g) => spansF.has(g));
+          if (pos === undefined || last === undefined) continue;
+          adjs.push({
+            anchor, elementIndex: edit.elementIndex, start: edit.start, end: edit.end,
+            delta: runsAdvance(edit.runs, anchor) - removed, pos, endPos: spansF.get(last)![1], members,
+          });
         }
-        const adj: AdjustEdit = {
-          anchor: edit.anchor, elementIndex: edit.elementIndex, start: edit.start, end: edit.end,
-          delta: runsAdvance(edit.runs, edit.anchor) - removed, pos: edit.pos, endPos: edit.endPos,
-        };
-        edits.push({ edit, addr, adj });
+        edits.push({ edit, addr, adjs });
       }
     }
     // A dropped kern had moved the pen by -v/1000 text units; removing it
-    // moves it back, charged to the edit before it in the same TJ.
+    // moves it back, charged to the edit before it in the same TJ — in each
+    // drawing, at that drawing's scale.
     for (const [opIndex, spans_] of s.kerns) {
       const op = opsOf(s.addr.path)[s.addr.streamIndex]?.[opIndex];
       const arr = op?.operator === 'TJ' ? op.operands[0] : undefined;
@@ -647,33 +991,391 @@ function planLineAdjust(
         const owner = edits.filter((x) => x.addr.opIndex === opIndex && x.addr.streamIndex === s.addr.streamIndex
           && x.addr.path.join('\0') === s.addr.path.join('\0') && x.edit.elementIndex < j)
           .sort((a, b) => b.edit.elementIndex - a.edit.elementIndex)[0];
-        if (owner) owner.adj.delta += v / 1000 * owner.adj.anchor.hscale * owner.adj.anchor.fontSize;
+        if (owner) for (const adj of owner.adjs) adj.delta += v / 1000 * adj.anchor.hscale * adj.anchor.fontSize;
       }
     }
   }
   const posOf = new Map<GlyphEvent, number>();
-  for (const [g, [p]] of spans) posOf.set(g, p);
-  // Whether a positioning operator lies after `a` and up to `b` in their
-  // scope's streams, read in order. Going BACKWARDS is a break too: a form
-  // drawn a second time starts its chain again.
-  const breaks = (a: ContentAddr, b: ContentAddr): boolean => {
-    if (b.streamIndex < a.streamIndex || (b.streamIndex === a.streamIndex && b.opIndex < a.opIndex)) return true;
-    if (b.streamIndex === a.streamIndex && b.opIndex === a.opIndex) return false;
-    const ops = opsOf(a.path);
-    for (let si = a.streamIndex; si <= b.streamIndex; si++) {
-      const list = ops[si];
-      if (!list) return true;
-      const from = si === a.streamIndex ? a.opIndex + 1 : 0;
-      const to = si === b.streamIndex ? b.opIndex : list.length - 1;
-      for (let i = from; i <= to; i++) if (PEN_RESET.has(list[i].operator)) return true;
-    }
-    return false;
-  };
-  for (const k of planAdjustment(mode, all, edits.map((x) => x.adj), { text, covered, posOf, refs }, breaks)) {
+  for (const [g, [p]] of spansF) posOf.set(g, p);
+  const plan = planAdjustment(mode, all, edits.flatMap((x) => x.adjs),
+    { text: full.text, covered: coveredF, posOf, refs: full.refs }, gap);
+  if (plan.conflicts > 0) {
+    throw new UnsupportedFeatureError(
+      `ReplaceText: ${pageLabel(pageNumber)}: adjust cannot move the line around a Form XObject drawn more than once, where its drawings need different spacing`);
+  }
+  for (const k of plan.inserts) {
     const ins = streamFor(k.addr).inserts;
     const list = ins.get(k.addr.opIndex);
     if (list) list.push(k); else ins.set(k.addr.opIndex, [k]);
   }
+}
+
+const ABSOLUTE = new Set(['BT', 'ET', 'Tm']);
+
+/** The `ChainGap` between two glyphs of one scope, from the scope's ops read
+ *  ONCE and cached. Going backwards — a form drawn a second time — is
+ *  `'absolute'`: its chain starts again. */
+function chainGapFor(doc: Document, page: Page): (a: ContentAddr, b: ContentAddr) => ChainGap {
+  const cache = new Map<string, ContentOp[][]>();
+  const opsOf = (path: readonly string[]): ContentOp[][] => {
+    const key = path.join('\0');
+    let ops = cache.get(key);
+    if (!ops) { ops = readScopeOps(doc, page, path); cache.set(key, ops); }
+    return ops;
+  };
+  return (a, b) => {
+    if (a.path.join('\0') !== b.path.join('\0')) return 'absolute';
+    if (b.streamIndex < a.streamIndex || (b.streamIndex === a.streamIndex && b.opIndex < a.opIndex)) return 'absolute';
+    if (b.streamIndex === a.streamIndex && b.opIndex === a.opIndex) return 'none';
+    const ops = opsOf(a.path);
+    let found: ChainGap = 'none';
+    for (let si = a.streamIndex; si <= b.streamIndex; si++) {
+      const list = ops[si];
+      if (!list) return 'absolute';
+      const from = si === a.streamIndex ? a.opIndex + 1 : 0;
+      const to = si === b.streamIndex ? b.opIndex : list.length - 1;
+      for (let i = from; i <= to; i++) {
+        if (ABSOLUTE.has(list[i].operator)) return 'absolute';
+        if (PEN_RESET.has(list[i].operator)) found = 'relative';
+      }
+    }
+    return found;
+  };
+}
+
+const DESCENT = 0.25;
+
+/**
+ * Plan `adjust: 'reflow'` (u3l5.5): for each paragraph a match touches, find
+ * it, wrap it, refuse or report what cannot be reflowed, and turn its target
+ * origins into `Tm` and kern inserts.
+ *
+ * **Invariant:** a word is corrected only where its NATURAL position differs
+ * from its target. The natural position is the pen chain's (u3l5.4); after a
+ * relative pen reset (`Td TD T* ' "`) it is the ORIGINAL position only while
+ * no `Tm` of ours is in force in that text object (`dirty`), since those
+ * operators are relative to a line matrix we may have moved. An absolute reset
+ * (`BT ET Tm`) clears `dirty`.
+ *
+ * **Invariant:** before the first NON-member glyph after a member in the same
+ * scope, while `dirty`, a `Tm` restoring the last member's line matrix is
+ * written after that member's operator — so content positioned relative to
+ * the line matrix after the paragraph does not move.
+ */
+function planReflow(
+  doc: Document, page: Page, pageNumber: number,
+  streams: Map<string, StreamEdits>, streamFor: (a: ContentAddr) => StreamEdits,
+  all: readonly GlyphEvent[], text: string, refs: readonly (GlyphEvent | undefined)[],
+  covered: Uint8Array, spans: Map<GlyphEvent, [number, number]>, inks: readonly ParaRect[],
+  anchored: [number, number][], unreflowable: UnreflowableText[], annotWrites: (() => void)[],
+  targetsOut: Map<GlyphEvent, [number, number]>, opts: ReplaceTextOptions,
+): void {
+  const gap = chainGapFor(doc, page);
+  const annots = annotRects(doc, page);
+  // A tagged page's paragraph is its block-level structure element; geometry
+  // is the fallback for an untagged one.
+  const keyOf = taggedKeys(doc, page) ?? untaggedKeys(text, refs);
+
+  // Every StrEdit with the op it sits in, and each edited glyph's edit.
+  const edits: { edit: StrEdit; addr: ContentAddr }[] = [];
+  for (const s of streams.values()) for (const [opIndex, list] of s.perOp) for (const edit of list) edits.push({ edit, addr: { ...s.addr, opIndex } });
+  // Indexed by op and element (u3l5.11): a scan of every edit per glyph was
+  // O(glyphs x edits).
+  const editsAt = new Map<string, StrEdit[]>();
+  for (const { edit, addr } of edits) {
+    const k = `${streamKey(addr)}|${addr.opIndex}|${edit.elementIndex}`;
+    const l = editsAt.get(k);
+    if (l) l.push(edit); else editsAt.set(k, [edit]);
+  }
+  const editOfGlyph = new Map<GlyphEvent, StrEdit>();
+  for (const g of all) {
+    const hit = editsAt.get(`${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}`)
+      ?.find((e) => g.byteStart >= e.start && g.byteStart < e.end);
+    if (hit) editOfGlyph.set(g, hit);
+  }
+  /** Device advance after the edits: an edit's whole new width on its anchor. */
+  const advanceOf = (g: GlyphEvent): number => {
+    const e = editOfGlyph.get(g);
+    if (!e) return glyphAdvance(g);
+    return g === e.anchor ? runsAdvance(e.runs, e.anchor) : 0;
+  };
+
+  // One paragraph per distinct key, with the matches it holds.
+  const done = new Set<unknown>();
+  // Every member glyph already written, by its place in the content and the
+  // linear part of its CTM: a form drawn twice is one stream, so its second
+  // drawing must not be written again (u3l5.4's `placed` rule).
+  const placed = new Map<string, string>();
+  const glyphKey = (g: GlyphEvent) => `${streamKey(g.addr)}|${g.addr.opIndex}|${g.elementIndex}|${g.byteStart}`;
+  const linear = (g: GlyphEvent) => g.ctm.slice(0, 4).map((v) => v.toFixed(9)).join(' ');
+  const crop = page.CropBox;
+  const annotPlan = new Map<PdfDict, ParaRect[]>();
+  // **Invariant (u3l5.11):** a match crossing two paragraphs reflows BOTH —
+  // the one holding its anchor takes the replacement, the other loses the
+  // matched text and closes up. Only the anchor's used to be reflowed, and
+  // the other kept a hole, unreported.
+  const work: { s: number; anchor: GlyphEvent; key: unknown }[] = [];
+  for (const [s, e] of anchored) {
+    for (let q = s; q < e; q++) {
+      const g = refs[q];
+      if (!g) continue;
+      const key = keyOf(g);
+      if (!work.some((w) => w.s === s && w.key === key)) work.push({ s, anchor: g, key });
+    }
+  }
+  for (const { s, anchor, key } of work) {
+    if (done.has(key)) continue;
+    done.add(key);
+    const refuse = (reason: UnreflowableReason): void => {
+      if (!opts.onUnreflowable) {
+        throw new UnsupportedFeatureError(`ReplaceText: ${pageLabel(pageNumber)}: cannot reflow the paragraph holding ${JSON.stringify(text.slice(s, anchored.find((r) => r[0] === s)![1]))}: ${reason}`);
+      }
+      unreflowable.push({ page: pageNumber, match: text.slice(s, anchored.find((r) => r[0] === s)![1]), reason });
+    };
+    const p = findParagraph({ all, text, refs, covered, keyOf, anchor, gap, inks, annots });
+    if (typeof p === 'string') { refuse(p); continue; }
+
+    const wordOf = new Map<GlyphEvent, number>();
+    p.words.forEach((w, i) => { for (const g of w.glyphs) wordOf.set(g, i); });
+    const editedWords = p.words.map((_, i) => i).filter((i) => p.words[i].glyphs.some((g) => editOfGlyph.has(g)));
+    if (editedWords.length === 0) continue;
+    const seen = [...p.members].map((g) => placed.get(glyphKey(g)));
+    if (seen.every((x) => x !== undefined)) {
+      // Drawn again: the first drawing's inserts already reflow it, and
+      // agree with this one only when the two CTMs differ by a translation.
+      if ([...p.members].some((g) => placed.get(glyphKey(g)) !== linear(g))) refuse('scopes');
+      continue;
+    }
+    if (seen.some((x) => x !== undefined)) { refuse('scopes'); continue; }
+    const leads = new Map<GlyphEvent, number>();
+    for (const w of p.words) {
+      for (let i = 1; i < w.glyphs.length; i++) {
+        const g = w.glyphs[i], e = editOfGlyph.get(g);
+        // A kern inside a match is dropped with it; one beside it stays.
+        leads.set(g, e && g !== e.anchor ? 0 : g.quad[0] - w.glyphs[i - 1].penEnd[0]);
+      }
+    }
+    const wrap = wrapParagraph({
+      para: p, advanceOf, leadOf: (g) => leads.get(g) ?? 0,
+      firstEdited: editedWords[0], lastEdited: editedWords[editedWords.length - 1],
+    });
+
+    if (wrap.addedLines > 0 && !roomBelow(p, wrap.lowest, all, inks, annots, crop)) { refuse('no-room'); continue; }
+    writeReflow(p, wrap.targets, all, gap, editOfGlyph, advanceOf, streamFor);
+    for (const [g, tg] of wrap.targets) targetsOut.set(g, tg);
+    for (const g of p.members) placed.set(glyphKey(g), linear(g));
+    moveAnnotQuads(doc, page, p, wrap.targets, advanceOf, annotWrites, annotPlan);
+  }
+}
+
+/** Block-level structure types: a paragraph is the nearest of these above a
+ *  glyph's MCID element (after the RoleMap). */
+const BLOCK_TYPES = new Set(['P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LBody', 'TD', 'TH', 'Caption', 'BlockQuote', 'Note']);
+
+/** The tagged paragraph key: the Dict of the block-level element owning a
+ *  glyph's MCID. Undefined when the page is not tagged (no structure tree or
+ *  no /StructParents), so the caller falls back to geometry. A glyph inside a
+ *  form, or with no MCID, has no key. */
+function taggedKeys(doc: Document, page: Page): ((g: GlyphEvent) => unknown) | undefined {
+  const root = doc.GetStructTree();
+  const sp = doc.resolve(page.Dict.get('StructParents'));
+  if (!root || typeof sp !== 'number') return undefined;
+  const memo = new Map<number, unknown>();
+  return (g) => {
+    if (g.mcid === undefined || g.addr.path.length > 0) return undefined;
+    if (memo.has(g.mcid)) return memo.get(g.mcid);
+    let el = root.ElementFor(sp, g.mcid);
+    while (el && !BLOCK_TYPES.has(el.StandardType) && !/^H\d+$/.test(el.StandardType)) el = el.Parent;
+    const key = el?.Dict;
+    memo.set(g.mcid, key);
+    return key;
+  };
+}
+
+/** Whether lines may grow down to `lowest` without reaching the next ink
+ *  below the paragraph within its horizontal span, or the crop box. */
+function roomBelow(
+  p: Paragraph, lowest: number, all: readonly GlyphEvent[], inks: readonly ParaRect[],
+  annots: readonly { subtype: string; rect: ParaRect }[], crop: number[],
+): boolean {
+  const floor = lowest - DESCENT * p.size;
+  if (floor < crop[1]) return false;
+  const below = (r: ParaRect) => r[3] <= p.box[1] + 0.01 && Math.min(r[2], p.box[2]) - Math.max(r[0], p.box[0]) > 0.01;
+  for (const g of all) if (g.text && !p.members.has(g) && below(g.quad) && g.quad[3] > floor) return false;
+  for (const r of inks) if (below(r) && r[3] > floor) return false;
+  // (u3l5.11) An annotation or widget below is ink a viewer draws over the
+  // grown lines. A /Popup is a window, not part of the page.
+  for (const a of annots) if (a.subtype !== 'Popup' && below(a.rect) && a.rect[3] > floor) return false;
+  return true;
+}
+
+/** Turn targets into inserts, walking each scope's glyphs in content order. */
+function writeReflow(
+  p: Paragraph, targets: Map<GlyphEvent, [number, number]>, all: readonly GlyphEvent[],
+  gap: (a: ContentAddr, b: ContentAddr) => ChainGap, editOfGlyph: Map<GlyphEvent, StrEdit>,
+  advanceOf: (g: GlyphEvent) => number, streamFor: (a: ContentAddr) => StreamEdits,
+): void {
+  const insert = (g: GlyphEvent, piece: ShowInsert['piece']) => {
+    const e = editOfGlyph.get(g);
+    const ins: ShowInsert = { addr: g.addr, elementIndex: g.elementIndex, byteStart: e ? e.start : g.byteStart, piece };
+    const map = streamFor(g.addr).inserts;
+    const list = map.get(g.addr.opIndex);
+    if (list) list.push(ins); else map.set(g.addr.opIndex, [ins]);
+  };
+  const after = (g: GlyphEvent, op: ContentOp) => {
+    const map = streamFor(g.addr).after;
+    const list = map.get(g.addr.opIndex);
+    if (list) list.push(op); else map.set(g.addr.opIndex, [op]);
+  };
+  const tmFor = (g: GlyphEvent, x: number, y: number): ContentOp => {
+    const [ca, cb, cc, cd] = g.ctm;
+    const dx = x - g.quad[0], dy = y - g.quad[1];
+    const det = ca * cd - cb * cc;
+    const de = (dx * cd - dy * cc) / det, df = (dy * ca - dx * cb) / det;
+    const r = (v: number) => Math.round(v * 1e6) / 1e6;
+    return { operator: 'Tm', operands: [r(g.tm[0]), r(g.tm[1]), r(g.tm[2]), r(g.tm[3]), r(g.tm[4] + de), r(g.tm[5] + df)] };
+  };
+  type St = { pen?: [number, number]; dirty: boolean; last?: GlyphEvent; lastMember?: GlyphEvent; prevEnd?: number };
+  const state = new Map<string, St>();
+  for (const g of all) {
+    const scope = g.addr.path.join('\0');
+    let st = state.get(scope);
+    if (!st) { st = { dirty: false }; state.set(scope, st); }
+    const kind = st.last ? gap(st.last.addr, g.addr) : 'absolute';
+    if (kind === 'absolute') st.dirty = false;
+    if (kind !== 'none') st.pen = undefined;
+    st.last = g;
+    // The original distance from the previous glyph's pen end to this one's
+    // origin is what the content adds between them — a TJ kern — and the pen
+    // carries it, or every kept kern is answered with a second one.
+    const chainedFrom = kind === 'none' ? st.prevEnd : undefined;
+    st.prevEnd = g.penEnd[0];
+    if (!p.members.has(g)) {
+      if (st.lastMember && st.dirty) {
+        after(st.lastMember, { operator: 'Tm', operands: [...st.lastMember.tlm] });
+        st.dirty = false;
+      }
+      st.lastMember = undefined;
+      continue;
+    }
+    st.lastMember = g;
+    const e = editOfGlyph.get(g);
+    if (e && g !== e.anchor) continue;          // drawn by its edit's anchor
+    if (st.pen && chainedFrom !== undefined) st.pen[0] += g.quad[0] - chainedFrom;
+    const t = targets.get(g);
+    if (!t) { if (st.pen) st.pen[0] += advanceOf(g); continue; }   // text-less: rides along
+    if (!st.pen && !st.dirty) st.pen = [g.quad[0], g.quad[1]];     // a chain start we did not move
+    if (!st.pen || Math.abs(st.pen[1] - t[1]) > 1e-6) {
+      insert(g, { kind: 'op', op: tmFor(g, t[0], t[1]) });
+      st.dirty = true;
+    } else if (Math.abs(st.pen[0] - t[0]) > 1e-6) {
+      const per = g.fontSize * g.hscale;
+      insert(g, { kind: 'kern', value: Math.round(-(t[0] - st.pen[0]) * 1000 / per * 1000) / 1000 });
+    }
+    st.pen = [t[0] + advanceOf(g), t[1]];
+  }
+  for (const st of state.values()) {
+    if (st.lastMember && st.dirty) after(st.lastMember, { operator: 'Tm', operands: [...st.lastMember.tlm] });
+  }
+}
+
+/** Every annotation's subtype and /Rect, for the overlap rules. */
+function annotRects(doc: Document, page: Page): { subtype: string; rect: ParaRect }[] {
+  const out: { subtype: string; rect: ParaRect }[] = [];
+  const annots = doc.resolve(page.Dict.get('Annots'));
+  if (!isArray(annots)) return out;
+  for (const a of annots) {
+    const d = doc.resolve(a);
+    if (!isDict(d)) continue;
+    const st = doc.resolve(d.get('Subtype'));
+    const r = doc.resolve(d.get('Rect'));
+    if (!isName(st) || !isArray(r) || r.length !== 4 || r.some((v) => typeof v !== 'number')) continue;
+    const [x0, y0, x1, y1] = r as number[];
+    out.push({ subtype: st.name, rect: [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)] });
+  }
+  return out;
+}
+
+/** Recompute /QuadPoints and /Rect of every Link or text-markup annotation
+ *  over the paragraph from its glyphs' targets — one quad per target line —
+ *  as a closure `apply` runs. A glyph is covered by its quad's CENTROID,
+ *  `SearchOptions.region`'s rule. */
+function moveAnnotQuads(
+  doc: Document, page: Page, p: Paragraph, targets: Map<GlyphEvent, [number, number]>,
+  advanceOf: (g: GlyphEvent) => number, annotWrites: (() => void)[],
+  plan: Map<PdfDict, ParaRect[]>,
+): void {
+  const annots = doc.resolve(page.Dict.get('Annots'));
+  if (!isArray(annots)) return;
+  for (const a of annots) {
+    const d = doc.resolve(a);
+    if (!isDict(d)) continue;
+    const st = doc.resolve(d.get('Subtype'));
+    if (!isName(st) || !MOVABLE_ANNOTS.has(st.name)) continue;
+    const qp = doc.resolve(d.get('QuadPoints'));
+    const rect = doc.resolve(d.get('Rect'));
+    let areas: ParaRect[] = [];
+    if (plan.has(d)) areas = plan.get(d)!;
+    else if (isArray(qp) && qp.length >= 8 && qp.length % 8 === 0 && qp.every((v) => typeof v === 'number')) {
+      const n = qp as number[];
+      for (let i = 0; i < n.length; i += 8) {
+        const xs = [n[i], n[i + 2], n[i + 4], n[i + 6]], ys = [n[i + 1], n[i + 3], n[i + 5], n[i + 7]];
+        areas.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
+      }
+    } else if (isArray(rect) && rect.length === 4 && rect.every((v) => typeof v === 'number')) {
+      const r = rect as number[];
+      areas.push([Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])]);
+    } else continue;
+    const mine = [...p.members].filter((g) => g.text.trim() !== '');
+    const covered = mine.filter((g) => areas.some((r) => centroidIn(r, g.quad)));
+    if (covered.length === 0) continue;
+    if (covered.every((g) => { const t = targets.get(g); return !t || (t[0] === g.quad[0] && t[1] === g.quad[1]); })) continue;
+    // Group by target baseline, then one quad per line.
+    const byLine = new Map<number, ParaRect>();
+    for (const g of covered) {
+      const t = targets.get(g) ?? [g.quad[0], g.quad[1]];
+      const key = Math.round(t[1] * 1000);
+      const box: ParaRect = [t[0], t[1], t[0] + advanceOf(g), t[1] + g.fontSize];
+      const cur = byLine.get(key);
+      byLine.set(key, cur ? [Math.min(cur[0], box[0]), Math.min(cur[1], box[1]), Math.max(cur[2], box[2]), Math.max(cur[3], box[3])] : box);
+    }
+    // **Invariant (u3l5.11):** only the quads over THIS paragraph are replaced;
+    // one over another paragraph is kept, and the annotation's areas are
+    // planned once across paragraphs, then written once.
+    const kept = areas.filter((r) => !mine.some((g) => centroidIn(r, g.quad)));
+    const first = !plan.has(d);
+    plan.set(d, [...kept, ...byLine.values()].sort((x, y) => y[1] - x[1] || x[0] - y[0]));
+    if (!first) continue;
+    annotWrites.push(() => {
+      const lines = plan.get(d)!;
+      const quads = lines.flatMap(([x0, y0, x1, y1]) => [x0, y1, x1, y1, x0, y0, x1, y0]);
+      const union: ParaRect = [
+        Math.min(...lines.map((l) => l[0])), Math.min(...lines.map((l) => l[1])),
+        Math.max(...lines.map((l) => l[2])), Math.max(...lines.map((l) => l[3])),
+      ];
+      d.set('QuadPoints', quads);
+      d.set('Rect', [...union]);
+      // A markup appearance is drawn for its OLD rect; left in place a viewer
+      // stretches it over the new one. A link draws nothing.
+      if (st.name !== 'Link' && d.has('AP')) regenerateAppearance(doc, d);
+      doc.markModified();
+    });
+  }
+}
+
+/** @internal The Form XObject stream the scope `path` names on `page`, or
+ *  undefined for the page itself or a path that does not resolve. */
+export function scopeStream(doc: Document, page: Page, path: readonly string[]): PdfStream | undefined {
+  let res = page.Resources;
+  let xo: PdfObject | undefined;
+  for (const n of path) {
+    const xobjs = doc.resolve(res?.get('XObject'));
+    xo = isDict(xobjs) ? doc.resolve(xobjs.get(n)) : undefined;
+    if (!isStream(xo)) return undefined;
+    const own = doc.resolve(xo.dict.get('Resources'));
+    if (isDict(own)) res = own;
+  }
+  return isStream(xo) ? xo : undefined;
 }
 
 /** The parsed content of the scope at `path`, per stream, READ-ONLY — the
@@ -695,20 +1397,81 @@ function readScopeOps(doc: Document, page: Page, path: readonly string[]): Conte
 
 const RESTORABLE = new Set(['DeviceGray', 'DeviceRGB', 'DeviceCMYK', 'Pattern']);
 
-/** The operators that put back `g`'s fill after a coloured replacement
- *  (u3l5.3): `GlyphEvent.fillState` re-emitted, or `0 g` for the initial fill.
- *  A colour-space NAME resolves only in the scope that set it, so a fill
- *  inherited from another scope through a named space cannot be restored
- *  here and the call is refused rather than written wrongly. */
-function restoreFill(g: GlyphEvent, pageNumber: number): ContentOp[] {
-  const fs = g.fillState;
-  if (!fs) return [{ operator: 'g', operands: [0] }];
-  const same = fs.path.length === g.addr.path.length && fs.path.every((n, i) => n === g.addr.path[i]);
-  if (!same && fs.ops.some((op) => op.operands.some((o) => isName(o) && !RESTORABLE.has(o.name)))) {
-    throw new UnsupportedFeatureError(
-      `ReplaceText: page ${pageNumber}: cannot restore a fill colour set in another scope through a named colour space`);
+/** The text render modes that stroke (32000-1 Table 106). */
+const STROKING_MODES = new Set([1, 2, 5, 6]);
+
+/** A resource entry a restore needs in a form's own /Resources (u3l5.9). */
+export interface ResourceCopy { path: readonly string[]; category: 'ColorSpace' | 'Pattern'; key: string; value: PdfObject }
+
+const sameObject = (a: PdfObject | undefined, b: PdfObject | undefined): boolean =>
+  a !== undefined && (a === b || (isRef(a) && isRef(b) && a.num === b.num && a.gen === b.gen));
+
+/** Plans the operators that put back a glyph's fill or stroke after a
+ *  coloured replacement: `GlyphEvent.fillState`/`strokeState` re-emitted, or
+ *  `0 g`/`0 G` for the initial colour.
+ *
+ *  **Invariant (u3l5.9):** a colour-space or pattern NAME resolves only in the
+ *  scope it was named in, so a colour inherited from another scope — set on
+ *  the page, the text in a form — is restored by COPYING that entry into the
+ *  form's own /Resources and renaming the operand. The key is the one that
+ *  already names the same object there, else a fresh one, chosen here and
+ *  reserved against the plan's other choices; nothing is written until
+ *  `copies` are applied, so a refused plan changes nothing. A form with no
+ *  /Resources of its own cannot take an entry (a fresh dict would hide its
+ *  parent's), and that alone is still refused. */
+class PaintRestorer {
+  readonly copies: ResourceCopy[] = [];
+  constructor(private readonly doc: Document, private readonly page: Page, private readonly pageNumber: number) {}
+
+  restore(g: GlyphEvent, stroke: boolean): ContentOp[] {
+    const st = stroke ? g.strokeState : g.fillState;
+    if (!st) return [{ operator: stroke ? 'G' : 'g', operands: [0] }];
+    const same = st.path.length === g.addr.path.length && st.path.every((n, i) => n === g.addr.path[i]);
+    if (same) return [...st.ops];
+    return st.ops.map((op) => {
+      const isCs = op.operator === 'cs' || op.operator === 'CS';
+      const isScn = op.operator === 'scn' || op.operator === 'SCN';
+      return {
+        operator: op.operator,
+        operands: op.operands.map((o, i) => {
+          if (!isName(o)) return o;
+          if (isCs && i === 0 && !RESTORABLE.has(o.name)) return name(this.copy(g, st.path, 'ColorSpace', o.name, stroke));
+          if (isScn && i === op.operands.length - 1) return name(this.copy(g, st.path, 'Pattern', o.name, stroke));
+          return o;
+        }),
+      };
+    });
   }
-  return [...fs.ops];
+
+  private copy(g: GlyphEvent, from: readonly string[], category: 'ColorSpace' | 'Pattern', key: string, stroke: boolean): string {
+    const refuse = (why: string): never => {
+      throw new UnsupportedFeatureError(
+        `ReplaceText: ${pageLabel(this.pageNumber)}: cannot restore a ${stroke ? 'stroke' : 'fill'} colour set in another scope through a named ${category === 'Pattern' ? 'pattern' : 'colour space'}: ${why}`);
+    };
+    const src = this.doc.resolve(scopeResources(this.doc, this.page, from, true)?.get(category));
+    const value = isDict(src) ? src.get(key) : undefined;
+    if (value === undefined) return refuse(`/${key} is not in the scope that set it`);
+    // Already the same object under the same name where the text is — a form
+    // inheriting its parent's /Resources, say: nothing to copy.
+    const here = this.doc.resolve(scopeResources(this.doc, this.page, g.addr.path, true)?.get(category));
+    if (isDict(here) && sameObject(here.get(key), value)) return key;
+    const target = scopeResources(this.doc, this.page, g.addr.path, false);
+    if (!target) return refuse('the Form XObject holding the text has no /Resources of its own');
+    const dict = this.doc.resolve(target.get(category));
+    if (isDict(dict)) for (const [k, v] of dict) if (sameObject(v, value)) return k;
+    const scope = g.addr.path.join('\0');
+    const mine = this.copies.filter((c) => c.path.join('\0') === scope && c.category === category);
+    const hit = mine.find((c) => sameObject(c.value, value));
+    if (hit) return hit.key;
+    const prefix = category === 'Pattern' ? 'P' : 'CS';
+    let fresh = '';
+    for (let i = 0; ; i++) {
+      fresh = `${prefix}${i}`;
+      if (!(isDict(dict) && dict.has(fresh)) && !mine.some((c) => c.key === fresh)) break;
+    }
+    this.copies.push({ path: [...g.addr.path], category, key: fresh, value });
+    return fresh;
+  }
 }
 
 /** True when the edits emptied a `Tj` that drew something. Such a `Tj` draws
