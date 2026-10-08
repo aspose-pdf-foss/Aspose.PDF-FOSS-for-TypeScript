@@ -2403,7 +2403,7 @@ Source (`src/`):
   is the cascade's rather than the selector engine's" — that is WRONG, and
   worth recording because it delayed the work: `lang` and `dir` are HTML
   ATTRIBUTES inherited through parent pointers, and `ComputedStyle` carries
-  neither among its 43 longhands. The cascade is not involved at all.
+  neither among its longhands. The cascade is not involved at all.
   **Invariant:** an unknown `:dir()` value is VALID and matches nothing, while
   an EMPTY `:dir()` or `:lang()` argument is INVALID. The two refusals differ
   on purpose — a direction we do not know is Selectors 4's never-matching,
@@ -2436,7 +2436,7 @@ Source (`src/`):
   inherited lang, which is the cascade's rather than the selector engine's",
   and waited on `zch2.2.3` for it — but `lang` and `dir` are HTML ATTRIBUTES
   inherited through parent pointers, and `ComputedStyle` carries neither among
-  its 43 longhands. The cascade is not involved, and `matches()` gained no
+  its longhands. The cascade is not involved, and `matches()` gained no
   parameter. Recorded because the misdiagnosis is what delayed the work.
   **Invariant:** its own module rather than part of `cssselect.ts`, because
   `nodeDirection` needs `bidi.js` where `cssselect.ts` is a leaf over
@@ -2478,7 +2478,7 @@ Source (`src/`):
   `svgcss.js` or `svgstyle.js`, and none throws. Nothing is exported from
   `index.ts` — `zch2.3` is the next consumer.
   **Invariant:** the property set is bounded by what `zch2.3`, `zch2.4` and
-  `zch2.6` will consume, not by CSS. **43** longhands, asserted, so a
+  `zch2.6` will consume, not by CSS. **52** longhands (43 until `v9j3.4` added the four radii, `background-image`, `-size`, `-repeat` and `-position-x`/`-y`), asserted, so a
   half-pasted table is a red build; a property outside them is recorded as
   `unknown-property` for `zch2.7` rather than dropped, which is what makes
   "we do not implement flexbox" reportable instead of invisible.
@@ -3128,7 +3128,7 @@ Source (`src/`):
   three "computed and never read" reports (`inline-block`, `vertical-align`,
   inline padding) need no display check. Those three have ZERO consumers
   outside `cssprop.ts`'s table, so they get no backstop from the cascade's
-  unknown-property report, which fires only for a name outside the 43
+  unknown-property report, which fires only for a name outside the 52
   longhands: without these they are silent by omission rather than by
   decision. Only a STATED padding reports, since the initial is 0 on every
   side and reporting the initial would put a record on every element in every
@@ -3399,6 +3399,103 @@ Source (`src/`):
   observable through `getComputedStyle` at all. Every rule here is held by a
   hand-built case and a mutation — all ten reddened something. `zch2.5` is
   where an end-to-end comparison becomes possible.
+- **boxpaint.ts**, **boxdraw.ts**, **cssbackground.ts** — rounded corners and
+  background images on boxes (`v9j3.4`). `boxpaint.ts` is the geometry —
+  radii, overlap scaling, slice masking, rounded paths, the colour-join
+  wedges, the background tile's size and origin, the gradient line, radial
+  extents and stop placement; `boxdraw.ts` is the ONE painter
+  (`paintBox`), shared by `cssframe.ts` (per slice) and `floatbox.ts`
+  (whole); `cssbackground.ts` is the CSS grammar of the nine new longhands
+  and the splitting the shorthands need.
+  **Invariant:** `boxpaint.ts` is a pure LEAF importing NOTHING and
+  `cssbackground.ts` a pure leaf over `cssvalue.js` — the split
+  `floatstack.ts`, `cloudborder.ts` and `linebox.ts` make, because geometry
+  that is silently wrong when reversed must be testable from numbers. One
+  geometry owner and one painter is what keeps a FloatingBox and an HTML box
+  from rounding a corner or ramping a gradient two ways.
+  **Invariant:** CSS paint order — clip to the rounded BORDER box (initial
+  `background-clip`), the colour, the image layer, the border ring — and the
+  layer is positioned against the PADDING box (initial `background-origin`).
+  A box with neither a radius nor a layer still takes `cssframe.ts`'s old
+  code path, which is what keeps every plain box byte-identical
+  (`html-identity` did not move).
+  **Invariant:** the layer is laid out against the WHOLE box and only clipped
+  to each slice — `box-decoration-break: slice` — so a gradient continues
+  across a column break; `sliceRadii` rounds only a slice's true corners.
+  That needs the whole box's height before the box has finished placing:
+  `BoxRun.natural` measures every child unconstrained, the gaps between them
+  and the insets included, and `BoxRun.used` is how far down the box each
+  slice starts, the gap it painted over included. **Measured:** dropping the
+  gaps from either reddened NOTHING until
+  `test/cssframe-gradient-run.test.ts` sampled a multi-child box's ramp for
+  linearity — every earlier gradient fixture held one child.
+  **Invariant:** percentage radii resolve against the BORDER box, and corners
+  that would overlap scale TOGETHER by the smallest side's factor (CSS
+  Backgrounds 3 §5.5, `fitRadii`), so `9999px` is a pill rather than a
+  self-intersecting path. The INNER radii (outer less border) are fitted
+  again, to the padding box: a 44pt corner less a 2pt border in a 27pt-wide
+  padding box otherwise drew a self-intersecting inner path.
+  **Invariant (`cssframe.ts`, Fixed):** a non-last slice that fits paints
+  ON over the gap that follows it — `QuotedElement.paintBar`'s rule — or a
+  box's background and side borders leave a white hole between every pair of
+  children. The returned `usedHeight` is UNCHANGED: the engine still owns the
+  gap, so pagination did not move. An empty box that paints (a background,
+  layer or border) now occupies `minHeight` plus its insets; one with nothing
+  to paint still takes no space. CSS `height` sizes the CONTENT box.
+  **Invariant:** when edge colours differ, the ring is clipped per edge by
+  `edgeWedges`, whose joins run from the outer corner along its diagonal to
+  where that diagonal meets the INNER ROUNDED PATH. That is exact rather than
+  a bound: the padding box is convex, so the quad of the four meeting points
+  lies inside it, and fitted inner radii keep the meeting points in order, so
+  the four wedges tile the ring. Two earlier shapes left holes — stopping at
+  the inner rectangle corner (found by the Chrome oracle at 0.89%, UNDER its 1%
+  bound) and then a centre-capped extension (found by the final review, up to
+  1.1% of an asymmetric ring). `test/boxpaint-radius.test.ts`'s coverage fuzz
+  holds it, over 300 seeded boxes with zero-width edges and 9999 radii. A
+  single-colour ring never uses the wedges.
+  **Invariant (final review):** only a DECORATED box — a radius or a layer —
+  asks `BoxRun.natural`, and `natural` is memoized per inner width. It
+  measures every child, and asked by every slice of every plain box it made a
+  `<div>` of N paragraphs cost N² layouts: 98.8 s at 2,000 against 218 ms.
+  `test/cssframe-natural-cost.test.ts` COUNTS inner `measure` calls; the plain
+  case pins the gate and the gradient case the memo.
+  **Invariant (final review):** a radial stop before the centre is cut at the
+  colour the line holds at 0, INTERPOLATED (`clipStopsAtZero`), not clamped —
+  `radial-gradient(red -50%, blue 50%)` is purple at the centre. A degenerate
+  ending shape (a radius of 0) is CSS Images 3's vanishing ellipse and paints
+  the LAST colour, as a flat fill rather than a singular pattern `/Matrix`,
+  which painted nothing.
+  **Invariant:** stops extend the gradient LINE rather than clamping colours
+  (`fitStops`), and a FULLY transparent stop takes its neighbour's colour
+  (`premultiplyTransparent`, CSS Images 4 §3.4.3), so `red, transparent` fades
+  rather than darkening. A PARTIALLY transparent stop is an approximation —
+  PDF interpolates colour and alpha separately — recorded, not chased.
+  **Invariant:** an elliptical radial gradient is a circle under a pattern
+  `/Matrix`, through the internal `PageGraphics.setFillGradientMatrix` and
+  `gradient.ts`'s `shadingPattern(shading, matrix?)`; the matrix rides the
+  alpha soft-mask twin too, or a transparent stop fades along a circle while
+  the colour runs on an ellipse. `clipPath` and `placeImage` are internal on
+  `VectorGraphics` likewise, and `imageembed.ts`'s `registerBuiltImage` is
+  `drawBuiltImage`'s registration, extracted byte-identically.
+  **Invariant (`cssflow.ts`):** `lenPt` is the one px → pt crossing for these
+  values, and samples a math expression at basis 0 and 100 — exact for
+  `calc()`, which is linear in the basis, approximate for `min()`/`max()`.
+  A `url()` that will not resolve is reported once as `image`/dropped and the
+  colour still paints.
+  **Note on scope:** one layer — a comma-separated list is refused whole and
+  reported as `unparsable-value` in `unsupported` — and no `repeating-*` or
+  `conic` gradients, colour hints, `space`/`round`, `fixed`, or
+  `background-clip`/`-origin`/`-attachment`. An HTML border draws solid
+  whatever its style, as it did before.
+  **Note on the oracle:** `test/fixtures/box-paint/` is 18 headless-Chrome
+  renderings of text-free boxes; `PROVENANCE.md` records each fixture's
+  measured disagreement (worst 0.21%), and the cascade goldens gained the
+  radii and the size/repeat/position longhands.
+  **Note, measured:** 26 of 27 mutations redden, four only after cases were
+  added (`natural`'s gaps, `run.used`'s extension, and both `splitPosition`
+  swaps, which no fixture wrote vertical-first). The 27th — dropping
+  `innerRadii`'s floor at 0 — is EQUIVALENT: the `rx > 0 && ry > 0` test
+  after it already maps a negative component to a square corner.
 - **csstable.ts** — a CSS `TableBox` to a `TableBuilder` (`zch2.6`). A pure
   leaf: `cssbox.js`, `cssprop.js` and `textdecor.js` for types, `cssvalue.js`
   for `fixedPx`, `tableauthor.js` for the builder and `bordersides.js` for the

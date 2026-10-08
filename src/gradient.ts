@@ -249,10 +249,14 @@ export function radialShading(
  *  to the DEFAULT space of the parent content stream (PDF 32000-1 §8.7.3.1).
  *  Gradient coordinates are already in that space, so any matrix here would
  *  double-transform them. */
-export function shadingPattern(shading: PdfDict): PdfDict {
-  return dict([
+export function shadingPattern(shading: PdfDict, matrix?: readonly number[]): PdfDict {
+  const d = dict([
     ['Type', name('Pattern')],
     ['PatternType', 2],
     ['Shading', shading],
   ]);
+  // (v9j3.4) Only when given, so every existing caller is byte-identical: an
+  // elliptical CSS radial gradient is a circle under this matrix.
+  if (matrix !== undefined) d.set('Matrix', [...matrix]);
+  return d;
 }

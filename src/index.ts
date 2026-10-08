@@ -175,7 +175,9 @@ export type {
   MarkdownStyle, MarkdownFontFamily, MarkdownFontSpec, ResolvedFamily,
 } from './mdstyle.js';
 export { FloatingBox } from './floatbox.js';
-export type { FloatBoxOptions, FloatBoxImageOptions } from './floatbox.js';
+export type {
+  FloatBoxOptions, FloatBoxImageOptions, FloatBoxRadius, FloatBoxCorner, FloatBoxBackgroundImage, BoxGradient,
+} from './floatbox.js';
 export { EmbeddedFont } from './embeddedfont.js';
 export type { StdFont } from './metrics.js';
 export { PageGraphics, VectorGraphics } from './graphics.js';

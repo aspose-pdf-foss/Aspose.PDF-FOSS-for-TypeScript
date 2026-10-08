@@ -18,6 +18,7 @@ import {
   type ColoredTilingPattern, type UncoloredTilingPattern,
 } from './tiling.js';
 import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
+import { registerBuiltImage, type BuiltImage } from './imageembed.js';
 import type { Layer } from './ocg.js';
 
 function checkNum(label: string, n: number): number {
@@ -124,6 +125,26 @@ export abstract class VectorGraphics {
    *  invariants both gradient setters share. */
   setFillGradient(g: Gradient): this { return this.gradientPaint(g, 'fill'); }
 
+  /** @internal setFillGradient with a pattern /Matrix (v9j3.4): an elliptical
+   *  CSS radial gradient is a circle under a scaling, and a PDF radial shading
+   *  is circular. The matrix rides the colour pattern AND its alpha twin, or a
+   *  transparent stop fades along a circle while the colour runs on an ellipse. */
+  setFillGradientMatrix(g: Gradient, m: Matrix): this { return this.gradientPaint(g, 'fill', m); }
+
+  /** @internal Clip to the current path and end it (`W n`, even-odd `W* n`).
+   *  For the box painter (v9j3.4); not public API. */
+  clipPath(evenOdd = false): this {
+    this.hasCurrentPoint = false;
+    return this.op(evenOdd ? 'W* n' : 'W n');
+  }
+
+  /** @internal Draw an image XObject into [x, y, w, h], registering it in this
+   *  builder's own resources — a page's, or a tile's (v9j3.4). */
+  placeImage(built: BuiltImage, x: number, y: number, w: number, h: number): this {
+    const key = registerBuiltImage(this.doc, this.resources(), built);
+    return this.op(`q\n${num(w)} 0 0 ${num(h)} ${num(x)} ${num(y)} cm\n/${escapeName(key)} Do\nQ`);
+  }
+
   /** Stroke subsequent paths with an axial or radial gradient. Symmetric with
    *  {@link setStrokeColor}: this sets the stroke paint, and the next `stroke()`
    *  / `fillStroke()` uses it. See {@link gradientPaint} for the invariants both
@@ -213,7 +234,7 @@ export abstract class VectorGraphics {
    *  Like every other graphics-state setting, that mask stays in force until a
    *  {@link restore}; wrap the paint in {@link save}/{@link restore} if later
    *  drawing must be unmasked. */
-  private gradientPaint(g: Gradient, ch: PaintChannel): this {
+  private gradientPaint(g: Gradient, ch: PaintChannel, m?: Matrix): this {
     validateGradient(g);
 
     // Degenerate cases collapse to a solid, matching svggradient.ts's rules.
@@ -232,7 +253,7 @@ export abstract class VectorGraphics {
     const shade = (variant: ShadingVariant) =>
       g.kind === 'linear' ? axialShading(g, stops, variant) : radialShading(g, stops, variant);
 
-    const key = registerShadingPatternIn(this.doc, this.resources(), shadingPattern(shade('color')));
+    const key = registerShadingPatternIn(this.doc, this.resources(), shadingPattern(shade('color'), m));
     const alpha = uniformOpacity(stops);
     if (alpha === null) {
       this.claimSoftMask(ch);
@@ -240,7 +261,7 @@ export abstract class VectorGraphics {
       // becomes a luminosity soft mask, whose group is un-transformed back into
       // the default space the colour pattern lives in.
       const gs = registerSoftMaskExtGStateIn(
-        this.doc, this.resources(), shadingPattern(shade('alpha')),
+        this.doc, this.resources(), shadingPattern(shade('alpha'), m),
         this.inverseCtm(), this.maskBBox());
       this.op(`/${escapeName(gs)} gs`);
     } else if (alpha < 1) this.channelOpacity(alpha, ch);

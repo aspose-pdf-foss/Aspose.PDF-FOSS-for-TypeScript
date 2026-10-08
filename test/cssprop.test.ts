@@ -12,10 +12,10 @@ const run = (prop: string, src: string, ctx: PropContext = CTX): unknown =>
   PROPERTIES.get(prop)?.compute(V(src), ctx);
 
 describe('the property table', () => {
-  it('holds exactly 43 longhands', () => {
+  it('holds exactly 52 longhands', () => {
     // Asserted so a half-pasted table is a red build rather than a property
     // that silently falls through to unknown-property.
-    expect(PROPERTIES.size).toBe(43);
+    expect(PROPERTIES.size).toBe(52);
   });
 
   it('marks exactly the 13 inherited properties as inherited', () => {

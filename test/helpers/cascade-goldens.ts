@@ -79,7 +79,27 @@ const KEY_OF: Record<string, keyof ComputedStyle> = {
   float: 'float', clear: 'clear', 'vertical-align': 'verticalAlign',
   'list-style-type': 'listStyleType', 'list-style-position': 'listStylePosition',
   'border-collapse': 'borderCollapse', 'line-height': 'lineHeight',
+  // v9j3.4
+  'border-top-left-radius': 'borderTopLeftRadius', 'border-top-right-radius': 'borderTopRightRadius',
+  'border-bottom-right-radius': 'borderBottomRightRadius', 'border-bottom-left-radius': 'borderBottomLeftRadius',
+  'background-size': 'backgroundSize', 'background-repeat': 'backgroundRepeat',
+  'background-position-x': 'backgroundPositionX', 'background-position-y': 'backgroundPositionY',
 };
+
+/** (v9j3.4) Chrome's serialization of one length-percentage — `10px`, `50%`,
+ *  `calc(100% - 10px)` — as {px, pct}; undefined for anything else. */
+function chromeLp(s: string): { px: number; pct: number } | undefined {
+  const t = s.trim();
+  let m = /^(-?[\d.]+)px$/.exec(t);
+  if (m) return { px: parseFloat(m[1] as string), pct: 0 };
+  m = /^(-?[\d.]+)%$/.exec(t);
+  if (m) return { px: 0, pct: parseFloat(m[1] as string) };
+  m = /^calc\((-?[\d.]+)% ([+-]) ([\d.]+)px\)$/.exec(t);
+  if (m) return { px: (m[2] === '-' ? -1 : 1) * parseFloat(m[3] as string), pct: parseFloat(m[1] as string) };
+  return undefined;
+}
+const lpNear = (a: LengthPct, b: { px: number; pct: number } | undefined): boolean =>
+  b !== undefined && !('expr' in a) && near(a.px, b.px) && near(a.pct, b.pct);
 
 /** Is this property one the comparator actually knows how to compare?
  *
@@ -199,6 +219,32 @@ export function compareProp(
   if (prop === 'text-decoration-line') {
     const mine = (v as string[]).length === 0 ? 'none' : (v as string[]).join(' ');
     return { ok: mine === chrome.trim(), ours: mine };
+  }
+
+  // (v9j3.4) Radii are [h, v]; Chrome writes one value when they agree.
+  if (prop.endsWith('-radius')) {
+    const [h, vv] = v as [LengthPct, LengthPct];
+    const parts = chrome.trim().split(/\s+/);
+    const ch = chromeLp(parts[0] ?? ''), cv = chromeLp(parts[1] ?? parts[0] ?? '');
+    return { ok: lpNear(h, ch) && lpNear(vv, cv), ours: JSON.stringify(v) };
+  }
+  if (prop === 'background-position-x' || prop === 'background-position-y') {
+    return { ok: lpNear(v as LengthPct, chromeLp(chrome)), ours: JSON.stringify(v) };
+  }
+  if (prop === 'background-repeat') {
+    const one: Record<string, string> = { 'repeat-x': 'repeat no-repeat', 'repeat-y': 'no-repeat repeat' };
+    const c = chrome.trim();
+    const full = one[c] ?? (c.includes(' ') ? c : `${c} ${c}`);
+    const mine = (v as string[]).join(' ');
+    return { ok: mine === full, ours: mine };
+  }
+  if (prop === 'background-size') {
+    if (typeof v === 'string') return { ok: v === chrome.trim(), ours: v };
+    const [a, b] = v as (LengthPct | 'auto')[];
+    const parts = chrome.trim().split(/\s+/);
+    const eq = (x: LengthPct | 'auto', c: string | undefined): boolean =>
+      x === 'auto' ? (c === undefined || c === 'auto') : lpNear(x, chromeLp(c ?? ''));
+    return { ok: eq(a, parts[0]) && eq(b, parts[1]), ours: JSON.stringify(v) };
   }
 
   return { ok: String(v) === chrome.trim(), ours: String(v) };

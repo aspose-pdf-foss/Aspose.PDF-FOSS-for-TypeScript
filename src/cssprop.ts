@@ -6,7 +6,7 @@
  *  No Document, no PDF object, no `node:` import.
  *
  *  Invariant: the set is bounded by what zch2.3, zch2.4 and zch2.6 will
- *  consume, not by CSS. 43 longhands, asserted — a property outside them is
+ *  consume, not by CSS. 52 longhands, asserted — a property outside them is
  *  recorded as `unknown-property` for zch2.7 rather than dropped, which is
  *  what makes "we do not implement flexbox" reportable instead of invisible.
  *
@@ -23,6 +23,10 @@ import {
   resolveLengthPct,
 } from './cssvalue.js';
 import type { Color, LengthPct } from './cssvalue.js';
+import {
+  computeRadius, computeBgImage, computeBgSize, computeBgRepeat, computeBgPosition,
+  type RadiusValue, type BgImageValue, type BgSizeValue, type BgRepeatValue,
+} from './cssbackground.js';
 
 export type LineHeight = 'normal' | { number: number } | { px: number };
 export type Auto<T> = T | 'auto';
@@ -78,6 +82,17 @@ export interface ComputedStyle {
   listStylePosition: 'outside' | 'inside';
   borderCollapse: 'separate' | 'collapse';
   borderSpacing: number;
+  /** (v9j3.4) Corner radii, [horizontal, vertical], px or %. */
+  borderTopLeftRadius: RadiusValue;
+  borderTopRightRadius: RadiusValue;
+  borderBottomRightRadius: RadiusValue;
+  borderBottomLeftRadius: RadiusValue;
+  /** (v9j3.4) One background layer. */
+  backgroundImage: BgImageValue;
+  backgroundSize: BgSizeValue;
+  backgroundRepeat: BgRepeatValue;
+  backgroundPositionX: LengthPct;
+  backgroundPositionY: LengthPct;
 }
 
 /** What relative values resolve against, for ONE element.
@@ -142,8 +157,8 @@ export const FONT_SIZE_KEYWORDS: Readonly<Record<string, number>> = {
 const FONT_SCALE = 1.2;
 
 // ---- helper factories ------------------------------------------------------
-// Each returns a `compute`. They exist so the 43 rows below carry only what
-// differs per property; a grammar written out 43 times is 43 chances to
+// Each returns a `compute`. They exist so the 52 rows below carry only what
+// differs per property; a grammar written out 52 times is 52 chances to
 // disagree with itself.
 
 /** One of a fixed set of keywords. */
@@ -194,6 +209,9 @@ function borderWidth(): PropDef['compute'] {
 
 const BORDER_STYLES: BorderStyle[] = ['none', 'hidden', 'solid', 'dotted',
   'dashed', 'double', 'groove', 'ridge', 'inset', 'outset'];
+
+/** The length context a compute hands cssbackground.ts. */
+const lc = (c: PropContext) => ({ fontSize: c.fontSize, rootFontSize: c.rootFontSize });
 
 // ---- the per-property computes that are not a plain factory ----------------
 
@@ -356,6 +374,16 @@ export const PROPERTIES: ReadonlyMap<string, PropDef> = new Map<string, PropDef>
   ['list-style-position', def('listStylePosition', true, 'outside', kw('outside', 'inside'))],
   ['border-collapse', def('borderCollapse', true, 'separate', kw('separate', 'collapse'))],
   ['border-spacing', def('borderSpacing', true, 0, absLen())],
+  // (v9j3.4) The grammar is cssbackground.ts's; none of these inherit.
+  ['border-top-left-radius', def('borderTopLeftRadius', false, [ZERO_LENGTH, ZERO_LENGTH], (v, c) => computeRadius(v, lc(c)))],
+  ['border-top-right-radius', def('borderTopRightRadius', false, [ZERO_LENGTH, ZERO_LENGTH], (v, c) => computeRadius(v, lc(c)))],
+  ['border-bottom-right-radius', def('borderBottomRightRadius', false, [ZERO_LENGTH, ZERO_LENGTH], (v, c) => computeRadius(v, lc(c)))],
+  ['border-bottom-left-radius', def('borderBottomLeftRadius', false, [ZERO_LENGTH, ZERO_LENGTH], (v, c) => computeRadius(v, lc(c)))],
+  ['background-image', def('backgroundImage', false, { kind: 'none' }, (v, c) => computeBgImage(v, lc(c), c.color))],
+  ['background-size', def('backgroundSize', false, ['auto', 'auto'], (v, c) => computeBgSize(v, lc(c)))],
+  ['background-repeat', def('backgroundRepeat', false, ['repeat', 'repeat'], (v) => computeBgRepeat(v))],
+  ['background-position-x', def('backgroundPositionX', false, ZERO_LENGTH, (v, c) => computeBgPosition('x', v, lc(c)))],
+  ['background-position-y', def('backgroundPositionY', false, ZERO_LENGTH, (v, c) => computeBgPosition('y', v, lc(c)))],
 ]);
 
 /** Every property at its initial value.

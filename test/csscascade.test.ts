@@ -110,7 +110,9 @@ describe('collection', () => {
     const el = allElements(doc).find((e) => e.attrs.get('id') === 'x');
     const inline = collect(doc).inline.get(el as HtmlElement);
     expect(inline?.normal.map(([k]) => k)).toEqual(['color']);
-    expect(inline?.important.map(([k]) => k)).toEqual(['background-color']);
+    // `background` governs six longhands since v9j3.4, all !important here.
+    expect(inline?.important.map(([k]) => k)).toEqual(['background-color', 'background-image',
+      'background-position-x', 'background-position-y', 'background-size', 'background-repeat']);
   });
 
   it('EXPANDS a shorthand at collection time, not later', () => {

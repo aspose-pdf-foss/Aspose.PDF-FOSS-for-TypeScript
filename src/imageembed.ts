@@ -226,6 +226,22 @@ export function imageSize(data: Uint8Array): { width: number; height: number } |
   }
 }
 
+/** Allocate `built` (and its `/SMask`) and register it under a fresh `Im` key
+ *  in `resources`. ONE owner, shared by drawBuiltImage and the box painter
+ *  (v9j3.4); the allocation order — mask, then image — is drawBuiltImage's,
+ *  which is what kept it byte-identical through the extraction. @internal */
+export function registerBuiltImage(doc: Document, resources: PdfDict, built: BuiltImage): string {
+  const stream: PdfStream = { ...built.stream, dict: new Map(built.stream.dict) };
+  if (built.smask) {
+    const smask: PdfStream = { ...built.smask, dict: new Map(built.smask.dict) };
+    stream.dict.set('SMask', doc.allocObject(smask));
+  }
+  const xobjs = ensureOwnSubdict(doc, resources, 'XObject');
+  const key = freshKey(xobjs, 'Im');
+  xobjs.set(key, doc.allocObject(stream));
+  return key;
+}
+
 export function drawBuiltImage(
   doc: Document, page: Page, built: BuiltImage,
   rect: [number, number, number, number],
@@ -233,15 +249,7 @@ export function drawBuiltImage(
 ): void {
   if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((n) => Number.isFinite(n)))
     throw new TypeError('rect must be [x, y, w, h] (4 finite numbers)');
-  const stream: PdfStream = { ...built.stream, dict: new Map(built.stream.dict) };
-  if (built.smask) {
-    const smask: PdfStream = { ...built.smask, dict: new Map(built.smask.dict) };
-    stream.dict.set('SMask', doc.allocObject(smask));
-  }
-  const res = ensureOwnResources(doc, page);
-  const xobjs = ensureOwnSubdict(doc, res, 'XObject');
-  const key = freshKey(xobjs, 'Im');
-  xobjs.set(key, doc.allocObject(stream));
+  const key = registerBuiltImage(doc, ensureOwnResources(doc, page), built);
 
   const [x, y, w, h] = rect;
   const opacity = opts.opacity;

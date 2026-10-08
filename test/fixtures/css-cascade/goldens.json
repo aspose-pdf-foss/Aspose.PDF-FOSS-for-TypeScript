@@ -823,6 +823,108 @@
      "text-decoration-color": "rgb(0, 0, 0)"
     }
    ]
+  },
+  {
+   "id": "border-radius",
+   "html": "<div id=a style=\"border-radius:10px 20px / 5px\">a</div><div id=b style=\"border-radius:4px 8px 12px\">b</div><p id=c style=\"border-top-left-radius:50%\">c</p>",
+   "props": [
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-right-radius",
+    "border-bottom-left-radius"
+   ],
+   "values": [
+    {
+     "border-top-left-radius": "0px",
+     "border-top-right-radius": "0px",
+     "border-bottom-right-radius": "0px",
+     "border-bottom-left-radius": "0px"
+    },
+    {
+     "border-top-left-radius": "0px",
+     "border-top-right-radius": "0px",
+     "border-bottom-right-radius": "0px",
+     "border-bottom-left-radius": "0px"
+    },
+    {
+     "border-top-left-radius": "0px",
+     "border-top-right-radius": "0px",
+     "border-bottom-right-radius": "0px",
+     "border-bottom-left-radius": "0px"
+    },
+    {
+     "border-top-left-radius": "10px 5px",
+     "border-top-right-radius": "20px 5px",
+     "border-bottom-right-radius": "10px 5px",
+     "border-bottom-left-radius": "20px 5px"
+    },
+    {
+     "border-top-left-radius": "4px",
+     "border-top-right-radius": "8px",
+     "border-bottom-right-radius": "12px",
+     "border-bottom-left-radius": "8px"
+    },
+    {
+     "border-top-left-radius": "50%",
+     "border-top-right-radius": "0px",
+     "border-bottom-right-radius": "0px",
+     "border-bottom-left-radius": "0px"
+    }
+   ]
+  },
+  {
+   "id": "background-longhands",
+   "html": "<div id=a style=\"background: red center / contain no-repeat\">a</div><div id=b style=\"background-repeat: repeat-x; background-size: 50% auto\">b</div><div id=c style=\"background-position: right 10px bottom\">c</div><div id=d style=\"background-position: top\">d</div>",
+   "props": [
+    "background-size",
+    "background-repeat",
+    "background-position-x",
+    "background-position-y"
+   ],
+   "values": [
+    {
+     "background-size": "auto",
+     "background-repeat": "repeat",
+     "background-position-x": "0%",
+     "background-position-y": "0%"
+    },
+    {
+     "background-size": "auto",
+     "background-repeat": "repeat",
+     "background-position-x": "0%",
+     "background-position-y": "0%"
+    },
+    {
+     "background-size": "auto",
+     "background-repeat": "repeat",
+     "background-position-x": "0%",
+     "background-position-y": "0%"
+    },
+    {
+     "background-size": "contain",
+     "background-repeat": "no-repeat",
+     "background-position-x": "50%",
+     "background-position-y": "50%"
+    },
+    {
+     "background-size": "50% auto",
+     "background-repeat": "repeat-x",
+     "background-position-x": "0%",
+     "background-position-y": "0%"
+    },
+    {
+     "background-size": "auto",
+     "background-repeat": "repeat",
+     "background-position-x": "calc(100% - 10px)",
+     "background-position-y": "100%"
+    },
+    {
+     "background-size": "auto",
+     "background-repeat": "repeat",
+     "background-position-x": "50%",
+     "background-position-y": "0%"
+    }
+   ]
   }
  ]
 }

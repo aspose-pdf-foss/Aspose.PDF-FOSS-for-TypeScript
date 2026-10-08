@@ -7,10 +7,23 @@ export function serializeObject(o: PdfObject): Uint8Array {
   return enc(serializeValue(o));
 }
 
+/** A PDF number has no exponent (32000-1 7.3.3), while `String(n)` writes one
+ *  for |n| < 1e-6 and |n| >= 1e21 — and a computed coordinate that should be
+ *  0 lands at 1e-14 routinely, which made the saved file unopenable. Every
+ *  number `String` writes WITHOUT an exponent is kept exactly, so no existing
+ *  output moves; only the exponent forms are spelled out in plain decimal. */
+function numberText(n: number): string {
+  const s = String(n);
+  if (!/e/i.test(s) || !Number.isFinite(n)) return s;
+  if (Math.abs(n) >= 1) return BigInt(Math.round(n)).toString();
+  const t = n.toFixed(20).replace(/0+$/, '').replace(/\.$/, '');
+  return t === '-0' || t === '' ? '0' : t;
+}
+
 export function serializeValue(o: PdfObject): string {
   if (o === null) return 'null';
   if (typeof o === 'boolean') return o ? 'true' : 'false';
-  if (typeof o === 'number') return String(o);
+  if (typeof o === 'number') return numberText(o);
   if (isRef(o)) return `${o.num} ${o.gen} R`;
   if (isName(o)) return `/${escapeName(o.name)}`;
   if (isArray(o)) return `[${(o as PdfArray).map(serializeValue).join(' ')}]`;

@@ -56,8 +56,10 @@ import { collapseMargins } from './cssmargin.js';
 import type { AtomicInline, FamilyResolver } from './cssinline.js';
 import type { TextRun } from './textdecor.js';
 import { decodeDataUri } from './datauri.js';
-import { imageSize } from './imageembed.js';
-import { fixedPx } from './cssvalue.js';
+import { fixedPx, resolveLengthPct, type LengthPct } from './cssvalue.js';
+import { buildImageXObject, imageSize, type BuiltImage } from './imageembed.js';
+import type { CornerSpec, BgLayer, Len } from './boxpaint.js';
+import type { GradientSpec } from './boxdraw.js';
 import type { NotRendered } from './htmlreport.js';
 import type { Undrawable } from './textcoverage.js';
 import type { FloatContent } from './flowelement.js';
@@ -330,10 +332,70 @@ function edgeOf(
   return c === undefined ? undefined : { width: pt(width), color: c };
 }
 
+/** A computed LengthPct as boxpaint's Len, crossing px -> pt here (the one
+ *  crossing). A math expression is sampled at basis 0 and 100 — exact for
+ *  calc(), whose value is linear in the basis, and an approximation for
+ *  min()/max(), which is recorded rather than chased. */
+function lenPt(v: LengthPct): Len {
+  if (!('expr' in v)) return { abs: v.px * PT_PER_PX, frac: v.pct / 100 };
+  const a = resolveLengthPct(v, 0), b = resolveLengthPct(v, 100);
+  return { abs: a * PT_PER_PX, frac: (b - a) / 100 };
+}
+
+/** The corner radii, or undefined when every corner is square — which keeps
+ *  a plain box's frame object exactly what it was (v9j3.4). */
+function radiiOf(s: ComputedStyle): CornerSpec[] | undefined {
+  const c = [s.borderTopLeftRadius, s.borderTopRightRadius, s.borderBottomRightRadius, s.borderBottomLeftRadius];
+  if (c.every(([h, v]) => fixedPx(h) === 0 || fixedPx(v) === 0)) return undefined;
+  return c.map(([h, v]) => ({ x: lenPt(h), y: lenPt(v) }));
+}
+
+/** The background layer (v9j3.4). An image resolves through a data: URI or
+ *  the caller's resolveImage; one that will not is reported ONCE, here, and
+ *  the box's colour still paints. An anonymous box (no element) paints no
+ *  background of its own: CSS paints the element's box, not its wrappers. */
+function layerOf(s: ComputedStyle, el: HtmlElement | null, c: Ctx): BoxFrame['layer'] {
+  const img = s.backgroundImage;
+  if (img.kind === 'none' || el === null) return undefined;
+  const layer: BgLayer = {
+    size: s.backgroundSize === 'cover' || s.backgroundSize === 'contain' ? s.backgroundSize
+      : [s.backgroundSize[0] === 'auto' ? 'auto' : lenPt(s.backgroundSize[0]),
+        s.backgroundSize[1] === 'auto' ? 'auto' : lenPt(s.backgroundSize[1])],
+    posX: lenPt(s.backgroundPositionX), posY: lenPt(s.backgroundPositionY),
+    repeatX: s.backgroundRepeat[0] === 'repeat', repeatY: s.backgroundRepeat[1] === 'repeat',
+  };
+  if (img.kind === 'url') {
+    const data = decodeDataUri(img.url) ?? c.resolveImage?.(img.url, '');
+    let built: BuiltImage | undefined;
+    if (data !== undefined) {
+      try { built = buildImageXObject(data); } catch (caught) { rethrowLimit(caught); }
+    }
+    const w = built?.stream.dict.get('Width'), h = built?.stream.dict.get('Height');
+    if (built === undefined || typeof w !== 'number' || typeof h !== 'number') {
+      c.skipped.push({ el, kind: 'dropped', construct: 'image', detail: `background-image: ${img.url}` });
+      return undefined;
+    }
+    return { source: { kind: 'image', built, width: w * PT_PER_PX, height: h * PT_PER_PX }, layer };
+  }
+  const stops = img.stops.map((st) => ({
+    color: st.color.rgb, alpha: st.color.a, ...(st.pos !== undefined ? { pos: lenPt(st.pos) } : {}),
+  }));
+  const g: GradientSpec = img.kind === 'linear'
+    ? { kind: 'linear', ...(img.to !== undefined ? { to: img.to } : { angle: img.angle ?? 180 }), stops }
+    : { kind: 'radial', shape: img.shape,
+      extent: Array.isArray(img.extent) ? { rx: lenPt(img.extent[0]), ry: lenPt(img.extent[1]) } : img.extent,
+      at: [lenPt(img.at[0]), lenPt(img.at[1])], stops };
+  return { source: { kind: 'gradient', g }, layer };
+}
+
 /** The frame for one resolved box, in POINTS. */
-function frameOf(r: ResolvedBox): BoxFrame {
+function frameOf(r: ResolvedBox, c: Ctx): BoxFrame {
   const s = r.box.style;
+  const radii = radiiOf(s);
+  const layer = layerOf(s, r.box.el, c);
   return {
+    ...(radii !== undefined ? { radii } : {}),
+    ...(layer !== undefined ? { layer } : {}),
     marginLeft: pt(r.marginLeft),
     marginRight: pt(r.marginRight),
     insetLeft: pt(r.insetLeft),
@@ -541,13 +603,13 @@ function mapBoxInner(r: ResolvedBox, spaceBefore: number, c: Ctx): FlowElement[]
       // (zch2.12). One sharing its line with text is reported below, the same
       // rule zch2.11 applies to an image.
       const els = svgElement(lone, r.contentWidth, spaceBefore, c);
-      if (els !== null) return frameBoxes(els, frameOf(r), spacing);
+      if (els !== null) return frameBoxes(els, frameOf(r, c), spacing);
       c.skipped.push({ el: lone.el, kind: 'dropped', construct: 'svg' });
       return [];
     }
     if (lone !== null) {
       const els = imageElement(lone, r.contentWidth, spaceBefore, c);
-      if (els !== null) return frameBoxes(els, frameOf(r), spacing);
+      if (els !== null) return frameBoxes(els, frameOf(r, c), spacing);
       // It did not resolve. Report it HERE and fall through to the text with
       // NO atomics: atomicsOf would ask the resolver for the same src a
       // second time, and a caller that counts its calls (or fetches) would
@@ -558,20 +620,21 @@ function mapBoxInner(r: ResolvedBox, spaceBefore: number, c: Ctx): FlowElement[]
       });
       const loneRuns = scaleRuns(box.content.runs);
       if (loneRuns.length === 0) return [];
-      return frameBoxes(textElement(loneRuns, box.el, style, undefined, c), frameOf(r), spacing);
+      return frameBoxes(textElement(loneRuns, box.el, style, undefined, c), frameOf(r, c), spacing);
     }
     // Not a lone image: each atomic that resolves rides the paragraph as an
     // inline box (zch2.11), and only the ones we cannot resolve are reported.
     const atomics = atomicsOf(box.content, c);
     const runs = scaleRuns(box.content.runs);
-    if (runs.length === 0 && atomics.length === 0) return [];
+    // (v9j3.4) Through frameBoxes, which keeps an empty box that still paints.
+    if (runs.length === 0 && atomics.length === 0) return frameBoxes([], frameOf(r, c), spacing);
     return frameBoxes(
-      textElement(runs, box.el, style, atomics, c), frameOf(r), spacing);
+      textElement(runs, box.el, style, atomics, c), frameOf(r, c), spacing);
   }
 
   // A block container: its children flatten, each wrapped in THIS box's frame.
   const kids = mapSiblings(box.content.children, r.contentWidth, c);
-  return frameBoxes(kids, frameOf(r), spacing);
+  return frameBoxes(kids, frameOf(r, c), spacing);
 }
 
 /** CSS list-style-type values that NUMBER rather than bullet. */

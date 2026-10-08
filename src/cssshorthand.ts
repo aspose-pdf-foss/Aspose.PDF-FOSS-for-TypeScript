@@ -25,6 +25,7 @@ import type { CssValue } from './cssparse.js';
 import type { CssToken } from './csstoken.js';
 import { trimWs, keywordOf, colorOf, cssWideOf } from './cssvalue.js';
 import { FONT_SIZE_KEYWORDS } from './cssprop.js';
+import { splitRadius, splitPosition, splitBackground } from './cssbackground.js';
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
 
@@ -36,6 +37,7 @@ export const SHORTHANDS: ReadonlySet<string> = new Set([
   'border', 'border-top', 'border-right', 'border-bottom', 'border-left',
   'border-width', 'border-style', 'border-color',
   'font', 'background', 'list-style', 'text-decoration',
+  'border-radius', 'background-position',
 ]);
 
 /** Split a value into whitespace-delimited parts. Commas are KEPT inside a
@@ -285,7 +287,11 @@ export const GOVERNS: Record<string, string[]> = {
   'border-bottom': ['border-bottom-width', 'border-bottom-style', 'border-bottom-color'],
   'border-left': ['border-left-width', 'border-left-style', 'border-left-color'],
   font: ['font-style', 'font-weight', 'font-size', 'line-height', 'font-family'],
-  background: ['background-color'],
+  background: ['background-color', 'background-image', 'background-position-x',
+    'background-position-y', 'background-size', 'background-repeat'],
+  'border-radius': ['border-top-left-radius', 'border-top-right-radius',
+    'border-bottom-right-radius', 'border-bottom-left-radius'],
+  'background-position': ['background-position-x', 'background-position-y'],
   'list-style': ['list-style-type', 'list-style-position'],
   'text-decoration': ['text-decoration-line', 'text-decoration-style',
     'text-decoration-color'],
@@ -319,13 +325,22 @@ export function expandShorthand(
     case 'border-bottom': return borderSides(['bottom'], p);
     case 'border-left': return borderSides(['left'], p);
     case 'font': return expandFont(v);
-    // Only the colour component is in scope. A background carrying an image
-    // is REFUSED whole rather than reduced to its colour: taking the red out
-    // of `red url(x.png)` renders a flat panel where the author wrote a
-    // picture, and refusing records it for zch2.7.
+    // (v9j3.4) One layer — colour, image, position / size and repeat — is in
+    // scope. What is still refused is refused WHOLE (a second layer, `fixed`,
+    // a box keyword) rather than reduced to its colour: taking the red out of
+    // a two-layer value renders a flat panel where the author wrote pictures.
     case 'background': {
-      const c = trimWs(v);
-      return colorOf(c) === undefined ? undefined : [['background-color', c]];
+      const m = splitBackground(trimWs(v));
+      return m === undefined ? undefined : Object.entries(m) as [string, CssValue[]][];
+    }
+    case 'border-radius': {
+      const r = splitRadius(p);
+      return r === undefined ? undefined
+        : (['top-left', 'top-right', 'bottom-right', 'bottom-left'] as const).map((k, i) => [`border-${k}-radius`, r[i]]);
+    }
+    case 'background-position': {
+      const xy = splitPosition(p);
+      return xy === undefined ? undefined : [['background-position-x', xy[0]], ['background-position-y', xy[1]]];
     }
     case 'list-style': return expandListStyle(p);
     case 'text-decoration': return expandTextDecoration(p);

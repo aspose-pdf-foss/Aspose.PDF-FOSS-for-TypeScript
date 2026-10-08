@@ -206,6 +206,25 @@ const CASES: { id: string; html: string; props: string[] }[] = [
       + '<div id=o><p id=t>x</p></div>',
     props: ['text-decoration-line', 'text-decoration-style', 'text-decoration-color'],
   },
+  {
+    // v9j3.4: the corner radii, from the shorthand (with its slash) and a longhand.
+    id: 'border-radius',
+    html: '<div id=a style="border-radius:10px 20px / 5px">a</div>'
+      + '<div id=b style="border-radius:4px 8px 12px">b</div>'
+      + '<p id=c style="border-top-left-radius:50%">c</p>',
+    props: ['border-top-left-radius', 'border-top-right-radius',
+      'border-bottom-right-radius', 'border-bottom-left-radius'],
+  },
+  {
+    // v9j3.4: size, repeat and position through the background shorthand and
+    // the longhands, the 4-value edge-offset form included.
+    id: 'background-longhands',
+    html: '<div id=a style="background: red center / contain no-repeat">a</div>'
+      + '<div id=b style="background-repeat: repeat-x; background-size: 50% auto">b</div>'
+      + '<div id=c style="background-position: right 10px bottom">c</div>'
+      + '<div id=d style="background-position: top">d</div>',
+    props: ['background-size', 'background-repeat', 'background-position-x', 'background-position-y'],
+  },
 ];
 
 const browser = await puppeteer.launch();

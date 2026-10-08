@@ -10,6 +10,34 @@ import {
 import { stampTextBlock, type TextBlockOptions, type AuthoringFont } from './stamp.js';
 import type { StructElement } from './struct.js';
 import type { FlowParagraphOptions } from './flow.js';
+import type { GradientStop } from './gradient.js';
+import { paintBox, type GradientSpec, type LayerSource } from './boxdraw.js';
+import { resolveRadii, hasRadius, type CornerSpec, type BgLayer, type Len } from './boxpaint.js';
+
+/** One corner's radius: a number, or [rx, ry] for an elliptical corner. Points. */
+export type FloatBoxCorner = number | [number, number];
+/** A box's corner radii (v9j3.4): one for all four, or per corner. Points. */
+export type FloatBoxRadius = number | {
+  topLeft?: FloatBoxCorner; topRight?: FloatBoxCorner; bottomRight?: FloatBoxCorner; bottomLeft?: FloatBoxCorner;
+};
+/** A BOX-RELATIVE gradient (v9j3.4). Linear: `angle` in CSS degrees, where 0
+ *  runs bottom to top and 180 (the default) top to bottom. Radial: `shape`
+ *  (default ellipse), a CSS size keyword (default farthest-corner) and `at`,
+ *  the centre as fractions of the box (default [0.5, 0.5]). Stops as
+ *  {@link GradientStop}. It lowers through the same rule a CSS gradient does. */
+export type BoxGradient =
+  | { kind: 'linear'; angle?: number; stops: GradientStop[] }
+  | { kind: 'radial'; shape?: 'circle' | 'ellipse';
+      size?: 'closest-side' | 'closest-corner' | 'farthest-side' | 'farthest-corner';
+      at?: [number, number]; stops: GradientStop[] };
+/** A background image (v9j3.4). `fit` is a preset of the CSS rule:
+ *  'stretch' (default, as .NET) fills the box; 'cover' and 'contain' centre it;
+ *  'tile' repeats it at its natural size; 'none' draws it once at the top-left. */
+export interface FloatBoxBackgroundImage {
+  data: Uint8Array;
+  fit?: 'stretch' | 'cover' | 'contain' | 'tile' | 'none';
+  format?: 'jpeg' | 'png' | 'bmp' | 'tiff';
+}
 
 /** Options for {@link Document.NewFloatingBox}. All lengths are in points. */
 export interface FloatBoxOptions {
@@ -22,8 +50,14 @@ export interface FloatBoxOptions {
    *  vocabulary is the one the table `BorderInfo` uses — both are "a rectangle
    *  with a subset of its edges drawn". */
   border?: { width: number; color: [number, number, number]; sides?: BorderSides };
-  /** Background fill color (rgb 0..1). Default none. */
-  background?: [number, number, number];
+  /** Background fill colour (rgb 0..1), or a box-relative gradient
+   *  (v9j3.4). Default none. */
+  background?: [number, number, number] | BoxGradient;
+  /** Rounded corners (v9j3.4), in points. Default square. */
+  radius?: FloatBoxRadius;
+  /** A background image (v9j3.4). One layer: exclusive with a gradient
+   *  `background`. Default none. */
+  backgroundImage?: FloatBoxBackgroundImage;
   /** Gap between consecutive box elements, the horizontal band the wrapped text
    *  keeps from the box (`band = width + spacing`), and the vertical gap above/
    *  below the box. One knob, three uses. Default 0. */
@@ -73,6 +107,8 @@ export class FloatingBox {
   /** @internal */ readonly borderWidth: number;
   /** @internal */ readonly border?: { width: number; color: [number, number, number]; sides?: BorderSides };
   /** @internal */ readonly background?: [number, number, number];
+  /** @internal (v9j3.4) */ readonly radii?: CornerSpec[];
+  /** @internal (v9j3.4) */ readonly layer?: { source: LayerSource; layer: BgLayer };
   /** @internal */ readonly alt?: string;
   private readonly items: BoxItem[] = [];
 
@@ -96,7 +132,22 @@ export class FloatingBox {
     // Reserved on every side regardless of which edges are drawn, so toggling
     // `sides` changes only the ink and never reflows the text inside the box.
     this.borderWidth = this.border?.width ?? 0;
-    if (options.background) this.background = checkColor(options.background, 'background');
+    // (v9j3.4) Everything validated and the image decoded BEFORE anything is
+    // stored, so a rejected box has allocated nothing.
+    const bg = options.background;
+    const grad = bg !== undefined && !Array.isArray(bg) ? checkGradient(bg) : undefined;
+    if (bg !== undefined && Array.isArray(bg)) this.background = checkColor(bg, 'background');
+    if (options.radius !== undefined) {
+      const r = checkRadius(options.radius);
+      if (r.some((c) => c.x.abs > 0 && c.y.abs > 0)) this.radii = r;
+    }
+    if (options.backgroundImage !== undefined) {
+      if (grad !== undefined)
+        throw new TypeError('background gradient and backgroundImage are exclusive: one background layer');
+      this.layer = imageLayer(options.backgroundImage);
+    } else if (grad !== undefined) {
+      this.layer = { source: { kind: 'gradient', g: grad }, layer: STRETCH };
+    }
     this.alt = options.alt;
     if (this.contentWidth() <= 0)
       throw new TypeError('floating box contentWidth must be positive (reduce padding/border or raise width)');
@@ -156,6 +207,24 @@ export class FloatingBox {
     const h = total + this.padding.top + this.padding.bottom + 2 * this.borderWidth;
     const bw = this.borderWidth;
 
+    // (v9j3.4) A radius, a gradient or an image goes through the one painter;
+    // without them the chrome below is today's, byte for byte.
+    const radii = resolveRadii(this.radii ?? [], this.width, h);
+    if (hasRadius(radii) || this.layer !== undefined) {
+      const e = this.border && bw > 0 ? resolveBorderSides(this.border.sides) : undefined;
+      const edge = (on: boolean | undefined) => (on && this.border ? { width: bw, color: this.border.color } : undefined);
+      paintBox(this.doc, page, {
+        x, y: topY - h, w: this.width, h, radii,
+        ...(this.background !== undefined ? { color: this.background } : {}),
+        edges: { top: edge(e?.top), right: edge(e?.right), bottom: edge(e?.bottom), left: edge(e?.left) },
+        ...(this.layer !== undefined ? { layer: {
+          ...this.layer, area: { x: x + bw, top: topY - bw, w: this.width - 2 * bw, h: h - 2 * bw },
+        } } : {}),
+      }, structParent !== undefined);
+      this.paintItems(page, x, topY, heights, structParent);
+      return h;
+    }
+
     // Chrome: background fill, then border stroke (inset by bw/2 so the stroke
     // stays within the outer box).
     const g = new PageGraphics(this.doc, page);
@@ -183,7 +252,13 @@ export class FloatingBox {
       }
     }
     g.apply();
+    this.paintItems(page, x, topY, heights, structParent);
+    return h;
+  }
 
+  /** The box's content, top-down inside the padding box. */
+  private paintItems(page: Page, x: number, topY: number, heights: number[], structParent?: StructElement): void {
+    const bw = this.borderWidth;
     // Inner content, top-down inside the padding box.
     const cx = x + this.padding.left + bw;
     const cw = this.contentWidth();
@@ -207,6 +282,77 @@ export class FloatingBox {
       }
       top -= eh;
     });
-    return h;
   }
+}
+
+const F = (frac: number): Len => ({ abs: 0, frac });
+/** `fit: 'stretch'` — the CSS rule for "fill the box". */
+const STRETCH: BgLayer = { size: [F(1), F(1)], posX: F(0), posY: F(0), repeatX: false, repeatY: false };
+const FITS: Record<NonNullable<FloatBoxBackgroundImage['fit']>, BgLayer> = {
+  stretch: STRETCH,
+  cover: { size: 'cover', posX: F(0.5), posY: F(0.5), repeatX: false, repeatY: false },
+  contain: { size: 'contain', posX: F(0.5), posY: F(0.5), repeatX: false, repeatY: false },
+  tile: { size: ['auto', 'auto'], posX: F(0), posY: F(0), repeatX: true, repeatY: true },
+  none: { size: ['auto', 'auto'], posX: F(0), posY: F(0), repeatX: false, repeatY: false },
+};
+
+function checkCorner(c: FloatBoxCorner | undefined, name: string): CornerSpec {
+  const [rx, ry] = c === undefined ? [0, 0] : typeof c === 'number' ? [c, c] : Array.isArray(c) && c.length === 2 ? c : [Number.NaN, Number.NaN];
+  for (const v of [rx, ry]) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new TypeError(`${name} must be a finite number or [rx, ry]`);
+    if (v < 0) throw new RangeError(`${name} must be >= 0`);
+  }
+  return { x: { abs: rx, frac: 0 }, y: { abs: ry, frac: 0 } };
+}
+
+function checkRadius(r: FloatBoxRadius): CornerSpec[] {
+  if (typeof r === 'number' || Array.isArray(r)) {
+    const c = checkCorner(r as FloatBoxCorner, 'radius');
+    return [c, c, c, c];
+  }
+  if (typeof r !== 'object' || r === null) throw new TypeError('radius must be a number or a per-corner object');
+  return [checkCorner(r.topLeft, 'radius.topLeft'), checkCorner(r.topRight, 'radius.topRight'),
+    checkCorner(r.bottomRight, 'radius.bottomRight'), checkCorner(r.bottomLeft, 'radius.bottomLeft')];
+}
+
+const SIZES = new Set(['closest-side', 'closest-corner', 'farthest-side', 'farthest-corner']);
+
+function checkGradient(g: BoxGradient): GradientSpec {
+  if (typeof g !== 'object' || g === null || (g.kind !== 'linear' && g.kind !== 'radial'))
+    throw new TypeError("background gradient kind must be 'linear' or 'radial'");
+  if (!Array.isArray(g.stops) || g.stops.length < 2) throw new TypeError('background gradient needs at least two stops');
+  const stops = g.stops.map((st, i) => {
+    if (typeof st !== 'object' || st === null || !Number.isFinite(st.offset) || st.offset < 0 || st.offset > 1)
+      throw new TypeError(`gradient stop ${i}: offset must be in 0..1`);
+    const color = checkColor(st.color, `gradient stop ${i} color`);
+    const alpha = st.opacity ?? 1;
+    if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) throw new TypeError(`gradient stop ${i}: opacity must be in 0..1`);
+    return { color, alpha, pos: F(st.offset) };
+  });
+  if (g.kind === 'linear') {
+    const angle = g.angle ?? 180;
+    if (!Number.isFinite(angle)) throw new TypeError('gradient angle must be a finite number');
+    return { kind: 'linear', angle, stops };
+  }
+  const shape = g.shape ?? 'ellipse';
+  if (shape !== 'circle' && shape !== 'ellipse') throw new TypeError("radial shape must be 'circle' or 'ellipse'");
+  const size = g.size ?? 'farthest-corner';
+  if (!SIZES.has(size)) throw new TypeError('radial size must be a CSS extent keyword');
+  const at = g.at ?? [0.5, 0.5];
+  if (!Array.isArray(at) || at.length !== 2 || !at.every((v) => Number.isFinite(v)))
+    throw new TypeError('radial at must be [x, y] fractions of the box');
+  return { kind: 'radial', shape, extent: size, at: [F(at[0]), F(at[1])], stops };
+}
+
+function imageLayer(im: FloatBoxBackgroundImage): { source: LayerSource; layer: BgLayer } {
+  if (typeof im !== 'object' || im === null || !(im.data instanceof Uint8Array))
+    throw new TypeError('backgroundImage.data must be a Uint8Array');
+  const fit = im.fit ?? 'stretch';
+  if (!Object.prototype.hasOwnProperty.call(FITS, fit))
+    throw new TypeError("backgroundImage.fit must be 'stretch', 'cover', 'contain', 'tile' or 'none'");
+  const built = buildImageXObject(im.data, im.format);
+  const w = built.stream.dict.get('Width'), h = built.stream.dict.get('Height');
+  if (typeof w !== 'number' || typeof h !== 'number') throw new TypeError('backgroundImage has no size');
+  // Natural size: pixels x 0.75pt, the rule an <img> already uses.
+  return { source: { kind: 'image', built, width: w * 0.75, height: h * 0.75 }, layer: FITS[fit] };
 }

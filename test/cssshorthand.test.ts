@@ -27,11 +27,12 @@ const ex = (name: string, src: string): Record<string, string> | undefined => {
 };
 
 describe('the shorthand set', () => {
-  it('names exactly the fourteen shorthands in scope', () => {
+  it('names exactly the sixteen shorthands in scope', () => {
     expect([...SHORTHANDS].sort()).toEqual([
       'background', 'border', 'border-bottom', 'border-color', 'border-left',
       'border-right', 'border-style', 'border-top', 'border-width', 'font',
       'list-style', 'margin', 'padding', 'text-decoration',
+      'border-radius', 'background-position',            // v9j3.4
     ].sort());
   });
 });
@@ -175,15 +176,21 @@ describe('font', () => {
 });
 
 describe('the remaining shorthands', () => {
-  it('takes only the colour from background', () => {
-    expect(ex('background', 'red')).toEqual({ 'background-color': 'red' });
+  it('a colour-only background resets the other five longhands (v9j3.4)', () => {
+    expect(ex('background', 'red')).toEqual({
+      'background-color': 'red', 'background-image': 'initial', 'background-position-x': 'initial',
+      'background-position-y': 'initial', 'background-size': 'initial', 'background-repeat': 'initial',
+    });
   });
 
-  it('refuses a background carrying anything but a colour', () => {
-    // Refusing records it for zch2.7. Taking the colour and dropping the
-    // image would render a flat panel where the author wrote a picture.
-    expect(ex('background', 'url(x.png)')).toBeUndefined();
-    expect(ex('background', 'red url(x.png) no-repeat')).toBeUndefined();
+  it('carries one image layer since v9j3.4, and still refuses a second layer whole', () => {
+    // Until v9j3.4 any image was refused; one layer is now in scope. Taking
+    // the colour out of a two-layer value would still render a flat panel
+    // where the author wrote pictures, so that stays refused.
+    expect(ex('background', 'red url(x.png) no-repeat')).toMatchObject({
+      'background-color': 'red', 'background-image': 'x.png', 'background-repeat': 'no-repeat' });   // ex() prints a url token by its value
+    expect(ex('background', 'url(a.png), url(b.png)')).toBeUndefined();
+    expect(ex('background', 'red fixed')).toBeUndefined();
   });
 
   it('expands list-style, in either order, resetting the other half', () => {
