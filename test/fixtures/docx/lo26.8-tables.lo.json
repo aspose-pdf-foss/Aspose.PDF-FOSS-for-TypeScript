@@ -15,7 +15,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Name",
@@ -31,7 +32,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Qty",
@@ -47,7 +49,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Note",
@@ -63,7 +66,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Wide cell",
@@ -79,7 +83,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Shaded",
@@ -95,7 +100,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Tall",
@@ -111,7 +117,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "in1",
@@ -127,7 +134,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "in2",
@@ -143,7 +151,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "",
@@ -151,7 +160,8 @@
       "heading": null,
       "listLabel": null,
       "inTable": true,
-      "segments": []
+      "segments": [],
+      "tabs": []
     },
     {
       "text": "c3",
@@ -167,7 +177,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "b4",
@@ -183,7 +194,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "c4",
@@ -199,7 +211,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "After the table.",
@@ -215,7 +228,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     }
   ],
   "tables": [

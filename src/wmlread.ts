@@ -19,7 +19,7 @@
  *  archive's limits), fontTable.xml's generic class per font name, and
  *  docProps/core.xml's title. Each degrades like the other optional parts. */
 import { openOpc, OFFICE_DOCUMENT, STYLES, NUMBERING, type OpcPackage, type OpcRelationship } from './opcread.js';
-import { parseTheme, parseStyles, emptyStyles, EMPTY_THEME, type ThemeFonts, type WmlStyles } from './wmlstyles.js';
+import { parseTheme, parseStyles, emptyStyles, EMPTY_THEME, type ThemeFonts, type WmlStyles, parseDefaultTabStop } from './wmlstyles.js';
 import { parseNumbering, EMPTY_NUMBERING, type WmlNumbering } from './wmlnumbering.js';
 import { parseBody, parseNotes, type BodyRel, type WmlBlock, type WmlPage } from './wmlbody.js';
 import { parseSettingsNotes, type WmlSectionNotes } from './wmlnotes.js';
@@ -39,6 +39,8 @@ export interface WmlDocument {
   endnotes?: Map<string, WmlBlock[]>;
   /** Note numbering properties: settings.xml's, and the LAST section's. */
   notePr: { settings: WmlSectionNotes; last: WmlSectionNotes };
+  /** settings.xml's `w:defaultTabStop`, in points (v9j3.1); absent when unstated. */
+  defaultTabStopPt?: number;
 }
 
 export type FontClass = 'serif' | 'sans-serif' | 'monospace';
@@ -123,6 +125,7 @@ export function openDocx(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
   const numbering: WmlNumbering = optional('numbering.xml', NUMBERING, (b) => parseNumbering(b, limits), EMPTY_NUMBERING);
   const settingsNotes: WmlSectionNotes = optional('settings.xml', SETTINGS, (b) => parseSettingsNotes(b, limits), {});
 
+  const defaultTabStop = optional('settings.xml', SETTINGS, (b) => parseDefaultTabStop(b, limits), undefined);
   const fontClasses = optional('fontTable.xml', FONT_TABLE, (b) => parseFontTable(b, limits), new Map<string, FontClass>());
 
   let title: string | undefined;
@@ -185,6 +188,7 @@ export function openDocx(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
   if (footnotes) doc.footnotes = footnotes;
   if (endnotes) doc.endnotes = endnotes;
   if (body.page) doc.page = body.page;
+  if (defaultTabStop !== undefined) doc.defaultTabStopPt = defaultTabStop;
   const opened: OpenedDocx = { doc, readPart, fontClass: (name) => fontClasses.get(name) };
   if (title !== undefined) opened.title = title;
   return opened;

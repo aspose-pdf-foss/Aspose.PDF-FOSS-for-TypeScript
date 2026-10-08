@@ -2838,6 +2838,47 @@ Source (`src/`):
   interior points to the SAME value, which makes the bulge predictable and the
   order invisible — permuting them reddens exactly one case, the unit test. Do
   not read the render tests as covering it.
+- **tabstops.ts** — tab stops (`v9j3.1`): `TabStop`, `TabAlign`, `TabLeader`,
+  `resolveTabStops` (validation), `nextStop`, `leaderGlyph` and `leaderFill`.
+  A pure LEAF importing nothing, so every rule is testable from numbers.
+  **Invariant:** a stop is chosen STRICTLY past the pen, so a tab always moves
+  forward — a 0 stop at a line start is skipped. Past the last explicit stop
+  it is the next multiple of the interval, and a custom stop clears every
+  default stop to its left, which is Word's rule.
+  **Invariant:** `leaderFill` is the ONE owner of how many leader glyphs fit
+  and where they start, RIGHT-aligned against the gap's end so a dotted column
+  lines up. TOC rows (`tocrender.ts`) count their dot leader through it, so
+  the two cannot disagree; `test/toc-leader-identity.test.ts` hashes TOC
+  output recorded BEFORE the switch and is the fence that the move changed no
+  byte.
+  **Invariant (`layout.ts`):** `tabbedLine` is ONE function for the pack
+  loop's fit test and for the segments the painter reads, so a line cannot be
+  measured one way and painted another. A tab is a unit of its own and never
+  merges into a text piece (`piecesOf`); a right, centre or decimal segment
+  wider than its room starts AT THE PEN (`Math.max(0, a)`), pushing right and
+  never overprinting what precedes the tab; with no stop on the line the tab
+  ENDS it and draws nothing. Without `tabs` none of this runs, which is what
+  keeps every identity fence green.
+  **Invariant (`stamp.ts`):** a tab is painted as a `TJ` kern of its
+  resolved advance; in justified text `Tw` stays 0 until after the line's
+  LAST tab and only the spaces after it are counted, so the columns stay where
+  the stops put them. Leaders are a SEPARATE body, `/Artifact` when the block
+  is tagged, drawn outside the block's structure sequence.
+  **Invariant (`flowelement.ts`):** stops are measured from the COLUMN edge,
+  before `indent.left` and a list item's body indent. `PlaceContext.tabOrigin`
+  and `MeasureContext.tabOrigin` carry how far the text box sits right of it;
+  `IndentElement`, `ListItemElement` and `ListBlockElement` each add their
+  own shift, in `measure` AND `place`. `TextElement` sets `tabOrigin` only
+  for a block that HAS stops and sits right of the origin, so every other
+  caller's options are unchanged.
+  **Note, measured:** of 19 mutations, 18 redden. The 19th — default stops
+  allowed left of the last explicit stop (`from = pen`) — is EQUIVALENT: a
+  pen left of the last explicit stop always finds an explicit one first, so
+  `Math.max(pen, last)` matters only within the epsilon. Three needed cases
+  first: the justify rule (the old case had no space BEFORE the tab, so `Tw`
+  there moved nothing, and checked only the stop, not the line end), the
+  measure-side origin (no case made a measured height depend on it), and
+  `w:defaultTabStop` (every fixture states 720 twips, our own fallback).
 - **linebox.ts** — where a line's baseline sits and how tall its band is
   (`zch2.11`): `lineBox(items, leading, blockFontSize)` over `LineItem`s
   carrying an ascent, a height and an alignment.
@@ -9749,6 +9790,14 @@ Source (`src/`):
   `basedOn` chain the nearer style wins — a toggle restated down a chain stays
   set. `docDefaults` answers only when neither style layer states it; direct
   formatting is ABSOLUTE.
+  **Invariant (`v9j3.1`):** tab stops ACCUMULATE from the farthest layer to
+  the nearest, a `clear` removing an inherited stop at its position — the one
+  paragraph property that does, every other taking the nearest layer. `bar`
+  and `num` stops are reported, not modelled. Only a paragraph that HOLDS a
+  tab opts into stops in `wmlflow.ts`, so every other paragraph's options are
+  unchanged; a tab in a table cell stays a reported space. Held to Word and
+  LibreOffice by the corpus `tabs` recipe and to Word's positions by
+  `test/tab-oracle.test.ts`.
   **Invariant:** a heading is the resolved `w:outlineLvl` + 1, NEVER a style
   id: ids are localized (`1` is Heading 1 in Russian Word) and names are
   `w:name`. A theme font (`asciiTheme`) outranks the literal beside it, as Word

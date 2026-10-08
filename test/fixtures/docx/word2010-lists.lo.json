@@ -15,7 +15,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Fruit",
@@ -31,7 +32,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Apple",
@@ -47,7 +49,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Green apple",
@@ -63,7 +66,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Vegetables",
@@ -79,7 +83,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Numbers:",
@@ -95,7 +100,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "First",
@@ -111,7 +117,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Sub a",
@@ -127,7 +134,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Sub sub i",
@@ -143,7 +151,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Second",
@@ -159,7 +168,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "An interruption.",
@@ -175,7 +185,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Third",
@@ -191,7 +202,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "A new list:",
@@ -207,7 +219,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Restart one",
@@ -223,7 +236,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Restart two",
@@ -239,7 +253,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "End of lists.",
@@ -255,7 +270,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "",
@@ -263,7 +279,8 @@
       "heading": null,
       "listLabel": null,
       "inTable": false,
-      "segments": []
+      "segments": [],
+      "tabs": []
     }
   ],
   "tables": [],

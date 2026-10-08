@@ -15,7 +15,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Table of Contents",
@@ -31,7 +34,10 @@
                                                 "sizePt":  16,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Chapter one\t1",
@@ -47,7 +53,14 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  481.85,
+                                            "align":  "right",
+                                            "leader":  "dot"
+                                        }
+                                    ]
                        },
                        {
                            "text":  "Chapter two\t2",
@@ -63,7 +76,14 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  481.85,
+                                            "align":  "right",
+                                            "leader":  "dot"
+                                        }
+                                    ]
                        },
                        {
                            "text":  "Chapter one",
@@ -79,7 +99,10 @@
                                                 "sizePt":  18,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Body with a footnote",
@@ -95,7 +118,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Body with an endnote",
@@ -111,7 +137,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Anchor for a text box.",
@@ -127,7 +156,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Commented words",
@@ -143,7 +175,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Kept inserted words.",
@@ -159,7 +194,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Chapter two",
@@ -175,7 +213,10 @@
                                                 "sizePt":  18,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Landscape page.",
@@ -191,7 +232,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

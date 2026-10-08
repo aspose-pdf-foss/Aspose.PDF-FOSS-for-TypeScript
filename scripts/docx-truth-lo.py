@@ -21,6 +21,22 @@ def count_enum(access):
     return n
 
 
+TAB_ALIGN = {'LEFT': 'left', 'CENTER': 'center', 'RIGHT': 'right', 'DECIMAL': 'decimal'}
+TAB_LEADER = {' ': 'none', '.': 'dot', '-': 'hyphen', '_': 'underscore', '·': 'middleDot'}
+
+
+def tabs_of(par):
+    """(v9j3.1) ParaTabStops in points from the margin, rounded to a twip. A
+    DEFAULT-aligned entry is LibreOffice's placeholder for 'default stops only'."""
+    out = []
+    for t in par.ParaTabStops:
+        if t.Alignment.value == 'DEFAULT':
+            continue
+        out.append({'pos': round(t.Position * 72 / 2540 * 20) / 20, 'align': TAB_ALIGN.get(t.Alignment.value, t.Alignment.value),
+                    'leader': TAB_LEADER.get(getattr(t.FillChar, 'value', t.FillChar), repr(t.FillChar))})
+    return out
+
+
 def segments(par):
     out, e = [], par.createEnumeration()
     while e.hasMoreElements():
@@ -107,7 +123,7 @@ def walk(text, in_table, doc, paras, tables, links, top):
                 style = el.ParaStyleName
             paras.append({'text': text_of(el), 'styleName': style,
                           'heading': lvl if 1 <= lvl <= 9 else None, 'listLabel': label_of(el),
-                          'inTable': in_table, 'segments': segments(el)})
+                          'inTable': in_table, 'segments': segments(el), 'tabs': tabs_of(el)})
             links_of(el, links, {})
         elif el.supportsService('com.sun.star.text.TextTable'):
             names = sorted(el.getCellNames(), key=cell_key)

@@ -15,7 +15,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Name",
@@ -31,7 +32,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Qty",
@@ -47,7 +49,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Note",
@@ -63,7 +66,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Wide cell",
@@ -79,7 +83,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Shaded",
@@ -95,7 +100,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Tall",
@@ -111,7 +117,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "in1",
@@ -127,7 +134,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "in2",
@@ -143,7 +151,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "",
@@ -151,7 +160,8 @@
       "heading": null,
       "listLabel": null,
       "inTable": true,
-      "segments": []
+      "segments": [],
+      "tabs": []
     },
     {
       "text": "c3",
@@ -167,7 +177,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "b4",
@@ -183,7 +194,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "c4",
@@ -199,7 +211,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "After the table.",
@@ -215,7 +228,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "",
@@ -223,7 +237,8 @@
       "heading": null,
       "listLabel": null,
       "inTable": false,
-      "segments": []
+      "segments": [],
+      "tabs": []
     }
   ],
   "tables": [

@@ -15,7 +15,10 @@
                                                 "sizePt":  14,
                                                 "font":  "Cambria"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "An opening paragraph.",
@@ -31,7 +34,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "First item",
@@ -47,7 +53,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Second item",
@@ -63,7 +72,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -73,7 +85,10 @@
                            "inTable":  false,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "See the docs.",
@@ -89,7 +104,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

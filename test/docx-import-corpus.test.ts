@@ -29,7 +29,9 @@ describe.each(files)('AddDocx renders %s', (f) => {
   it('draws every paragraph\'s text both readers agree on', () => {
     const agreed = truths[0].paragraphs.map((p) => p.text)
       .filter((t) => truths.every((u) => u.paragraphs.some((q) => q.text === t)))
-      .map(norm).filter((t) => t !== '' && !t.includes('\t'));
+      // A tab paragraph is left out BEFORE norm turns its tab into a space: since
+      // v9j3.1 a tab advances to its stop and may draw a leader between its parts.
+      .filter((t) => !t.includes('\t')).map(norm).filter((t) => t !== '');
     expect(agreed.length).toBeGreaterThan(0);
     const missing = agreed.filter((t) => !text.includes(t));
     expect(missing).toEqual([]);

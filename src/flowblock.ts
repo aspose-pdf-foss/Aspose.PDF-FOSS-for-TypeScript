@@ -450,7 +450,8 @@ class IndentElement implements FlowElement {
 
   measure(ctx: MeasureContext): MeasureResult {
     const k = this.scale(ctx.width);
-    return this.inner.measure?.({ width: ctx.width - (this.left + this.right) * k, availHeight: ctx.availHeight, indentScale: k })
+    return this.inner.measure?.({ width: ctx.width - (this.left + this.right) * k, availHeight: ctx.availHeight, indentScale: k,
+      tabOrigin: (ctx.tabOrigin ?? 0) + this.left * k })
       ?? { usedHeight: 0, fits: false };
   }
 
@@ -458,6 +459,7 @@ class IndentElement implements FlowElement {
     const k = this.scale(ctx.width);
     const res = this.inner.place({
       ...ctx, x: ctx.x + this.left * k, width: ctx.width - (this.left + this.right) * k, indentScale: k,
+      tabOrigin: (ctx.tabOrigin ?? 0) + this.left * k,
     });
     // Reported once something drew, never from `measure` (kk3q).
     if (res.drew && k < 1) this.onCompromise?.('squeezed');

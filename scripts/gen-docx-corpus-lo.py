@@ -15,7 +15,7 @@ from com.sun.star.style.NumberingType import ARABIC, CHARS_LOWER_LETTER, ROMAN_L
 
 OUT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), '..', 'test', 'fixtures', 'docx'))
 MANAGED = ('CharWeight', 'CharPosture', 'CharHeight', 'CharFontName', 'CharColor', 'CharStyleName', 'HyperLinkURL')
-PARA_RESET = ('PageDescName', 'ParaIsNumberingRestart', 'NumberingStartValue')
+PARA_RESET = ('PageDescName', 'ParaIsNumberingRestart', 'NumberingStartValue', 'ParaTabStops')
 
 
 def png16(path):
@@ -228,6 +228,44 @@ def notes_doc(o, tag):
     w.save('lo%s-notes.docx' % tag)
 
 
+def tab_stops(spec):
+    """(v9j3.1) (points, 'LEFT'|'RIGHT'|'CENTER'|'DECIMAL', fill char) -> ParaTabStops."""
+    out = []
+    for pos, align, fill in spec:
+        t = uno.createUnoStruct('com.sun.star.style.TabStop')
+        t.Position = round(pos * 2540 / 72)
+        t.Alignment = uno.Enum('com.sun.star.style.TabAlign', align)
+        t.DecimalChar = '.'
+        t.FillChar = fill
+        out.append(t)
+    return uno.Any('[]com.sun.star.style.TabStop', tuple(out))
+
+
+def tabs_doc(o, tag):
+    """(v9j3.1) Mirrors the Word recipe. LibreOffice has no 'clear': a
+    paragraph's ParaTabStops REPLACES its style's, so the cleared paragraph
+    states the one stop it keeps, and the export writes the clear."""
+    w = Writer(o)
+    pst = w.doc.StyleFamilies.getByName('ParagraphStyles')
+    ts = w.doc.createInstance('com.sun.star.style.ParagraphStyle'); pst.insertByName('Tabbed', ts); ts.ParentStyle = 'Standard'
+    uno.invoke(ts, 'setPropertyValue', ('ParaTabStops', tab_stops([(72, 'LEFT', ' '), (144, 'LEFT', ' ')])))
+
+    def t(style, text, spec=None):
+        w.para(style, [text])
+        if spec is not None:
+            uno.invoke(w.cur, 'setPropertyValue', ('ParaTabStops', tab_stops(spec)))
+    w.para('Heading 1', ['Tabs'])
+    t('Standard', 'Name	Value', [(144, 'LEFT', '.')])
+    t('Standard', 'Left	Right', [(360, 'RIGHT', ' ')])
+    t('Standard', 'a	Centred', [(216, 'CENTER', ' ')])
+    t('Standard', 'Price	12.50', [(216, 'DECIMAL', ' ')])
+    t('Standard', 'Total	9', [(360, 'RIGHT', '·')])
+    t('Tabbed', 'a	b	c', [(144, 'LEFT', ' ')])
+    t('Tabbed', 'd	e')
+    t('Standard', 'x	y	z')
+    w.save('lo%s-tabs.docx' % tag)
+
+
 def main():
     png = os.path.join(tempfile.gettempdir(), 'gen-docx-corpus-lo.png')
     png16(png)
@@ -238,7 +276,8 @@ def main():
         only = sys.argv[2] if len(sys.argv) > 2 else ''
         for topic, build in (('styles', lambda: styles_doc(o, tag)), ('lists', lambda: lists_doc(o, tag)),
                              ('tables', lambda: tables_doc(o, tag)), ('media', lambda: media_doc(o, tag, png)),
-                             ('skipped', lambda: skipped_doc(o, tag)), ('notes', lambda: notes_doc(o, tag))):
+                             ('skipped', lambda: skipped_doc(o, tag)), ('notes', lambda: notes_doc(o, tag)),
+                             ('tabs', lambda: tabs_doc(o, tag))):
             if not only or only == topic:
                 build()
     os.remove(png)

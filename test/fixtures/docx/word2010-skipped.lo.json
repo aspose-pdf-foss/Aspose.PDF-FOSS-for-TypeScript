@@ -15,7 +15,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Chapter one\t1",
@@ -30,6 +31,13 @@
           "italic": false,
           "sizePt": 11.0,
           "font": "Calibri"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 467.25,
+          "align": "right",
+          "leader": "dot"
         }
       ]
     },
@@ -47,6 +55,13 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
+      ],
+      "tabs": [
+        {
+          "pos": 467.25,
+          "align": "right",
+          "leader": "dot"
+        }
       ]
     },
     {
@@ -63,7 +78,8 @@
           "sizePt": 14.0,
           "font": "Cambria"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Body with a footnote",
@@ -79,7 +95,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Body with an endnote",
@@ -95,7 +112,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Anchor for a text box.",
@@ -111,7 +129,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Commented words",
@@ -127,7 +146,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Kept inserted words.",
@@ -143,7 +163,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Chapter two",
@@ -159,7 +180,8 @@
           "sizePt": 14.0,
           "font": "Cambria"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Landscape page.",
@@ -175,7 +197,8 @@
           "sizePt": 11.0,
           "font": "Calibri"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "",
@@ -183,7 +206,8 @@
       "heading": null,
       "listLabel": null,
       "inTable": false,
-      "segments": []
+      "segments": [],
+      "tabs": []
     }
   ],
   "tables": [],

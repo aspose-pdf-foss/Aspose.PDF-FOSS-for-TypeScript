@@ -15,7 +15,8 @@
           "sizePt": 18.0,
           "font": "Arial"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Second level",
@@ -31,7 +32,8 @@
           "sizePt": 16.0,
           "font": "Arial"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Third level",
@@ -47,7 +49,8 @@
           "sizePt": 14.0,
           "font": "Arial"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Custom heading text",
@@ -63,7 +66,8 @@
           "sizePt": 16.0,
           "font": "Arial"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Plain body text.",
@@ -79,7 +83,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "Direct formats sizes fonts colours end.",
@@ -123,7 +128,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "A strong word.",
@@ -153,7 +159,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     },
     {
       "text": "toggle rest.",
@@ -169,7 +176,8 @@
           "sizePt": 12.0,
           "font": "Times New Roman"
         }
-      ]
+      ],
+      "tabs": []
     }
   ],
   "tables": [],

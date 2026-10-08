@@ -15,7 +15,10 @@
                                                 "sizePt":  18,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Alpha",
@@ -31,7 +34,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Beta",
@@ -47,7 +53,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Gamma*",
@@ -63,7 +72,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Delta",
@@ -79,7 +91,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

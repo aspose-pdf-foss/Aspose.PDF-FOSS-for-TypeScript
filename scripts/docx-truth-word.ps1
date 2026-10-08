@@ -15,6 +15,9 @@ function Clean([string]$s) {
   return ($s -replace '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
 }
 $UNDEF = 9999999
+# WdTabAlignment and WdTabLeader, in the names test/helpers/docx-truth.ts uses.
+$TAB_ALIGN = @{ 0 = 'left'; 1 = 'center'; 2 = 'right'; 3 = 'decimal'; 4 = 'bar'; 6 = 'list' }
+$TAB_LEADER = @{ 0 = 'none'; 1 = 'dot'; 2 = 'hyphen'; 3 = 'underscore'; 4 = 'line'; 5 = 'middleDot' }
 # A range's text without its inline pictures: Word's Range.Text writes each one
 # as a character ('/' for a DrawingML picture) that is not text.
 function TextOf($rg) {
@@ -124,6 +127,20 @@ try {
           }
         } else { Add-Seg $segs (SegmentOf $wd) $t }
       }
+      # Tab stops (v9j3.1): Paragraph.TabStops is the stops in force, explicit
+      # and inherited, in points from the margin; rounded to a twip. It ALSO
+      # lists Word's default stops, which carry CustomTab = False and are not
+      # stops the document states.
+      $tabs = New-Object System.Collections.ArrayList
+      foreach ($ts in $p.TabStops) {
+        if (-not $ts.CustomTab) { continue }
+        # A list number's own tab (w:val="num", wdAlignTabList) belongs to the
+        # numbering, not to the paragraph's text; LibreOffice does not list it,
+        # and readDocx reports it as unmodelled.
+        if ([int]$ts.Alignment -eq 6) { continue }
+        [void]$tabs.Add([ordered]@{ pos = [math]::Round([double]$ts.Position * 20) / 20
+          align = $TAB_ALIGN[[int]$ts.Alignment]; leader = $TAB_LEADER[[int]$ts.Leader] })
+      }
       $lvl = [int]$p.OutlineLevel
       $label = $null
       if ($p.Range.ListFormat.ListType -ne 0) { $label = [string]$p.Range.ListFormat.ListString }
@@ -134,6 +151,7 @@ try {
         listLabel = $label
         inTable = [bool]$p.Range.Information(12)                  # wdWithInTable
         segments = @($segs.ToArray())
+        tabs = @($tabs.ToArray())
       }
     }
 

@@ -1,0 +1,222 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Tabs",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Tabs",
+          "bold": true,
+          "italic": false,
+          "sizePt": 18.0,
+          "font": "Arial"
+        }
+      ],
+      "tabs": []
+    },
+    {
+      "text": "Name\tValue",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Name\tValue",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 144.0,
+          "align": "left",
+          "leader": "dot"
+        }
+      ]
+    },
+    {
+      "text": "Left\tRight",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Left\tRight",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 360.0,
+          "align": "right",
+          "leader": "none"
+        }
+      ]
+    },
+    {
+      "text": "a\tCentred",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "a\tCentred",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 216.0,
+          "align": "center",
+          "leader": "none"
+        }
+      ]
+    },
+    {
+      "text": "Price\t12.50",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Price\t12.50",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 216.0,
+          "align": "decimal",
+          "leader": "none"
+        }
+      ]
+    },
+    {
+      "text": "Total\t9",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Total\t9",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 360.0,
+          "align": "right",
+          "leader": "middleDot"
+        }
+      ]
+    },
+    {
+      "text": "a\tb\tc",
+      "styleName": "Tabbed",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "a\tb\tc",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 144.0,
+          "align": "left",
+          "leader": "none"
+        }
+      ]
+    },
+    {
+      "text": "d\te",
+      "styleName": "Tabbed",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "d\te",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": [
+        {
+          "pos": 72.0,
+          "align": "left",
+          "leader": "none"
+        },
+        {
+          "pos": 144.0,
+          "align": "left",
+          "leader": "none"
+        }
+      ]
+    },
+    {
+      "text": "x\ty\tz",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "x\ty\tz",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ],
+      "tabs": []
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 0,
+    "endnotes": 0,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  },
+  "notes": {
+    "footnotes": [],
+    "endnotes": []
+  }
+}

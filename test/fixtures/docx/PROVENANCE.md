@@ -141,6 +141,7 @@ recipes live in `scripts/gen-docx-corpus-word.ps1` and
 | `tables` | a repeating header row; a horizontal merge; a vertical merge; a nested table; a shaded cell |
 | `media` | an inline 16x16 PNG; an external hyperlink; an internal link to a bookmark |
 | `skipped` | header, footer, footnote, endnote, text box, TOC field, comment, a tracked insertion and deletion, a second section in landscape |
+| `tabs` (`v9j3.1`) | a left stop with a dot leader; right, centre and decimal stops; a right stop with a middle-dot leader; a paragraph style with two stops, used once with one stop cleared and once as inherited; default stops only. **LibreOffice** has no `clear`: a paragraph's `ParaTabStops` replaces its style's, so the cleared paragraph states the stop it keeps — and its export writes the `clear` |
 | `notes` (`v9j3.3.2`) | **Word:** footnotes (one of two paragraphs), a custom mark `*`, an endnote, a footnote in a table cell placed LAST in section 1, and a second section whose footnotes are lowercase roman and restart each section. **LibreOffice:** its footnote numbering is document-wide, so its file states lowercase roman from `iii` for the whole document instead, plus a custom mark and an endnote |
 
 - **Command:** `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/gen-docx-corpus.ps1 -LoProgram <LibreOffice program dir>`
@@ -172,6 +173,7 @@ recipes live in `scripts/gen-docx-corpus-word.ps1` and
 | `word2010-media.docx` | `2461B3B3DE12D8B864CD2D9397E029EBDC1B2F125B1106AF769440934A049415` |
 | `word2010-skipped.docx` | `AB2D64BA5621F9FE6E01F29035C5EDB89713226957BACCCFA814F3F8B2958BEA` |
 | `word2010-notes.docx` | `1577C577D5FA99D980AD5FD7EA8A6181BF58D6BB3F8BCFDAF17480808557BF1E` |
+| `word2010-tabs.docx` | `B5C264526DAD7F9E7D1CC35B797A1873F7F441BA90E674A7DE79A24F7F044299` |
 
 ### LibreOffice 26.8
 
@@ -194,6 +196,7 @@ recipes live in `scripts/gen-docx-corpus-word.ps1` and
 | `lo26.8-media.docx` | `ED1D4C20F9F9808090F6528A349B4D0EF6074FCD280B5A769C6DA2A4C407CF83` |
 | `lo26.8-skipped.docx` | `A68397B719F2CD32E807CB713F7903F00281D4A5A90F663CF1BC75DE3C229F4B` |
 | `lo26.8-notes.docx` | `537BD1E41CD19310B86CBA07AE11B614EA15354B14926C808E76B1E320B05E95` |
+| `lo26.8-tabs.docx` | `6AD7C8BFEB982A488481ADAE76CDAD12228F61E621EF10107AF8AA14E2B05CB9` |
 
 **Two things LibreOffice WRITES differently, which are the producer's semantics
 and not recipe bugs** — and Word, reading LibreOffice's file, agrees with it on
@@ -285,6 +288,26 @@ Every truth file carries `notes`: per kind, each note's mark and text.
   the placement skip of a restart marker, is EQUIVALENT: the marker places as
   an empty element.
 
+### Tab stops (`v9j3.1`)
+
+Every truth paragraph carries `tabs`: the stops in force, each `{ pos, align,
+leader }` with `pos` in points from the margin ROUNDED TO A TWIP, so Word's
+points and LibreOffice's 1/100 mm compare exactly (a TOC style's 9351 twips is
+467.55pt to Word and 467.5142pt through 1/100 mm).
+
+- **Word lists more than the document states.** `Paragraph.TabStops` also
+  holds Word's DEFAULT stops (`CustomTab = False`) and a list number's own tab
+  (`w:val="num"`, `wdAlignTabList`); the reader drops both. The leader is
+  `TabStop.Leader` — a first draft read a property that does not exist and got
+  `none` for every stop, which the disagreements showed at once.
+- **LibreOffice** reports `ParaTabStops`, with a `DEFAULT`-aligned entry as its
+  placeholder for "default stops only", dropped; `FillChar` arrives as a UNO
+  `Char` and is read through `.value`.
+- **They agree on every stop in all 16 files**, the cleared style stop
+  included, and `readDocx` matches them all — the TOC styles' right-aligned dot
+  leaders in the two `skipped` files too. The re-read moved no other field of
+  any truth file.
+
 ### Where readDocx is held to a known gap
 
 None. `readDocx` agrees with both readers at every path they agree on — about
@@ -354,3 +377,36 @@ paragraphs by their TEXT.
 **Ceiling.** One Word version, one single-row borderless table with zero cell
 margins, exact line spacing only. Nothing about a table's own spacing
 properties, borders, row height rules, or a table at the top of a page.
+
+## tab-oracle.docx and tab-oracle.json (`v9j3.1`)
+
+**What it is.** OURS, not Word's: seven paragraphs set in Courier New 10pt,
+one per tab-stop case — a left stop at 2in, a right stop at 4in, a centre stop
+at 3in, a decimal stop at 3in before `12.50`, default stops only
+(`w:defaultTabStop` 720, two tabs), a style chain whose child clears an
+inherited stop, and a dot leader to a right stop at 5in. Each case puts a
+unique upper-case MARKER after its tab. Written by
+`test/helpers/build-tab-oracle.ts` (byte-reproducible; the test asserts the
+vendored file equals the builder's output). Word 2010 (`14.0 build 14.0.7268`)
+opens a COPY through COM and records each marker's left edge,
+`Range.Information(5)`, in points, with the face it laid the marker out in.
+
+**Command.** `powershell -ExecutionPolicy Bypass -File scripts/gen-tab-oracle.ps1`
+(not run by `npm test`; it needs Word). Run 2026-10-08. SHA-256 of the `.docx`:
+`7BBB60B05A38FE4130C0DCDA5D63A72D5C98C462E847D0CEFBAA0E19EB2D9B78`; of the
+`.json`: `BD924176C29B44BAA5DD76082527003B7484731EDCBCC2E873C8E16840887A12` (LF, as committed; the script writes CRLF).
+
+**What it found.** Nothing to correct: `AddDocx` lands all eight markers
+exactly where Word does. Stops are measured from the margin, a stop is chosen
+past the pen, a cleared inherited stop is gone, and right, centre and decimal
+alignment measure the segment as Word does.
+
+**Why every case is exact.** Word reports `Courier New` for every marker, and
+the importer — with no font folder registered — substitutes Courier, whose
+600-unit advance is Courier New's. So a right, centre or decimal target is
+metric-exact rather than off by a substituted face's width.
+
+**Ceiling.** One Word version, one fixed-pitch face, single-line paragraphs.
+Nothing about a stop past the right margin, a tab that wraps, a leader's own
+glyph positions (only where the text after it lands), justified tabbed lines,
+or a tab inside a list item's hanging indent.

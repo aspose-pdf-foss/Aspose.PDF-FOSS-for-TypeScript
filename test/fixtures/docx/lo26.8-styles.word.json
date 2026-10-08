@@ -15,7 +15,10 @@
                                                 "sizePt":  18,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Second level",
@@ -31,7 +34,10 @@
                                                 "sizePt":  16,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Third level",
@@ -47,7 +53,10 @@
                                                 "sizePt":  14,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Custom heading text",
@@ -63,7 +72,10 @@
                                                 "sizePt":  16,
                                                 "font":  "Arial"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Plain body text.",
@@ -79,7 +91,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Direct formats sizes fonts colours end.",
@@ -123,7 +138,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "A strong word.",
@@ -153,7 +171,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "toggle rest.",
@@ -169,7 +190,10 @@
                                                 "sizePt":  12,
                                                 "font":  "Times New Roman"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

@@ -44,8 +44,8 @@ describe('leafDiff', () => {
 
 describe('comparable and readerDisagreements', () => {
   it('never compares the reader name or a style name, and compares counts', () => {
-    const a = truth({ reader: 'Word', paragraphs: [{ text: 'x', styleName: 'Заголовок 1', heading: 1, listLabel: null, inTable: false, segments: [] }] });
-    const b = truth({ reader: 'LO', paragraphs: [{ text: 'x', styleName: 'Heading 1', heading: 1, listLabel: null, inTable: false, segments: [] }] });
+    const a = truth({ reader: 'Word', paragraphs: [{ text: 'x', styleName: 'Заголовок 1', heading: 1, listLabel: null, inTable: false, segments: [], tabs: [] }] });
+    const b = truth({ reader: 'LO', paragraphs: [{ text: 'x', styleName: 'Heading 1', heading: 1, listLabel: null, inTable: false, segments: [], tabs: [] }] });
     expect(readerDisagreements(a, b)).toEqual([]);
     b.counts.footnotes = 1;
     expect(readerDisagreements(a, b)).toEqual(['counts.footnotes']);
@@ -60,9 +60,14 @@ describe('truthOf', () => {
       + '<w:tr><w:tc>' + p(r('d1')) + '</w:tc><w:tc><w:tcPr><w:vMerge/></w:tcPr>' + p('') + '</w:tc></w:tr></w:tbl>');
     const t = truthOf(doc);
     expect(t.paragraphs[0]).toEqual({ text: 'Bold plain\tx', heading: null, listLabel: null, inTable: false,
-      segments: [{ text: 'Bold ', bold: true, italic: false, sizePt: 10, font: '' }, { text: 'plain\tx', bold: false, italic: false, sizePt: 10, font: '' }] });
+      segments: [{ text: 'Bold ', bold: true, italic: false, sizePt: 10, font: '' }, { text: 'plain\tx', bold: false, italic: false, sizePt: 10, font: '' }], tabs: [] });
     expect(t.paragraphs.map((x) => [x.text, x.inTable])).toEqual([['Bold plain\tx', false], ['c1', true], ['c1b', true], ['c2', true], ['d1', true], ['', true]]);
     expect(t.tables).toEqual([{ rows: [['c1\nc1b', 'c2'], ['d1']] }]);
+  });
+
+  it('projects a paragraph\'s resolved tab stops, positions to the twip (v9j3.1)', () => {
+    const doc = read('<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9351"/></w:tabs></w:pPr>' + r('a') + '</w:p>');
+    expect(truthOf(doc).paragraphs[0].tabs).toEqual([{ pos: 467.55, align: 'right', leader: 'dot' }]);
   });
 
   it('keeps a link whole across a tab or a line break inside it, as Word does', () => {

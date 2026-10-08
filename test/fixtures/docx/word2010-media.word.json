@@ -15,7 +15,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "A link to the example site.",
@@ -31,7 +34,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Target paragraph",
@@ -47,7 +53,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Jump to the target.",
@@ -63,7 +72,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -73,7 +85,10 @@
                            "inTable":  false,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

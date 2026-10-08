@@ -4,9 +4,10 @@ import { PdfObject, PdfDict, isDict, isName, isRef, name, ref } from './types.js
 import { StdFont } from './metrics.js';
 import {
   layoutText, layoutRuns, LaidLine, LaidSegment, FontDriver, winAnsiDriver,
-  type LayoutRun, type RunSlice, isAtomicRun,
-  weaveByBeforeRun,
+  type LayoutRun, type RunSlice, type TextLayoutRun, isAtomicRun,
+  weaveByBeforeRun, lastTabIndex,
 } from './layout.js';
+import { resolveTabStops, leaderGlyph, leaderFill, type TabStop, type TabLayout } from './tabstops.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { emitLine } from './otemit.js';
 import { shapeText, type ShapeOpts } from './shape.js';
@@ -429,6 +430,14 @@ export interface TextBlockOptions extends Omit<StampOptions, 'align' | 'rotate'>
   /** Break words across lines with a drawn hyphen (v9j3.2). Default: off —
    *  output is then byte-identical to before the option existed. */
   hyphenate?: HyphenationOptions;
+  /** Tab stops (v9j3.1). Present, a tab advances to the next stop; `[]` means
+   *  default stops only. Absent, a tab draws nothing and output is unchanged. */
+  tabStops?: TabStop[];
+  /** Points between implicit stops past the last explicit one. Default 36. */
+  defaultTabInterval?: number;
+  /** @internal Points the rect sits RIGHT of the tab origin — a Flow
+   *  paragraph's left indent — so stops are measured from the column edge. */
+  tabOrigin?: number;
 }
 
 interface NormalizedBlockOptions {
@@ -444,6 +453,8 @@ interface NormalizedBlockOptions {
   decor: ResolvedDecor | undefined;
   /** The resolved hyphenator, or undefined when off (v9j3.2). */
   hyphen?: Hyphenator;
+  /** Resolved tab stops, or undefined when off (v9j3.1). */
+  tabs?: TabLayout;
 }
 
 /** Wrap an already-laid block body in a rotation about (`px`, `py`), or return
@@ -516,7 +527,17 @@ function normalizeBlockOptions(o: TextBlockOptions): NormalizedBlockOptions {
   // (v9j3.2) Validated here, before anything is drawn; undefined keeps every
   // layout call on its pre-hyphenation path.
   const hyphen = o.hyphenate === undefined ? undefined : hyphenator(resolveHyphenation(o.hyphenate));
-  return { font, fontSize, color, opacity, align, valign, leading, rotate, behind, decor, hyphen };
+  // (v9j3.1) Validated here, before anything is drawn; undefined keeps every
+  // layout call on its tab-free path.
+  let tabs: TabLayout | undefined;
+  if (o.tabStops !== undefined) {
+    if (o.shape === true || effectiveShape(font, o.shape))
+      throw new TypeError('tabStops cannot be combined with shaping');
+    const origin = o.tabOrigin ?? 0;
+    if (typeof origin !== 'number' || !Number.isFinite(origin)) throw new TypeError('tabOrigin must be a finite number');
+    tabs = { ...resolveTabStops(o.tabStops, o.defaultTabInterval), origin };
+  }
+  return { font, fontSize, color, opacity, align, valign, leading, rotate, behind, decor, hyphen, tabs };
 }
 
 /** One run with every inherited property filled in and its driver built. */
@@ -710,8 +731,12 @@ function justifySpacing(
   align: NormalizedBlockOptions['align'], boxWidth: number, line: LaidLine,
 ): number {
   if (align !== 'justify' || line.hardBreak) return 0;
+  // (v9j3.1) With a tab on the line, only the spaces after the LAST tab
+  // stretch; the columns stay where the stops put them.
+  const t = lastTabIndex(line);
   let gaps = 0;
-  for (const ch of line.text) if (ch === ' ') gaps++;
+  if (t < 0) { for (const ch of line.text) if (ch === ' ') gaps++; }
+  else for (const s of line.segments.slice(t + 1)) for (const ch of s.text) if (ch === ' ') gaps++;
   if (gaps === 0) return 0;
   const slack = boxWidth - line.width;
   return slack > 0 ? slack / gaps : 0;
@@ -792,6 +817,9 @@ interface SegmentBox {
   /** The run's baseline shift (`TextRun.rise`); 0 for an atomic. `baseline`
    *  stays the LINE's, so a block-level decoration keeps spanning the line. */
   rise: number;
+  /** The box is a tab's gap (v9j3.1): it draws no glyph, so it takes no link
+   *  MCID and no link rect of its own. */
+  tab?: true;
 }
 
 /** Per-segment boxes for a laid run block.
@@ -812,10 +840,14 @@ function segmentBoxes(
 ): SegmentBox[] {
   const out: SegmentBox[] = [];
   lines.forEach((line, i) => {
-    const tw = justifySpacing(o.align, lineBoxWidth(w, line), line);
+    const lineTw = justifySpacing(o.align, lineBoxWidth(w, line), line);
     const baseline = baselines[i];
     let dx = x + lineX(o.align, w, line);
-    for (const seg of line.segments) {
+    // (v9j3.1) Tw is in force only after the line's last tab, which is exactly
+    // what the emitter sets.
+    const twFrom = lastTabIndex(line) + 1;
+    line.segments.forEach((seg, si) => {
+      const tw = si >= twFrom ? lineTw : 0;
       let spaces = 0;
       if (tw > 0) for (const ch of seg.text) if (ch === ' ') spaces++;
       const width = seg.width + tw * spaces;
@@ -832,9 +864,9 @@ function segmentBoxes(
       const trailing = tail === '' || isAtomicRun(r.layout) ? 0
         : r.layout.driver.measure(tail, r.layout.fontSize) + tw * tail.length;
       out.push({ run: seg.run, x: dx, baseline, width, trailing,
-        rise: isAtomicRun(r.layout) ? 0 : r.rise });
+        rise: isAtomicRun(r.layout) ? 0 : r.rise, ...(seg.tab !== undefined ? { tab: true as const } : {}) });
       dx += width;
-    }
+    });
   });
   return out;
 }
@@ -919,7 +951,8 @@ function runLinkBoxes(
     const r = runs[b.run];
     // An atomic carries no link of its own — a linked image is zch2.12's, and
     // an inert atomic run would otherwise ask for a font size it has not got.
-    if (r.link === undefined || isAtomicRun(r.layout)) return;
+    // A tab gap draws no glyph, so it gets no rect of its own (v9j3.1).
+    if (r.link === undefined || isAtomicRun(r.layout) || b.tab) return;
     const vm = vmetricsFor(r.font);
     const size = r.layout.fontSize;
     out.push({
@@ -951,6 +984,41 @@ function segAt(
     n -= line.segments.length;
   }
   return undefined;
+}
+
+/** (v9j3.1) Leader ink for every tab segment that asks for one: glyphs through
+ *  `leaderFill`, the count TOC uses, or for 'line' the run's underline geometry
+ *  across the gap. A body of its own, so a tagged block can mark it
+ *  `/Artifact` outside its structure sequence. */
+function leaderBody(
+  lines: LaidLine[], boxes: SegmentBox[], runs: ResolvedRun[], fontKeys: string[],
+): string {
+  let s = '';
+  let i = 0;
+  for (const line of lines) {
+    for (const seg of line.segments) {
+      const b = boxes[i++];
+      if (seg.tab === undefined || seg.tab.leader === 'none' || b.width <= 0) continue;
+      const r = runs[seg.run];
+      const tl = r.layout as TextLayoutRun;
+      const clear = 0.25 * tl.fontSize;
+      if (seg.tab.leader === 'line') {
+        const d = resolveDecor({ underline: true }, r.color, tl.fontSize, vmetricsFor(r.font));
+        if (d === undefined || b.width <= 2 * clear) continue;
+        const ops = decorRects([{ x: b.x + clear, baseline: b.baseline, width: b.width - 2 * clear }], d);
+        s += ops.beneath + ops.above;
+        continue;
+      }
+      const glyph = leaderGlyph(seg.tab.leader)!;
+      if (tl.driver.probe(glyph) === 0) continue;            // the face cannot draw it: no leader
+      const fill = leaderFill(b.x, b.x + b.width, tl.driver.measure(glyph, tl.fontSize), clear);
+      if (fill.count === 0) continue;
+      const [cr, cg, cb] = r.color;
+      s += `BT\n/${fontKeys[seg.run]} ${num(tl.fontSize)} Tf\n${num(cr)} ${num(cg)} ${num(cb)} rg\n`;
+      s += `${num(fill.x)} ${num(b.baseline)} Td\n${serializeString(tl.driver.encode(glyph.repeat(fill.count)))} Tj\nET\n`;
+    }
+  }
+  return s;
 }
 
 /** Per-run block body: one text object, a `Tf` when the font or size changes and
@@ -986,7 +1054,12 @@ function buildRunBlockBody(
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const tw = justifySpacing(o.align, lineBoxWidth(w, line), line);
-    if (tw !== prevTw) { s += `${num(tw)} Tw\n`; prevTw = tw; }
+    // (v9j3.1) On a line with a tab, Tw stays 0 until after its LAST tab —
+    // segmentBoxes applies it from the same place.
+    const lastTab = lastTabIndex(line);
+    const lineStartTw = lastTab >= 0 ? 0 : tw;
+    if (lineStartTw !== prevTw) { s += `${num(lineStartTw)} Tw\n`; prevTw = lineStartTw; }
+    let segOnLine = 0;
     const offset = lineX(o.align, w, line);
     if (i === 0) s += `${num(x + offset)} ${num(baselines[0])} Td\n`;
     else s += `${num(offset - prevOffset)} ${num(baselines[i] - baselines[i - 1])} Td\n`;
@@ -999,6 +1072,21 @@ function buildRunBlockBody(
       // leaving the element text-less. `undefined` for every segment of an
       // untagged block, so those bytes are exactly what they always were.
       const mcid = linkMcids[segIdx++];
+      const here = segOnLine++;
+      if (seg.tab !== undefined) {
+        // (v9j3.1) A tab draws nothing and moves the pen by its resolved
+        // advance — the atomic mechanism, in the tab's own run font so the
+        // kern scales by a size that is really in force.
+        const tl = r.layout as TextLayoutRun;
+        if (key !== curFont || tl.fontSize !== curSize) {
+          s += `/${key} ${num(tl.fontSize)} Tf\n`;
+          curFont = key;
+          curSize = tl.fontSize;
+        }
+        if (seg.width > 0) s += `[ ${num(-(seg.width * 1000) / curSize)} ] TJ\n`;
+        if (here === lastTab && tw !== prevTw) { s += `${num(tw)} Tw\n`; prevTw = tw; }
+        continue;
+      }
       // Bound to a local so the type guard narrows it for the rest of the
       // loop body — a guard on `seg.atomic` would not, since it says nothing
       // about `r.layout`.
@@ -1098,6 +1186,13 @@ export function flowTextBlock(
   const put = o.behind ? prependContent : appendContent;
   const [x, y, w, h] = rect;
 
+  // (v9j3.1) Only the run path paints tab segments: a string with tab stops
+  // becomes one run, and its remainder goes back to a string.
+  if (o.tabs !== undefined && !isTextRunList(content)) {
+    const r = flowTextBlock(doc, page, [{ text: content }], rect, options);
+    return { remainder: r.remainder === null ? null : r.remainder.map((t) => t.text).join(''), usedHeight: r.usedHeight };
+  }
+
   if (isTextRunList(content)) {
     rejectShapedRuns(options, o.font);
     const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
@@ -1107,7 +1202,7 @@ export function flowTextBlock(
     const ro: NormalizedBlockOptions =
       o.align === 'justify' && !justifiable(resolved) ? { ...o, align: 'left' } : o;
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0, ro.hyphen);
+      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0, ro.hyphen, ro.tabs);
     if (lines.length > 0) {
       const fontKeys = resolved.map((r) => registerFont(doc, page, r.font));
       const gsKey = ro.opacity < 1 ? registerExtGState(doc, page, ro.opacity) : undefined;
@@ -1121,14 +1216,26 @@ export function flowTextBlock(
       // 0 and the links that follow are 1, 2, … MCIDs are identifiers rather
       // than an ordering, but a reversed one reads like a bug.
       const blockMcid = tag !== undefined ? allocContentMcid(doc, tag, page) : undefined;
+      // A tab gap draws no glyph, so it reserves no MCID: one would mark nothing
+      // and leave the /Link holding a dangling kid (v9j3.1).
       const linkMcids = boxes.map((b) =>
-        tag !== undefined && resolved[b.run].link !== undefined
+        tag !== undefined && resolved[b.run].link !== undefined && !b.tab
           ? reserveContentMcid(doc, tag, page)
           : undefined);
       const bodyBytes = buildRunBlockBody(
         lines, resolved, fontKeys, x, y, w, h, ro, gsKey, boxes, linkMcids);
       put(doc, page,
         markContent(doc, page, options, rotateBody(bodyBytes, ro.rotate, x, y), blockMcid));
+      if (lines.some((l) => lastTabIndex(l) >= 0)) {
+        const lead = leaderBody(lines, boxes, resolved, fontKeys);
+        if (lead !== '') {
+          const body = rotateBody(enc(`q\n${lead}Q`), ro.rotate, x, y);
+          // Decoration, not content: artifacted whenever the block is tagged
+          // or artifacted itself, and a body of its own so it never sits inside
+          // the block's marked-content sequence (v9j3.1).
+          put(doc, page, options.tag !== undefined || options.artifact ? wrapArtifact(body) : body);
+        }
+      }
       // After the ink, so the annotation lands on content that exists.
       // measureTextBlock, the dry run, never reaches here — which is what keeps
       // measurement free of side effects.
@@ -1212,12 +1319,17 @@ export function measureTextBlock(
   content: string | TextRun[], width: number, availHeight: number, options: TextBlockOptions = {},
 ): { usedHeight: number; remainder: string | TextRun[] | null; remainderAtomics?: BlockAtomic[] } {
   const o = normalizeBlockOptions(options);
+  // (v9j3.1) The same redirect flowTextBlock makes: tabs live on the run path.
+  if (o.tabs !== undefined && !isTextRunList(content)) {
+    const r = measureTextBlock([{ text: content }], width, availHeight, options);
+    return { usedHeight: r.usedHeight, remainder: r.remainder === null ? null : r.remainder.map((t) => t.text).join('') };
+  }
   if (isTextRunList(content)) {
     rejectShapedRuns(options, o.font);
     const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
     if (nothingDrawable(resolved)) return { usedHeight: 0, remainder: null };
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0, o.hyphen);
+      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0, o.hyphen, o.tabs);
     const rest = sliceContent(remainder, content, atomicOf, resolved);
     return {
       usedHeight: linesHeight(lines),
@@ -1254,7 +1366,9 @@ export function wrapLines(
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
   else driver = driverFor(o.font);
   if (drawsNothing(text, driver)) return [];
-  const { lines } = layoutText(text, driver, o.fontSize, width, Infinity, o.leading, o.hyphen);
+  const { lines } = o.tabs === undefined
+    ? layoutText(text, driver, o.fontSize, width, Infinity, o.leading, o.hyphen)
+    : layoutRuns([{ text, driver, fontSize: o.fontSize }], width, Infinity, o.leading, o.fontSize, 0, o.hyphen, o.tabs);
   return lines.map((l) => ({ text: l.text, width: l.width }));
 }
 

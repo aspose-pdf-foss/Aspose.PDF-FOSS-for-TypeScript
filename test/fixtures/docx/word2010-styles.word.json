@@ -15,7 +15,10 @@
                                                 "sizePt":  14,
                                                 "font":  "Cambria"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Second level",
@@ -31,7 +34,10 @@
                                                 "sizePt":  13,
                                                 "font":  "Cambria"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Third level",
@@ -47,7 +53,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Cambria"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Custom heading text",
@@ -63,7 +72,10 @@
                                                 "sizePt":  13,
                                                 "font":  "Cambria"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Plain body text.",
@@ -79,7 +91,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Direct formats sizes fonts colours end.",
@@ -123,7 +138,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "A strong word.",
@@ -153,7 +171,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "toggle rest.",
@@ -176,7 +197,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -186,7 +210,10 @@
                            "inTable":  false,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

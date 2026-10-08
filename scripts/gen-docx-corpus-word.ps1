@@ -199,6 +199,42 @@ try {
   $sel.TypeText('Epsilon'); $d.Footnotes.Add($sel.Range).Range.Text = 'Second section note.'; Endpos; $sel.TypeParagraph()
   Save-Doc 'notes'
   }
+  # ---- tabs (v9j3.1) ----
+  # Each paragraph's stops are set on its OWN range after its text is typed; the
+  # paragraph format is reset first, so stops never carry over from the last
+  # paragraph through TypeParagraph. Positions in points; WdTabAlignment and
+  # WdTabLeader by number.
+  if (-not $Only -or $Only -eq 'tabs') {
+  New-Doc
+  $ts = $d.Styles.Add('Tabbed', 1); $ts.BaseStyle = (S -1).NameLocal
+  [void]$ts.ParagraphFormat.TabStops.Add(72, 0, 0); [void]$ts.ParagraphFormat.TabStops.Add(144, 0, 0)
+  function T([object]$style, [string]$text, [object[]]$stops, [double]$clear = -1) {
+    $sel.Range.ListFormat.RemoveNumbers()
+    $sel.Style = $style; $sel.ParagraphFormat.Reset()
+    $sel.TypeText($text)
+    $tsc = $sel.Paragraphs.Item(1).TabStops
+    foreach ($s in $stops) { [void]$tsc.Add($s[0], $s[1], $s[2]) }
+    # TabStop.Clear() is a METHOD; PowerShell's COM binder reads it as a property,
+    # so it is invoked by name. Clearing an inherited stop writes w:val="clear".
+    if ($clear -ge 0) {
+      for ($i = $tsc.Count; $i -ge 1; $i--) {
+        $x = $tsc.Item($i)
+        if ([math]::Abs($x.Position - $clear) -lt 0.5) { [void]$x.GetType().InvokeMember('Clear', 'InvokeMethod', $null, $x, $null) }
+      }
+    }
+    Endpos; $sel.TypeParagraph()
+  }
+  P (S -2) @('Tabs')
+  T (S -1) "Name`tValue" @(,@(144, 0, 1))                           # left, dots
+  T (S -1) "Left`tRight" @(,@(360, 2, 0))                           # right
+  T (S -1) "a`tCentred" @(,@(216, 1, 0))                            # centre
+  T (S -1) "Price`t12.50" @(,@(216, 3, 0))                          # decimal
+  T (S -1) "Total`t9" @(,@(360, 2, 5))                              # right, middle dots
+  T (S 'Tabbed') "a`tb`tc" @() 72                                 # style stops, one cleared
+  T (S 'Tabbed') "d`te" @()                                         # style stops as inherited
+  T (S -1) "x`ty`tz" @()                                           # default stops only
+  Save-Doc 'tabs'
+  }
 } finally {
   $w.Quit(); [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
   Remove-Item $png -ErrorAction SilentlyContinue

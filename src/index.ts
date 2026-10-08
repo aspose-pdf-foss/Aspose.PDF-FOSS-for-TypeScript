@@ -116,6 +116,7 @@ export { richTextToPlain } from './richtext.js';
 export type { TextFont } from './font.js';
 export type { StampOptions, TextBlockOptions, AuthoringFont } from './stamp.js';
 export type { HyphenationOptions } from './hyphenate.js';
+export type { TabStop, TabAlign, TabLeader } from './tabstops.js';
 export { hyphenationLanguages } from './hyphenate.js';
 export type { TextRun } from './textdecor.js';
 export type {

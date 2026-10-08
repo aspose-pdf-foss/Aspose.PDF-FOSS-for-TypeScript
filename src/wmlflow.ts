@@ -80,6 +80,8 @@ interface Ctx extends RunCtx {
   /** The body's section counter and, per section boundary k, the note kinds
    *  section k + 1 restarts (eachSect) — absent in a note body (v9j3.3.2). */
   noteSection?: { idx: number; restartAt: ('footnote' | 'endnote')[][] };
+  /** settings.xml's default tab interval, in points (v9j3.1). */
+  tabInterval: number;
 }
 
 const cur = (c: Ctx): FlowElement[] => c.segments[c.segments.length - 1];
@@ -142,6 +144,12 @@ function paraOptions(p: WmlParagraph, content: Content, c: Ctx, part: Part): Flo
     onUndrawable: (u) => c.log.add(u.all ? 'text' : 'text:partial', u.all ? 'dropped' : 'degraded'),
   };
   if (content.atomics.length > 0) o.atomics = content.atomics;
+  // (v9j3.1) Only a paragraph holding a tab opts in, so every other paragraph
+  // hands the flow exactly the options it always did.
+  if (content.runs.some((r) => r.text.includes('\t'))) {
+    o.tabStops = (pp.tabs ?? []).map((t) => ({ position: t.posPt, align: t.align, leader: t.leader }));
+    o.defaultTabInterval = c.tabInterval;
+  }
   if (pp.align) o.align = pp.align;
   const ind = pp.indent;
   if (ind) {
@@ -252,6 +260,7 @@ function listItem(p: WmlParagraph, c: Ctx): FlowListItem {
     spaceBefore: o.spaceBefore, spaceAfter: o.spaceAfter,
   };
   if (content.atomics.length > 0) item.atomics = content.atomics;
+  if (o.tabStops) { item.tabStops = o.tabStops; item.defaultTabInterval = o.defaultTabInterval; }
   if (o.align) item.align = o.align;
   // Word's left indent is where the BODY starts; the label hangs before it.
   if (o.indent?.left) item.indent = o.indent.left;
@@ -296,7 +305,7 @@ function cellContent(blocks: WmlBlock[], c: Ctx): { runs: TextRun[]; atomics: Fl
     if (inl.length !== p.inlines.length) c.log.add('w:br (page)', 'degraded', p.inlines.length - inl.length);
     // A cell cites notes like any paragraph (v9j3.3.3); inside a note body
     // `c.cite` is undefined and the reference is reported (in a note).
-    const got = inlineContent(inl, c);
+    const got = inlineContent(inl, { ...c, inCell: true });
     const lead = got.runs[0];
     if (runs.length > 0) runs.push({ text: '\n', font: lead?.font, fontSize: lead?.fontSize });
     const label = labelOf(p, lead?.font ?? DEFAULT_FONT, c);
@@ -435,7 +444,7 @@ export function wmlElements(doc: WmlDocument, width: number, env: WmlFlowEnv): {
   const secs = sectionNotes(doc);
   const restartAt = secs.slice(1).map((s) => (['footnote', 'endnote'] as const)
     .filter((k) => s[k === 'footnote' ? 'footnotePr' : 'endnotePr']?.numRestart === 'eachSect'));
-  const c: Ctx = { env, log, width, segments: [[]], gap: 0, prevAfter: 0, noteSection: { idx: 0, restartAt } };
+  const c: Ctx = { env, log, width, segments: [[]], gap: 0, prevAfter: 0, noteSection: { idx: 0, restartAt }, tabInterval: doc.defaultTabStopPt ?? 36 };
   const built = { footnote: new Map<string, FlowNote>(), endnote: new Map<string, FlowNote>() };
   let cited = false;
   c.cite = (ref: WmlNoteRef) => {
@@ -485,7 +494,7 @@ function noteLead(blocks: WmlBlock[], mark: string | undefined): WmlBlock[] {
  *  note's own Word styles, with references inside it refused (notes do not
  *  nest). A page or column break inside a note cannot be honoured. */
 function noteElements(blocks: WmlBlock[], parent: Ctx): FlowElement[] {
-  const nc: Ctx = { env: parent.env, log: parent.log, width: parent.width, segments: [[]], gap: 0, prevAfter: 0, refusal: 'in a note' };
+  const nc: Ctx = { env: parent.env, log: parent.log, width: parent.width, segments: [[]], gap: 0, prevAfter: 0, refusal: 'in a note', tabInterval: parent.tabInterval };
   blockElements(blocks, nc);
   if (nc.segments.length > 1) parent.log.add('w:br (page)', 'degraded', nc.segments.length - 1);
   return nc.segments.flat();

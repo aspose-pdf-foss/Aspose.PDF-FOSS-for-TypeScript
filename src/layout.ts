@@ -3,6 +3,7 @@ import { measure, StdFont } from './metrics.js';
 import { lineBreakPrefix, LBRK } from './linebreak.js';
 import type { Hyphenator } from './hyphenate.js';
 import { lineBox, type LineItem } from './linebox.js';
+import { nextStop, type TabLayout, type TabLeader, type ResolvedTabStop } from './tabstops.js';
 
 /** A font abstraction the layout/stamping engine measures and encodes through,
  *  letting one code path flow Standard-14 (1-byte WinAnsi) and embedded
@@ -118,6 +119,9 @@ export interface LaidSegment {
    *  emitter draws the box and advances the pen; every consumer that walks
    *  segments for GEOMETRY already advances by `width` and needs no change. */
   atomic?: AtomicBox;
+  /** A tab (v9j3.1): `text` '' and `bytes` empty, `width` the resolved
+   *  advance. Never encoded. */
+  tab?: { leader: TabLeader };
 }
 
 /** A piece of unconsumed text, tagged with the run it came from.
@@ -192,6 +196,8 @@ interface Unit {
   /** The WHOLE word's hyphenation points, as positions in `text`, shared by
    *  the word's tails so a tail is never re-analysed as a word of its own. */
   word?: readonly number[];
+  /** A tab (v9j3.1): one character, its width resolved by position. */
+  tab?: boolean;
 }
 
 interface WrappedLine {
@@ -302,11 +308,15 @@ function* breakOverwideWord(
  *  overflows horizontally — no hyphenation). Then keep only the lines whose
  *  baselines fit within `boxHeight` (each line consumes `leading`), returning
  *  the rest as a re-flowable `remainder`.
+ *
+ *  `tabs` (v9j3.1): a tab becomes its own unit whose width depends on where it
+ *  lands. Absent, a tab stays inside its word at zero width and none of the tab
+ *  code runs.
  *  @internal */
 export function layoutRuns(
   runs: readonly LayoutRun[], boxWidth: number, boxHeight: number,
   leading: number, blockFontSize: number, firstLineIndent = 0,
-  hyphenation?: Hyphenator,
+  hyphenation?: Hyphenator, tabs?: TabLayout,
 ): RunLayoutResult {
   // An atomic wider than the box scales BOTH dimensions down — the rule
   // flow.ts's image() already applies to a block image, so it is one rule
@@ -517,6 +527,64 @@ export function layoutRuns(
     : firstLineIndent;
   const limit = (): number => (wrapped.length === 0 ? boxWidth - fi : boxWidth);
 
+  /** (v9j3.1) Where line `lineIdx` starts, from the tab origin. */
+  const lineBase = (lineIdx: number): number => tabs!.origin + (lineIdx === 0 ? fi : 0);
+  /** (v9j3.1) The line's right edge, from the tab origin: the box's own edge. */
+  const lineRight = (): number => tabs!.origin + boxWidth;
+
+  /** (v9j3.1) The width of `units` laid as line `lineIdx`, and each tab's
+   *  resolved advance and stop. A tab segment is the text after a tab up to
+   *  the next tab or the line end. Right, center and decimal alignment place it
+   *  against the stop, but never before the pen, so text never overprints. ONE
+   *  function for the pack loop's fit test and for the segments, so a line
+   *  cannot be measured one way and painted another. */
+  const tabbedLine = (units: readonly Unit[], lineIdx: number): {
+    width: number; adv: Map<Unit, number>; stops: Map<Unit, ResolvedTabStop | undefined>;
+  } => {
+    const base = lineBase(lineIdx);
+    const right = lineRight();
+    const adv = new Map<Unit, number>();
+    const stops = new Map<Unit, ResolvedTabStop | undefined>();
+    let pen = 0;
+    let open: { u: Unit; stop: ResolvedTabStop | undefined; at: number; seg: number; pre?: number } | undefined;
+    const close = (): void => {
+      if (!open) return;
+      let a = 0;
+      if (open.stop) {
+        const room = open.stop.position - (base + open.at);
+        a = open.stop.align === 'left' ? room
+          : open.stop.align === 'right' ? room - open.seg
+            : open.stop.align === 'center' ? room - open.seg / 2
+              : room - (open.pre ?? open.seg);
+      }
+      a = Math.max(0, a);
+      adv.set(open.u, a);
+      pen = open.at + a + open.seg;
+      open = undefined;
+    };
+    for (let k = 0; k < units.length; k++) {
+      const u = units[k];
+      const sep = u.spaceBefore && k > 0 ? spaceWidth(units[k - 1].end - 1) : 0;
+      if (u.tab) {
+        if (open) { open.seg += sep; close(); } else pen += sep;
+        open = { u, stop: nextStop(tabs!, base + pen, right), at: pen, seg: 0 };
+        stops.set(u, open.stop);
+        continue;
+      }
+      const w = unitWidth(u);
+      if (open) {
+        const st = open.stop;
+        if (st?.align === 'decimal' && open.pre === undefined) {
+          const d = text.slice(u.start, u.end).indexOf(st.decimalChar);
+          if (d >= 0) open.pre = open.seg + sep + spanWidth(u.start, u.start + d);
+        }
+        open.seg += sep + w;
+      } else pen += sep + w;
+    }
+    close();
+    return { width: pen, adv, stops };
+  };
+
   /** Take one packed line, or report that the budget is spent — in which case
    *  `restAt` names where that line, and so the remainder, begins. */
   const keep = (units: Unit[], endsParagraph: boolean, startChar: number): boolean => {
@@ -586,13 +654,24 @@ export function layoutRuns(
     let curWidth = 0;
     let i = paraStart;
     let first = true;
+    let afterTab = false;
     while (i < paraEnd) {
+      const gapFrom = i;
       while (i < paraEnd && text[i] === ' ') i++;
       if (i >= paraEnd) break;
       let j = i;
-      while (j < paraEnd && text[j] !== ' ') j++;
-      const spaceBefore = !first;
+      // (v9j3.1) With tabs a tab ends a word and is a unit of its own; without,
+      // it stays inside the word exactly as before.
+      const isTab = tabs !== undefined && text[i] === '\t';
+      if (isTab) j = i + 1;
+      else while (j < paraEnd && text[j] !== ' ' && !(tabs !== undefined && text[j] === '\t')) j++;
+      // Without tabs every unit after the first follows a space, which is the
+      // rule this always used. With tabs a unit may follow a tab directly, so
+      // the separator is whether a space REALLY preceded it, and the word after
+      // a tab takes none: the tab IS the gap.
+      const spaceBefore = !first && (tabs === undefined || (i > gapFrom && !afterTab));
       first = false;
+      afterTab = isTab;
       // LAZY, so that `break para` below stops the split where it stands
       // (`lqs1`): an over-wide word may be longer than the page, and the
       // remainder is re-flowed, so materializing every piece re-splits the
@@ -602,9 +681,11 @@ export function layoutRuns(
       // point can split goes through the plain split (v9j3.2). Pre-cutting it
       // here, against the whole box, strands the line before it and can put
       // two cut pieces on one line with a hyphen between them.
-      const units: Iterable<Unit> = hyphenation === undefined && spanWiderThan(i, j, boxWidth)
-        ? overwideUnits(i, j, spaceBefore)
-        : [{ start: i, end: j, spaceBefore }];
+      const units: Iterable<Unit> = isTab
+        ? [{ start: i, end: j, spaceBefore, tab: true }]
+        : hyphenation === undefined && spanWiderThan(i, j, boxWidth)
+          ? overwideUnits(i, j, spaceBefore)
+          : [{ start: i, end: j, spaceBefore }];
       for (const u0 of units) {
         // A head that ends at a hyphenation point leaves a TAIL, which goes
         // through the same test on the next line (v9j3.2). Off, no unit
@@ -625,6 +706,19 @@ export function layoutRuns(
             fromPlain = true;
           } else break;
           const hy = hyphenation !== undefined && !fromPlain;
+          if (u.tab) {
+            const lineIdx = wrapped.length;
+            const sepT = u.spaceBefore && cur.length > 0 ? spaceWidth(cur[cur.length - 1].end - 1) : 0;
+            const pen = lineBase(lineIdx) + (cur.length ? tabbedLine(cur, lineIdx).width + sepT : 0);
+            if (nextStop(tabs!, pen, lineRight()) === undefined) {
+              // No stop on this line: the tab ends it and draws nothing (v9j3.1).
+              if (cur.length > 0) { if (!keep(cur, false, cur[0].start)) break para; cur = []; curWidth = 0; }
+              continue;
+            }
+            cur.push(u);
+            curWidth = tabbedLine(cur, lineIdx).width;
+            continue;
+          }
           if (cur.length === 0) {
             if (hy && spanWiderThan(u.start, u.end, limit())) {
               const pts = wordPoints(u);
@@ -642,7 +736,12 @@ export function layoutRuns(
             continue;
           }
           const sep = u.spaceBefore ? spaceWidth(cur[cur.length - 1].end - 1) : 0;
-          const next = curWidth + sep + unitWidth(u);
+          // (v9j3.1) With a tab on the line the width is position-aware, so it
+          // is re-derived from the units; otherwise it is the incremental sum
+          // it always was.
+          const next = tabs !== undefined && cur.some((x) => x.tab)
+            ? tabbedLine([...cur, u], wrapped.length).width
+            : curWidth + sep + unitWidth(u);
           if (next <= limit()) { cur.push(u); curWidth = next; continue; }
           const pts = hy ? wordPoints(u) : undefined;
           const at = pts ? hyphenHead(u, limit() - curWidth - sep, pts) : undefined;
@@ -679,11 +778,13 @@ export function layoutRuns(
    *  single-run line yields exactly ONE piece holding the whole line — which is
    *  what makes its measurement and its emitted bytes identical to the string
    *  engine's. */
-  const piecesOf = (units: Unit[]): RunSlice[] => {
-    const out: RunSlice[] = [];
+  const piecesOf = (units: Unit[]): (RunSlice & { tab?: Unit })[] => {
+    const out: (RunSlice & { tab?: Unit })[] = [];
+    // A tab piece is never merged into, nor merged onto (v9j3.1): it is its own
+    // segment, painted as a kern.
     const push = (run: number, t: string): void => {
       const last = out[out.length - 1];
-      if (last !== undefined && last.run === run) { last.text += t; return; }
+      if (last !== undefined && last.run === run && last.tab === undefined) { last.text += t; return; }
       out.push({ run, text: t });
     };
     for (let ui = 0; ui < units.length; ui++) {
@@ -697,6 +798,7 @@ export function layoutRuns(
         const k = spaceRun(owner(units[ui - 1].end - 1));
         if (k >= 0) push(k, ' ');
       }
+      if (u.tab) { out.push({ run: owner(u.start), text: '', tab: u }); continue; }
       let i = u.start;
       while (i < u.end) {
         const r = owner(i);
@@ -715,7 +817,14 @@ export function layoutRuns(
 
   const lines: LaidLine[] = [];
   for (let k = 0; k < kept; k++) {
+    const tl = tabs !== undefined && wrapped[k].units.some((x) => x.tab) ? tabbedLine(wrapped[k].units, k) : undefined;
     const segments: LaidSegment[] = piecesOf(wrapped[k].units).map((p) => {
+      if (p.tab !== undefined) {
+        return {
+          run: p.run, text: '', width: tl!.adv.get(p.tab) ?? 0, bytes: new Uint8Array(0),
+          tab: { leader: tl!.stops.get(p.tab)?.leader ?? 'none' },
+        };
+      }
       const run = scaled[p.run];
       // An atomic's piece is the U+FFFC placeholder, REPLACED by '' here —
       // which is what keeps it out of line.text and out of any encode call.
@@ -773,6 +882,13 @@ export function layoutRuns(
   }
 
   return { lines, remainder };
+}
+
+/** The index of the line's last tab segment, -1 when it has none (v9j3.1).
+ *  @internal */
+export function lastTabIndex(line: LaidLine): number {
+  for (let i = line.segments.length - 1; i >= 0; i--) if (line.segments[i].tab) return i;
+  return -1;
 }
 
 function concatBytes(segments: LaidSegment[]): Uint8Array {

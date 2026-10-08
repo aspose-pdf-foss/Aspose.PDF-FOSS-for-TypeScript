@@ -44,11 +44,20 @@ import {
 } from './wmlns.js';
 import { LoadLimits } from './loadlimits.js';
 import { PdfParseError } from './errors.js';
+import type { TabAlign, TabLeader } from './tabstops.js';
 
 export type Align = 'left' | 'center' | 'right' | 'justify';
 export type LineRule = { auto: number } | { exactPt: number } | { atLeastPt: number };
 export interface Indent { leftPt?: number; rightPt?: number; firstLinePt?: number; hangingPt?: number }
-export interface ParaProps { align?: Align; spaceBeforePt?: number; spaceAfterPt?: number; line?: LineRule; indent?: Indent }
+/** One `w:tab` as stated (v9j3.1); `start`/`end` are read as left/right. */
+export interface WmlTabStop { posPt: number; val: 'left' | 'right' | 'center' | 'decimal' | 'bar' | 'num' | 'clear'; leader?: string }
+/** A resolved tab stop, in points from the paragraph's margin. */
+export interface ParaTab { posPt: number; align: TabAlign; leader: TabLeader }
+export interface ParaProps {
+  align?: Align; spaceBeforePt?: number; spaceAfterPt?: number; line?: LineRule; indent?: Indent;
+  /** (v9j3.1) The stops in force, sorted; absent when none is. */
+  tabs?: ParaTab[];
+}
 export interface RunProps {
   bold: boolean; italic: boolean; underline: boolean; strike: boolean;
   sizePt: number;
@@ -72,6 +81,7 @@ export interface RunLayer {
 export interface ParaLayer {
   align?: Align; spaceBeforePt?: number; spaceAfterPt?: number; line?: LineRule; indent?: Indent;
   outlineLvl?: number; numId?: number; ilvl?: number;
+  tabs?: WmlTabStop[];
   unmodelled: string[];
 }
 
@@ -108,6 +118,12 @@ const HIGHLIGHT: ReadonlyMap<string, Rgb> = new Map(Object.entries({
 const QUIET_RPR = new Set(['rStyle', 'lang', 'noProof', 'szCs', 'bCs', 'iCs', 'kern', 'snapToGrid', 'webHidden']);
 const QUIET_PPR = new Set(['pStyle', 'keepNext', 'keepLines', 'widowControl', 'snapToGrid',
   'autoSpaceDE', 'autoSpaceDN', 'adjustRightInd', 'suppressAutoHyphens', 'rPr', 'sectPr']);
+
+const TAB_VALS = new Set(['left', 'right', 'center', 'decimal', 'bar', 'num', 'clear']);
+/** ST_TabTlc to the authoring vocabulary; `heavy` is a solid rule. */
+const TAB_LEADER: ReadonlyMap<string, TabLeader> = new Map([
+  ['dot', 'dot'], ['hyphen', 'hyphen'], ['underscore', 'underscore'], ['middleDot', 'middleDot'], ['heavy', 'line'],
+]);
 
 /** An ST_OnOff ATTRIBUTE stated true; absent or any false spelling is not. */
 const onOffAttr = (el: NsElement, local: string): boolean => {
@@ -198,6 +214,20 @@ export function readParaLayer(pPr: NsElement | undefined): ParaLayer {
         out.indent = ind;
         break;
       }
+      case 'tabs': {
+        const list: WmlTabStop[] = [];
+        for (const t of wChildren(c, 'tab')) {
+          const pos = wNum(t, 'pos');
+          if (pos === undefined) continue;
+          const v = wAttr(t, 'val') ?? 'left';
+          const val = v === 'start' ? 'left' : v === 'end' ? 'right' : v;
+          if (!TAB_VALS.has(val)) { out.unmodelled.push(`w:tab@val=${v}`); continue; }
+          const leader = wAttr(t, 'leader');
+          list.push({ posPt: pos / TWIP, val: val as WmlTabStop['val'], ...(leader !== undefined && leader !== 'none' ? { leader } : {}) });
+        }
+        out.tabs = list;
+        break;
+      }
       case 'outlineLvl': { const n = wNum(c); if (n !== undefined) out.outlineLvl = n; break; }
       case 'numPr': {
         const id = wNum(wChild(c, 'numId')); if (id !== undefined) out.numId = id;
@@ -208,6 +238,12 @@ export function readParaLayer(pPr: NsElement | undefined): ParaLayer {
     }
   }
   return out;
+}
+
+/** `w:defaultTabStop` from settings.xml, in points; undefined when unstated (v9j3.1). */
+export function parseDefaultTabStop(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): number | undefined {
+  const v = wNum(wChild(parseWml(bytes, limits), 'defaultTabStop'));
+  return v !== undefined && v > 0 ? v / TWIP : undefined;
 }
 
 export function parseTheme(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): ThemeFonts {
@@ -319,8 +355,27 @@ export function resolveParagraph(
   else if (first?.firstLinePt !== undefined) indent.firstLinePt = first.firstLinePt;
   if (Object.keys(indent).length > 0) props.indent = indent;
 
+  // (v9j3.1) Tab stops ACCUMULATE from the farthest layer to the nearest, and
+  // a 'clear' removes an inherited stop at its position (ECMA-376 17.3.1.37);
+  // every other paragraph property takes the nearest layer instead.
+  const stops = new Map<number, WmlTabStop>();
+  for (const l of [...layers].reverse()) {
+    for (const t of l.tabs ?? []) {
+      if (t.val === 'clear') stops.delete(t.posPt); else stops.set(t.posPt, t);
+    }
+  }
+  const tabNotes: string[] = [];
+  const tabs: ParaTab[] = [];
+  for (const t of [...stops.values()].sort((a, b) => a.posPt - b.posPt)) {
+    if (t.val === 'bar' || t.val === 'num') { tabNotes.push(`w:tab@val=${t.val}`); continue; }
+    // A stop left of the margin has nowhere to land in a block measured from it.
+    if (t.posPt < 0) { tabNotes.push('w:tab (negative position)'); continue; }
+    tabs.push({ posPt: t.posPt, align: t.val as TabAlign, leader: (t.leader !== undefined ? TAB_LEADER.get(t.leader) : undefined) ?? 'none' });
+  }
+  if (tabs.length > 0) props.tabs = tabs;
+
   const outline = nearest(layers, (l) => l.outlineLvl);
-  const out: ResolvedParagraph = { props, ilvl, unmodelled: dedupe(layers.flatMap((l) => l.unmodelled)) };
+  const out: ResolvedParagraph = { props, ilvl, unmodelled: dedupe([...layers.flatMap((l) => l.unmodelled), ...tabNotes]) };
   if (styleId !== undefined) {
     out.styleId = styleId;
     const name = styles.byId.get(styleId)?.name;

@@ -31,6 +31,10 @@ export interface MeasureContext {
    *  reaches back by the left room actually GRANTED, not the room stated.
    *  Absent means 1. */
   indentScale?: number;
+  /** (v9j3.1) Points the element's text box sits RIGHT of the tab origin — the
+   *  sum of the left shifts of the decorators around it that model a
+   *  PARAGRAPH indent (`IndentElement`, `ListItemElement`). Absent means 0. */
+  tabOrigin?: number;
 }
 
 /** Where an element is being placed. `top` is the current column pen (PDF user
@@ -52,6 +56,8 @@ export interface PlaceContext {
   structParent?: StructElement;
   /** See {@link MeasureContext.indentScale}. Absent means 1. */
   indentScale?: number;
+  /** See {@link MeasureContext.tabOrigin}. Absent means 0. */
+  tabOrigin?: number;
 }
 
 /** Outcome of {@link FlowElement.place}. @internal */

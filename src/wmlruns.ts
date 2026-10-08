@@ -27,6 +27,9 @@ export interface RunCtx {
    *  names the place in `skipped`. */
   cite?: (r: WmlNoteRef) => { kind: 'footnote' | 'endnote'; note: FlowNote } | undefined;
   refusal?: 'in a note';
+  /** (v9j3.1) A table cell has no tab-stop path, so a tab there stays the
+   *  space it always was, and is reported. */
+  inCell?: boolean;
 }
 
 function face(f: ResolvedFamily, bold: boolean, italic: boolean): AuthoringFont {
@@ -93,8 +96,9 @@ export function inlineContent(inlines: WmlInline[], c: RunCtx): { runs: FlowText
       // page/column breaks were split out by the caller; only line breaks reach here.
       runs.push({ ...fontOf(runs[runs.length - 1]), text: '\n' });
     } else if (i.kind === 'tab') {
-      runs.push({ ...fontOf(runs[runs.length - 1]), text: ' ' });
-      c.log.add('w:tab');
+      // (v9j3.1) A real tab: the paragraph opts in with its stops.
+      if (c.inCell) { runs.push({ ...fontOf(runs[runs.length - 1]), text: ' ' }); c.log.add('w:tab (in a table cell)'); }
+      else runs.push({ ...fontOf(runs[runs.length - 1]), text: '\t' });
     } else if (i.kind === 'image') {
       const a = imageAtomic(i, runs.length, c);
       if (a) atomics.push(a);

@@ -20,6 +20,7 @@
     "paragraphs[13].segments[0].text",
     "paragraphs[13].text"
   ],
+  "lo26.8-tabs.docx": [],
   "word2010-basic.docx": [
     "links[0].url"
   ],
@@ -69,5 +70,6 @@
     "paragraphs[13].text",
     "paragraphs[14].segments.length",
     "paragraphs[14].text"
-  ]
+  ],
+  "word2010-tabs.docx": []
 }

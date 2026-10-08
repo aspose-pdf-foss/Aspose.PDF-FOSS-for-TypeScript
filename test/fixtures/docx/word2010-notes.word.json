@@ -15,7 +15,10 @@
                                                 "sizePt":  14,
                                                 "font":  "Cambria"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Alpha",
@@ -31,7 +34,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Beta",
@@ -47,7 +53,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Gamma*",
@@ -63,7 +72,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Delta",
@@ -79,7 +91,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Cell",
@@ -95,7 +110,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -105,7 +123,10 @@
                            "inTable":  true,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -115,7 +136,10 @@
                            "inTable":  false,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -125,7 +149,10 @@
                            "inTable":  false,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "Epsilon",
@@ -141,7 +168,10 @@
                                                 "sizePt":  11,
                                                 "font":  "Calibri"
                                             }
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        },
                        {
                            "text":  "",
@@ -151,7 +181,10 @@
                            "inTable":  false,
                            "segments":  [
 
-                                        ]
+                                        ],
+                           "tabs":  [
+
+                                    ]
                        }
                    ],
     "tables":  [

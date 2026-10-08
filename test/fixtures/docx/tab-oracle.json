@@ -1,0 +1,45 @@
+{
+    "word":  "14.0 build 14.0.7268",
+    "rows":  [
+                 {
+                     "char":  "A",
+                     "x":  216,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "B",
+                     "x":  354,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "C",
+                     "x":  273,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "D",
+                     "x":  270,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "E",
+                     "x":  108,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "F",
+                     "x":  144,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "G",
+                     "x":  216,
+                     "font":  "Courier New"
+                 },
+                 {
+                     "char":  "H",
+                     "x":  426,
+                     "font":  "Courier New"
+                 }
+             ]
+}

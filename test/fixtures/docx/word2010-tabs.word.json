@@ -1,0 +1,247 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Tabs",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Tabs",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  14,
+                                                "font":  "Cambria"
+                                            }
+                                        ],
+                           "tabs":  [
+
+                                    ]
+                       },
+                       {
+                           "text":  "Name\tValue",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Name\tValue",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  144,
+                                            "align":  "left",
+                                            "leader":  "dot"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "Left\tRight",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Left\tRight",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  360,
+                                            "align":  "right",
+                                            "leader":  "none"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "a\tCentred",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "a\tCentred",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  216,
+                                            "align":  "center",
+                                            "leader":  "none"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "Price\t12.50",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Price\t12.50",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  216,
+                                            "align":  "decimal",
+                                            "leader":  "none"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "Total\t9",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Total\t9",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  360,
+                                            "align":  "right",
+                                            "leader":  "middleDot"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "a\tb\tc",
+                           "styleName":  "Tabbed",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "a\tb\tc",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  144,
+                                            "align":  "left",
+                                            "leader":  "none"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "d\te",
+                           "styleName":  "Tabbed",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "d\te",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+                                        {
+                                            "pos":  72,
+                                            "align":  "left",
+                                            "leader":  "none"
+                                        },
+                                        {
+                                            "pos":  144,
+                                            "align":  "left",
+                                            "leader":  "none"
+                                        }
+                                    ]
+                       },
+                       {
+                           "text":  "x\ty\tz",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "x\ty\tz",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ],
+                           "tabs":  [
+
+                                    ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ],
+                           "tabs":  [
+
+                                    ]
+                       }
+                   ],
+    "tables":  [
+
+               ],
+    "links":  [
+
+              ],
+    "images":  0,
+    "counts":  {
+                   "headers":  0,
+                   "footers":  0,
+                   "footnotes":  0,
+                   "endnotes":  0,
+                   "textBoxes":  0,
+                   "fields":  0,
+                   "comments":  0,
+                   "revisions":  0
+               },
+    "notes":  {
+                  "footnotes":  [
+
+                                ],
+                  "endnotes":  [
+
+                               ]
+              }
+}

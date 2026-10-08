@@ -1,4 +1,5 @@
 import { resolveHyphenation, type HyphenationOptions } from './hyphenate.js';
+import { resolveTabStops, type TabStop } from './tabstops.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
@@ -105,6 +106,12 @@ export interface FlowOptions {
    *  `lang`, when unstated, is this flow's own `lang`. Tables state their own
    *  (`createTable({ hyphenate })`). Default: off. */
   hyphenate?: HyphenationOptions;
+  /** Tab stops for every paragraph, heading and list of this flow (v9j3.1).
+   *  An element's own `tabStops` wins; `false` turns them off for that
+   *  element. Default: off. */
+  tabStops?: TabStop[];
+  /** Points between implicit stops, with {@link tabStops}. Default 36. */
+  defaultTabInterval?: number;
   /** How this flow's footnotes look (v9j3.3): mark format and start, mark
    *  size, note body size, the separator rule, spacing. A footnote is cited
    *  through {@link FlowTextRun.footnote} and placed at the foot of the column
@@ -268,6 +275,34 @@ export interface FlowParagraphOptions {
   /** Break words across lines with a drawn hyphen (v9j3.2). `false` overrides
    *  a flow-wide default. Default: off. */
   hyphenate?: HyphenationOptions | false;
+  /** Tab stops (v9j3.1), in points from the COLUMN's left edge — before
+   *  `indent.left` — so a stop lands where it says whatever the indent.
+   *  `false` overrides a flow-wide default; `[]` means default stops only.
+   *  Default: off, a tab then draws nothing. */
+  tabStops?: TabStop[] | false;
+  /** Points between implicit stops past the last explicit one (v9j3.1).
+   *  Default 36. */
+  defaultTabInterval?: number;
+}
+
+/** Validate an element's tab options at BUILD time, before Render (v9j3.1). */
+function checkTabs(o: { tabStops?: TabStop[] | false; defaultTabInterval?: number }): void {
+  if (o.tabStops !== undefined && o.tabStops !== false) resolveTabStops(o.tabStops, o.defaultTabInterval);
+}
+
+/** The block options for an element's tab stops — empty unless stated, so an
+ *  element without them hands the block exactly the options it always did. */
+function tabOptions(o: { tabStops?: TabStop[] | false; defaultTabInterval?: number }): Partial<TextBlockOptions> {
+  return o.tabStops ? {
+    tabStops: o.tabStops,
+    ...(o.defaultTabInterval !== undefined ? { defaultTabInterval: o.defaultTabInterval } : {}),
+  } : {};
+}
+
+/** Block options with the tab origin set (v9j3.1): only when the block has
+ *  stops and sits right of the origin, so every other caller is unchanged. */
+function withTabOrigin(o: TextBlockOptions, origin: number | undefined): TextBlockOptions {
+  return o.tabStops !== undefined && origin ? { ...o, tabOrigin: origin } : o;
 }
 
 /** A paragraph's indent, validated and resolved to numbers. @internal */
@@ -303,6 +338,7 @@ function paragraphOptions(o: FlowParagraphOptions): TextBlockOptions {
     // block exactly the options it always did (m2fp.5).
     ...(o.indent?.firstLine ? { firstLineIndent: o.indent.firstLine } : {}),
     ...(o.hyphenate ? { hyphenate: o.hyphenate } : {}),
+    ...tabOptions(o),
   };
 }
 
@@ -341,7 +377,7 @@ class TextElement implements FlowElement {
 
   measure(ctx: MeasureContext): MeasureResult {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
-    const { usedHeight, remainder } = measureFlowText(this.text, ctx.width, ctx.availHeight, this.scaled(ctx.indentScale));
+    const { usedHeight, remainder } = measureFlowText(this.text, ctx.width, ctx.availHeight, withTabOrigin(this.scaled(ctx.indentScale), ctx.tabOrigin));
     return withNotes({ usedHeight, fits: remainder === null }, this.text, remainder);
   }
 
@@ -355,7 +391,7 @@ class TextElement implements FlowElement {
     if (this.tag === undefined && ctx.structParent && !isEmptyFlowText(this.text)) {
       this.tag = ctx.structParent.Append(this.structType);
     }
-    const base = this.scaled(ctx.indentScale);
+    const base = withTabOrigin(this.scaled(ctx.indentScale), ctx.tabOrigin);
     const opts = this.tag ? { ...base, tag: this.tag } : base;
     const rect: [number, number, number, number] =
       [ctx.x, ctx.top - ctx.availHeight, ctx.width, ctx.availHeight];
@@ -408,6 +444,7 @@ function reportCoverage(
  *  the contents of a block quote. */
 export function paragraph(text: FlowText, o: FlowParagraphOptions = {}): FlowElement[] {
   if (o.hyphenate !== undefined && o.hyphenate !== false) resolveHyphenation(o.hyphenate);
+  checkTabs(o);
   const ind = normalizeIndent(o);
   reportCoverage(text, o.font ?? 'Helvetica', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
@@ -424,6 +461,7 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
     throw new TypeError('heading level must be an integer in 1..6');
   if (o.keepWithNext !== undefined && typeof o.keepWithNext !== 'boolean')
     throw new TypeError('keepWithNext must be a boolean');
+  checkTabs(o);
   const ind = normalizeIndent(o);
   const withDefaults: FlowParagraphOptions = {
     ...o,
@@ -490,6 +528,12 @@ export interface FlowListOptions {
   /** Break item bodies across lines with a drawn hyphen (v9j3.2). `false`
    *  overrides a flow-wide default. Default: off. */
   hyphenate?: HyphenationOptions | false;
+  /** Tab stops for every item body (v9j3.1), in points from the LIST's left
+   *  edge — before the marker indent. An item's own wins; `false` overrides a
+   *  flow-wide default. Default: off. */
+  tabStops?: TabStop[] | false;
+  /** Points between implicit stops past the last explicit one. Default 36. */
+  defaultTabInterval?: number;
   /** Body alignment. Default 'left'. */
   align?: 'left' | 'center' | 'right' | 'justify';
   /** Drop the list below the floats on the given side(s) before placing it.
@@ -504,6 +548,8 @@ export interface FlowListOptions {
 /** Resolved, validated list options (shared by every item of one list). @internal */
 interface NormalizedListOptions {
   hyphenate?: HyphenationOptions;
+  tabStops?: TabStop[];
+  defaultTabInterval?: number;
   ordered: boolean;
   start: number;
   bulletOverride?: string;   // explicit bullet text, or undefined → vector cycle
@@ -632,8 +678,11 @@ function normalizeListOptions(o: FlowListOptions): NormalizedListOptions {
   validateDecoration('strikethrough', o.strikethrough);
   validateBackground('background', o.background);
   if (o.hyphenate !== undefined && o.hyphenate !== false) resolveHyphenation(o.hyphenate);
+  checkTabs(o);
   return {
     hyphenate: o.hyphenate || undefined,
+    ...(o.tabStops ? { tabStops: o.tabStops } : {}),
+    ...(o.defaultTabInterval !== undefined ? { defaultTabInterval: o.defaultTabInterval } : {}),
     ordered, start, bulletOverride: o.bullet, font, fontSize, color: o.color, leading: o.leading,
     underline: o.underline, strikethrough: o.strikethrough, background: o.background,
     align: o.align, markerGap: 0.5 * fontSize, itemSpacing, spaceBefore, spaceAfter, indentOverride,
@@ -708,6 +757,7 @@ function bodyOptions(o: NormalizedListOptions): TextBlockOptions {
     align: o.align, leading: o.leading,
     underline: o.underline, strikethrough: o.strikethrough, background: o.background,
     ...(o.hyphenate ? { hyphenate: o.hyphenate } : {}),
+    ...tabOptions(o),
   };
 }
 
@@ -768,7 +818,8 @@ class ListItemElement implements FlowElement {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
     const indent = this.indentFor(ctx.width);
     const { usedHeight, remainder } =
-      measureFlowText(this.text, ctx.width - indent, ctx.availHeight, this.bodyOpts());
+      measureFlowText(this.text, ctx.width - indent, ctx.availHeight,
+        withTabOrigin(this.bodyOpts(), (ctx.tabOrigin ?? 0) + indent));
     return withNotes({ usedHeight, fits: remainder === null }, this.text, remainder);
   }
 
@@ -783,11 +834,11 @@ class ListItemElement implements FlowElement {
     if (!this.drawsNothing())
       ensureItemStruct(ctx, this.marker, this.holder, this.state);
 
+    const indent = this.indentFor(ctx.width);
     const bodyOpts: TextBlockOptions = {
-      ...this.bodyOpts(),
+      ...withTabOrigin(this.bodyOpts(), (ctx.tabOrigin ?? 0) + indent),
       ...(this.state.lbody ? { tag: this.state.lbody } : {}),
     };
-    const indent = this.indentFor(ctx.width);
     const rect: [number, number, number, number] = [
       ctx.x + indent, ctx.top - ctx.availHeight,
       ctx.width - indent, ctx.availHeight,
@@ -865,7 +916,8 @@ class ListBlockElement implements FlowElement {
 
   measure(ctx: MeasureContext): MeasureResult {
     const indent = this.indentFor(ctx.width);
-    return this.inner.measure?.({ width: ctx.width - indent, availHeight: ctx.availHeight })
+    return this.inner.measure?.({ width: ctx.width - indent, availHeight: ctx.availHeight,
+      tabOrigin: (ctx.tabOrigin ?? 0) + indent })
       ?? { usedHeight: 0, fits: false };
   }
 
@@ -877,6 +929,7 @@ class ListBlockElement implements FlowElement {
       ...ctx,
       x: ctx.x + indent,
       width: ctx.width - indent,
+      tabOrigin: (ctx.tabOrigin ?? 0) + indent,
       // A block inside an item nests under /LBody, so a multi-paragraph item
       // reads as LI > LBody > P, P rather than as loose content.
       structParent: this.state.lbody ?? ctx.structParent,
@@ -952,6 +1005,11 @@ export interface FlowListItem {
   /** Body indent (points from the list's left edge) for THIS item, replacing the
    *  per-depth auto/uniform indent. Affects only this item, not its descendants. */
   indent?: number;
+  /** Override the list's tab stops for THIS item's body (v9j3.1). `false`
+   *  switches them off. Default: the list value. */
+  tabStops?: TabStop[] | false;
+  /** Override the list's implicit stop interval for THIS item. */
+  defaultTabInterval?: number;
 }
 /** A list node: a bare string leaf or a {@link FlowListItem} that may nest. */
 export type FlowListNode = string | FlowListItem;
@@ -1018,6 +1076,7 @@ function validateNode(n: FlowListNode): FlowListItem {
   validateDecoration('item.underline', n.underline);
   validateDecoration('item.strikethrough', n.strikethrough);
   validateBackground('item.background', n.background);
+  checkTabs(n);
   return n;
 }
 
@@ -1028,7 +1087,8 @@ function resolveItemOptions(list: NormalizedListOptions, item: FlowListItem): No
   if (item.font === undefined && item.fontSize === undefined && item.color === undefined
       && item.align === undefined && item.leading === undefined
       && item.underline === undefined && item.strikethrough === undefined
-      && item.background === undefined) {
+      && item.background === undefined
+      && item.tabStops === undefined && item.defaultTabInterval === undefined) {
     return list;
   }
   return {
@@ -1043,6 +1103,8 @@ function resolveItemOptions(list: NormalizedListOptions, item: FlowListItem): No
     underline: item.underline ?? list.underline,
     strikethrough: item.strikethrough ?? list.strikethrough,
     background: item.background ?? list.background,
+    tabStops: item.tabStops === false ? undefined : item.tabStops ?? list.tabStops,
+    defaultTabInterval: item.defaultTabInterval ?? list.defaultTabInterval,
   };
 }
 
@@ -1340,6 +1402,8 @@ export class Flow {
   private readonly lang?: string;
   private readonly keepHeadingsWithNext: boolean;
   private readonly hyphenate?: HyphenationOptions;
+  private readonly tabStops?: TabStop[];
+  private readonly defaultTabInterval?: number;
   private readonly footOpts: ResolvedNoteOptions;
   private readonly endOpts: ResolvedNoteOptions;
   private rendered = false;
@@ -1369,6 +1433,23 @@ export class Flow {
       this.hyphenate = options.hyphenate.lang === undefined && options.lang !== undefined
         ? { ...options.hyphenate, lang: options.lang } : options.hyphenate;
     }
+    if (options?.tabStops !== undefined || options?.defaultTabInterval !== undefined) {
+      if (options.tabStops === undefined) throw new TypeError('defaultTabInterval requires tabStops');
+      resolveTabStops(options.tabStops, options.defaultTabInterval);
+      this.tabStops = options.tabStops;
+      this.defaultTabInterval = options.defaultTabInterval;
+    }
+  }
+
+  /** An element's options with the flow's tab-stop default applied (v9j3.1):
+   *  its own value wins, `false` included. */
+  private withTabs<T extends { tabStops?: TabStop[] | false; defaultTabInterval?: number }>(o: T): T {
+    if (o.tabStops !== undefined || this.tabStops === undefined) return o;
+    return {
+      ...o, tabStops: this.tabStops,
+      ...(o.defaultTabInterval === undefined && this.defaultTabInterval !== undefined
+        ? { defaultTabInterval: this.defaultTabInterval } : {}),
+    };
   }
 
   /** An element's options with the flow's hyphenation default applied (v9j3.2):
@@ -1383,7 +1464,7 @@ export class Flow {
 
   /** Append a word-wrapped paragraph. Chainable. */
   AddParagraph(text: FlowText, options: FlowParagraphOptions = {}): this {
-    this.items.push(...paragraph(text, this.withHyphenation(options)));
+    this.items.push(...paragraph(text, this.withTabs(this.withHyphenation(options))));
     return this;
   }
 
@@ -1392,7 +1473,7 @@ export class Flow {
    *  via `options`, and (when the flow is tagged) the `/H1`..`/H6` structure type.
    *  Chainable. */
   AddHeading(level: number, text: FlowText, options: FlowHeadingOptions = {}): this {
-    this.items.push(...heading(level, text, options));
+    this.items.push(...heading(level, text, this.withTabs(options)));
     return this;
   }
 
@@ -1404,7 +1485,7 @@ export class Flow {
    *  • ◦ ▪ (drawn as vector shapes). An item's `ordered`/`bullet`/`start` override
    *  its own sub-list. Chainable. */
   AddList(items: FlowListNode[], options: FlowListOptions = {}): this {
-    this.items.push(...list(items, this.withHyphenation(options)));
+    this.items.push(...list(items, this.withTabs(this.withHyphenation(options))));
     return this;
   }
 

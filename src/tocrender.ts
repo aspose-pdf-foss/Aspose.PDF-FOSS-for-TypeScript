@@ -6,6 +6,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { addLink } from './annotation.js';
 import { stampText } from './stamp.js';
+import { leaderFill } from './tabstops.js';
 import type { StructElement } from './struct.js';
 import { TocTagger } from './tocstruct.js';
 import {
@@ -61,16 +62,16 @@ function paintRow(
   if (L.leader === 'dots') {
     const last = row.lines[row.lines.length - 1];
     const lastEnd = row.titleLeft + (last ? last.width : 0);
-    const gap = (L.numberLeft - L.leaderGap) - (lastEnd + L.leaderGap);
-    const dotWidth = rowMeasure('.', style, opts);
-    const count = dotWidth > 0 ? Math.floor(gap / dotWidth) : 0;
-    // Right-aligned against the number column so the dot runs line up vertically
-    // across rows however long the titles are — left-aligning leaves them ragged
-    // exactly where the eye follows them.
-    if (count > 0)
+    // ONE owner of the count with tab leaders (tabstops.ts, v9j3.1): the gap
+    // runs from the title end to the number column, a leaderGap clear each
+    // side. Right-aligned against the number column so the dot runs line up
+    // vertically across rows however long the titles are — left-aligning
+    // leaves them ragged exactly where the eye follows them.
+    const fill = leaderFill(lastEnd, L.numberLeft, rowMeasure('.', style, opts), L.leaderGap);
+    if (fill.count > 0)
       // Decoration, not content: in a tagged page the leader must be an
       // artifact, or a screen reader reads a run of dots aloud.
-      stampText(doc, page, '.'.repeat(count), L.numberLeft - L.leaderGap, lastBaseline,
+      stampText(doc, page, '.'.repeat(fill.count), L.numberLeft - L.leaderGap, lastBaseline,
         tagger ? { ...rowStampOptions(style, opts, 'right'), artifact: true } : right);
   }
 

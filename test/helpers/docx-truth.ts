@@ -11,8 +11,13 @@ import { formatMark } from '../../src/flownotes.js';
 import { noteFormat, sectionNotes } from '../../src/wmlflow.js';
 
 export interface Segment { text: string; bold: boolean; italic: boolean; sizePt: number; font: string }
+/** A paragraph's tab stop as a reader resolves it (v9j3.1): `pos` in points
+ *  from the margin, rounded to a twip, so Word's points and LibreOffice's
+ *  1/100 mm compare exactly. */
+export interface TruthTab { pos: number; align: string; leader: string }
 export interface TruthParagraph {
   text: string; styleName: string; heading: number | null; listLabel: string | null; inTable: boolean; segments: Segment[];
+  tabs: TruthTab[];
 }
 export type TruthLink = { text: string; url: string } | { text: string; anchor: string };
 export const COUNT_KEYS = ['headers', 'footers', 'footnotes', 'endnotes', 'textBoxes', 'fields', 'comments', 'revisions'] as const;
@@ -60,6 +65,8 @@ export function assertTruthShape(t: unknown, where: string): asserts t is DocxTr
     const q = p as Record<string, unknown>;
     if (!Array.isArray(q.segments)) fail(`paragraphs[${i}].segments`);
     (q.segments as unknown[]).forEach((s, j) => { if (!isObj(s) || typeof s.text !== 'string') fail(`paragraphs[${i}].segments[${j}]`); });
+    if (!Array.isArray(q.tabs)) fail(`paragraphs[${i}].tabs`);
+    (q.tabs as unknown[]).forEach((t, j) => { if (!isObj(t) || typeof t.pos !== 'number') fail(`paragraphs[${i}].tabs[${j}]`); });
   });
   if (!Array.isArray(o.tables)) fail('tables');
   (o.tables as unknown[]).forEach((t2, i) => {
@@ -199,6 +206,7 @@ export function truthOf(doc: WmlDocument, list: readonly string[] = []): Compara
     paragraphs: flat.map(({ p, inTable }) => ({
       text: paraText(p, list), heading: p.heading ?? null, listLabel: p.list?.label ?? null, inTable,
       segments: segmentsOf(p, list),
+      tabs: (p.props.tabs ?? []).map((t) => ({ pos: Math.round(t.posPt * 20) / 20, align: t.align, leader: t.leader })),
     })),
     tables: doc.blocks.filter((b) => b.kind === 'table').map((t) => ({
       rows: t.rows.map((row) => row.cells.filter((c) => c.vMerge !== 'continue').map((c) => cellText(c, list))),
