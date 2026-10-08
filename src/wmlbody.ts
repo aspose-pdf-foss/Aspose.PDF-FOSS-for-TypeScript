@@ -54,6 +54,7 @@ import {
 import { ListCounter, levelOf, type WmlNumbering } from './wmlnumbering.js';
 import { LoadLimits } from './loadlimits.js';
 import { PdfParseError } from './errors.js';
+import { readSectionNotes, type WmlSectionNotes } from './wmlnotes.js';
 
 export type WmlLink = { url: string } | { anchor: string };
 /** A link an element (`w:hyperlink`, `w:fldSimple`) applies, and how many complex
@@ -61,8 +62,13 @@ export type WmlLink = { url: string } | { anchor: string };
 interface LinkScope { link: WmlLink; depth: number }
 interface OpenField { state: 'instr' | 'result'; instr: string; decided: boolean; link?: WmlLink }
 export interface WmlText { kind: 'text'; text: string; props: RunProps; link?: WmlLink; unmodelled: string[] }
+/** A footnote or endnote reference (v9j3.3.2). `props` is the reference run's
+ *  resolved style (a mark in bold text is bold); `mark` is a custom mark
+ *  (`w:customMarkFollows`), the run's following text. */
+export interface WmlNoteRef { kind: 'note'; note: 'footnote' | 'endnote'; id: string; props: RunProps; mark?: string }
 export type WmlInline =
   | WmlText
+  | WmlNoteRef
   | { kind: 'break'; type: 'line' | 'page' | 'column' }
   | { kind: 'tab' }
   | { kind: 'image'; part?: string; widthPt: number; heightPt: number; alt?: string };
@@ -74,6 +80,8 @@ export interface WmlParagraph {
   list?: { numId: number; ilvl: number; ordinal: number; label: string; bullet: boolean };
   inlines: WmlInline[];
   unmodelled: string[];
+  /** This paragraph ends a section: that section's note properties (v9j3.3.2). */
+  sectionEnd?: WmlSectionNotes;
 }
 export interface WmlCell { span: number; vMerge?: 'restart' | 'continue'; shading?: Rgb; blocks: WmlBlock[] }
 /** `gridBefore`/`gridAfter`: grid columns left empty before the first cell and
@@ -91,7 +99,11 @@ export interface BodyContext {
   /** A relationship of the main document part, by Id. */
   rel(id: string): BodyRel | undefined;
 }
-export interface BodyResult { blocks: WmlBlock[]; page?: WmlPage; unsupported: Map<string, number> }
+export interface BodyResult {
+  blocks: WmlBlock[]; page?: WmlPage; unsupported: Map<string, number>;
+  /** The body's final sectPr's note properties: the LAST section's (v9j3.3.2). */
+  lastSection: WmlSectionNotes;
+}
 
 const EMU_PER_PT = 12700;
 const TWIP = 20;
@@ -101,6 +113,8 @@ const DROPPED = new Set([
   'moveFromRangeStart', 'moveFromRangeEnd', 'moveToRangeStart', 'moveToRangeEnd',
   'commentRangeStart', 'commentRangeEnd', 'lastRenderedPageBreak', 'sectPr', 'sdtPr', 'sdtEndPr',
   'rPr', 'pPr', 'tblPr', 'tblGrid', 'trPr', 'tcPr', 'tblPrEx', 'softHyphen', 'instrText', 'delInstrText', 'delText',
+  // Word's own number inside a note body: the engine draws the gutter mark (v9j3.3.2).
+  'footnoteRef', 'endnoteRef',
 ]);
 const TRANSPARENT = new Set(['smartTag', 'customXml']);
 /** Kept to the rules above — `ins`/`moveTo`/`fldSimple` descended, `del`/`moveFrom`
@@ -274,6 +288,7 @@ class Walker {
     const inlines: WmlInline[] = [];
     this.inlineChildren(p, inlines, rp.styleId, undefined);
     const para: WmlParagraph = { kind: 'paragraph', props: rp.props, inlines, unmodelled: [...rp.unmodelled] };
+    if (sect) para.sectionEnd = readSectionNotes(sect);
     if (rp.styleName !== undefined) para.styleName = rp.styleName;
     if (rp.heading !== undefined) para.heading = rp.heading;
     if (rp.numId !== undefined) {
@@ -339,10 +354,25 @@ class Walker {
       out.push(current);
     };
     const other = (i: WmlInline): void => { if (!this.skipping()) { out.push(i); current = undefined; } };
+    // w:customMarkFollows (v9j3.3.2): the run's next w:t is the note's mark.
+    let awaitingMark: WmlNoteRef | undefined;
     for (const c of r.children) {
       if (c.ns !== W) { this.note(displayName(c)); text(textOf(c)); continue; }
       switch (c.local) {
-        case 't': text(c.text); break;
+        case 't':
+          if (awaitingMark) { if (!this.skipping()) awaitingMark.mark = c.text; awaitingMark = undefined; break; }
+          text(c.text);
+          break;
+        case 'footnoteReference':
+        case 'endnoteReference': {
+          const id = wAttr(c, 'id');
+          if (id === undefined || this.skipping()) break;
+          const ref: WmlNoteRef = { kind: 'note', note: c.local === 'footnoteReference' ? 'footnote' : 'endnote', id, props: rr.props };
+          other(ref);
+          const cmf = wAttr(c, 'customMarkFollows');
+          if (cmf === '1' || cmf === 'true' || cmf === 'on') awaitingMark = ref;
+          break;
+        }
         case 'tab': other({ kind: 'tab' }); break;
         case 'br': { const t = wAttr(c, 'type'); other({ kind: 'break', type: t === 'page' ? 'page' : t === 'column' ? 'column' : 'line' }); break; }
         case 'cr': other({ kind: 'break', type: 'line' }); break;
@@ -502,5 +532,28 @@ export function parseBody(bytes: Uint8Array, ctx: BodyContext): BodyResult {
   walker.finish();
   walker.section(wChild(body, 'sectPr'));
   const page = pageOf(wChild(body, 'sectPr'));
-  return page ? { blocks, page, unsupported: walker.unsupported } : { blocks, unsupported: walker.unsupported };
+  const lastSection = readSectionNotes(wChild(body, 'sectPr'));
+  return page ? { blocks, page, unsupported: walker.unsupported, lastSection } : { blocks, unsupported: walker.unsupported, lastSection };
+}
+
+/** footnotes.xml / endnotes.xml (v9j3.3.2): each note's blocks by `w:id`,
+ *  through the SAME Walker the body uses — so a note's lists, tables, images
+ *  and links resolve by the body's rules — with `ctx.rel` being THIS part's
+ *  relationships. Separator entries (`w:type` separator, continuationSeparator,
+ *  continuationNotice) are skipped: the engine draws its own rule. */
+export function parseNotes(bytes: Uint8Array, ctx: BodyContext, kind: 'footnote' | 'endnote'): { notes: Map<string, WmlBlock[]>; unsupported: Map<string, number> } {
+  const root = parseWml(bytes, ctx.limits);
+  const plural = `${kind}s`;
+  if (root.ns !== W || root.local !== plural) throw new PdfParseError(`${plural}.xml: the root is not w:${plural}`);
+  const walker = new Walker(ctx);
+  const notes = new Map<string, WmlBlock[]>();
+  for (const n of wChildren(root, kind)) {
+    const type = wAttr(n, 'type');
+    if (type !== undefined && type !== 'normal') continue;
+    const id = wAttr(n, 'id');
+    if (id === undefined || notes.has(id)) continue;
+    notes.set(id, walker.blocksOf(n));
+  }
+  walker.finish();
+  return { notes, unsupported: walker.unsupported };
 }

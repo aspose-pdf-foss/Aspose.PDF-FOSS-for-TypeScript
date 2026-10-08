@@ -91,8 +91,8 @@ describe('readDocx', () => {
   });
 
   it('sorts and totals the unsupported report', () => {
-    const doc = readDocx(pkg(docXml(p('<w:r><w:footnoteReference w:id="1"/></w:r>') + p('<w:r><w:footnoteReference w:id="2"/><w:sym/></w:r>'))));
-    expect(doc.unsupported).toEqual([{ name: 'w:footnoteReference', count: 2 }, { name: 'w:sym', count: 1 }]);
+    const doc = readDocx(pkg(docXml(p('<w:r><w:commentReference w:id="1"/></w:r>') + p('<w:r><w:commentReference w:id="2"/><w:sym/></w:r>'))));
+    expect(doc.unsupported).toEqual([{ name: 'w:commentReference', count: 2 }, { name: 'w:sym', count: 1 }]);
   });
 });
 

@@ -75,9 +75,25 @@ function firstElementOnPage(doc: Document, page: number): StructElement | undefi
   return walk(root.Children, 0);
 }
 
+/** Whether `el` or an element below it lies on `page`. A /Note holds no
+ *  content of its own — its mark and body are children — so its own `Page`
+ *  is INHERITED from the citing element, which is the wrong page for an
+ *  endnote; the descendants are what say where it actually is. */
+function hasContentOnPage(el: StructElement, page: number, depth: number): boolean {
+  if (depth > 64) return false;
+  if (el.Dict.has('Pg') && el.Page?.Number === page) return true;
+  return el.Children.some((c) => hasContentOnPage(c, page, depth + 1));
+}
+
 /** Build the /A dict for `a`. Validates everything before returning, so a
- *  caller that lets this throw has allocated nothing. */
-export function encodeAction(doc: Document, a: PdfAction): PdfDict {
+ *  caller that lets this throw has allocated nothing.
+ *
+ *  `structTarget` (internal, mba3) names the structure element a GoTo's /SD
+ *  points at, for a caller that KNOWS it — a note link targets the /Note or
+ *  the citing element, not whatever element happens to come first on the
+ *  page. It is honoured only when it is on the target page and has a ref;
+ *  otherwise the page's first element is used, as before. */
+export function encodeAction(doc: Document, a: PdfAction, structTarget?: StructElement): PdfDict {
   switch (a?.type) {
     case 'goto': {
       const p = a.page;
@@ -95,7 +111,8 @@ export function encodeAction(doc: Document, a: PdfAction): PdfDict {
       //
       // Written only when the document is tagged AND an element resolves for
       // the target page, so an untagged document is byte-identical.
-      const el = firstElementOnPage(doc, p);
+      const el = structTarget?.Ref !== undefined && hasContentOnPage(structTarget, p, 0)
+        ? structTarget : firstElementOnPage(doc, p);
       if (el?.Ref !== undefined) dict.set('SD', encodeDest(el.Ref, a.view));
       return dict;
     }

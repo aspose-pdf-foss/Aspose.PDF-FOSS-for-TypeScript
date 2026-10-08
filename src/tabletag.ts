@@ -61,6 +61,12 @@ export class TableTagger {
   /** The /TR the next `cell` joins; undefined before the first `beginRow`. */
   private row: StructElement | undefined;
 
+  /** The element `cell()` last created per cell, for a note's owner (v9j3.3.3). */
+  private readonly cellElements = new Map<CellBuilder, StructElement>();
+
+  /** The /TD or /TH `cell()` last created for `cell`. */
+  elementOf(cell: CellBuilder): StructElement | undefined { return this.cellElements.get(cell); }
+
   constructor(doc: Document, opts: TableTaggerOptions = {}) {
     const parent = opts.structParent;
     // A /Table parent is continuation, not nesting: a manual-pagination loop
@@ -89,6 +95,7 @@ export class TableTagger {
     if (this.row === undefined) throw new Error('cell before beginRow');
     const scope = headerScope(cell, rowIndex, repeatingRows);
     const elem = this.row.Append(scope === undefined ? 'TD' : 'TH');
+    this.cellElements.set(cell, elem);
     // Written only when there is something to say: readTable defaults an absent
     // ColSpan and RowSpan to 1, so an /A on every plain cell would be pure bloat.
     const attrs: { colSpan?: number; rowSpan?: number; scope?: 'Row' | 'Column' } = {};

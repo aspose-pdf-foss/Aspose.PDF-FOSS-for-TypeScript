@@ -6,7 +6,7 @@ const T = 'Hyphenation keeps documentation of extraordinary responsibility reada
 const narrow = { format: PageFormat.custom(200, 400), marginLeft: 40, marginRight: 40, marginTop: 20, marginBottom: 20 };
 // Document.New starts with an empty page the flow does not use, so skip empties.
 const text = (doc: Document) => Document.Open(doc.Save()).Pages.map((p) => p.GetText()).filter((t) => t !== '').join('\n');
-const hasHyphenEnd = (s: string) => s.split('\n').some((l) => /[a-z]-$/.test(l));
+const hasHyphenEnd = (s: string) => s.split('\n').some((l) => /[a-z]\u00AD$/.test(l));
 
 describe('Flow hyphenation (v9j3.2)', () => {
   it('hyphenates a paragraph that asks', () => {
@@ -48,7 +48,7 @@ describe('Flow hyphenation (v9j3.2)', () => {
     const d = Document.New(PageFormat.A4);
     d.NewFlow({ ...narrow, format: PageFormat.custom(200, 80) })
       .AddParagraph(`${T} ${T} ${T}`, { fontSize: 12, hyphenate: { lang: 'en' } }).Render();
-    const all = text(d).replace(/-\n/g, '').replace(/\n/g, ' ');
+    const all = text(d).replace(/\u00AD\n/g, '').replace(/\n/g, ' ');
     expect(all).toBe(`${T} ${T} ${T}`);
   });
 

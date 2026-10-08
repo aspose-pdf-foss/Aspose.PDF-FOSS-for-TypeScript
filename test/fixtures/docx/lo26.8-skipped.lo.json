@@ -206,5 +206,19 @@
     "fields": 1,
     "comments": 1,
     "revisions": 2
+  },
+  "notes": {
+    "footnotes": [
+      {
+        "mark": "1",
+        "text": "The footnote text."
+      }
+    ],
+    "endnotes": [
+      {
+        "mark": "i",
+        "text": "The endnote text."
+      }
+    ]
   }
 }

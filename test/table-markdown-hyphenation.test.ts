@@ -5,7 +5,7 @@ import { createTable } from '../src/tableauthor.js';
 
 const W = 'extraordinary responsibility documentation';
 const text = (doc: Document) => Document.Open(doc.Save()).Pages.map((p) => p.GetText()).filter((t) => t !== '').join('\n');
-const hyphenEnds = (s: string) => s.split('\n').filter((l) => /[a-z]-$/.test(l)).length;
+const hyphenEnds = (s: string) => s.split('\n').filter((l) => /[a-z]\u00AD$/.test(l)).length;
 
 describe('table cells hyphenate (v9j3.2)', () => {
   it('cascades from table defaults and sizes the row for the hyphenated text', () => {
@@ -27,7 +27,7 @@ describe('table cells hyphenate (v9j3.2)', () => {
     const d = Document.New(PageFormat.A4);
     d.Pages[0].AddTable(t, 72, 700, { width: 140 });
     const right = Document.Open(d.Save()).Pages[0].GetTextFragments().filter((f) => f.quad[0] > 72 + 70);
-    expect(right.some((f) => /-$/.test(f.text))).toBe(false);
+    expect(right.some((f) => /[-\u00AD]$/.test(f.text))).toBe(false);
     expect(hyphenEnds(text(d))).toBeGreaterThan(0);
   });
 

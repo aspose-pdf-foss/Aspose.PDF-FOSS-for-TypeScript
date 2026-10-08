@@ -21,7 +21,8 @@
 import { openOpc, OFFICE_DOCUMENT, STYLES, NUMBERING, type OpcPackage, type OpcRelationship } from './opcread.js';
 import { parseTheme, parseStyles, emptyStyles, EMPTY_THEME, type ThemeFonts, type WmlStyles } from './wmlstyles.js';
 import { parseNumbering, EMPTY_NUMBERING, type WmlNumbering } from './wmlnumbering.js';
-import { parseBody, type BodyRel, type WmlBlock, type WmlPage } from './wmlbody.js';
+import { parseBody, parseNotes, type BodyRel, type WmlBlock, type WmlPage } from './wmlbody.js';
+import { parseSettingsNotes, type WmlSectionNotes } from './wmlnotes.js';
 import { LoadLimits } from './loadlimits.js';
 import { PdfParseError, rethrowLimit } from './errors.js';
 import { parseWml, W, wAttr, wChild, wChildren } from './wmlns.js';
@@ -32,6 +33,12 @@ export interface WmlDocument {
   page?: WmlPage;
   /** Every construct seen and not modelled, by qualified name, sorted by name. */
   unsupported: { name: string; count: number }[];
+  /** Footnote / endnote bodies by w:id (v9j3.3.2); undefined when the document
+   *  has no usable part — a missing or unreadable one is also recorded. */
+  footnotes?: Map<string, WmlBlock[]>;
+  endnotes?: Map<string, WmlBlock[]>;
+  /** Note numbering properties: settings.xml's, and the LAST section's. */
+  notePr: { settings: WmlSectionNotes; last: WmlSectionNotes };
 }
 
 export type FontClass = 'serif' | 'sans-serif' | 'monospace';
@@ -69,6 +76,9 @@ function parseFontTable(bytes: Uint8Array, limits: LoadLimits): Map<string, Font
 }
 
 const THEME = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
+const FOOTNOTES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes';
+const ENDNOTES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes';
+const SETTINGS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings';
 const STRICT_REL = 'http://purl.oclc.org/ooxml/officeDocument/relationships';
 const strictTwin = (type: string): string => `${STRICT_REL}/${type.slice(type.lastIndexOf('/') + 1)}`;
 const isType = (r: OpcRelationship, type: string): boolean => r.type === type || r.type === strictTwin(type);
@@ -111,6 +121,7 @@ export function openDocx(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
   const theme: ThemeFonts = optional('theme', THEME, (b) => parseTheme(b, limits), EMPTY_THEME);
   const styles: WmlStyles = optional('styles.xml', STYLES, (b) => parseStyles(b, theme, limits), emptyStyles(theme, limits));
   const numbering: WmlNumbering = optional('numbering.xml', NUMBERING, (b) => parseNumbering(b, limits), EMPTY_NUMBERING);
+  const settingsNotes: WmlSectionNotes = optional('settings.xml', SETTINGS, (b) => parseSettingsNotes(b, limits), {});
 
   const fontClasses = optional('fontTable.xml', FONT_TABLE, (b) => parseFontTable(b, limits), new Map<string, FontClass>());
 
@@ -140,12 +151,39 @@ export function openDocx(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
     if (r?.part === undefined || pkg.has(r.part)) return r;
     return { target: r.target, external: r.external };
   };
+  // A notes part resolves r:ids against ITS OWN relationships (v9j3.3.2).
+  const relOf = (part: string): ((id: string) => BodyRel | undefined) => {
+    let prs: readonly OpcRelationship[] = [];
+    try { prs = pkg.relationships(part); } catch (caught) { rethrowLimit(caught); note(`${part.slice(part.lastIndexOf('/') + 1)}.rels: unreadable`); }
+    const ids = new Map(prs.map((x) => [x.id, x]));
+    return (id) => {
+      const x = ids.get(id);
+      if (x?.part === undefined || pkg.has(x.part)) return x;
+      return { target: x.target, external: x.external };
+    };
+  };
+  const notesOf = (kind: 'footnote' | 'endnote', type: string): Map<string, WmlBlock[]> | undefined => {
+    const role = `${kind}s.xml`;
+    const r = rels.find((x) => isType(x, type));
+    if (r === undefined) return undefined;
+    if (r.part === undefined || !pkg.has(r.part)) { note(`${role}: missing`); return undefined; }
+    try {
+      const got = parseNotes(pkg.read(r.part), { styles, numbering, limits, rel: relOf(r.part) }, kind);
+      for (const [name, count] of got.unsupported) note(name, count);
+      return got.notes;
+    } catch (caught) { rethrowLimit(caught); note(`${role}: unreadable`); return undefined; }
+  };
+  const footnotes = notesOf('footnote', FOOTNOTES);
+  const endnotes = notesOf('endnote', ENDNOTES);
   const body = parseBody(pkg.read(main), { styles, numbering, limits, rel });
   for (const [name, count] of body.unsupported) note(name, count);
   const doc: WmlDocument = {
     blocks: body.blocks,
     unsupported: [...unsupported].map(([name, count]) => ({ name, count })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+    notePr: { settings: settingsNotes, last: body.lastSection },
   };
+  if (footnotes) doc.footnotes = footnotes;
+  if (endnotes) doc.endnotes = endnotes;
   if (body.page) doc.page = body.page;
   const opened: OpenedDocx = { doc, readPart, fontClass: (name) => fontClasses.get(name) };
   if (title !== undefined) opened.title = title;

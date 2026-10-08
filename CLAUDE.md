@@ -1284,6 +1284,158 @@ Source (`src/`):
   `test/css-float.test.ts`, because the corpus compares content widths and the
   bug was in margins. Placement is not observable through `getComputedStyle`
   at all.
+- **flownotes.ts** — footnotes and endnotes for Flow (`v9j3.3`): lowering a
+  run that cites a note into its body and a MARK RUN, numbering, the
+  `NoteElement` decorator a note body lowers to, the per-column `NoteColumn`,
+  and `settleBudget`, the pure loop behind the reservation. `Flow.Render` is
+  its only caller; it must NOT value-import `flow.ts` (`paragraph()` arrives
+  as an injected `BodyMaker`).
+  **Invariant:** the mark run carries its `NoteRef` under a module-private
+  SYMBOL key, and `sliceContent`'s `{ ...source, text }` copies own symbol
+  keys — so a remainder carries its references and `stamp.ts` needed no change
+  beyond `TextRun.rise`. "Which references did a placement keep" is
+  `refs(text) - refs(remainder)`, by identity (`keptRefs`). A symbol key also
+  cannot trip `resolveRuns`' guard, which REFUSES a run with a `footnote` or
+  `endnote` key anywhere outside Flow's lowering (`AddTextBlock`, table cells,
+  `FloatingBox`) — the accepted-and-ignored-key trap `region` records.
+  **Invariant:** numbering happens in ONE pass at the start of `Render`, over
+  the queue in order (= Add order), BEFORE anything is measured, so a mark's
+  width never changes after a line was measured. Not in the builders: they are
+  free functions with no flow, and their elements may be composed into quotes
+  or list-item `blocks` first. Numbering is per RENDER; a module-wide set
+  refused building the same runs again for a second document and protected
+  nothing (review #6).
+  **Invariant (`v9j3.3.1`), and it REVERSES `v9j3.3`'s cited-once rule:** a
+  `FlowNote` cited several times is numbered and placed by its FIRST citation
+  in queue order; every later citation is a REPEAT — the same mark, an EMPTY
+  body, `NoteRef.repeatOf` set. An empty body reserves no foot room and
+  commits nothing, so `settleBudget` and `NoteColumn` needed no change;
+  `commitRefs` skips a repeat for tagging and for the endnote queue, which is
+  what makes one `/Note` per note. GitHub's footnote model, which Markdown
+  needs. **Measured:** giving a repeat a fresh number reddens 6, tagging
+  repeats reddens 2.
+  **Invariant (`v9j3.3.4`):** marks and notes link both ways through
+  `NoteLinks`, ONE per placement (`Flow.Render`, `Page.trailingNotes`):
+  citation boxes arrive through the mark's deferred link, the gutter mark
+  through `noteDrawn`, and `finish()` writes every GoTo annotation after all
+  placement — nothing half-written, a citation whose note never placed gets
+  none. **And its tagged `/Link` becomes a `/Span`** (`unlink`), as does any
+  box or note drawn AFTER `finish()` — a one-rect remainder continued later:
+  a `/Link` with no annotation is announced as a link that goes nowhere, and
+  `ValidatePdfUa` cannot see it (final review). A repeat resolves to its FIRST citation, which is also where the back
+  link goes. The link is set in `NoteNumberer.assign`, not in `lowerNotes`:
+  lowering runs in the builders, which have no flow and so no `links`
+  option — and setting it there OVERWRITES the URI `lowerNotes` copied onto
+  the mark, so a cited URI run keeps its URI on its words alone. `links:
+  false` is byte-identical to the pre-links output, which
+  `test/flow-notes-identity.test.ts`'s twins assert against the OLD hashes;
+  the tagged default-on hash was re-recorded, the mark having moved into a
+  `/Link`.
+  **Invariant (`mba3`):** a note link's `/SD` names the `/Note` (citation →
+  note) and `ref.owner` (note → citation), through `encodeAction`'s internal
+  `structTarget`. It is accepted when the element or a DESCENDANT has its own
+  `/Pg` on the target page, never through `StructElement.Page`: a `/Note`
+  holds no content and inherits the CITING page, so an endnote fell back to
+  the page's first element. Measured: each half reddens
+  `test/flow-notes-sd.test.ts`. A mark's `DeferredLink` rides `TextRun.link`
+  typed as `runlink.ts`'s `LinkedRun`, which every reader of a run's link
+  (`resolveRuns`, the table cell check) reads through; the one cast is where
+  `lowerNotes` pushes the mark into a `TextRun[]`. **Note, measured:** all 15 mutations aimed at this redden, none
+  needing a case added after the plan.
+  **Invariant (`v9j3.3.3`):** `rebaseForMarks` is the one owner of "where does
+  an atomic sit once marks are inserted". `lowerNotes` inserts a mark run after
+  every cited run, so an atomic's `beforeRun` moves past the marks before it;
+  `paragraph`, `heading`, list items and the table copy all call it. Until
+  then an image after a cited run drew BETWEEN the run and its mark —
+  measured 44pt from the run start where 24 was right — and no test saw it.
+  **Invariant (`v9j3.3.1`):** `notesAsTrailing` is how ONE RECT takes notes
+  (`page.AddMarkdown`): it numbers every reference, DETACHES each by deleting
+  the symbol key from its mark run (the lowering's own object), and appends
+  the separator and the bodies — footnotes, then endnotes, each note once —
+  after the content. Detaching is what lets `placeElements` keep refusing a
+  reference: dropping the delete reddens 4. Numbering is per call.
+  **Invariant (`v9j3.3.2`):** `flow.RestartNotes(kind?)` queues a
+  ZERO-HEIGHT MARKER (`noteRestart`), and the up-front numbering pass resets
+  the named kinds' counters at it — Word's "restart each section". Placement
+  skips it and the keep-with-next lookahead looks PAST it: asked instead, the
+  marker answers `usedHeight 0`, which reads as "the next line does not fit"
+  and pushes a heading off a page it fits on. **Note, measured, and the
+  obvious fixture is a false witness:** a heading STRANDED at a page foot
+  advances under both readings, so only a heading MID-PAGE separates them
+  (`test/flow-notes-restart.test.ts`); the old fixture's 1900-word filler did
+  not even strand the heading — 2170..2200 do. **Note, an EQUIVALENT mutant:**
+  dropping the placement skip reddens nothing and cannot — the marker places
+  as an empty element (`drew: false`, `remainder: null`), the path that
+  already changes no state. Kept as the honest statement.
+  **Invariant (`v9j3.3.2`):** under `footnotes.restart: 'page'` (Word's
+  "restart each page"; refused for endnotes) every footnote is still numbered
+  PROVISIONALLY by the up-front pass — that builds its body and sets
+  `numberer.any` — and each OFFER renumbers it (`renumberForPage`) from the
+  references `commitRefs` has already counted on THIS page. So a line pushed
+  to the next page is renumbered there. `NoteNumberer.renumber` re-measures
+  the GUTTER from the new mark: a note first numbered 13 and drawn as 1 would
+  otherwise sit a two-digit gutter in. **Note, measured:** both of those were
+  green until their cases existed — `min === 1` per page passes when every
+  note on a page is 1, and the gutter needs ten-plus notes before the page
+  break. With no `RestartNotes` and no `'page'`, `test/flow-notes-identity.test.ts`
+  hashes output recorded BEFORE the engine changed — a fence, not a golden.
+  **Invariant:** the probe runs only when the flow numbered at least one note;
+  otherwise `notes` is undefined and `Render` takes exactly its old path —
+  the byte-identity argument, by construction rather than by test.
+  **Invariant:** `FlowElement.noteRefs()` and `measure().notes` originate in
+  `TextElement` and `ListItemElement` alone; every decorator forwards
+  (`QuotedElement`, `IndentElement`, `ListBlockElement`, `BoxElement`).
+  `placeElements` REFUSES an element with refs (one rect has no foot and no
+  next column), and so does `Render` for a float carrying refs.
+  **Invariant:** `settleBudget` BISECTS for the largest budget whose kept
+  content plus its kept footnotes' whole notes fit `room` — exact because
+  feasibility is monotone (more budget keeps more content and a superset of
+  refs). It replaced a shrink loop stepping down by the note height, which
+  stopped once the reference left the kept prefix and wasted ~180pt of page
+  (review #5). `footFor` answers Infinity when the feet would rise above an
+  active float's bottom, so the foot never overprints a float (review #4).
+  The keep-with-next lookahead settles the NEXT element the same way, so a
+  heading is not stranded above a line its own footnote moves (review #3).
+  Whole notes come first: a line whose note will not fit MOVES, and the split
+  fallback (bisect for the smallest budget keeping one line) fires only at a
+  column start that holds NO CARRY. **Note, a bug the sweep found:** without
+  the carry clause, a column full of an earlier note's continuation split the
+  next reference from its one-line note across pages — advancing cures that,
+  since the carry drains.
+  **Invariant:** `NoteColumn` paints at column CLOSE (`advanceColumn` and the
+  end of `Render`), never incrementally — the area grows upward and note 1
+  must sit above note 2. Carry paints FIRST, and a column full of carry makes
+  content wait — and a column START holding carry is not empty: whatever does
+  not fit there advances rather than taking the shrink/overflow paths, which
+  placed an element past a sliver of room without committing its notes, so a
+  footnote vanished (review #1). **Note, measured, a REDUNDANT PAIR:** that
+  advance and `top - effBottom() <= 0` each hold the carry-wait case alone;
+  breaking both reddens 6. Every placement path commits through ONE
+  `commitRefs`, the overflow path included. Carry always shrinks — an
+  unsplittable piece taller than an empty column overflows past the bottom —
+  so the drain after the last element terminates. `effBottom()` replaces
+  `g.contentBottom` in the float fit, the float split budget, `availHeight`
+  and keep-with-next.
+  **Invariant:** endnotes are queued after the content and placed by the SAME
+  loop (an outer `for (;;)` around it). `newPage` in a multi-column flow is a
+  page break: `forcePage` makes `advanceColumn` skip the remaining columns.
+  **Invariant:** a tagged note's `/Note` is created at COMMIT as a child of
+  the element holding the reference (`ref.owner`, set by the element that
+  drew it), endnotes too. The gutter mark is the `/Note`'s OWN marked
+  content, not a `/Lbl`: `structvalidate.ts`'s ListStructure rule keeps
+  `/Lbl` to list items, so a `/Lbl` failed ValidatePdfUa on every tagged flow
+  with notes (review #2). IDs are
+  `fn-k`/`en-k`, the smallest `k` not already in `/IDTree`, registered once
+  per `Render` (`structwrite.ts`'s `registerStructIds`).
+  **Note, measured, and FOUR of the plan's fixtures measured nothing:** the
+  reservation, carry order, keep-with-next and carry-wait mutations all stayed
+  GREEN until their fixtures were rebuilt by probing filler sizes (and one
+  fixture's note words collided with its filler words). Two planned mutations
+  were EQUIVALENT — dropping the `Math.min` (`a2 >= a` absorbs it) and a string
+  key for the symbol (spread copies string keys too). After the review fix pass
+  the sweep is 17 mutants: 16 redden alone, and the 17th is half of the
+  redundant pair recorded above. The sweep harness first read every mutant GREEN because vitest's
+  coloured output broke its failure regex: strip ANSI and trust the exit status.
 - **flowelement.ts**, **flowblock.ts**, **flowplace.ts** — the Flow element
   protocol and the three block types Markdown needed and Flow lacked.
   `flowelement.ts` holds `FlowElement`/`PlaceContext`/`PlaceResult` and the
@@ -1523,6 +1675,14 @@ Source (`src/`):
   it holds `stamp.ts`'s dependency on `annotation.ts` to one symbol; nothing in
   `annotation.ts`'s transitive graph reaches `stamp.ts`, so the edge closes no
   cycle.
+  **Invariant (`v9j3.3.4`):** a run's `link` may be a `DeferredLink`
+  (internal; `TextRun.link`'s public type stays `string`) — a note mark,
+  whose target does not exist when the run is laid out. It is laid out and,
+  when tagged, given its own marked content and `/Link` element exactly as a
+  URI run is; only the ANNOTATION is withheld, and its box goes to `onBox`.
+  The owner writes the annotation when the target exists, so none is ever
+  written with a placeholder target. `stamp.ts`'s and `tableauthor.ts`'s
+  link validation admit it through `isDeferredLink`.
   **Invariant:** a link rect and a text background are ONE geometry —
   `vmetricsFor` scaled by the RUN's own `fontSize`, not the block's. A second
   derivation drifts, and the drift is invisible until someone compares a link's
@@ -1574,6 +1734,36 @@ Source (`src/`):
   function. The PAINTING can be, and is — `paintRowSlice`, shared by both.
   **Invariant:** a split table carries its `TableTagger` forward, which is what
   keeps it one `/Table` rather than one per column.
+  **Invariant (`v9j3.3.3`):** a cell may cite a footnote or endnote, and the
+  table element LOWERS it on a PRIVATE COPY of the builder (`TableBuilder.mapCells`,
+  internal) — never in `addCell`, never on the caller's builder. It lowers
+  LAZILY, on first use (`Render`'s numbering pass), so rows added after
+  `AddTable` render whether or not the table cites — a copy taken at
+  `AddTable` silently lost them for cited tables only (final review);
+  `table()` lowers once and discards the result, to validate at build time as
+  `paragraph()` does. Lowering is idempotent, which is what lets a
+  continuation pass through the same getter. That is what
+  keeps `page.AddTable`'s refusal FREE: the same builder handed to it still
+  carries the raw `footnote` key and meets `resolveRuns`' guard, and
+  `tableauthor.ts` learns nothing about notes. A table citing nothing is
+  handed through untouched — the byte-identity argument, by construction,
+  fenced by `test/flow-table-notes-identity.test.ts`. A mark is sized from
+  the CELL's cascaded size (`resolveCellStyle`), as a paragraph's is from
+  its block size.
+  **Invariant (`v9j3.3.3`):** `TableElement.measure()` reports the references
+  of the rows `fit()` KEPT. A table splits by row and a row is atomic, so more
+  budget keeps a superset — `settleBudget`'s monotonicity holds and a cited
+  row moves with its note. A kept reference's owner is its cell's /TD or /TH
+  (`TableTagger.elementOf`). A continuation's leading repeated header rows
+  (`echo`) report NONE: the first slice committed them, while the mark — the
+  same run object — still draws on every page. **`echo` is the header rows
+  ALREADY PAINTED, not the header block:** `fit` may cut inside a multi-row
+  header, and counting the whole block lost the note of a header row first
+  painted on the continuation, silently (final review; filler 111..117).
+  **Note, measured:** 15 of 16 mutations redden; the 16th (reporting
+  coverage on the lowered copy) is EQUIVALENT, a mark being `''` at build
+  time. The cell-size rule reddened only once a cell sized UNLIKE its table
+  existed — every earlier fixture inherited the table's size.
   **Invariant:** a tagged flow element tags its own ink or artifacts it — there
   is no third option. A code block did neither from `gl6o.3.2` to `gl6o.4` and
   no test noticed: `UntaggedContent` is a per-page WARNING that names no
@@ -2710,6 +2900,14 @@ Source (`src/`):
   **Invariant:** the head chosen is the RIGHTMOST point that fits with its
   hyphen, drawn in the font of the character before the break; a point whose
   font cannot draw `-` is skipped.
+  **Invariant (`rhud`):** the inserted hyphen is MEASURED as `'-'` and WRITTEN
+  as `FontDriver.hyphen` — U+00AD for `winAnsiDriver`, which WinAnsi encodes
+  as 0xAD, Annex D's second /hyphen, so the glyph and AFM width are `-`'s and
+  the render is pixel-identical (`test/hyphen-soft.test.ts`). It reads back as
+  U+00AD, which is how a later reflow tells OUR break from an author's `-`.
+  An EmbeddedFont driver states none and draws `-`: one Identity-H glyph has
+  one `/ToUnicode` meaning. Measuring through `hyphen` would be the same
+  number for WinAnsi, but it is `-` that layout reasons about.
   **Note on the oracle:** `hyphen@1.14.1` (goldens via
   `scripts/gen-hyphenation-goldens.mjs`) is a different implementation over a copy
   of the same CTAN patterns — it catches engine bugs, not pattern bugs. All 140
@@ -3443,6 +3641,49 @@ Source (`src/`):
   **Invariant:** strikethrough rides the SAME delimiter stack as `*` and `_`; a
   post-pass cannot get `*a~~b*c~~` right. Runs of one or two tildes only, and
   the opener and closer must be the same length or nothing wraps.
+  **Invariant (`v9j3.3.1`): footnotes are the SIXTH extension,** transcribed
+  from `cmark-gfm` master `27d942c` function by function and checked against
+  its own test data (`fixtures/gfm-footnotes/`, 10 examples), since GitHub's
+  spec document predates the extension. A definition is a CONTAINER opened by
+  `[^label]:` plus its trailing blanks (`_scan_footnote_definition`, which
+  is why `[^n]:       x` opens no indented code) and continued by four
+  columns of indent or a blank line. A reference is made in
+  `handle_close_bracket`'s no-match branch, from the RAW source between
+  `[^` and `]`, so an undefined `[^~~x~~]` comes back as those exact
+  characters; under GFM `![^` never opens an image.
+  **Invariant:** `resolveFootnotes` (`process_footnotes`) numbers by first
+  citation walking the tree with the definitions STILL IN PLACE — so a
+  citation inside a definition that sits earlier numbers where that
+  definition sits — then unlinks every definition and keeps the cited ones on
+  `MdDocument.footnotes`. Labels match through `normalizeLabel` (the
+  link-label fold); the FIRST definition wins; past 1000 characters a label
+  matches nothing. **Invariant (`v9j3.3.5`):** only a LITERALLY empty line
+  continues a definition (`data[0] == '\n'`, so `"  "` closes it), and
+  `MAX_LIST_DEPTH` (100) counts block starts tried on ONE line — cmark-gfm's
+  `depth` is reset per `open_new_blocks` call — and bounds definitions only,
+  since commonmark.js has no list bound and the default path is the suite's.
+  **Measured:** every grammar mutation reddens, most on the
+  corpus; first-wins, `[^]` and the tree-order rule are held by hand-built
+  cases alone. Mutating the block start's ORDER (after the list item) is an
+  EQUIVALENT mutant — nothing beginning with `[` can be a list item or a
+  thematic break.
+  **Invariant (`mdruns.ts`):** a citation is an EMPTY run carrying the note,
+  styled like the text it follows, so a mark in bold text is bold, and it is
+  a MERGE BARRIER both ways — let the text after it append and the mark is
+  drawn after that text. Measured: dropping the barrier reddened nothing
+  until `a[^1]b` was asserted by position.
+  **Invariant (`mdflow.ts`):** one `FlowNote` per cited definition, built
+  ONCE so repeated citations share it, its body through the same
+  `blockElements` a top-level block uses at `noteStyle` (sizes scaled by
+  `footnoteSize / fontSize`). A note body gets no resolver, so a citation
+  there is literal `[^label]` and is REPORTED (`footnote (nested)`) — never
+  handed to the engine, which refuses it. **Invariant (`v9j3.3.5`):** each
+  body's `skipped` and compromise wiring counts only for a note the BODY's
+  resolver handed out (`Ctx.usedNotes`): one cited only from another note is
+  numbered by `resolveFootnotes` and never placed. Both halves reddened alone. A table cell cites like a
+  paragraph since `v9j3.3.3`. The option is `footnotePlacement`, not the
+  spec's `footnotes`: `doc.AddMarkdown` takes `MarkdownFlowOptions &
+  FlowOptions`, and `FlowOptions.footnotes` is already the note-style object.
   **Invariant:** the extended-autolink pass never descends into a `link`. It is
   the one extension where a post-pass is correct, because code spans and links
   are already their own node types by then, so the two contexts an autolink must
@@ -5477,6 +5718,21 @@ Source (`src/`):
   matrix, so a following paragraph placed by `Td` does not move. An ABSOLUTE
   reset (`BT ET Tm`) clears `dirty` — a byte-economy rule, held by "writes no
   Tm for a converged line its own BT already places".
+  **Invariant (`r9u0`):** a stream the reflow wrote a `Tm` into
+  (`StreamEdits.compact`, set by `tmFor` and by a restore through `after`)
+  goes through `dropDeadPositioning` at apply. It drops a CONTIGUOUS run of
+  `Td`/`T*`/`Tm`/kern-only `TJ` that a following `Tm` or `ET` overwrites, and
+  nothing else. `TD` is never pen-only, because it sets `TL`. Without the pass
+  every reflow stacked a restore and target pair per moved line: +11 `Tm` per
+  edit. **Measured:** 7 of 8 mutations redden, `test/reflow-compact.test.ts`
+  holding glyph positions to hashes recorded BEFORE the change.
+  **Note, measured and NOT covered:** flagging on the restore `after` is a
+  REDUNDANT PAIR with `tmFor`. Every fixture's restore lands in a stream
+  `tmFor` already flagged; only a restore in a later stream of a
+  `/Contents` array holding no moved glyph would need it.
+  **Note:** `test/reflow-hyphen-identity.test.ts` was RE-RECORDED once, for
+  five cases, by this change. The check before re-recording: positions, a 2x
+  render and annotation quads identical with the pass on and off.
   **Invariant (final review):** the writer's pen CARRIES the original offset
   from the previous glyph's pen end to this one's origin — a producer's TJ
   kern — and the wrap places a moved word with its own internal offsets
@@ -5551,8 +5807,9 @@ Source (`src/`):
   `thirdparty` at the compound's own hyphen), so patterns cannot tell an
   inserted break from an author's compound, and the rule turned `well-known`
   into `wellknown` on a default call. The price, recorded: re-wrapping text
-  hyphenated with drawn hyphens (`AddTextBlock`'s, our own) can leave one
-  mid-line. `test/reflow-hyphen-rejoin.test.ts` holds both directions.
+  hyphenated with drawn `-` hyphens can leave one mid-line. Since `rhud` that
+  is another producer's, or ours in an EMBEDDED font: a Standard-14 break we
+  write is U+00AD and rejoins. `test/reflow-hyphen-rejoin.test.ts` holds both directions.
   **Invariant (`6y39`):** language is the option, else the anchor glyph's
   element `EffectiveLang` (ending at the catalog), else the catalog; no
   bundled table → whole words, silently. The hyphen face is the unit's own
@@ -5579,9 +5836,15 @@ Source (`src/`):
   that fit too. Three mutations needed cases of their own: the hyphen face's
   tier order, the box-based pen (EQUIVALENT until an edit splits) and the
   removed hyphen in `moveAnnotQuads`. The planned "second reflow over our own
-  output" case cannot run: ANY second reflow over our output is refused
-  `interleaved` (a line-final space left non-member, chained to a member),
-  hyphenated or not — tracked as `8eew`. The plan's own fixture swap
+  output leaves no stray hyphen" case was refused `interleaved` until `8eew`
+  (a line-final space left non-member, chained to a member — see
+  `reflowpara.ts`), and asserted no stray hyphen only once `rhud` wrote our
+  breaks as U+00AD (`textedit.ts`'s `softHyphenCode`: a code decoding to
+  U+00AD, its glyph DEFINED, its advance equal to `-`'s, in a simple or an
+  Identity-H font alike; the width test reddens 1, the guard against a
+  composite font that `canEncode` once added reddens 1 the other way). **Invariant (`8eew`):** a whitespace glyph
+  `layoutLines` placed on no line takes its membership by pen chain, like a
+  text-less glyph; reverting that reddens 3. The plan's own fixture swap
   (`cross-`/`over` for `well-`/`known`) hid the rejoin defect above; the final
   review found it.
 - **textrestyle.ts** — `page.RestyleText` / `doc.RestyleText` (`u3l5.6`): the
@@ -9241,6 +9504,17 @@ Source (`src/`):
   how an export comes to read `• • item` — which is exactly what the pre-`no93.2`
   flattening produced. The one exception is a task's state, which HTML emits as a
   disabled checkbox because it is content rather than decoration.
+  **Invariant (`5cil`):** a word broken at a line-end SOFT hyphen (U+00AD)
+  before a lower-case letter is rejoined, with no space and no soft hyphen. On
+  the untagged path it happens at the two line joins (`blockNodes`, `buildList`);
+  on the tagged path, `rejoinSoftBreaks` runs over each element's inline children.
+  Inside one string the line break is REQUIRED, so a soft hyphen drawn mid-line
+  is left alone. Across two adjacent text nodes it is not, because a style or MCID
+  boundary at the break leaves the newline in neither. It rewrites strings and
+  never merges nodes, so the no-merge rule below and `docx-flow-identity` hold.
+  A drawn `-` is never joined, which is reflow's 6y39 rule. **Measured:** 9 of
+  9 mutations redden. The mid-line case needed its own fixture before the
+  newline requirement could fail.
   **Invariant:** U+00A0 maps back to U+0020 in `DocCode.text`, and only there.
   The substitution is `preformat`'s, made because `layoutRuns` collapses runs of
   spaces and a code block's indentation would not otherwise survive being drawn;
@@ -9699,6 +9973,42 @@ Source (`src/`):
   `skipped` names to what Word and LibreOffice BOTH read; the round trip
   (`ToDocx` → `AddDocx`) pins text and structure types. Neither says where
   ink lands — there is no oracle for the rendering, only hand-built cases.
+- **wmlnotes.ts** — Word's note NUMBERING properties (`v9j3.3.2`):
+  `w:footnotePr`/`w:endnotePr` in `settings.xml` and in each section's
+  `sectPr` (format, start, restart, position), read as stated and resolved
+  nowhere — what a section's effective numbering is belongs to
+  `wmlflow.ts`'s `docxNoteOptions`. A leaf over `wmlns.ts`. The note BODIES
+  are `wmlbody.ts`'s `parseNotes`, beside `parseBody`, because it needs the
+  module-private `Walker`; the spec put it here and was overruled.
+  **Invariant:** a note is parsed by the SAME walker as the body, so its
+  paragraphs, lists, tables, images and links follow the body's rules — and
+  it resolves `r:id`s against `footnotes.xml`'s OWN relationships
+  (`wmlread.ts`'s `relOf(part)`), never the document's. Separator,
+  continuation-separator and continuation-notice entries are skipped; the
+  engine draws its own rule.
+  **Invariant:** `w:customMarkFollows` makes the run's NEXT `w:t` the mark,
+  not body text. And the renderer (`wmlflow.ts`'s `noteLead`) drops from a
+  note's first paragraph what stood in for Word's number — a custom mark Word
+  ALSO writes as an ordinary leading run, and the tab LibreOffice puts after
+  its own number — or the mark is drawn twice and every note reports
+  `w:tab`. Both found by the corpus, not the plan.
+  **Invariant (`wmlflow.ts`):** Word's numbering comes from the LAST section,
+  as page geometry does; a section whose format or start differs is
+  reported `w:footnotePr (section)`/degraded, and an `eachSect` restart in
+  section k + 1 becomes a `RestartNotes` marker at the boundary.
+  `doc.AddDocx` and `page.AddDocx` apply Word's options (the caller's
+  explicit options winning); `flow.AddDocx` cannot — a Flow's options are
+  fixed at construction — and reports `w:footnotePr`/`w:endnotePr` when
+  Word's differ.
+  **Invariant:** a reference in a TABLE CELL renders since `v9j3.3.3` —
+  `cellContent` keeps `cite` and `table()` lowers it; one inside a NOTE is
+  reported `(in a note)`, notes not nesting. Word never writes the second, so its case is hand-built.
+  **Note, measured:** 15 of 16 mutations across the engine, reader and mapper
+  redden; the green one is the marker placement skip above (equivalent).
+  Four more were green first and reddened only once their cases existed: the
+  per-page count, the gutter re-measure, the mid-page keep and the nested
+  note. The per-page restart is held by hand-built cases ALONE: it
+  depends on pagination this library does not share with Word.
 - **docxflow.ts**, **docxtable.ts**, **docxstyles.ts**, **docxexport.ts** — DOCX
   flow mode (`Document.ToDocx`, `Page.ToDocx`), the third serializer over
   `docmodel.ts` after `htmlsemantic.ts` and `mdexport.ts`. Three are pure —
@@ -11669,7 +11979,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/pdfx/` | `PROVENANCE.md` | Ghostscript-produced PDF/X-1a/X-3/X-4 for `pdfxvalidate.ts` — four conformant, one deliberately not, and the only fixtures reaching `outputIntentRule`'s registered-name branch (`test/pdfx-real.test.ts`) |
 | `fixtures/corrupt/` | `PROVENANCE.md` | Damaged files for the recovery suite (`test/corrupt-real.test.ts`). The one directory where the *source* is what is third-party — a corrupt file has no producer — so Ghostscript and qpdf lay out the bytes and the damage is recorded byte for byte, alongside what each fixture salvages and loses |
 | `fixtures/zip/` | `PROVENANCE.md` | ZIP **input** from three writers that are not ours — libarchive (`tar.exe`), .NET Framework and `git archive`. Pins the two rules no builder fixture reaches on real bytes: sizes from the central directory (libarchive's data descriptors) and data located by the LOCAL extra length (libarchive's 32-vs-24). Also a bit-11 UTF-8 name and a backslash name (.NET) and an archive comment (git). The manifest's hashes come from the INPUTS, not the archives (`test/zipread-real.test.ts`) |
-| `fixtures/docx/` | `PROVENANCE.md` | DOCX from **Microsoft Word 2010** (Russian UI, COM automation, `scripts/gen-docx-word.ps1`, not run by `npm test`). `m2fp.2` uses it to anchor OPC reading on bytes we did not write — relationships out of Id order (`rId8` first), a content type answered by a `Default` — and resolves main document, styles, numbering, image and external hyperlink. Not byte-reproducible (Word stamps `docProps/core.xml`); the vendored file is the reference. Records for `m2fp.3` that a localized Word writes LOCALIZED style ids (`heading 1` is `w:styleId="1"`); its test is `test/opcread-docx.test.ts`. **The `m2fp.4` corpus:** five recipes written by BOTH Word 2010 (COM) and LibreOffice 26.8 (UNO, a pinned MSI unpacked outside the repo), `word2010-basic` included — styles, lists, tables, media, and the constructs `readDocx` only records — each READ by both applications into `<name>.word.json`/`<name>.lo.json` (`scripts/gen-docx-corpus.ps1`). `test/docx-corpus.test.ts` pins `disagreements.json` EXACTLY and holds `readDocx` to every value the two readers agree on; past a disagreement in LENGTH it compares elements only up to the shorter reading, while `readDocx`'s OWN length must fall between the two — the final review measured that without that bound a `readDocx` stopping at a section break or a merged cell passed exactly the files covering them. The readers disagree on five shapes, each a finding (a URL's trailing slash, TOC hyperlinks, headers of a linked section, a section-break paragraph, a covered merged cell). The corpus found `readDocx` silently dropping headers, footers, section breaks and revisions from its report, and nothing else. Beside it, `wml-oracle.docx` is OURS and `wml-oracle.json` is Word 2010's COMPUTED formatting of it through COM (`scripts/gen-wml-oracle.ps1`) — the oracle for `m2fp.3`'s style resolution, toggle XOR and list counters. It corrected no rule and confirmed every open question; it did teach the builder that Word refuses a theme lacking `a:clrScheme`/`a:fmtScheme` (`test/wml-oracle.test.ts`) |
+| `fixtures/docx/` | `PROVENANCE.md` | DOCX from **Microsoft Word 2010** (Russian UI, COM automation, `scripts/gen-docx-word.ps1`, not run by `npm test`). `m2fp.2` uses it to anchor OPC reading on bytes we did not write — relationships out of Id order (`rId8` first), a content type answered by a `Default` — and resolves main document, styles, numbering, image and external hyperlink. Not byte-reproducible (Word stamps `docProps/core.xml`); the vendored file is the reference. Records for `m2fp.3` that a localized Word writes LOCALIZED style ids (`heading 1` is `w:styleId="1"`); its test is `test/opcread-docx.test.ts`. **The `m2fp.4` corpus:** five recipes written by BOTH Word 2010 (COM) and LibreOffice 26.8 (UNO, a pinned MSI unpacked outside the repo), `word2010-basic` included — styles, lists, tables, media, and the constructs `readDocx` only records — each READ by both applications into `<name>.word.json`/`<name>.lo.json` (`scripts/gen-docx-corpus.ps1`). `test/docx-corpus.test.ts` pins `disagreements.json` EXACTLY and holds `readDocx` to every value the two readers agree on; past a disagreement in LENGTH it compares elements only up to the shorter reading, while `readDocx`'s OWN length must fall between the two — the final review measured that without that bound a `readDocx` stopping at a section break or a merged cell passed exactly the files covering them. The readers disagree on five shapes, each a finding (a URL's trailing slash, TOC hyperlinks, headers of a linked section, a section-break paragraph, a covered merged cell). The corpus found `readDocx` silently dropping headers, footers, section breaks and revisions from its report, and nothing else. Beside it, `wml-oracle.docx` is OURS and `wml-oracle.json` is Word 2010's COMPUTED formatting of it through COM (`scripts/gen-wml-oracle.ps1`) — the oracle for `m2fp.3`'s style resolution, toggle XOR and list counters. It corrected no rule and confirmed every open question; it did teach the builder that Word refuses a theme lacking `a:clrScheme`/`a:fmtScheme` (`test/wml-oracle.test.ts`). Since `v9j3.3.2` a sixth recipe, `notes`, has both applications read footnotes and endnotes; they DISAGREE on the Word file's marks, LibreOffice ignoring Word's per-section restart, so those marks are held to Word alone (`test/docx-corpus.test.ts`) |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
 | `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
@@ -11677,6 +11987,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |
 | `fixtures/commonmark/` | `PROVENANCE.md` | The official CommonMark 0.31.2 suite — 652 examples, run with no allowlist through the test-only oracle in `test/helpers/md-html.ts` |
+| `fixtures/gfm-footnotes/` | `PROVENANCE.md` | `cmark-gfm`'s own `extensions.txt` and `regression.txt` at pinned commits — the 3 + 7 footnote examples, selected by a computed predicate whose count is asserted. GitHub's spec document has none, the extension postdating it. Marked `-text` in `.gitattributes`: `regression.txt` carries a doubled CR that `eol=lf` would rewrite. Its known divergence, `[\^x]`, is unexercised |
 | `fixtures/gfm/` | `PROVENANCE.md` | GitHub's own `spec.txt` — the 24 examples tagged with an extension name. The other 648 are a CommonMark **0.29** document and are deliberately not run |
 | `fixtures/html5lib/` | `PROVENANCE.md` | The official html5lib-tests tokenizer suite — 6,995 of 7,033 cases over every state, both character-reference spellings, and the parse-error vocabulary with positions. The suite browser engines share, so it catches the class our own builders cannot: it CORRECTED two position rules this repo had asserted the wrong way round in its own tests. Since `zch2.9` it is also the STALE half of a spec disagreement: 38 cases assert the pre-#12118 reading of `<?`, this pin is one day newer than that merge and upstream is dormant, so they are excluded by a computed predicate |
 | `fixtures/css-parsing/` | `PROVENANCE.md` | CSS Syntax 3's conformance corpus, from CourtBouillon — 149 cases in 8 files, all run with no allowlist. Records a SPEC-ERA decision: the corpus still tokenizes `unicode-range` and the match tokens, which the current editor's draft removed, and we follow the corpus. Records two places the corpus README contradicts its own data, where the data wins. Caught five rules the plan did not name, three of them invisible to a diff of serialized output |

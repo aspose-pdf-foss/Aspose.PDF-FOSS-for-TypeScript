@@ -12,7 +12,7 @@ import type { Document } from './document.js';
 import type { FamilyResolver } from './cssinline.js';
 import type { FlowElement, Compromise } from './flowelement.js';
 import { openDocx, type OpenedDocx } from './wmlread.js';
-import { wmlElements, type DocxSkipped, type WmlFlowEnv } from './wmlflow.js';
+import { wmlElements, type DocxSkipped, type DocxNoteOptions, type WmlFlowEnv } from './wmlflow.js';
 import { documentFamilyResolver } from './cssfont.js';
 
 export type { DocxSkipped } from './wmlflow.js';
@@ -46,7 +46,7 @@ export function openDocxSource(doc: Document, bytes: Uint8Array): OpenedDocxSour
 
 export function docxElements(
   doc: Document, src: Uint8Array | OpenedDocxSource, width: number, options: DocxFlowOptions = {},
-): { segments: FlowElement[][]; skipped: DocxSkipped[] } {
+): { segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean } {
   checkDocxOptions(options);
   const { opened } = src instanceof Uint8Array ? openDocxSource(doc, src) : src;
   const resolver = options.resolveFamily ?? documentFamilyResolver(doc);

@@ -269,7 +269,9 @@ class InlineParser {
   parseBang(): boolean {
     const start = this.pos;
     this.pos++;
-    if (this.subject[this.pos] === '[') {
+    // cmark-gfm parse_inline's '!' case: `![^` never opens an image under
+    // GFM, so `a![^1]` is a bang and a footnote reference.
+    if (this.subject[this.pos] === '[' && !(this.gfm && this.subject[this.pos + 1] === '^')) {
       this.pos++;
       this.addBracket(this.text('!['), start + 2, true);
     } else {
@@ -344,6 +346,21 @@ class InlineParser {
     }
 
     if (!matched) {
+      // cmark-gfm handle_close_bracket, noMatch: a bracket that is not a link
+      // and whose text starts with `^` plus at least one more character is a
+      // footnote reference. Its label is the RAW source between `[^` and `]`,
+      // whatever parsed inside — so an undefined `[^~~x~~]` later comes back
+      // as those exact characters. Unlike a link it deactivates no opener.
+      const raw = this.subject.slice(opener.index, afterBracket - 1);
+      if (this.gfm && !isImage && raw.length > 1 && raw[0] === '^') {
+        this.processEmphasis(opener.prevDelimiter);
+        this.list.extract(opener.node, undefined); // discard what parsed inside
+        this.list.push({ type: 'footnote_reference', label: raw.slice(1), index: 0, occurrence: 0 });
+        this.list.remove(opener.node);
+        this.removeBracket();
+        this.pos = afterBracket;
+        return true;
+      }
       this.removeBracket();
       this.pos = afterBracket;
       this.text(']');
@@ -610,6 +627,7 @@ function walk(block: MdBlock, refs: Map<string, LinkRef>, gfm: boolean): void {
     case 'block_quote':
     case 'item':
     case 'list':
+    case 'footnote_definition':
       for (const c of block.children) walk(c, refs, gfm);
       return;
     case 'table':

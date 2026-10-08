@@ -1,0 +1,193 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Notes",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Notes",
+          "bold": true,
+          "italic": false,
+          "sizePt": 14.0,
+          "font": "Cambria"
+        }
+      ]
+    },
+    {
+      "text": "Alpha",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Alpha",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Beta",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Beta",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Gamma",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Gamma",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Delta",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Delta",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "Cell",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": [
+        {
+          "text": "Cell",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": true,
+      "segments": []
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": []
+    },
+    {
+      "text": "Epsilon",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Epsilon",
+          "bold": false,
+          "italic": false,
+          "sizePt": 11.0,
+          "font": "Calibri"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": []
+    }
+  ],
+  "tables": [
+    {
+      "rows": [
+        [
+          "Cell",
+          ""
+        ]
+      ]
+    }
+  ],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 5,
+    "endnotes": 1,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  },
+  "notes": {
+    "footnotes": [
+      {
+        "mark": "i",
+        "text": "First note."
+      },
+      {
+        "mark": "ii",
+        "text": "Para one.\n\nPara two."
+      },
+      {
+        "mark": "*",
+        "text": "* Starred note."
+      },
+      {
+        "mark": "iii",
+        "text": "Cell note."
+      },
+      {
+        "mark": "iv",
+        "text": "Second section note."
+      }
+    ],
+    "endnotes": [
+      {
+        "mark": "i",
+        "text": "An endnote."
+      }
+    ]
+  }
+}

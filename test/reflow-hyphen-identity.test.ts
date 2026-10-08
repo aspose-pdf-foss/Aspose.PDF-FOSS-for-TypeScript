@@ -25,13 +25,20 @@ const digest = (doc: Document): string => {
 
 // Recorded BEFORE 6y39 touched src/. A red case here is a regression of the
 // unhyphenated path, never a golden to refresh.
+//
+// RE-RECORDED ONCE, by r9u0, for five cases (replace-center did not move):
+// reflow now drops text-positioning a later Tm supersedes (dropDeadPositioning).
+// Verified before re-recording: every glyph origin, the page rendered at 2x
+// and every annotation quad were IDENTICAL with the pass on and off; only the
+// bytes shrank (325 -> 283 for replace-left). Do not refresh it again without
+// the same check.
 const RECORDED: Record<string, string> = {
-  'replace-left': '24de01a570ffdbc879085043f4194672d5a7f6576718c30d1b9d8004ef7584a4',
-  'replace-justify': '2940a67f2c10a8fbf39f683287f4ac0a0bb223fedbb00c3d7f469cb791a1a4d7',
+  'replace-left': '1ec9012630b77757fa902174f779fab1e0c75590d1889587da71dd674023810f',
+  'replace-justify': '4fe667364f80b0b03e04b394b123b21ce1e2e07d7e1b8e1146c22f03aee838c2',
   'replace-center': 'd9722b660cbb92538d204a6b7dcae2e6fb53a6772f4cc54bdbf7d48f5d544c6f',
-  'replace-right': 'd464c4daa47f616bed63d657b1081a638915113e37ad076a4a5a2cfdd082ad40',
-  'restyle-reflow': 'a73efbbf252830bcea4175b55255caf0615a09bdf45a0e6eb27126df53211e74',
-  'replace-link': 'df1974edd46f49f191a6f0e1c08404066ba1fa861547e5e0ca439196fa8c4f5a',
+  'replace-right': '58468e886980e42197b9a75bc801af4cd886e66d94462177d5f8ba8019ae2a9d',
+  'restyle-reflow': 'c1be75796e8d6737673f7c012b809cfd194a03acbb5ac62cf73ea3107f9318b0',
+  'replace-link': '04ed8d091542d5034dfe00cf65e74542fab21fbfa9ed1e5a7f26e4ceb870dae1',
 };
 
 describe('reflow without hyphenate is byte-identical (6y39 fence)', () => {

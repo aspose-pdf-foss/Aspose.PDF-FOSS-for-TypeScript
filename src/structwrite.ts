@@ -12,6 +12,7 @@ import type { ContentOp } from './content.js';
 import { wrapMarkedContent, wrapArtifact } from './pagecontent.js';
 import { checkStructType } from './structtype.js';
 import { ensureNamespace } from './structns.js';
+import { collectNameTree, flatNameNode } from './nametree.js';
 
 const asNum = (o: PdfObject): number | undefined => (typeof o === 'number' ? o : undefined);
 
@@ -696,4 +697,21 @@ export function retagContentItems(
     ec.commit();
   }
   return { retagged, unreachable };
+}
+
+/** Add (id -> element ref) entries to the StructTreeRoot's /IDTree, keeping
+ *  what is there, rewritten ONCE as a flat name node — a caller registering
+ *  many IDs batches them, since each call rewrites the whole tree. An element
+ *  /ID nothing can resolve is half done (PDF/UA-1 7.9 wants it findable).
+ *  @internal */
+export function registerStructIds(
+  doc: Document, rootDict: PdfDict, entries: ReadonlyArray<[string, PdfRef]>,
+): void {
+  if (entries.length === 0) return;
+  const collected: Array<[string, PdfObject]> = [];
+  collectNameTree(doc, rootDict.get('IDTree'), collected);
+  const map = new Map<string, PdfObject>(collected);
+  for (const [id, ref] of entries) map.set(id, ref);
+  rootDict.set('IDTree', doc.allocObject(flatNameNode(map)));
+  doc.markModified();
 }

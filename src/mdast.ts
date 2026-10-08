@@ -4,7 +4,12 @@
  *  carry no source positions — see
  *  docs/superpowers/specs/2026-08-11-commonmark-parser-design.md. */
 
-export interface MdDocument { type: 'document'; children: MdBlock[]; }
+export interface MdDocument {
+  type: 'document';
+  children: MdBlock[];
+  /** Cited definitions in `index` order (gfm only); absent when nothing was cited. */
+  footnotes?: MdFootnoteDefinition[];
+}
 export interface MdBlockQuote { type: 'block_quote'; children: MdBlock[]; }
 
 /** `tight` decides whether an item's paragraphs render as paragraphs (loose) or
@@ -62,27 +67,51 @@ export interface MdLink { type: 'link'; destination: string; title: string; chil
 export interface MdImage { type: 'image'; destination: string; title: string; children: MdInline[]; }
 export interface MdHtmlInline { type: 'html_inline'; literal: string; }
 
+/** A GFM footnote citation, `[^label]`. */
+export interface MdFootnoteReference {
+  type: 'footnote_reference';
+  /** The DEFINITION's label as written (cmark-gfm renders the definition's
+   *  literal); before resolution, the reference's own raw label. */
+  label: string;
+  /** 1-based, order of first citation; 0 before resolution. */
+  index: number;
+  /** 1 for the first citation of its definition, 2, 3…; 0 before resolution. */
+  occurrence: number;
+}
+/** A GFM footnote definition, `[^label]: …`, a container of blocks. It never
+ *  stays in `MdDocument.children` once resolved — see `MdDocument.footnotes`. */
+export interface MdFootnoteDefinition {
+  type: 'footnote_definition';
+  /** As written. */
+  label: string;
+  /** 0 until cited. */
+  index: number;
+  /** How many citations it has (cmark-gfm's def_count). */
+  references: number;
+  children: MdBlock[];
+}
+
 export type MdBlock =
   | MdDocument | MdBlockQuote | MdList | MdItem
   | MdParagraph | MdHeading | MdThematicBreak | MdCodeBlock | MdHtmlBlock
-  | MdTable | MdTableRow | MdTableCell;
+  | MdTable | MdTableRow | MdTableCell | MdFootnoteDefinition;
 
 export type MdInline =
   | MdText | MdSoftBreak | MdHardBreak
   | MdEmph | MdStrong | MdCode | MdLink | MdImage | MdHtmlInline
-  | MdStrikethrough;
+  | MdStrikethrough | MdFootnoteReference;
 
 export type MdNode = MdBlock | MdInline;
 
 const BLOCK_TYPES = new Set<string>([
   'document', 'block_quote', 'list', 'item',
   'paragraph', 'heading', 'thematic_break', 'code_block', 'html_block',
-  'table', 'table_row', 'table_cell',
+  'table', 'table_row', 'table_cell', 'footnote_definition',
 ]);
 /** Blocks whose children are themselves blocks. A cell is not one: like a
  *  paragraph, its children are inlines. */
 const CONTAINER_TYPES = new Set<string>([
-  'document', 'block_quote', 'list', 'item', 'table', 'table_row',
+  'document', 'block_quote', 'list', 'item', 'table', 'table_row', 'footnote_definition',
 ]);
 
 export function isMdBlock(n: { type: string }): n is MdBlock { return BLOCK_TYPES.has(n.type); }

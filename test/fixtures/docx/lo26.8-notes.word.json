@@ -1,0 +1,124 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Notes",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Notes",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  18,
+                                                "font":  "Arial"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Alpha",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Alpha",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  12,
+                                                "font":  "Times New Roman"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Beta",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Beta",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  12,
+                                                "font":  "Times New Roman"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Gamma*",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Gamma*",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  12,
+                                                "font":  "Times New Roman"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Delta",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Delta",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  12,
+                                                "font":  "Times New Roman"
+                                            }
+                                        ]
+                       }
+                   ],
+    "tables":  [
+
+               ],
+    "links":  [
+
+              ],
+    "images":  0,
+    "counts":  {
+                   "headers":  0,
+                   "footers":  0,
+                   "footnotes":  3,
+                   "endnotes":  1,
+                   "textBoxes":  0,
+                   "fields":  0,
+                   "comments":  0,
+                   "revisions":  0
+               },
+    "notes":  {
+                  "footnotes":  [
+                                    {
+                                        "mark":  "iii",
+                                        "text":  "First note."
+                                    },
+                                    {
+                                        "mark":  "iv",
+                                        "text":  "Second note."
+                                    },
+                                    {
+                                        "mark":  "*",
+                                        "text":  "Starred note."
+                                    }
+                                ],
+                  "endnotes":  [
+                                   {
+                                       "mark":  "i",
+                                       "text":  "An endnote."
+                                   }
+                               ]
+              }
+}

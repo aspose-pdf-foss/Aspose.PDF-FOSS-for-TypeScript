@@ -1,6 +1,6 @@
 import type {
   MdBlock, MdBlockQuote, MdCodeBlock, MdDocument, MdHeading, MdHtmlBlock, MdItem, MdList,
-  MdParagraph, MdTable,
+  MdFootnoteDefinition, MdParagraph, MdTable,
 } from './mdast.js';
 import {
   ASCII_PUNCT, normalizeLabel, scanLinkDestination, scanLinkTitle, unescapeString,
@@ -25,9 +25,18 @@ const MAX_DEPTH = 1000;
 
 const CODE_INDENT = 4;
 
+/** cmark-gfm's `MAX_LIST_DEPTH`, applied to footnote definitions only. Its
+ *  `depth` is NOT nesting: `open_new_blocks` resets it per line and counts the
+ *  containers opened on THAT line, so `[^a]: [^b]: …` stops opening
+ *  definitions at the hundredth and the rest is text. List items carry the
+ *  same bound in cmark-gfm but not in commonmark.js, and the default path is
+ *  pinned by the CommonMark suite, so it stays footnote-only (v9j3.3.5). */
+const MAX_LIST_DEPTH = 100;
+
 type Kind =
   | 'document' | 'block_quote' | 'list' | 'item'
-  | 'paragraph' | 'heading' | 'code_block' | 'html_block' | 'thematic_break' | 'table';
+  | 'paragraph' | 'heading' | 'code_block' | 'html_block' | 'thematic_break' | 'table'
+  | 'footnote_definition';
 
 /** Only these take the generic "attach the remainder" step. Everything else has
  *  already consumed whatever its opening line carried. */
@@ -106,11 +115,17 @@ const NON_SPACE = /[^ \t]/;
  *  anything else cannot open one, so tryStart is not worth calling. GFM adds
  *  `|` and `:` for a table's delimiter row. */
 const MAYBE_START = /^[#`~*+_=<>0-9-]/;
-const MAYBE_START_GFM = /^[#`~*+_=<>0-9|:-]/;
+const MAYBE_START_GFM = /^[#`~*+_=<>0-9|:[-]/;
+
+/** cmark-gfm scanners.re `_scan_footnote_definition`:
+ *  `'[^' ([^\] \r\n\x00\t]+) ']:' [ \t]*`. The trailing blanks are part of the
+ *  match, which is why `[^n]:       text` opens no indented code block. */
+const FOOTNOTE_DEF = /^\[\^([^\] \r\n\0\t]+)\]:[ \t]*/;
 
 function canContain(parent: Kind, child: Kind): boolean {
   if (parent === 'list') return child === 'item';
-  if (parent === 'document' || parent === 'block_quote' || parent === 'item') return child !== 'item';
+  if (parent === 'document' || parent === 'block_quote' || parent === 'item'
+      || parent === 'footnote_definition') return child !== 'item';
   return false;
 }
 
@@ -138,6 +153,8 @@ class BlockParser {
   indented = false;
   blank = false;
   allClosed = true;
+  /** Block starts tried on the current line: cmark-gfm's per-line `depth`. */
+  lineDepth = 0;
   lastMatched: Open;
 
   constructor(gfm: boolean) {
@@ -344,7 +361,9 @@ class BlockParser {
       && ACCEPTS_LINES.has(container.kind);
 
     // 2. Try new block starts.
+    this.lineDepth = 0;
     while (!matchedLeaf) {
+      this.lineDepth++;
       this.findNextNonspace();
       const maybeStart = this.gfm ? MAYBE_START_GFM : MAYBE_START;
       if (!this.indented && !maybeStart.test(this.line.slice(this.nextNonspace))) {
@@ -443,6 +462,15 @@ class BlockParser {
 
       case 'paragraph':
         return this.blank ? 'closed' : 'matched';
+
+      // cmark-gfm parse_footnote_definition_block_prefix: four columns of
+      // indent continue it, and so does a LITERALLY EMPTY line —
+      // `input->data[0] == '\n'`, so a line of one to three spaces closes the
+      // definition where an ordinary blank test would keep it open (v9j3.3.5).
+      case 'footnote_definition':
+        if (this.indent >= CODE_INDENT) { this.advance(CODE_INDENT, true); return 'matched'; }
+        if (this.line.length === 0) return 'matched';
+        return 'closed';
 
       case 'heading':
       case 'thematic_break':
@@ -592,6 +620,22 @@ class BlockParser {
         this.finalize(t);
         this.advance(this.line.length - this.pos, false);
         return { block: t, leaf: true };
+      }
+
+      // GFM footnote definition (cmark-gfm open_new_blocks: after the thematic
+      // break, before the list item). Its opening line's remainder is ordinary
+      // block content, so it returns a container.
+      if (this.gfm && this.lineDepth < MAX_LIST_DEPTH) {
+        const fd = FOOTNOTE_DEF.exec(rest);
+        if (fd !== null) {
+          this.advanceNextNonspace();
+          this.advance(fd[0].length, false);
+          this.closeUnmatched();
+          const node: MdFootnoteDefinition = {
+            type: 'footnote_definition', label: fd[1], index: 0, references: 0, children: [],
+          };
+          return { block: this.addChild('footnote_definition', node), leaf: false };
+        }
       }
     }
 
@@ -869,6 +913,7 @@ function assemble(b: Open): MdBlock[] {
       case 'document':
       case 'block_quote':
       case 'item':
+      case 'footnote_definition':
         c.node.children = inner;
         break;
       case 'list':

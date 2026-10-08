@@ -43,7 +43,8 @@
  *  non-destructive dry run must not touch. Its only consumer is
  *  keep-with-next. */
 
-import { insetScale, type Compromise } from './flowelement.js';
+import { insetScale, type Compromise, type MeasureResult } from './flowelement.js';
+import type { NoteRef } from './flownotes.js';
 import type {
   FlowClear, FlowElement, MeasureContext, PlaceContext, PlaceResult,
 } from './flowelement.js';
@@ -152,7 +153,9 @@ class BoxElement implements FlowElement {
     return this.geo(width).width;
   }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+  noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+
+  measure(ctx: MeasureContext): MeasureResult {
     const width = this.innerWidth(ctx.width);
     const avail = ctx.availHeight - this.padTop - this.padBottom;
     if (width <= 0 || avail <= 0) return { usedHeight: 0, fits: false };
@@ -161,7 +164,8 @@ class BoxElement implements FlowElement {
     // A zero-height inner element with nothing left over is EMPTY, not unfitted:
     // pass its verdict through, so the discard survives a chain of nested boxes.
     if (m.usedHeight === 0) return { usedHeight: 0, fits: m.fits };
-    return { usedHeight: this.padTop + m.usedHeight + this.padBottom, fits: m.fits };
+    const used = { usedHeight: this.padTop + m.usedHeight + this.padBottom, fits: m.fits };
+    return m.notes === undefined ? used : { ...used, notes: m.notes };
   }
 
   place(ctx: PlaceContext): PlaceResult {

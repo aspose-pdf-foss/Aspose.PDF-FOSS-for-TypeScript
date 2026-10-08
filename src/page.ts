@@ -1,5 +1,5 @@
 import type { Document } from './document.js';
-import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream } from './types.js';
+import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream, type PdfRef } from './types.js';
 import { inflateStream } from './flate.js';
 import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
@@ -59,7 +59,7 @@ import {
   type PushButtonInit, type SignatureFieldInit,
 } from './formcreate.js';
 import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
-import { untagObjects } from './structwrite.js';
+import { registerStructIds, untagObjects } from './structwrite.js';
 import { checkOnSkipped, markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
 import { docxElements, checkDocxOptions, type AddDocxResult, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
@@ -67,8 +67,13 @@ import { SkipLog, mergeSkipped } from './wmlflow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { HtmlDocument } from './htmldom.js';
 import { placeElements } from './flowplace.js';
+import {
+  normalizeNoteOptions, notesAsTrailing, takenIds, NoteLinks, type FlowNoteOptions, type FlowEndnoteOptions,
+} from './flownotes.js';
+import { paragraph } from './flow.js';
 import type { MdDocument } from './mdast.js';
 import type { StructElement } from './struct.js';
+import type { FlowElement } from './flowelement.js';
 
 /** Validate a rectangle and return a defensive copy. */
 function checkBox(key: string, box: number[]): number[] {
@@ -674,11 +679,42 @@ export class Page {
     const late: string[] = [];
     const onSkipped = (s: string): void => { late.push(s); options.onSkipped?.(s); };
     const { elements, skipped } = markdownElements(src, { ...options, onSkipped });
-    const { usedHeight, remainder } = placeElements(this.doc, this, elements, rect, {
+    // One rect has no column foot and no next column: GFM footnotes are
+    // numbered and placed AFTER the content, inside the same rect (v9j3.3.1).
+    // The note size is the one the bodies were mapped at, so the gutter mark
+    // matches them in either placement (v9j3.3.1 review).
+    const fontSize = options.style?.footnoteSize ?? 8;
+    const t = this.trailingNotes(elements, { fontSize }, { fontSize }, options.structParent);
+    const { usedHeight, remainder } = placeElements(this.doc, this, t.placed, rect, {
       paragraphSpacing: options.paragraphSpacing,
       structParent: options.structParent,
     });
+    t.done();
     return { usedHeight, remainder, skipped: [...skipped, ...late] };
+  }
+
+  /** Notes for one rect (v9j3.3.1/.2): numbered and placed after the content,
+   *  tagged under `structParent` as a flow tags them. Returns the elements to
+   *  place and a `done()` that registers the note IDs once placement is over. */
+  private trailingNotes(
+    elements: FlowElement[], foot: FlowNoteOptions, end: FlowEndnoteOptions, structParent: StructElement | undefined,
+  ): { placed: FlowElement[]; done(): void } {
+    const root = structParent !== undefined ? this.doc.GetStructTree() ?? undefined : undefined;
+    const tagging = structParent !== undefined && root !== undefined
+      ? { parent: structParent, taken: takenIds(this.doc, root.Dict), entries: [] as Array<[string, PdfRef]> }
+      : undefined;
+    const links = new NoteLinks(this.doc);
+    const placed = notesAsTrailing(elements, normalizeNoteOptions(foot, 'footnote'), normalizeNoteOptions(end, 'endnote'),
+      (t, size) => paragraph(t, { fontSize: size }), tagging, links);
+    return {
+      placed,
+      done: () => {
+        // Placement is over: write the note links (v9j3.3.4).
+        links.finish();
+        if (tagging !== undefined && root !== undefined && tagging.entries.length > 0)
+          registerStructIds(this.doc, root.Dict, tagging.entries);
+      },
+    };
   }
 
   /** Lay an HTML document into the rectangle [x, y, w, h] (PDF user space,
@@ -730,11 +766,15 @@ export class Page {
     checkDocxOptions(options);
     const late = new SkipLog();
     const onSkipped = (s: DocxSkipped): void => { late.add(s.name, s.kind, s.count); options.onSkipped?.(s); };
-    const { segments, skipped } = docxElements(this.doc, bytes, rect[2], { ...options, onSkipped });
+    const { segments, skipped, notes } = docxElements(this.doc, bytes, rect[2], { ...options, onSkipped });
     if (segments.length > 1) late.add('w:br (page)', 'degraded', segments.length - 1);
-    const { usedHeight, remainder } = placeElements(this.doc, this, segments.flat(), rect, {
+    // Word's notes, numbered by Word's properties and placed after the content
+    // inside the rect (v9j3.3.2).
+    const t = this.trailingNotes(segments.flat(), notes.footnotes, notes.endnotes, options.structParent);
+    const { usedHeight, remainder } = placeElements(this.doc, this, t.placed, rect, {
       paragraphSpacing: 0, structParent: options.structParent,
     });
+    t.done();
     return { usedHeight, remainder, skipped: mergeSkipped(skipped, late.list()) };
   }
 

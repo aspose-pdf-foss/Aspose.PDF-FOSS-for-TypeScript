@@ -129,9 +129,10 @@ word/numbering.xml              1510
 
 ## The corpus (`m2fp.4`)
 
-Two writers build the same five recipes; two readers read every file. The
+Two writers build the same recipes; two readers read every file. The
 recipes live in `scripts/gen-docx-corpus-word.ps1` and
-`scripts/gen-docx-corpus-lo.py`, kept in step text for text.
+`scripts/gen-docx-corpus-lo.py`, kept in step text for text — except `notes`
+(`v9j3.3.2`), below.
 
 | Topic | Exercises |
 |---|---|
@@ -140,9 +141,11 @@ recipes live in `scripts/gen-docx-corpus-word.ps1` and
 | `tables` | a repeating header row; a horizontal merge; a vertical merge; a nested table; a shaded cell |
 | `media` | an inline 16x16 PNG; an external hyperlink; an internal link to a bookmark |
 | `skipped` | header, footer, footnote, endnote, text box, TOC field, comment, a tracked insertion and deletion, a second section in landscape |
+| `notes` (`v9j3.3.2`) | **Word:** footnotes (one of two paragraphs), a custom mark `*`, an endnote, a footnote in a table cell placed LAST in section 1, and a second section whose footnotes are lowercase roman and restart each section. **LibreOffice:** its footnote numbering is document-wide, so its file states lowercase roman from `iii` for the whole document instead, plus a custom mark and an endnote |
 
 - **Command:** `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/gen-docx-corpus.ps1 -LoProgram <LibreOffice program dir>`
-  (both builders, both readers, SHA-256s); `-SkipBuild` re-reads only. Then
+  (both builders, both readers, SHA-256s); `-SkipBuild` re-reads only;
+  `-Only <topic>` builds one recipe and still re-reads every file. Then
   `npx tsx scripts/docx-disagreements.ts`.
 - **Not reproducible byte for byte:** both writers stamp `docProps/core.xml`
   with the save time. The VENDORED files are the reference.
@@ -168,6 +171,7 @@ recipes live in `scripts/gen-docx-corpus-word.ps1` and
 | `word2010-tables.docx` | `E638D71AC038609E7943ED2AF640DC787DB1EE2F7A98CFF57F67093E662961E8` |
 | `word2010-media.docx` | `2461B3B3DE12D8B864CD2D9397E029EBDC1B2F125B1106AF769440934A049415` |
 | `word2010-skipped.docx` | `AB2D64BA5621F9FE6E01F29035C5EDB89713226957BACCCFA814F3F8B2958BEA` |
+| `word2010-notes.docx` | `1577C577D5FA99D980AD5FD7EA8A6181BF58D6BB3F8BCFDAF17480808557BF1E` |
 
 ### LibreOffice 26.8
 
@@ -189,6 +193,7 @@ recipes live in `scripts/gen-docx-corpus-word.ps1` and
 | `lo26.8-tables.docx` | `D6071D9810732CE006F69226DC51A5D1E52E732BB8C8011C0CF704A9FD81B3E0` |
 | `lo26.8-media.docx` | `ED1D4C20F9F9808090F6528A349B4D0EF6074FCD280B5A769C6DA2A4C407CF83` |
 | `lo26.8-skipped.docx` | `A68397B719F2CD32E807CB713F7903F00281D4A5A90F663CF1BC75DE3C229F4B` |
+| `lo26.8-notes.docx` | `537BD1E41CD19310B86CBA07AE11B614EA15354B14926C808E76B1E320B05E95` |
 
 **Two things LibreOffice WRITES differently, which are the producer's semantics
 and not recipe bugs** — and Word, reading LibreOffice's file, agrees with it on
@@ -237,6 +242,48 @@ reading, since there the other reader is no witness — but `readDocx`'s OWN
 length must still fall between the two readers'. Without that bound a
 `readDocx` that stopped at a section break or a merged cell passed the very
 files that cover those constructs (final review, mutation-checked).
+
+### Notes (`v9j3.3.2`)
+
+Every truth file carries `notes`: per kind, each note's mark and text.
+
+- **Word's mark is DERIVED:** `Footnote.Reference.Text` is the control
+  character 0x02 for an auto-numbered note (probed before the reader was
+  written). The script computes the number from what Word reports — the
+  note's section, that section's `NumberStyle`, `StartingNumber` and
+  `NumberingRule` — counting only auto-numbered notes. The FORMATTING of those
+  numbers is the script's. A custom mark is the reference's own text.
+- **LibreOffice reports its mark directly:** the anchor's string (`1`, `i`),
+  or the label when custom.
+- **They disagree on the Word file's footnote marks**, and that is LibreOffice
+  ignoring Word's per-section restart: it numbers the whole document with the
+  last section's lowercase roman (`i`..`iv`) where Word shows `1 2 * 3 i`.
+  So the agree-only comparison cannot see the per-section rule, and
+  `test/docx-corpus.test.ts` holds that one file's marks to WORD ALONE.
+- **They disagree on a custom-mark note's text:** Word writes the mark into the
+  note body as an ordinary leading run; LibreOffice reads it as text
+  (`* Starred note.`), Word does not. The renderer drops it (`noteLead`), or
+  the mark would be drawn twice — a finding of this corpus, held by
+  `test/docx-notes.test.ts`.
+- **LibreOffice writes a tab** between its own number and the note text; the
+  renderer drops it, or every note would report `w:tab`.
+- **Not covered:** per-page restart (it depends on pagination this library does
+  not share with Word — `test/flow-notes-page-restart.test.ts` alone holds
+  it); a list inside a note (LibreOffice's list-style names vary by version, so
+  it is held by `test/docx-notes.test.ts`); Word's `chicago` format past four
+  notes, where the engine's `symbols` (`* † ‡ § ¶ #`) and Word's (`* † ‡ §`,
+  then doubled) part company.
+- **The cell note renders (`v9j3.3.3`):** `word2010-notes.docx`'s footnote in
+  a table cell is now DRAWN, and `test/table-notes-frontends.test.ts` holds the
+  numbers drawn for the whole file to Word's — compared by number, not
+  spelling, since the engine applies the last section's lowercase roman to
+  every section (reported) where Word spells section 1 in arabic.
+- **Mutation-checked:** of 16 mutations across the engine, the reader and
+  the mapper, 15 redden. The corpus reddens the custom-mark and lowerRoman
+  rules; the per-page restart, its gutter, the restart marker's lookahead and
+  a note citing a note are held by hand-built cases alone. The 16th, dropping
+  the placement skip of a restart marker, is EQUIVALENT: the marker places as
+  an empty element.
 
 ### Where readDocx is held to a known gap
 

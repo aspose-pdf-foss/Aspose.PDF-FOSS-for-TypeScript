@@ -1,5 +1,5 @@
-import type { MdInline } from './mdast.js';
-import { isPunctuation, isUnicodeWhitespace } from './mdscan.js';
+import type { MdBlock, MdDocument, MdFootnoteDefinition, MdInline } from './mdast.js';
+import { isPunctuation, isUnicodeWhitespace, normalizeLabel } from './mdscan.js';
 
 /** The GitHub Flavored Markdown extensions that are not the table block:
  *  strikethrough, task list items, extended autolinks, and the
@@ -330,4 +330,67 @@ export function extendedAutolinks(nodes: MdInline[]): MdInline[] {
     out.push(n);
   }
   return out;
+}
+
+/** cmark-gfm blocks.c `process_footnotes`, transcribed.
+ *
+ *  1. Collect definitions in POST-order (cmark's EXIT events); for a repeated
+ *     label the earliest collected wins (map.c sorts by label, then age).
+ *  2. Walk the tree with the definitions STILL IN PLACE, numbering each
+ *     reference on first sight of its definition — so a citation inside an
+ *     earlier definition numbers where that definition sits. A reference with
+ *     no definition (or a label past 1000 characters, `cmark_map_lookup`'s
+ *     bound) becomes the literal text `[^label]`.
+ *  3. Unlink EVERY definition — cited, uncited and duplicate — and keep the
+ *     cited ones in index order on `doc.footnotes`. */
+export function resolveFootnotes(doc: MdDocument): void {
+  const defs = new Map<string, MdFootnoteDefinition>();
+  const collect = (bs: MdBlock[]): void => {
+    for (const b of bs) {
+      if ('children' in b && b.type !== 'paragraph' && b.type !== 'heading' && b.type !== 'table_cell')
+        collect(b.children as MdBlock[]);
+      if (b.type === 'footnote_definition') {
+        const key = normalizeLabel(b.label);
+        if (key !== '' && !defs.has(key)) defs.set(key, b);
+      }
+    }
+  };
+  collect(doc.children);
+
+  let next = 0;
+  const cited: MdFootnoteDefinition[] = [];
+  const inl = (ns: MdInline[]): MdInline[] => {
+    const out: MdInline[] = [];
+    for (const n of ns) {
+      if (n.type === 'footnote_reference') {
+        const def = n.label.length <= 1000 ? defs.get(normalizeLabel(n.label)) : undefined;
+        if (def === undefined) { out.push({ type: 'text', value: `[^${n.label}]` }); continue; }
+        if (def.index === 0) { def.index = ++next; cited.push(def); }
+        def.references++;
+        out.push({ type: 'footnote_reference', label: def.label, index: def.index, occurrence: def.references });
+        continue;
+      }
+      if ('children' in n) (n as { children: MdInline[] }).children = inl(n.children as MdInline[]);
+      out.push(n);
+    }
+    return out;
+  };
+  const walk = (bs: MdBlock[]): void => {
+    for (const b of bs) {
+      if (b.type === 'paragraph' || b.type === 'heading' || b.type === 'table_cell') b.children = inl(b.children);
+      else if ('children' in b) walk(b.children as MdBlock[]);
+    }
+  };
+  walk(doc.children);
+
+  const unlink = (bs: MdBlock[]): MdBlock[] => bs
+    .filter((b) => b.type !== 'footnote_definition')
+    .map((b) => {
+      if ('children' in b && b.type !== 'paragraph' && b.type !== 'heading' && b.type !== 'table_cell')
+        (b as { children: MdBlock[] }).children = unlink(b.children as MdBlock[]);
+      return b;
+    });
+  for (const d of cited) d.children = unlink(d.children);
+  doc.children = unlink(doc.children);
+  if (cited.length > 0) doc.footnotes = cited;
 }

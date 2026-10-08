@@ -136,6 +136,7 @@ export { Flow, paragraph, heading, list, image } from './flow.js';
 export type {
   FlowOptions, FlowParagraphOptions, FlowHeadingOptions, FlowListOptions, FlowImageOptions,
   FlowListItem, FlowListNode, FlowElement, FlowClear, PlaceContext, PlaceResult,
+  FlowNote, FlowTextRun, FlowNoteOptions, FlowEndnoteOptions, MarkFormat,
 } from './flow.js';
 
 // --- Flow block vocabulary (gl6o.3.2) ---
@@ -318,6 +319,7 @@ export type {
   MdThematicBreak, MdCodeBlock, MdHtmlBlock,
   MdText, MdSoftBreak, MdHardBreak, MdEmph, MdStrong, MdCode, MdLink, MdImage, MdHtmlInline,
   MdAlign, MdTable, MdTableRow, MdTableCell, MdStrikethrough,
+  MdFootnoteReference, MdFootnoteDefinition,
 } from './mdast.js';
 
 // ---- HTML parsing (zch2.1) ------------------------------------------------

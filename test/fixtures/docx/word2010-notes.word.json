@@ -1,0 +1,211 @@
+{
+    "reader":  "Word 14.0.7268",
+    "paragraphs":  [
+                       {
+                           "text":  "Notes",
+                           "styleName":  "Заголовок 1",
+                           "heading":  1,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Notes",
+                                                "bold":  true,
+                                                "italic":  false,
+                                                "sizePt":  14,
+                                                "font":  "Cambria"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Alpha",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Alpha",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Beta",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Beta",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Gamma*",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Gamma*",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Delta",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Delta",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "Cell",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  true,
+                           "segments":  [
+                                            {
+                                                "text":  "Cell",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  true,
+                           "segments":  [
+
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       },
+                       {
+                           "text":  "Epsilon",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+                                            {
+                                                "text":  "Epsilon",
+                                                "bold":  false,
+                                                "italic":  false,
+                                                "sizePt":  11,
+                                                "font":  "Calibri"
+                                            }
+                                        ]
+                       },
+                       {
+                           "text":  "",
+                           "styleName":  "Обычный",
+                           "heading":  null,
+                           "listLabel":  null,
+                           "inTable":  false,
+                           "segments":  [
+
+                                        ]
+                       }
+                   ],
+    "tables":  [
+                   {
+                       "rows":  [
+                                    [
+                                        "Cell",
+                                        ""
+                                    ]
+                                ]
+                   }
+               ],
+    "links":  [
+
+              ],
+    "images":  0,
+    "counts":  {
+                   "headers":  0,
+                   "footers":  0,
+                   "footnotes":  5,
+                   "endnotes":  1,
+                   "textBoxes":  0,
+                   "fields":  0,
+                   "comments":  0,
+                   "revisions":  0
+               },
+    "notes":  {
+                  "footnotes":  [
+                                    {
+                                        "mark":  "1",
+                                        "text":  "First note."
+                                    },
+                                    {
+                                        "mark":  "2",
+                                        "text":  "Para one.\nPara two."
+                                    },
+                                    {
+                                        "mark":  "*",
+                                        "text":  "Starred note."
+                                    },
+                                    {
+                                        "mark":  "3",
+                                        "text":  "Cell note."
+                                    },
+                                    {
+                                        "mark":  "i",
+                                        "text":  "Second section note."
+                                    }
+                                ],
+                  "endnotes":  [
+                                   {
+                                       "mark":  "i",
+                                       "text":  "An endnote."
+                                   }
+                               ]
+              }
+}

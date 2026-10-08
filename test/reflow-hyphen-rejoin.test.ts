@@ -11,7 +11,7 @@ const hblock = (text: string, width = BOX[2]) => {
   return Document.Open(d.Save());
 };
 const HY = { adjust: 'reflow' as const, hyphenate: { lang: 'en' } };
-const hyphens = (d: Document) => (d.Pages[0].GetText().match(/-\n/g) ?? []).length;
+const softBreaks = (d: Document) => (d.Pages[0].GetText().match(/\u00AD\n/g) ?? []).length;
 
 describe('rejoin in ReplaceText (6y39)', () => {
   // A drawn '-' at a line end may be an author's compound hyphen, and the
@@ -42,9 +42,22 @@ describe('rejoin in ReplaceText (6y39)', () => {
     const L = before.findIndex((l) => l.includes('considerable'));
     expect(after.slice(0, L)).toEqual(before.slice(0, L));
   });
-  // 'a second reflow over our own output leaves no stray hyphen' waits on
-  // 8eew: ANY second reflow over our own output is refused 'interleaved',
-  // hyphenated or not, so that case cannot run yet.
+  // 6y39's planned case, runnable since 8eew and true since rhud: a hyphen
+  // hyphenation INSERTS is written as WinAnsi 0xAD, which reads back as
+  // U+00AD, so a later reflow knows it for a break and rejoins it.
+  it('a second reflow over our own output leaves no stray hyphen (8eew, rhud)', () => {
+    let doc = hblock(LONG);
+    doc.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', HY);
+    doc = Document.Open(doc.Save());
+    expect(doc.Pages[0].ReplaceText('Documentation and analysis', 'Docs', HY)).toBe(1);
+    doc = Document.Open(doc.Save());
+    const text = doc.Pages[0].GetText();
+    expect(text).not.toMatch(/[-\u00AD][^\n]/);                   // every break ends a line
+    expect(text).not.toContain('-');                               // LONG has no hyphen of its own
+    expect(softBreaks(doc)).toBeGreaterThan(0);                   // non-vacuous: it did hyphenate
+    const words = LONG.replace('Documentation', 'Docs').split(' ');
+    expect(text.replace(/\u00AD\n/g, '').split(/\s+/)).toEqual(words);
+  });
   it('ReplaceText still counts only real matches', () => {
     const doc = hblock(LONG);
     expect(doc.Pages[0].ReplaceText('Documentation', 'Docs', HY)).toBe(1);
@@ -54,10 +67,10 @@ describe('rejoin in ReplaceText (6y39)', () => {
     const d = Document.New();
     d.AddMarkdown(LONG, { tagged: true, hyphenate: { lang: 'en' }, format: PageFormat.custom(320, 600) });
     const doc = Document.Open(d.Save());
-    expect(hyphens(doc)).toBeGreaterThan(0);                       // non-vacuous
+    expect(softBreaks(doc)).toBeGreaterThan(0);                       // non-vacuous
     const before = doc.ValidatePdfUa().Issues.filter((i) => i.rule === 'UntaggedContent').length;
     doc.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', HY);
-    expect(hyphens(doc)).toBeGreaterThan(0);
+    expect(softBreaks(doc)).toBeGreaterThan(0);
     expect(doc.ValidatePdfUa().Issues.filter((i) => i.rule === 'UntaggedContent').length).toBe(before);
   });
 });

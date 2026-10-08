@@ -8,7 +8,7 @@ import { readTruth, readerDisagreements } from '../test/helpers/docx-truth.js';
 
 const DIR = join(import.meta.dirname, '..', 'test', 'fixtures', 'docx');
 const out: Record<string, string[]> = {};
-for (const f of readdirSync(DIR).filter((x) => x.endsWith('.docx') && x !== 'wml-oracle.docx').sort()) {
+for (const f of readdirSync(DIR).filter((x) => x.endsWith('.docx') && !x.endsWith('-oracle.docx')).sort()) {
   const base = join(DIR, f.replace(/\.docx$/, ''));
   if (!existsSync(`${base}.word.json`) || !existsSync(`${base}.lo.json`)) { out[f] = []; continue; }
   out[f] = readerDisagreements(readTruth(`${base}.word.json`), readTruth(`${base}.lo.json`)).sort();

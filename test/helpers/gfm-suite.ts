@@ -12,6 +12,8 @@ export interface GfmCase {
   example: number;
   section: string;
   extension: string;
+  /** Every word on the opening fence; `extension` is the first. */
+  tags: string[];
   startLine: number;
 }
 
@@ -29,8 +31,14 @@ let cached: GfmCase[] | undefined;
 
 /** Every example in the file, in spec order, numbered as the spec numbers them. */
 export function loadGfmExamples(): GfmCase[] {
-  if (cached !== undefined) return cached;
-  const lines = readFileSync(fileURLToPath(SPEC_URL), 'utf8').split('\n');
+  if (cached === undefined) cached = loadExamplesFrom(SPEC_URL);
+  return cached;
+}
+
+/** Every example in a cmark-style spec file — GitHub's `spec.txt`, or
+ *  cmark-gfm's `extensions.txt` and `regression.txt` — in file order. */
+export function loadExamplesFrom(url: URL): GfmCase[] {
+  const lines = readFileSync(fileURLToPath(url), 'utf8').split('\n');
   const out: GfmCase[] = [];
   let section = '';
   let example = 0;
@@ -40,7 +48,8 @@ export function loadGfmExamples(): GfmCase[] {
     if (heading !== null) { section = heading[1].trim(); continue; }
     if (!lines[i].startsWith(OPEN)) continue;
 
-    const extension = lines[i].slice(OPEN.length).trim();
+    const tags = lines[i].slice(OPEN.length).trim().split(/\s+/).filter((t) => t !== '');
+    const extension = tags[0] ?? '';
     const startLine = i + 1;
     example++;
 
@@ -51,10 +60,9 @@ export function loadGfmExamples(): GfmCase[] {
     for (j++; j < lines.length && !lines[j].startsWith(FENCE); j++) html.push(lines[j]);
     i = j;
 
-    out.push({ markdown: body(markdown), html: body(html), example, section, extension, startLine });
+    out.push({ markdown: body(markdown), html: body(html), example, section, extension, tags, startLine });
   }
 
-  cached = out;
   return out;
 }
 

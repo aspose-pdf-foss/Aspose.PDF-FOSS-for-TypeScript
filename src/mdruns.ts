@@ -3,7 +3,8 @@
  *  Pure: no Document, no PDF objects, no layout. It turns an emphasis tree into
  *  the flat run list gl6o.3.1 made the Flow text engine carry. */
 
-import type { MdImage, MdInline } from './mdast.js';
+import type { MdFootnoteReference, MdImage, MdInline } from './mdast.js';
+import type { FlowNote, FlowTextRun } from './flownotes.js';
 import type { TextRun } from './textdecor.js';
 import type { FlowAtomic } from './flow.js';
 import { faceFor, type ResolvedFamily, type ResolvedMarkdownStyle } from './mdstyle.js';
@@ -31,13 +32,24 @@ export interface RunContext {
    *  its alt text and reporting itself. That is what makes the restriction a
    *  property of the CALLER rather than a rule repeated in this module. */
   atomic?: AtomicResolver;
+  /** How a footnote citation becomes a note (v9j3.3.1). ABSENT where a
+   *  citation cannot be honoured — a table cell, a note body — and then the
+   *  citation is drawn as its literal `[^label]` and reported as
+   *  {@link RunContext.noteRefusal}. */
+  note?: NoteResolver;
+  /** The `skipped` entry for a citation {@link RunContext.note} cannot take. */
+  noteRefusal?: string;
 }
+
+/** Resolves a GFM footnote citation to the note it cites, or `undefined`. */
+export type NoteResolver =
+  (n: MdFootnoteReference) => { kind: 'footnote' | 'endnote'; note: FlowNote } | undefined;
 
 /** Runs, and the boxes to be placed among them. Mirrors `cssinline.ts`'s
  *  `InlineContent`, which is the same shape for the same reason: an atomic
  *  rides a channel PARALLEL to the runs, so `TextRun` does not change. */
 export interface InlineContent {
-  runs: TextRun[];
+  runs: FlowTextRun[];
   /** Empty unless {@link RunContext.atomic} was supplied. */
   atomics: FlowAtomic[];
 }
@@ -103,7 +115,7 @@ function runProps(
 export function inlineRuns(
   nodes: MdInline[], style: ResolvedMarkdownStyle, ctx: RunContext, skipped: string[],
 ): InlineContent {
-  const out: TextRun[] = [];
+  const out: FlowTextRun[] = [];
   const atomics: FlowAtomic[] = [];
   let lastKey: string | undefined;
 
@@ -156,6 +168,22 @@ export function inlineRuns(
           break;
         }
         case 'html_inline': skipped.push('html_inline'); break;
+        case 'footnote_reference': {
+          const r = ctx.note?.(n);
+          if (r === undefined) {
+            push(`[^${n.label}]`, s);
+            skipped.push(ctx.noteRefusal ?? 'footnote');
+            break;
+          }
+          // An empty run CARRYING the note: the engine draws the mark after
+          // it, in this run's style, so a mark in bold text is bold. A merge
+          // barrier both ways — text before must not be absorbed into it, and
+          // text after must not be appended to it, or the mark would follow
+          // that text instead.
+          out.push({ text: '', ...runProps(s, style, ctx), [r.kind]: r.note });
+          lastKey = undefined;
+          break;
+        }
       }
     }
   };
@@ -178,6 +206,7 @@ export function plainText(nodes: MdInline[]): string {
         case 'link': case 'image':
           walk(n.children); break;
         case 'html_inline': break;
+        case 'footnote_reference': break;
       }
     }
   };

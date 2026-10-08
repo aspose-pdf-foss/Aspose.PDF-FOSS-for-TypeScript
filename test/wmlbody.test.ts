@@ -146,9 +146,9 @@ describe('containers and fields', () => {
   });
 
   it('records an unknown construct and keeps its text', () => {
-    const res = body(`<w:altChunkish>${r('blocktext')}</w:altChunkish>` + p(`<w:r><w:footnoteReference w:id="1"/></w:r><w:dir w:val="rtl">${r('x')}</w:dir>`));
+    const res = body(`<w:altChunkish>${r('blocktext')}</w:altChunkish>` + p(`<w:r><w:commentReference w:id="1"/></w:r><w:dir w:val="rtl">${r('x')}</w:dir>`));
     expect(paras(res).map(textOf)).toEqual(['blocktext', 'x']);
-    expect(unsupported(res)).toEqual({ 'w:altChunkish': 1, 'w:footnoteReference': 1, 'w:dir': 1 });
+    expect(unsupported(res)).toEqual({ 'w:altChunkish': 1, 'w:commentReference': 1, 'w:dir': 1 });
   });
 
   it('takes a markup-compatibility Fallback for a Choice it does not understand', () => {

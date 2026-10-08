@@ -8,9 +8,10 @@
 
 import {
   insetScale, nonNegative, normalizeClear, normalizeSpacing, type Compromise,
-  type FlowClear, type FlowElement, type MeasureContext, type PlaceContext, type PlaceResult,
+  type FlowClear, type FlowElement, type MeasureContext, type MeasureResult, type PlaceContext, type PlaceResult,
 } from './flowelement.js';
 import type { StructElement } from './struct.js';
+import type { NoteRef } from './flownotes.js';
 import { preformat } from './preformat.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { coverageOf, type Undrawable } from './textcoverage.js';
@@ -369,7 +370,9 @@ class QuotedElement implements FlowElement {
     return this.indent * insetScale(width, this.indent);
   }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+  noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+
+  measure(ctx: MeasureContext): MeasureResult {
     // Every element in this repo implements measure; the fallback is unreachable
     // and exists only because the protocol declares it optional.
     const indent = this.indentFor(ctx.width);
@@ -443,7 +446,9 @@ class IndentElement implements FlowElement {
   /** ONE factor for both edges, read by measure and place alike. */
   private scale(width: number): number { return insetScale(width, this.left + this.right); }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+  noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+
+  measure(ctx: MeasureContext): MeasureResult {
     const k = this.scale(ctx.width);
     return this.inner.measure?.({ width: ctx.width - (this.left + this.right) * k, availHeight: ctx.availHeight, indentScale: k })
       ?? { usedHeight: 0, fits: false };

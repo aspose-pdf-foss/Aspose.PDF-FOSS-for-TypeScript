@@ -25,9 +25,12 @@ import { codeBlock, quote, rule } from './flowblock.js';
 import type { Undrawable } from './textcoverage.js';
 import { table } from './flowtable.js';
 import { createTable, type TableBuilder } from './tableauthor.js';
-import { inlineRuns, plainText, type AtomicResolver } from './mdruns.js';
+import { inlineRuns, plainText, type AtomicResolver, type NoteResolver } from './mdruns.js';
+import type { FlowNote } from './flownotes.js';
 import { decodeDataUri } from './datauri.js';
-import { resolveMarkdownStyle, type MarkdownStyle, type ResolvedMarkdownStyle } from './mdstyle.js';
+import {
+  noteStyle, resolveMarkdownStyle, type MarkdownStyle, type ResolvedMarkdownStyle,
+} from './mdstyle.js';
 import { rethrowLimit } from './errors.js';
 
 /** Options for the Markdown entry points. Extends {@link MarkdownOptions}, so
@@ -56,6 +59,11 @@ export interface MarkdownFlowOptions extends MarkdownOptions {
    *  code blocks never hyphenate. `false` opts out of a flow's default.
    *  Default: off. */
   hyphenate?: HyphenationOptions | false;
+  /** Where GFM footnotes go (v9j3.3.1): `'foot'` (default) at the foot of the
+   *  column citing them, `'end'` as endnotes after the content, as GitHub
+   *  renders them. `page.AddMarkdown`, which has one rect, places either kind
+   *  after the content inside it. */
+  footnotePlacement?: 'foot' | 'end';
 }
 
 /** What a Markdown entry point reports. */
@@ -86,6 +94,38 @@ interface Ctx {
   st: ResolvedMarkdownStyle;
   opts: MarkdownFlowOptions;
   skipped: string[];
+  /** One FlowNote per cited footnote definition, by index (v9j3.3.1). */
+  notes?: Map<number, FlowNote>;
+  /** The definitions a citation in the BODY actually resolved to — the notes
+   *  that will be drawn (v9j3.3.5). A definition cited only from another
+   *  note's body is numbered by `resolveFootnotes` but never placed. */
+  usedNotes?: Set<number>;
+  /** Mapping a note body, where a citation cannot be honoured: notes do not
+   *  nest. */
+  inNote?: boolean;
+}
+
+/** How a citation in an ordinary block becomes a note, or `undefined` where
+ *  one cannot be honoured — inside a note body, or with no footnotes. */
+function noteResolver(c: Ctx): NoteResolver | undefined {
+  const notes = c.notes;
+  if (notes === undefined || c.inNote === true) return undefined;
+  const kind = c.opts.footnotePlacement === 'end' ? 'endnote' : 'footnote';
+  return (ref) => {
+    const note = notes.get(ref.index);
+    if (note === undefined) return undefined;
+    c.usedNotes?.add(ref.index);
+    return { kind, note };
+  };
+}
+
+/** The citation fields of a RunContext for an ordinary block. */
+function noteFields(c: Ctx): { note?: NoteResolver; noteRefusal?: string } {
+  const note = noteResolver(c);
+  return {
+    ...(note === undefined ? {} : { note }),
+    ...(c.inNote === true ? { noteRefusal: 'footnote (nested)' } : {}),
+  };
 }
 
 /** The Markdown presentation of an undrawable block. `skipped` is a flat
@@ -200,7 +240,8 @@ function paragraphElements(n: MdParagraph, c: Ctx, extraBefore: number): FlowEle
       });
   }
   const content = inlineRuns(n.children, c.st,
-    { family: c.st.family, fontSize: c.st.fontSize, atomic: atomicResolver(c) }, c.skipped);
+    { family: c.st.family, fontSize: c.st.fontSize, atomic: atomicResolver(c), ...noteFields(c) },
+    c.skipped);
   return paragraph(content.runs, {
     atomics: atomicsOrNone(content.atomics),
     font: c.st.family.regular,
@@ -221,7 +262,8 @@ function headingElements(n: MdHeading, c: Ctx, extraBefore: number): FlowElement
   // options, so supporting one and not the other would be an arbitrary hole
   // in `# Title ![icon](x)`.
   const content = inlineRuns(n.children, c.st,
-    { family: c.st.heading.family, fontSize: size, atomic: atomicResolver(c) }, c.skipped);
+    { family: c.st.heading.family, fontSize: size, atomic: atomicResolver(c), ...noteFields(c) },
+    c.skipped);
   return heading(n.level, content.runs, {
     atomics: atomicsOrNone(content.atomics),
     font: c.st.heading.family.regular,
@@ -271,7 +313,7 @@ function itemNode(item: MdItem, parent: MdList, c: Ctx): FlowListItem {
   // so through `paragraphElements`, which has lifted them since `z77w`.
   const content = leading
     ? inlineRuns(leading.children, c.st,
-      { family: c.st.family, fontSize: c.st.fontSize, atomic: atomicResolver(c) },
+      { family: c.st.family, fontSize: c.st.fontSize, atomic: atomicResolver(c), ...noteFields(c) },
       c.skipped)
     : undefined;
   const text = content?.runs;
@@ -351,7 +393,10 @@ function mdTable(n: MdTable, c: Ctx): TableBuilder {
       // A cell places atomics too (`dsw8`), so an image in a Markdown table
       // draws rather than flattening to its alt text.
       const content = inlineRuns(cell.children, c.st,
-        { ...(row.header ? header : body), atomic: atomicResolver(c) }, c.skipped);
+        // A cell cites notes like a paragraph (v9j3.3.3); inside a note body
+        // noteFields still yields the 'footnote (nested)' refusal.
+        { ...(row.header ? header : body), atomic: atomicResolver(c), ...noteFields(c) },
+        c.skipped);
       r.addCell(content.runs, {
         align: n.align[i] ?? 'left',
         ...(content.atomics.length > 0 ? { atomics: content.atomics } : {}),
@@ -434,10 +479,36 @@ export function markdownElements(
   // Validate the whole style before building anything, so a rejected call
   // leaves the document byte-identical.
   const st = resolveMarkdownStyle(options.style);
+  const fp = options.footnotePlacement;
+  if (fp !== undefined && fp !== 'foot' && fp !== 'end')
+    throw new TypeError("footnotePlacement must be 'foot' or 'end'");
   const doc = typeof src === 'string' ? parseMarkdown(src, options) : src;
   const c: Ctx = { st, opts: options, skipped: [] };
+  const bodies: { index: number; elements: FlowElement[]; skipped: string[] }[] = [];
+  if (doc.footnotes !== undefined) {
+    // One FlowNote per cited definition, built once, so repeated citations
+    // share it. Its body goes through the SAME blockElements a top-level block
+    // does, at the note size, with citations inside it refused (no nesting).
+    // Each body's reports are kept apart and appended after the main body's,
+    // so `skipped` stays in document order — the notes come last — and only
+    // for a note the body actually cites: one cited only from another note is
+    // never drawn, so what it "could not draw" is not true (v9j3.3.5).
+    for (const d of doc.footnotes) {
+      const nc: Ctx = { st: noteStyle(st), opts: options, skipped: [], inNote: true };
+      bodies.push({ index: d.index, elements: blockElements(d.children, nc, 0), skipped: nc.skipped });
+    }
+    c.notes = new Map(bodies.map((b) => [b.index, { content: b.elements }]));
+    c.usedNotes = new Set();
+  }
   const elements = blockElements(doc.children, c, 0);
-  if (options.onSkipped !== undefined) reportCompromises(elements, options.onSkipped);
+  const drawn = bodies.filter((b) => c.usedNotes!.has(b.index));
+  for (const b of drawn) c.skipped.push(...b.skipped);
+  if (options.onSkipped !== undefined) {
+    reportCompromises(elements, options.onSkipped);
+    // A note body is placed by the engine like any element, so a squeeze or
+    // an overflow inside it is reported the same way (v9j3.3.5).
+    for (const b of drawn) reportCompromises(b.elements, options.onSkipped);
+  }
   return { elements, skipped: c.skipped };
 }
 

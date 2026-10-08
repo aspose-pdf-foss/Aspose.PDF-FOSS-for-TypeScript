@@ -16,8 +16,9 @@ import {
 } from './textdecor.js';
 import { buildImageXObject, drawBuiltImage, type BuiltImage } from './imageembed.js';
 import { num, appendContent, wrapMarkedContent } from './pagecontent.js';
-import { allocContentMcid } from './structwrite.js';
+import { allocContentMcid, registerStructIds } from './structwrite.js';
 import { enc } from './serialize.js';
+import type { PdfRef } from './types.js';
 import { PageFormat } from './pageformat.js';
 import {
   clearTo, insetsAt, nextBoundary, pruneFloats, resolveFloatTop,
@@ -25,8 +26,15 @@ import {
 } from './floatstack.js';
 import {
   insetScale, nonNegative, normalizeClear, normalizeSpacing, type Compromise,
-  type FlowClear, type FlowElement, type FloatContent, type MeasureContext, type PlaceContext, type PlaceResult,
+  type FlowClear, type FlowElement, type FloatContent, type MeasureContext, type MeasureResult,
+  type PlaceContext, type PlaceResult,
 } from './flowelement.js';
+import {
+  lowerNotes, rebaseForMarks, NoteLinks, refsIn, keptRefs, normalizeNoteOptions, settleBudget, NoteNumberer, NoteColumn,
+  takenIds, nextNoteId, tagNote, noteRestart, isNoteRestart,
+  type FlowTextRun, type NoteRef, type FlowNoteOptions, type FlowEndnoteOptions, type ResolvedNoteOptions,
+} from './flownotes.js';
+import { UnsupportedFeatureError } from './errors.js';
 
 import {
   rule, codeBlock, quote, indented,
@@ -36,7 +44,7 @@ import { table, type FlowTableOptions } from './flowtable.js';
 import type { TableBuilder } from './tableauthor.js';
 import { markdownElements, type MarkdownFlowOptions, type MarkdownResult } from './mdflow.js';
 import { htmlElements, type HtmlFlowOptions, type HtmlFlowResult } from './htmlflow.js';
-import { docxElements, type DocxFlowOptions, type DocxFlowResult, type OpenedDocxSource } from './wmlimport.js';
+import { docxElements, type DocxFlowOptions, type DocxFlowResult, type DocxSkipped, type OpenedDocxSource } from './wmlimport.js';
 import type { HtmlDocument } from './htmldom.js';
 import type { MdDocument } from './mdast.js';
 
@@ -53,6 +61,8 @@ export { table } from './flowtable.js';
 export type { FlowTableOptions } from './flowtable.js';
 
 export { PageFormat } from './pageformat.js';
+
+export type { FlowNote, FlowTextRun, FlowNoteOptions, FlowEndnoteOptions, MarkFormat } from './flownotes.js';
 
 /** Options for {@link Document.NewFlow}. All lengths are in points. */
 export interface FlowOptions {
@@ -95,6 +105,16 @@ export interface FlowOptions {
    *  `lang`, when unstated, is this flow's own `lang`. Tables state their own
    *  (`createTable({ hyphenate })`). Default: off. */
   hyphenate?: HyphenationOptions;
+  /** How this flow's footnotes look (v9j3.3): mark format and start, mark
+   *  size, note body size, the separator rule, spacing. A footnote is cited
+   *  through {@link FlowTextRun.footnote} and placed at the foot of the column
+   *  holding its reference. Default: arabic from 1, 8pt notes under a 0.5pt
+   *  rule a third of the column wide. */
+  footnotes?: FlowNoteOptions;
+  /** How this flow's endnotes look (v9j3.3) — as {@link footnotes}, plus
+   *  `newPage`. Endnotes follow the flow's content. Default: lower roman from
+   *  1, 10pt notes, continuing after the content. */
+  endnotes?: FlowEndnoteOptions;
 }
 
 /** Resolved, validated flow geometry (identical on every page). @internal */
@@ -153,9 +173,10 @@ export function columnX(g: Geometry, col: number): number {
   return g.contentLeft + col * (g.columnWidth + g.columnGap);
 }
 
-/** Flowed text: a plain string, or a {@link TextRun} list mixing styles within
- *  one wrapped block. */
-export type FlowText = string | TextRun[];
+/** Flowed text: a plain string, or a {@link FlowTextRun} list mixing styles
+ *  within one wrapped block — and, inside a Flow, citing footnotes and
+ *  endnotes (v9j3.3). A plain {@link TextRun} list is still accepted. */
+export type FlowText = string | FlowTextRun[];
 
 /** Whether flowed text would draw nothing — which decides whether an element
  *  ever gets a structure node. */
@@ -173,6 +194,13 @@ function measureFlowText(
   return isTextRunList(t)
     ? measureTextBlock(t, width, availHeight, o)
     : measureTextBlock(t, width, availHeight, o);
+}
+
+/** A measure result with the kept note references attached — only when there
+ *  are any, so a note-free element reports exactly what it always did. */
+function withNotes(m: MeasureResult, text: FlowText, remainder: FlowText | null): MeasureResult {
+  const notes = keptRefs(text, remainder);
+  return notes.length > 0 ? { ...m, notes } : m;
 }
 
 function drawFlowText(
@@ -309,10 +337,12 @@ class TextElement implements FlowElement {
     return k === undefined || k === 1 || !fi ? this.opts : { ...this.opts, firstLineIndent: fi * k };
   }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+  noteRefs(): NoteRef[] { return refsIn(this.text); }
+
+  measure(ctx: MeasureContext): MeasureResult {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
     const { usedHeight, remainder } = measureFlowText(this.text, ctx.width, ctx.availHeight, this.scaled(ctx.indentScale));
-    return { usedHeight, fits: remainder === null };
+    return withNotes({ usedHeight, fits: remainder === null }, this.text, remainder);
   }
 
   place(ctx: PlaceContext): PlaceResult {
@@ -336,6 +366,9 @@ class TextElement implements FlowElement {
       // not fit in the leftover space (retry this element in the next column).
       return { usedHeight: 0, remainder: remainder === null ? null : this, drew: false };
     }
+    // The structure element that holds each reference this chunk drew — where
+    // a tagged flow hangs the reference's /Note (v9j3.3).
+    for (const r of keptRefs(this.text, remainder)) r.owner = this.tag;
     return {
       usedHeight,
       // Continuation carries spaceBefore = 0 (already started) and the same tag.
@@ -378,7 +411,7 @@ export function paragraph(text: FlowText, o: FlowParagraphOptions = {}): FlowEle
   const ind = normalizeIndent(o);
   reportCoverage(text, o.font ?? 'Helvetica', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
-  return indented([new TextElement(forFirstLine(text, ind.firstLine), paragraphOptions(o), 'P', spaceBefore, spaceAfter,
+  return indented([new TextElement(forFirstLine(lowerNotes(text, o.fontSize ?? 12), ind.firstLine), paragraphOptions({ ...o, atomics: rebaseForMarks(text, o.atomics) }), 'P', spaceBefore, spaceAfter,
     undefined, false, undefined, normalizeClear(o.clear))], ind.left, ind.right);
 }
 
@@ -400,7 +433,7 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
   // AFTER withDefaults, so the reported face is the one the painter will use.
   reportCoverage(text, withDefaults.font ?? 'Helvetica-Bold', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
-  return indented([new TextElement(forFirstLine(text, ind.firstLine), paragraphOptions(withDefaults), 'H' + String(level),
+  return indented([new TextElement(forFirstLine(lowerNotes(text, withDefaults.fontSize!), ind.firstLine), paragraphOptions({ ...withDefaults, atomics: rebaseForMarks(text, withDefaults.atomics) }), 'H' + String(level),
     spaceBefore, spaceAfter, undefined, true, o.keepWithNext, normalizeClear(o.clear))], ind.left, ind.right);
 }
 
@@ -729,12 +762,14 @@ class ListItemElement implements FlowElement {
     return this.indent * insetScale(width, this.indent);
   }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+  noteRefs(): NoteRef[] { return refsIn(this.text); }
+
+  measure(ctx: MeasureContext): MeasureResult {
     if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
     const indent = this.indentFor(ctx.width);
     const { usedHeight, remainder } =
       measureFlowText(this.text, ctx.width - indent, ctx.availHeight, this.bodyOpts());
-    return { usedHeight, fits: remainder === null };
+    return withNotes({ usedHeight, fits: remainder === null }, this.text, remainder);
   }
 
   place(ctx: PlaceContext): PlaceResult {
@@ -767,6 +802,7 @@ class ListItemElement implements FlowElement {
     }
 
     drawMarkerOnce(ctx, this.marker, indent, this.opts, this.state);
+    for (const r of keptRefs(this.text, remainder)) r.owner = this.state.lbody;
     // (kk3q) The item body drew narrower than its indent asked for.
     if (indent < this.indent) this.onCompromise?.('squeezed');
 
@@ -825,7 +861,9 @@ class ListBlockElement implements FlowElement {
     return this.indent * insetScale(width, this.indent);
   }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
+  noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+
+  measure(ctx: MeasureContext): MeasureResult {
     const indent = this.indentFor(ctx.width);
     return this.inner.measure?.({ width: ctx.width - indent, availHeight: ctx.availHeight })
       ?? { usedHeight: 0, fits: false };
@@ -1071,8 +1109,8 @@ function buildListElements(items: FlowListNode[], options: FlowListOptions): Flo
   for (const p of planned) {
     const indent = p.item.indent ?? cumulative[p.depth];
     if (p.item.text !== undefined)
-      p.elements.push(new ListItemElement(p.item.text, p.marker, indent, p.opts, 0, 0,
-        p.holder, p.state, resolveAtomics(p.item.atomics)));
+      p.elements.push(new ListItemElement(lowerNotes(p.item.text, p.opts.fontSize), p.marker, indent, p.opts, 0, 0,
+        p.holder, p.state, resolveAtomics(rebaseForMarks(p.item.text, p.item.atomics))));
     for (const b of p.item.blocks ?? [])
       p.elements.push(new ListBlockElement(b, p.marker, indent, p.opts, p.holder, p.state,
         b.spaceBefore ?? 0, b.spaceAfter ?? 0));
@@ -1302,6 +1340,8 @@ export class Flow {
   private readonly lang?: string;
   private readonly keepHeadingsWithNext: boolean;
   private readonly hyphenate?: HyphenationOptions;
+  private readonly footOpts: ResolvedNoteOptions;
+  private readonly endOpts: ResolvedNoteOptions;
   private rendered = false;
 
   constructor(private readonly doc: Document, options?: FlowOptions) {
@@ -1322,6 +1362,8 @@ export class Flow {
     if (options?.keepHeadingsWithNext !== undefined && typeof options.keepHeadingsWithNext !== 'boolean')
       throw new TypeError('keepHeadingsWithNext must be a boolean');
     this.keepHeadingsWithNext = options?.keepHeadingsWithNext ?? true;
+    this.footOpts = normalizeNoteOptions(options?.footnotes, 'footnote');
+    this.endOpts = normalizeNoteOptions(options?.endnotes, 'endnote');
     if (options?.hyphenate !== undefined) {
       resolveHyphenation(options.hyphenate, options.lang);
       this.hyphenate = options.hyphenate.lang === undefined && options.lang !== undefined
@@ -1431,7 +1473,11 @@ export class Flow {
     // (v9j3.2) The flow's hyphenation default reaches Markdown it adds.
     // The same rule as AddParagraph and AddList: its own value wins, false
     // included, and one without a lang takes the flow's (v9j3.2 review).
-    const o = this.withHyphenation(options);
+    const h = this.withHyphenation(options);
+    // A GFM note body is mapped at the flow's own note size unless the style
+    // states one, so the gutter mark the engine draws matches it (v9j3.3.1).
+    const own = (h.footnotePlacement === 'end' ? this.endOpts : this.footOpts).fontSize;
+    const o = h.style?.footnoteSize !== undefined ? h : { ...h, style: { ...h.style, footnoteSize: own } };
     const { elements, skipped } = markdownElements(src, o);
     this.items.push(...elements);
     return { skipped };
@@ -1461,18 +1507,39 @@ export class Flow {
    *  headings, lists, tables, images and links — reporting everything else in
    *  `skipped` (`m2fp.5`). A page or column break becomes a column break. */
   AddDocx(src: Uint8Array | OpenedDocxSource, options: DocxFlowOptions = {}): DocxFlowResult {
-    const { segments, skipped } = docxElements(this.doc, src, this.geometry.columnWidth, options);
+    const { segments, skipped, notes, cited } = docxElements(this.doc, src, this.geometry.columnWidth, options);
     segments.forEach((els, k) => {
       if (k > 0) this.AddColumnBreak();
       this.items.push(...els);
     });
-    return { skipped };
+    // Word's numbering applies through doc.AddDocx, which builds the flow from
+    // it; a flow built otherwise keeps its own and says so (v9j3.3.2).
+    const extra: DocxSkipped[] = [];
+    if (cited) {
+      const same = (w: ResolvedNoteOptions, mine: ResolvedNoteOptions): boolean =>
+        w.format === mine.format && w.start === mine.start && w.restart === mine.restart;
+      if (!same(normalizeNoteOptions(notes.footnotes, 'footnote'), this.footOpts))
+        extra.push({ name: 'w:footnotePr', count: 1, kind: 'degraded' });
+      if (!same(normalizeNoteOptions(notes.endnotes, 'endnote'), this.endOpts))
+        extra.push({ name: 'w:endnotePr', count: 1, kind: 'degraded' });
+    }
+    // SkipLog's order (name, then kind). No merge is needed: neither name is
+    // one the mapper reports. Not wmlflow.ts's mergeSkipped: it imports this module.
+    return { skipped: extra.length === 0 ? skipped : [...skipped, ...extra].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0)) };
   }
 
   /** Force the following content to start in the next column (next page if in
    *  the last column). Chainable. */
   AddColumnBreak(): this {
     this.items.push({ kind: 'column-break' });
+    return this;
+  }
+
+  /** Restart note numbering here (v9j3.3.2): the next footnote (or endnote, or
+   *  both when `kind` is omitted) takes its kind's `start` again — Word's
+   *  "restart each section". Draws nothing and takes no room. Chainable. */
+  RestartNotes(kind?: 'footnote' | 'endnote'): this {
+    this.items.push(noteRestart(kind));
     return this;
   }
 
@@ -1520,6 +1587,10 @@ export class Flow {
       ? this.doc.CreateStructTree().Append('Sect')
       : undefined;
     if (structParent !== undefined && this.lang !== undefined) structParent.Lang = this.lang;
+    // Note IDs avoid what /IDTree already holds; registered once, at the end.
+    const structRoot = structParent !== undefined ? this.doc.GetStructTree()! : undefined;
+    const takenNoteIds = structRoot !== undefined ? takenIds(this.doc, structRoot.Dict) : new Set<string>();
+    const noteIdEntries: Array<[string, PdfRef]> = [];
 
     const queue: FlowItem[] = [...this.items];
     let pageIdx = 0;
@@ -1536,7 +1607,87 @@ export class Flow {
     // Floats deferred to the next column. FlowItem rather than FloatItem since
     // zch2.10: a CSS float is an ordinary element carrying a marker.
     let pending: FlowItem[] = [];
+
+    // Number every note once, in queue (= Add) order, BEFORE anything is
+    // measured — so a mark's width never changes after a line was measured
+    // (v9j3.3). A flow citing no note leaves `notes` undefined and takes
+    // exactly the path it always did: that is the byte-identity argument.
+    const noteLinks = new NoteLinks(this.doc);
+    const numberer = new NoteNumberer(this.footOpts, this.endOpts,
+      (t, fontSize) => paragraph(t, { fontSize }), noteLinks);
+    for (const it of queue) {
+      if (isNoteRestart(it)) { numberer.restart(it.noteRestart); continue; }
+      if (isBreak(it)) continue;
+      const refs = (it as FlowElement).noteRefs?.() ?? [];
+      if (refs.length === 0) continue;
+      if (floatOf(it) !== undefined)
+        throw new UnsupportedFeatureError('footnotes and endnotes inside a float are not supported');
+      for (const r of refs) numberer.assign(r);
+    }
+    const notes = numberer.any ? new NoteColumn(this.footOpts, g.columnWidth) : undefined;
+    // restart: 'page' (v9j3.3.2): footnotes placed on the current page, and
+    // every reference already committed, whose number is final.
+    const pageRestart = this.footOpts.restart === 'page';
+    const committed = new Set<NoteRef>();
+    let countPage = -1;
+    let countOnPage = 0;
+    const renumberForPage = (el: FlowElement): void => {
+      let n = this.footOpts.start + (countPage === pageIdx ? countOnPage : 0);
+      for (const r of el.noteRefs?.() ?? []) {
+        if (r.kind !== 'footnote' || committed.has(r)) continue;
+        numberer.renumber(r, n);
+        if (r.repeatOf === undefined && r.note.mark === undefined) n++;
+      }
+    };
+    const endnoteRefs: NoteRef[] = [];
+    // The column bottom as content sees it: raised by the footnote area.
+    const effBottom = (): number => g.contentBottom + (notes?.footHeight() ?? 0);
+    // The foot height `settleBudget` reasons with: Infinity when the feet
+    // would rise above an active float's bottom — the area spans the whole
+    // column and would overprint the float (review #4).
+    const footFor = (rs: NoteRef[]): number => {
+      const h = notes!.footHeight(rs);
+      const floor = floats.reduce((m, fl) => Math.min(m, fl.bottom), Infinity);
+      return g.contentBottom + h > floor + 1e-9 ? Infinity : h;
+    };
+    const closeColumn = (): void => {
+      if (notes === undefined || notes.empty) return;
+      notes.paint({
+        doc: this.doc, page: ensurePage(pageIdx), x: columnX(g, col), penY: colTop,
+        contentBottom: g.contentBottom, structParent, columnEmpty: atColumnStart,
+      });
+    };
+
+    // endnotes.newPage in a multi-column flow wants a PAGE break: one
+    // column-break sentinel moves one column, so advanceColumn honours this
+    // once by jumping past the remaining columns.
+    let forcePage = false;
+    // The ONE place a placed element's references are committed: tagged, held
+    // for this column's foot (footnotes) or queued (endnotes). Every path that
+    // places an element runs through it, or a note is silently lost.
+    const commitRefs = (refs: readonly NoteRef[]): void => {
+      if (refs.length === 0) return;
+      for (const r of refs) {
+        committed.add(r);
+        if (r.kind !== 'footnote' || r.repeatOf !== undefined || r.note.mark !== undefined) continue;
+        if (countPage !== pageIdx) { countPage = pageIdx; countOnPage = 0; }
+        countOnPage++;
+      }
+      if (structParent !== undefined) {
+        // A repeated citation is the same note: tagged once, by its first.
+        for (const r of refs) {
+          if (r.repeatOf !== undefined) continue;
+          tagNote(r, structParent, nextNoteId(r.kind, takenNoteIds));
+          noteIdEntries.push([r.id!, r.noteTag!.Ref!]);
+        }
+      }
+      notes!.commit(refs);
+      for (const r of refs) if (r.kind === 'endnote' && r.repeatOf === undefined) endnoteRefs.push(r);
+    };
+
     const advanceColumn = () => {
+      closeColumn();
+      if (forcePage) { col = g.columns - 1; forcePage = false; }
       col++;
       if (col >= g.columns) { col = 0; pageIdx++; }
       colTop = g.contentTop;
@@ -1548,6 +1699,10 @@ export class Flow {
       if (pending.length > 0) { queue.unshift(...pending); pending = []; }
     };
 
+    // The outer loop runs the placement loop a second time for the endnotes,
+    // which are ordinary flow content once queued (v9j3.3).
+    let endnotesQueued = false;
+    for (;;) {
     while (queue.length > 0 || pending.length > 0) {
       // Only carried floats left: open the column they were deferred to. The
       // loop condition guarantees `pending` is non-empty here, so advanceColumn
@@ -1555,6 +1710,7 @@ export class Flow {
       if (queue.length === 0) { advanceColumn(); continue; }
       const item = queue[0];
       if (isBreak(item)) { queue.shift(); advanceColumn(); continue; }
+      if (isNoteRestart(item)) { queue.shift(); continue; }
 
       // Clear the floats the pen has passed.
       floats = pruneFloats(floats, colTop);
@@ -1573,7 +1729,7 @@ export class Flow {
         // still fits the channel it leaves.
         const boxTop = resolveFloatTop(
           floats, fl.side, box.width, box.spacing, naturalTop, g.columnWidth);
-        if (boxTop - h >= g.contentBottom - 1e-9) {
+        if (boxTop - h >= effBottom() - 1e-9) {
           floatPlan = { top: boxTop, height: h, natural: naturalTop };
         } else if (!atColumnStart) {
           // Defer rather than advancing: taking the column with us would abandon
@@ -1597,7 +1753,7 @@ export class Flow {
               ? columnX(g, col)
               : columnX(g, col) + g.columnWidth - box.width;
             const s = box.splitPaint(
-              page, boxX, boxTop, boxTop - g.contentBottom, fl.side, structParent);
+              page, boxX, boxTop, boxTop - effBottom(), fl.side, structParent);
             splitHeight = s.height;
             splitTail = s.tail;
           }
@@ -1657,6 +1813,7 @@ export class Flow {
       // never sets degradeOnOverflow; the only thing that falls through here is
       // a degrading element float, which places like any other element.
       const item2: FlowElement = item as FlowElement;
+      if (pageRestart) renumberForPage(item2);
 
       // Clear: drop the pen below the floats on the requested side(s). Idempotent
       // — the cleared floats are pruned, so re-entering with the same element
@@ -1685,7 +1842,10 @@ export class Flow {
       const boundary = besideFloat ? nextBoundary(floats, top)! : 0;
       const elemX = columnX(g, col) + insetL;
       const elemWidth = g.columnWidth - insetL - insetR;
-      const availHeight = besideFloat ? top - boundary : top - g.contentBottom;
+      const availHeight = besideFloat ? Math.min(top - boundary, top - effBottom()) : top - effBottom();
+
+      // Footnotes (or carry) fill what is left of this column: content waits.
+      if (notes !== undefined && top - effBottom() <= 0) { advanceColumn(); continue; }
 
       // A left and a right band can swallow the column between them: skip the pen
       // to where it reopens rather than placing into a negative-width region.
@@ -1705,12 +1865,25 @@ export class Flow {
         // `fits` alone now admits an element with nothing to draw; such a heading
         // has no ink to keep with anything, so it must not push the column.
         if (self.fits && self.usedHeight > 0) {
-          const next = queue.length > 1 && !isBreak(queue[1]) && !isFloat(queue[1])
-            ? (queue[1] as FlowElement) : undefined;
+          // The next element that DRAWS: a restart marker takes no room (v9j3.3.2).
+          const after = queue.slice(1).find((q) => !isNoteRestart(q));
+          const next = after !== undefined && !isBreak(after) && !isFloat(after)
+            ? (after as FlowElement) : undefined;
+          if (pageRestart && next !== undefined) renumberForPage(next);
           if (next?.measure) {
             const gapNext = (item2.spaceAfter ?? 0) + g.paragraphSpacing + (next.spaceBefore ?? 0);
-            const remaining = (top - self.usedHeight) - gapNext - g.contentBottom;
-            if (next.measure({ width: g.columnWidth, availHeight: remaining }).usedHeight <= 0) {
+            const remaining = (top - self.usedHeight) - gapNext - effBottom();
+            // With notes, the next element's first line must fit WITH its own
+            // footnotes — the same settling its placement will do — or the
+            // heading is stranded above a line that then moves on.
+            const nextTop = (top - self.usedHeight) - gapNext;
+            const settledNext = notes === undefined || remaining <= 0 ? undefined
+              : settleBudget((b) => next.measure!({ width: g.columnWidth, availHeight: b }),
+                remaining, nextTop - g.contentBottom, footFor, false);
+            const nextBudget = settledNext === undefined ? remaining
+              : settledNext === 'advance' ? 0 : settledNext.budget;
+            if (nextBudget <= 0
+              || next.measure({ width: g.columnWidth, availHeight: nextBudget }).usedHeight <= 0) {
               advanceColumn();
               continue;
             }
@@ -1718,13 +1891,30 @@ export class Flow {
         }
       }
 
+      // Reserve the foot for the notes this element would cite (v9j3.3): lower
+      // its budget until its kept content and their whole notes share the column.
+      let budget = availHeight;
+      let placedRefs: NoteRef[] = [];
+      if (notes !== undefined && item2.measure !== undefined) {
+        const settled = settleBudget(
+          (b) => item2.measure!({ width: elemWidth, availHeight: b }),
+          availHeight, top - g.contentBottom, footFor,
+          // The split fallback is for a column empty of content AND carry: one
+          // only full of the previous note's carry is cured by advancing.
+          atColumnStart && !notes.hasCarry);
+        if (settled === 'advance') { advanceColumn(); continue; }
+        budget = settled.budget;
+        placedRefs = settled.refs;
+      }
+
       const page = ensurePage(pageIdx); // create a page only when content needs it
       const res = item2.place({
-        doc: this.doc, page, x: elemX, top, width: elemWidth, availHeight,
+        doc: this.doc, page, x: elemX, top, width: elemWidth, availHeight: budget,
         paragraphSpacing: g.paragraphSpacing, structParent,
       });
 
       if (res.drew) {
+        commitRefs(placedRefs);
         queue.shift();
         colTop = top - res.usedHeight; // consume the gap and the used height
         atColumnStart = false;
@@ -1751,6 +1941,11 @@ export class Flow {
         floats = pruneFloats(floats, colTop);
         continue;
       }
+      // A column start holding the previous note's carry is not EMPTY: what
+      // did not fit is cured by advancing, since the carry drains — and the
+      // shrink/overflow paths below would place the element past a sliver of
+      // room without committing its notes.
+      if (atColumnStart && notes !== undefined && notes.hasCarry) { advanceColumn(); continue; }
       if (atColumnStart) {
         // Last resort before refusing the document (zch2.16). Asked ONLY here,
         // where availHeight is the whole column: a tall image near a column
@@ -1776,9 +1971,8 @@ export class Flow {
         // reports the element's natural height, which is exactly the room the
         // overflow needs — and keeps the emitted rect tight rather than
         // astronomically tall.
-        const natural = item2.measure?.(
-          { width: elemWidth, availHeight: OVERFLOW_PROBE },
-        )?.usedHeight;
+        const probe = item2.measure?.({ width: elemWidth, availHeight: OVERFLOW_PROBE });
+        const natural = probe?.usedHeight;
         const over = item2.place({
           doc: this.doc, page, x: elemX, top, width: elemWidth,
           availHeight: natural !== undefined && natural > 0 ? natural : OVERFLOW_PROBE,
@@ -1786,6 +1980,8 @@ export class Flow {
         });
         queue.shift();
         if (over.drew) {
+          // Drawn whole, so every reference it carries was placed.
+          if (notes !== undefined) commitRefs(probe?.notes ?? []);
           colTop = top - over.usedHeight;
           atColumnStart = false;
           pendingSpaceAfter = item2.spaceAfter ?? 0;
@@ -1795,7 +1991,37 @@ export class Flow {
       advanceColumn();
     }
 
+      if (endnotesQueued || endnoteRefs.length === 0) break;
+      endnotesQueued = true;
+      // A fresh page already (col 0, nothing placed) needs no break.
+      if (this.endOpts.newPage && !(col === 0 && atColumnStart)) {
+        forcePage = true;
+        queue.push({ kind: 'column-break' });
+      }
+      const sep = this.endOpts.separator;
+      if (sep !== undefined) {
+        queue.push(...rule({
+          thickness: sep.thickness, color: sep.color,
+          width: Math.min(sep.width ?? g.columnWidth / 3, g.columnWidth), spaceBefore: this.endOpts.spacing,
+        }));
+      }
+      for (const r of endnoteRefs) queue.push(...r.body);
+    }
+
+    closeColumn();
+    // Carry left after the last element: keep opening columns until it drains.
+    // Every column paints some carry (NoteColumn.paint's overflow rule), so this ends.
+    while (notes !== undefined && !notes.empty) {
+      col++;
+      if (col >= g.columns) { col = 0; pageIdx++; }
+      colTop = g.contentTop;
+      atColumnStart = true;
+      closeColumn();
+    }
     if (pages.length === 0) ensurePage(0); // always produce at least one page
+    // Every note and every citation is placed: write the links (v9j3.3.4).
+    noteLinks.finish();
+    if (structRoot !== undefined) registerStructIds(this.doc, structRoot.Dict, noteIdEntries);
     return pages;
   }
 }

@@ -96,7 +96,24 @@ describe.each(files)('%s', (f) => {
 
   it('records every construct the readers found and readDocx does not model', () => {
     const names = new Set(ours.unsupported.map((u) => u.name));
-    const missing = COUNT_KEYS.filter((k) => truths.every((t) => t.counts[k] > 0) && !SKIP_MAP[k].some((n) => names.has(n)));
+    // Footnotes and endnotes are modelled since v9j3.3.2: the readers' counts
+    // must be matched by notes in the model, not by a skip name.
+    const modelled: Partial<Record<keyof TruthCounts, number>> = {
+      footnotes: ours.footnotes?.size ?? 0, endnotes: ours.endnotes?.size ?? 0,
+    };
+    const missing = COUNT_KEYS.filter((k) => truths.every((t) => t.counts[k] > 0)
+      && (k in modelled ? (modelled[k] ?? 0) === 0 : !SKIP_MAP[k].some((n) => names.has(n))));
     expect(missing).toEqual((KNOWN_SKIP_GAPS[f] ?? []).map((g) => g.count));
   });
+});
+
+// Per-section restart (v9j3.3.2) is witnessed by WORD ALONE: LibreOffice numbers
+// footnotes document-wide and reads the Word file's notes i, ii, iii, iv, so the
+// agree-only comparison above cannot see the rule. Held to Word here, as
+// test/fixtures/docx/PROVENANCE.md records.
+it('numbers word2010-notes.docx the way Word does, per-section restart included', () => {
+  const word = readTruth(join(DIR, 'word2010-notes.word.json'));
+  const ours = truthOf(readDocx(new Uint8Array(readFileSync(join(DIR, 'word2010-notes.docx')))));
+  expect(ours.notes.footnotes.map((n) => n.mark)).toEqual(word.notes.footnotes.map((n) => n.mark));
+  expect(ours.notes.endnotes.map((n) => n.mark)).toEqual(word.notes.endnotes.map((n) => n.mark));
 });

@@ -10,7 +10,9 @@
  *
  *  **Invariant:** nothing here throws on document content; what does not map is
  *  a counted record in `skipped`. */
-import type { WmlBlock, WmlParagraph, WmlInline, WmlTable } from './wmlbody.js';
+import type { WmlBlock, WmlParagraph, WmlInline, WmlNoteRef, WmlTable } from './wmlbody.js';
+import type { WmlNotePr, WmlSectionNotes } from './wmlnotes.js';
+import { noteRestart, type FlowNote, type FlowNoteOptions, type FlowEndnoteOptions, type MarkFormat } from './flownotes.js';
 import type { WmlDocument } from './wmlread.js';
 import type { FlowElement } from './flowelement.js';
 import type { ResolvedFamily } from './mdstyle.js';
@@ -40,6 +42,8 @@ const DROPPED = new Set([
   'w:headerReference', 'w:footerReference', 'w:footnoteReference', 'w:endnoteReference',
   'w:commentReference', 'w:del', 'w:moveFrom', 'w:fldChar (unterminated)',
   'a:blip (unresolved image)', 'a:blip (unreadable image)', 'w:drawing (not a picture)', 'text',
+  'w:footnoteReference (unknown id)', 'w:endnoteReference (unknown id)',
+  'w:footnoteReference (in a note)', 'w:endnoteReference (in a note)',
 ]);
 
 export function kindOf(name: string): 'dropped' | 'degraded' {
@@ -73,6 +77,9 @@ interface Ctx extends RunCtx {
   gap: number;
   /** The space-after standing above the next element (0 at a segment start). */
   prevAfter: number;
+  /** The body's section counter and, per section boundary k, the note kinds
+   *  section k + 1 restarts (eachSect) — absent in a note body (v9j3.3.2). */
+  noteSection?: { idx: number; restartAt: ('footnote' | 'endnote')[][] };
 }
 
 const cur = (c: Ctx): FlowElement[] => c.segments[c.segments.length - 1];
@@ -287,6 +294,8 @@ function cellContent(blocks: WmlBlock[], c: Ctx): { runs: TextRun[]; atomics: Fl
   const addPara = (p: WmlParagraph): void => {
     const inl = p.inlines.filter((i) => !(i.kind === 'break' && i.type !== 'line'));
     if (inl.length !== p.inlines.length) c.log.add('w:br (page)', 'degraded', p.inlines.length - inl.length);
+    // A cell cites notes like any paragraph (v9j3.3.3); inside a note body
+    // `c.cite` is undefined and the reference is reported (in a note).
     const got = inlineContent(inl, c);
     const lead = got.runs[0];
     if (runs.length > 0) runs.push({ text: '\n', font: lead?.font, fontSize: lead?.fontSize });
@@ -407,14 +416,141 @@ function blockElements(blocks: WmlBlock[], c: Ctx): void {
         if (k > 0) { c.segments.push([]); c.gap = 0; c.prevAfter = 0; }
         paragraphElements(b, inl, c, { first: k === 0, last: k === parts.length - 1 });
       });
+      // The end of a section: restart the note kinds the next section restarts.
+      if (b.sectionEnd !== undefined && c.noteSection !== undefined) {
+        const kinds = c.noteSection.restartAt[c.noteSection.idx++] ?? [];
+        for (const k of kinds) cur(c).push(noteRestart(k));
+      }
     }
   }
 }
 
-export function wmlElements(doc: WmlDocument, width: number, env: WmlFlowEnv): { segments: FlowElement[][]; skipped: DocxSkipped[] } {
+export function wmlElements(doc: WmlDocument, width: number, env: WmlFlowEnv): {
+  segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean;
+} {
   const log = new SkipLog();
   for (const u of doc.unsupported) log.add(u.name, kindOf(u.name), u.count);
-  const c: Ctx = { env, log, width, segments: [[]], gap: 0, prevAfter: 0 };
+  const notes = docxNoteOptions(doc);
+  for (const s of notes.skipped) log.add(s, 'degraded');
+  const secs = sectionNotes(doc);
+  const restartAt = secs.slice(1).map((s) => (['footnote', 'endnote'] as const)
+    .filter((k) => s[k === 'footnote' ? 'footnotePr' : 'endnotePr']?.numRestart === 'eachSect'));
+  const c: Ctx = { env, log, width, segments: [[]], gap: 0, prevAfter: 0, noteSection: { idx: 0, restartAt } };
+  const built = { footnote: new Map<string, FlowNote>(), endnote: new Map<string, FlowNote>() };
+  let cited = false;
+  c.cite = (ref: WmlNoteRef) => {
+    const part = ref.note === 'footnote' ? doc.footnotes : doc.endnotes;
+    const tag = ref.note === 'footnote' ? 'w:footnoteReference' : 'w:endnoteReference';
+    if (part === undefined) { log.add(tag, 'dropped'); return undefined; }
+    const blocks = part.get(ref.id);
+    if (blocks === undefined) { log.add(`${tag} (unknown id)`, 'dropped'); return undefined; }
+    let note = built[ref.note].get(ref.id);
+    if (note === undefined) {
+      note = { content: noteElements(noteLead(blocks, ref.mark), c), ...(ref.mark !== undefined ? { mark: ref.mark } : {}) };
+      built[ref.note].set(ref.id, note);
+    }
+    cited = true;
+    return { kind: ref.note, note };
+  };
   blockElements(doc.blocks, c);
-  return { segments: c.segments, skipped: log.list() };
+  return { segments: c.segments, skipped: log.list(), notes, cited };
+}
+
+/** A note body without what stood in for Word's own number (corpus finding,
+ *  v9j3.3.2): the engine draws the gutter mark, so the body must not draw it
+ *  again. Word writes a CUSTOM mark as an ordinary leading run of that text
+ *  (no w:footnoteRef), and LibreOffice puts a tab between the number and the
+ *  text — so leading tabs, whitespace and, for a custom mark, its own text are
+ *  dropped from the first paragraph. Returns the blocks unchanged otherwise. */
+function noteLead(blocks: WmlBlock[], mark: string | undefined): WmlBlock[] {
+  const first = blocks[0];
+  if (first === undefined || first.kind !== 'paragraph') return blocks;
+  const inl = [...first.inlines];
+  let markLeft = mark;
+  while (inl.length > 0) {
+    const i = inl[0];
+    if (i.kind === 'tab') { inl.shift(); continue; }
+    if (i.kind !== 'text') break;
+    let t = i.text.replace(/^\s+/, '');
+    if (markLeft !== undefined && t.startsWith(markLeft)) { t = t.slice(markLeft.length).replace(/^\s+/, ''); markLeft = undefined; }
+    if (t === '') { inl.shift(); continue; }
+    inl[0] = { ...i, text: t };
+    break;
+  }
+  if (inl.length === first.inlines.length && inl[0] === first.inlines[0]) return blocks;
+  return [{ ...first, inlines: inl }, ...blocks.slice(1)];
+}
+
+/** A note's blocks as flow elements, mapped by the same block mapper at the
+ *  note's own Word styles, with references inside it refused (notes do not
+ *  nest). A page or column break inside a note cannot be honoured. */
+function noteElements(blocks: WmlBlock[], parent: Ctx): FlowElement[] {
+  const nc: Ctx = { env: parent.env, log: parent.log, width: parent.width, segments: [[]], gap: 0, prevAfter: 0, refusal: 'in a note' };
+  blockElements(blocks, nc);
+  if (nc.segments.length > 1) parent.log.add('w:br (page)', 'degraded', nc.segments.length - 1);
+  return nc.segments.flat();
+}
+
+const NUM_FMT: Readonly<Record<string, MarkFormat>> = {
+  decimal: 'arabic', lowerRoman: 'roman', upperRoman: 'Roman',
+  lowerLetter: 'alpha', upperLetter: 'Alpha', chicago: 'symbols',
+};
+/** Word's w:numFmt as the engine's mark format; undefined when it has none. */
+export function noteFormat(numFmt: string | undefined): MarkFormat | undefined {
+  return numFmt !== undefined && Object.hasOwn(NUM_FMT, numFmt) ? NUM_FMT[numFmt] : undefined;
+}
+
+/** Each section's EFFECTIVE note properties, in order: its own sectPr's over
+ *  settings.xml's, field by field. The last section is the body's sectPr. */
+export function sectionNotes(doc: WmlDocument): WmlSectionNotes[] {
+  const merge = (own: WmlSectionNotes): WmlSectionNotes => ({
+    footnotePr: { ...doc.notePr.settings.footnotePr, ...own.footnotePr },
+    endnotePr: { ...doc.notePr.settings.endnotePr, ...own.endnotePr },
+  });
+  const ends = doc.blocks.filter((b): b is WmlParagraph => b.kind === 'paragraph' && b.sectionEnd !== undefined);
+  return [...ends.map((p) => merge(p.sectionEnd!)), merge(doc.notePr.last)];
+}
+
+export interface DocxNoteOptions { footnotes: FlowNoteOptions; endnotes: FlowEndnoteOptions; skipped: string[] }
+
+/** The flow note options Word's numbering asks for, from the LAST section (as
+ *  page geometry is), and what the engine cannot honour (all degraded). */
+export function docxNoteOptions(doc: WmlDocument): DocxNoteOptions {
+  const secs = sectionNotes(doc);
+  const last = secs[secs.length - 1];
+  const skipped: string[] = [];
+  const opts = (kind: 'footnote' | 'endnote', pr: WmlNotePr | undefined, notes: Map<string, WmlBlock[]> | undefined): FlowNoteOptions => {
+    const o: FlowNoteOptions = {};
+    if (pr?.numFmt !== undefined) {
+      const f = noteFormat(pr.numFmt);
+      if (f === undefined) { skipped.push(`w:numFmt (${kind})`); if (kind === 'footnote') o.format = 'arabic'; }
+      else o.format = f;
+    }
+    if (pr?.numStart !== undefined) o.start = pr.numStart;
+    if (pr?.numRestart === 'eachPage') {
+      if (kind === 'footnote') o.restart = 'page';
+      else skipped.push('w:numRestart (endnote)');
+    }
+    const pos = pr?.pos;
+    if (pos !== undefined && pos !== (kind === 'footnote' ? 'pageBottom' : 'docEnd')) skipped.push(`w:pos (${kind})`);
+    const size = firstNoteSize(notes);
+    if (size !== undefined) o.fontSize = size;
+    return o;
+  };
+  const footnotes = opts('footnote', last.footnotePr, doc.footnotes);
+  const endnotes: FlowEndnoteOptions = opts('endnote', last.endnotePr, doc.endnotes);
+  for (const key of ['footnotePr', 'endnotePr'] as const) {
+    const differs = secs.slice(0, -1).some((s) => s[key]?.numFmt !== last[key]?.numFmt || s[key]?.numStart !== last[key]?.numStart);
+    if (differs) skipped.push(`w:${key} (section)`);
+  }
+  return { footnotes, endnotes, skipped };
+}
+
+/** The first note's first paragraph's largest text size: the size the engine's
+ *  gutter mark is drawn against. */
+function firstNoteSize(notes: Map<string, WmlBlock[]> | undefined): number | undefined {
+  const first = notes?.values().next().value;
+  const para = first?.find((b): b is WmlParagraph => b.kind === 'paragraph');
+  const sizes = para?.inlines.flatMap((i) => (i.kind === 'text' ? [i.props.sizePt] : [])) ?? [];
+  return sizes.length > 0 ? Math.max(...sizes) : undefined;
 }

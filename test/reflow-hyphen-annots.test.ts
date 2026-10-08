@@ -19,13 +19,13 @@ describe('annotations and decorations over a split word (6y39)', () => {
     const m = doc.Pages[0].Search('internationalization')[0];
     doc.Pages[0].AddHighlight({ quads: m.quads.flatMap(([x0, y0, x1, y1]) => [x0, y1, x1, y1, x0, y0, x1, y0]) });
     doc.Pages[0].ReplaceText('quick', 'remarkably quick', HY);
-    expect(doc.Pages[0].GetText()).toMatch(/inter[a-z]*-\n/);   // the word WAS split
+    expect(doc.Pages[0].GetText()).toMatch(/inter[a-z]*\u00AD\n/);   // the word WAS split
     const hl = doc.Pages[0].Annotations.find((a) => a.Subtype === 'Highlight')!;
     const qp = hl.Dict.get('QuadPoints') as number[];
     expect(qp.length).toBe(16);
     // Top line first, [x0 y1 x1 y1 x0 y0 x1 y0]: the head's x1 reaches the
     // hyphen's end, which Search reports as the end of the head's quad.
-    const head = doc.Pages[0].Search(/inter[a-z]*-/)[0].quads[0];
+    const head = doc.Pages[0].Search(/inter[a-z]*\u00AD/)[0].quads[0];
     expect(qp[2]).toBeCloseTo(head[2], 1);
   });
   it('a highlight over a rejoined word becomes one quad, with no box for the removed hyphen', () => {
@@ -47,12 +47,12 @@ describe('annotations and decorations over a split word (6y39)', () => {
     const doc = block();
     // At 22pt the restyled word no longer fits after 'lazy' and must split.
     doc.Pages[0].RestyleText('internationalization', { fontSize: 22, underline: true }, HY);
-    expect(doc.Pages[0].GetText()).toMatch(/internationaliza-\ntion/);
+    expect(doc.Pages[0].GetText()).toMatch(/internationaliza\u00AD\ntion/);
     const ops = parseContentStream(doc.Pages[0].Contents);
     const rects = ops.filter((o) => o.operator === 're');
     expect(rects.length).toBe(2);   // one underline is one 're'; one per line
     // The head's rule runs through its hyphen: as wide as Search's quad for it.
-    const head = doc.Pages[0].Search('internationaliza-')[0].quads[0];
+    const head = doc.Pages[0].Search('internationaliza\u00AD')[0].quads[0];
     expect(rects[0].operands[2] as number).toBeCloseTo(head[2] - head[0], 1);
   });
 });

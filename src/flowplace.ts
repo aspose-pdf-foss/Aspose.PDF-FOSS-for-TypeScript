@@ -11,6 +11,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
 import type { FlowElement } from './flowelement.js';
+import { UnsupportedFeatureError } from './errors.js';
 import {
   insetsAt, nextBoundary, pruneFloats, resolveFloatTop, type ActiveFloat,
 } from './floatstack.js';
@@ -52,6 +53,16 @@ export function placeElements(
   const ps = options.paragraphSpacing ?? 0;
   if (!Number.isFinite(ps) || ps < 0)
     throw new TypeError('paragraphSpacing must be a non-negative finite number');
+  // A single rect has no column foot and no next column: a footnote placed
+  // here would have nowhere honest to go (v9j3.3). Refuse rather than drop it.
+  // A restart marker (v9j3.3.2) numbers nothing here and draws nothing. Tested
+  // by shape: flownotes.ts value-imports this module, so importing its
+  // isNoteRestart back would close a cycle.
+  const isMarker = (e: FlowElement): boolean => (e as { noteRestart?: unknown }).noteRestart !== undefined;
+  if (elements.some(isMarker)) elements = elements.filter((e) => !isMarker(e));
+  if (elements.some((e) => (e.noteRefs?.().length ?? 0) > 0))
+    throw new UnsupportedFeatureError(
+      'footnotes and endnotes are supported only by Flow.Render, not by a single-rect placement');
   const rectTop = y + h;
   let top = rectTop;
   let started = false;

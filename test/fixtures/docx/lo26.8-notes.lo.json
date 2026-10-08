@@ -1,0 +1,120 @@
+{
+  "reader": "LibreOffice 26.8.0.3",
+  "paragraphs": [
+    {
+      "text": "Notes",
+      "styleName": "Heading 1",
+      "heading": 1,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Notes",
+          "bold": true,
+          "italic": false,
+          "sizePt": 18.0,
+          "font": "Arial"
+        }
+      ]
+    },
+    {
+      "text": "Alpha",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Alpha",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Beta",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Beta",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Gamma",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Gamma",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    },
+    {
+      "text": "Delta",
+      "styleName": "Default Paragraph Style",
+      "heading": null,
+      "listLabel": null,
+      "inTable": false,
+      "segments": [
+        {
+          "text": "Delta",
+          "bold": false,
+          "italic": false,
+          "sizePt": 12.0,
+          "font": "Times New Roman"
+        }
+      ]
+    }
+  ],
+  "tables": [],
+  "links": [],
+  "images": 0,
+  "counts": {
+    "headers": 0,
+    "footers": 0,
+    "footnotes": 3,
+    "endnotes": 1,
+    "textBoxes": 0,
+    "fields": 0,
+    "comments": 0,
+    "revisions": 0
+  },
+  "notes": {
+    "footnotes": [
+      {
+        "mark": "iii",
+        "text": "First note."
+      },
+      {
+        "mark": "iv",
+        "text": "Second note."
+      },
+      {
+        "mark": "*",
+        "text": "*\tStarred note."
+      }
+    ],
+    "endnotes": [
+      {
+        "mark": "i",
+        "text": "An endnote."
+      }
+    ]
+  }
+}

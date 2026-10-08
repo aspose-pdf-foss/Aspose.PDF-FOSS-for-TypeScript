@@ -9,7 +9,8 @@
  *  destination until the document is placed, and a `/URI` to `#name` is a link
  *  that looks clickable and does nothing (`cssinline.ts`'s rule), so it is
  *  reported and its text kept. */
-import type { WmlInline, WmlText } from './wmlbody.js';
+import type { WmlInline, WmlNoteRef, WmlText } from './wmlbody.js';
+import type { FlowNote, FlowTextRun } from './flownotes.js';
 import type { TextRun } from './textdecor.js';
 import type { FlowAtomic } from './flow.js';
 import type { AuthoringFont } from './stamp.js';
@@ -17,7 +18,16 @@ import type { ResolvedFamily } from './mdstyle.js';
 import type { SkipLog, WmlFlowEnv } from './wmlflow.js';
 import { imageSize } from './imageembed.js';
 
-export interface RunCtx { env: WmlFlowEnv; log: SkipLog }
+export interface RunCtx {
+  env: WmlFlowEnv;
+  log: SkipLog;
+  /** How a note reference becomes a cited note (v9j3.3.2); an undefined result
+   *  means `cite` reported why. ABSENT where a reference cannot be honoured —
+   *  a note body (a table cell cites since v9j3.3.3) — and then `refusal`
+   *  names the place in `skipped`. */
+  cite?: (r: WmlNoteRef) => { kind: 'footnote' | 'endnote'; note: FlowNote } | undefined;
+  refusal?: 'in a note';
+}
 
 function face(f: ResolvedFamily, bold: boolean, italic: boolean): AuthoringFont {
   return bold && italic ? f.boldItalic : bold ? f.bold : italic ? f.italic : f.regular;
@@ -71,8 +81,8 @@ function imageAtomic(i: WmlImage, beforeRun: number, c: RunCtx): FlowAtomic | un
 /** The face and size a break or a tab takes: the run's before it. */
 const fontOf = (x?: TextRun): Pick<TextRun, 'font' | 'fontSize'> => (x ? { font: x.font, fontSize: x.fontSize } : {});
 
-export function inlineContent(inlines: WmlInline[], c: RunCtx): { runs: TextRun[]; atomics: FlowAtomic[]; maxSize: number } {
-  const runs: TextRun[] = [];
+export function inlineContent(inlines: WmlInline[], c: RunCtx): { runs: FlowTextRun[]; atomics: FlowAtomic[]; maxSize: number } {
+  const runs: FlowTextRun[] = [];
   const atomics: FlowAtomic[] = [];
   let maxSize = 0;
   for (const i of inlines) {
@@ -88,6 +98,17 @@ export function inlineContent(inlines: WmlInline[], c: RunCtx): { runs: TextRun[
     } else if (i.kind === 'image') {
       const a = imageAtomic(i, runs.length, c);
       if (a) atomics.push(a);
+    } else if (i.kind === 'note') {
+      const tag = i.note === 'footnote' ? 'w:footnoteReference' : 'w:endnoteReference';
+      if (c.cite === undefined) { c.log.add(`${tag} (${c.refusal ?? 'in a note'})`, 'dropped'); continue; }
+      const got = c.cite(i);
+      if (got === undefined) continue;
+      // An EMPTY run carrying the note, in the reference run's own face and
+      // size: the engine draws the mark after it (a mark in bold text is bold).
+      // Its unmodelled names (the superscript) are not reported: the raised
+      // mark is the engine's to draw.
+      const fam = c.env.family(i.props.font);
+      runs.push({ text: '', font: face(fam.family, i.props.bold, i.props.italic), fontSize: i.props.sizePt, [got.kind]: got.note });
     }
   }
   return { runs, atomics, maxSize };

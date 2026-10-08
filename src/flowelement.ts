@@ -9,6 +9,15 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
 import type { ClearSide } from './floatstack.js';
+import type { NoteRef } from './flownotes.js';
+
+/** What {@link FlowElement.measure} reports. */
+export interface MeasureResult {
+  usedHeight: number;
+  fits: boolean;
+  /** Note references in the content that would be kept. Absent means none. */
+  notes?: readonly NoteRef[];
+}
 
 /** Which side's floats an element must clear before it places. */
 export type FlowClear = ClearSide;
@@ -69,8 +78,16 @@ export interface FlowElement {
    *  Conflating that with "did not fit here" makes it ask for another column,
    *  and at a column start there is none, so the whole render throws
    *  (zch2.13). A caller that needs "drew something" must test `usedHeight`
-   *  itself, as the keep-with-next lookahead does. */
-  measure?(ctx: MeasureContext): { usedHeight: number; fits: boolean };
+   *  itself, as the keep-with-next lookahead does.
+   *
+   *  `notes` (v9j3.3) lists the note references in the content that would be
+   *  KEPT at this budget — what `Flow.Render` reserves column-foot room for
+   *  before it places. Absent means none. */
+  measure?(ctx: MeasureContext): MeasureResult;
+  /** Every note reference this element — and anything it wraps — carries, in
+   *  reading order, whatever the budget (v9j3.3). Containers forward their
+   *  child's; only text elements originate one. Absent means none. */
+  noteRefs?(): NoteRef[];
   /** True only for headings — the elements eligible for keep-with-next. */
   readonly keepWithNextEligible?: boolean;
   /** Per-element override of the flow keep-with-next policy; `undefined` inherits

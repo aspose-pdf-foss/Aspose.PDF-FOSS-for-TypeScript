@@ -161,10 +161,19 @@ def read(o, path):
         if counts['revisions']:
             disp = o.smgr.createInstanceWithContext('com.sun.star.frame.DispatchHelper', o.ctx)
             disp.executeDispatch(doc.CurrentController.Frame, '.uno:AcceptAllTrackedChanges', '', 0, ())
+        def notes_of(coll):
+            # v9j3.3.2: the anchor string is the mark LibreOffice displays; a
+            # custom mark is the label.
+            out = []
+            for i in range(coll.getCount()):
+                n = coll.getByIndex(i)
+                out.append({'mark': n.getLabel() or n.getAnchor().getString(), 'text': clean(n.getString()).strip()})
+            return out
+        notes = {'footnotes': notes_of(doc.Footnotes), 'endnotes': notes_of(doc.Endnotes)}
         paras, tables, links = [], [], []
         walk(doc.Text, False, doc, paras, tables, links, True)
         return {'reader': 'LibreOffice ' + o.version(), 'paragraphs': paras, 'tables': tables, 'links': links,
-                'images': doc.GraphicObjects.getCount(), 'counts': counts}
+                'images': doc.GraphicObjects.getCount(), 'counts': counts, 'notes': notes}
     finally:
         doc.close(True)
 

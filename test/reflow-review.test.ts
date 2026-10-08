@@ -93,3 +93,30 @@ describe('reflow review findings (u3l5.5)', () => {
     expect(bbox[3] - bbox[1]).toBeCloseTo(rect[3] - rect[1], 3);
   });
 });
+
+describe('a line-final space in a show string (8eew)', () => {
+  const LONG = 'Documentation of internationalization requirements demonstrates extraordinary responsibility and considerable organizational flexibility throughout implementation';
+  it('a second reflow over our own output is accepted and re-wraps', () => {
+    const d = Document.New(PageFormat.A4);
+    d.Pages[0].AddTextBlock(LONG, [72, 400, 200, 300], { fontSize: 12 });
+    let doc = Document.Open(d.Save());
+    doc.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', { adjust: 'reflow' });
+    doc = Document.Open(doc.Save());
+    // The first reflow leaves `(Documentation and analysis of ) Tj`: a space
+    // ending a line, chained to the member before it.
+    expect(new TextDecoder().decode(doc.Pages[0].Contents)).toContain('of ) Tj');
+    expect(doc.Pages[0].ReplaceText('Documentation and analysis', 'Docs', { adjust: 'reflow' })).toBe(1);
+    doc = Document.Open(doc.Save());
+    const lines = doc.Pages[0].GetText().split('\n');
+    expect(lines.join(' ').split(/\s+/)).toEqual(LONG.replace('Documentation', 'Docs').split(' '));
+    expect(lines[0]).toBe('Docs of internationalization');     // the shorter text pulled a word up
+    for (const f of doc.Pages[0].GetTextFragments()) expect(f.quad[0]).toBeCloseTo(72, 3);
+  });
+  it("a producer's own trailing space before a line break does not block a reflow", () => {
+    const doc = Document.Open(buildSimpleTextPdf(
+      'BT /F1 12 Tf 20 280 Td (alpha beta gamma ) Tj 0 -14 Td (delta epsilon zeta ) Tj 0 -14 Td (eta theta) Tj ET'));
+    expect(doc.Pages[0].ReplaceText('beta', 'BETA-BETA-BETA', { adjust: 'reflow' })).toBe(1);
+    expect(doc.Pages[0].GetText().split(/\s+/)).toEqual(
+      'alpha BETA-BETA-BETA gamma delta epsilon zeta eta theta'.split(' '));
+  });
+});

@@ -13,9 +13,9 @@ const text = (t: string, w: number, h = 1000, hy = manual) =>
 describe('layoutRuns with hyphenation (v9j3.2)', () => {
   it('splits the word that does not fit at its rightmost fitting point and draws a hyphen', () => {
     // 'aaa ' is 24pt; in 60pt the head may be 36pt: 'hy-' (18) fits, 'hyphen-' (42) does not.
-    expect(text(`aaa hy${SHY}phen${SHY}ation`, 60)).toEqual(['aaa hy-', 'phenation']);
+    expect(text(`aaa hy${SHY}phen${SHY}ation`, 60)).toEqual([`aaa hy${SHY}`, 'phenation']);
     // In 66pt the head may be 42pt: 'hyphen-' fits and is the rightmost.
-    expect(text(`aaa hy${SHY}phen${SHY}ation`, 66)).toEqual(['aaa hyphen-', 'ation']);
+    expect(text(`aaa hy${SHY}phen${SHY}ation`, 66)).toEqual([`aaa hyphen${SHY}`, 'ation']);
   });
 
   it('counts the hyphen in the line width', () => {
@@ -38,7 +38,7 @@ describe('layoutRuns with hyphenation (v9j3.2)', () => {
     // 'hyphen-' (42) and 'ation-' (36) fit; the last 'hyphenation' (66) has no
     // point and no UAX #14 opportunity (AL x AL), so it overflows whole, as today.
     const w = `hy${SHY}phen${SHY}ation${SHY}hyphenation`;
-    expect(text(w, 60)).toEqual(['hyphen-', 'ation-', 'hyphenation']);
+    expect(text(w, 60)).toEqual([`hyphen${SHY}`, `ation${SHY}`, 'hyphenation']);
   });
 
   it('skips a point whose font cannot draw a hyphen', () => {
@@ -54,7 +54,7 @@ describe('layoutRuns with hyphenation (v9j3.2)', () => {
 
   it('keeps the soft hyphens in the remainder', () => {
     const r = layoutRuns([{ text: `aaa hy${SHY}phen${SHY}ation more`, driver: CR, fontSize: 10 }], 60, 12, 12, 10, 0, manual);
-    expect(r.lines.map((l) => l.text)).toEqual(['aaa hy-']);
+    expect(r.lines.map((l) => l.text)).toEqual([`aaa hy${SHY}`]);
     expect(r.remainder.map((s) => s.text).join('')).toBe(`phen${SHY}ation more`);
   });
 
@@ -62,9 +62,9 @@ describe('layoutRuns with hyphenation (v9j3.2)', () => {
     const auto = hyphenator(resolveHyphenation({ lang: 'en' }));
     const src = 'The quick brown fox jumps over the lazy dog and hyphenation documentation';
     const lines = layoutText(src, CR, 10, 70, 1000, 12, auto).lines;
-    const joined = lines.map((l, i) => (i < lines.length - 1 && l.text.endsWith('-') ? l.text.slice(0, -1) : `${l.text} `)).join('');
+    const joined = lines.map((l, i) => (i < lines.length - 1 && l.text.endsWith(SHY) ? l.text.slice(0, -1) : `${l.text} `)).join('');
     expect(joined.trim()).toBe(src);
-    expect(lines.some((l) => l.text.endsWith('-'))).toBe(true);
+    expect(lines.some((l) => l.text.endsWith(SHY))).toBe(true);
     for (const l of lines) expect(l.width).toBeLessThanOrEqual(70 + 1e-6);
   });
 

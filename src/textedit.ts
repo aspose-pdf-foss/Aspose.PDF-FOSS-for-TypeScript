@@ -282,6 +282,39 @@ interface StreamEdits {
   after: Map<number, ContentOp[]>;
   /** Operators written BEFORE an operator (u3l5.6). */
   before: Map<number, ContentOp[]>;
+  /** The reflow wrote a `Tm` here, so superseded positioning is dropped at
+   *  apply (r9u0, `dropDeadPositioning`). */
+  compact?: boolean;
+}
+
+/** An operator that sets the text matrix and does nothing else: `Td`, `T*`,
+ *  `Tm`, and a `TJ` holding no string (a pure kern). NOT `TD`, which also
+ *  sets the leading that later `T*`, `'` and `"` read. */
+function penOnly(op: ContentOp): boolean {
+  if (op.operator === 'Td' || op.operator === 'T*' || op.operator === 'Tm') return true;
+  return op.operator === 'TJ' && isArray(op.operands[0]) && op.operands[0].every((x) => typeof x === 'number');
+}
+
+/** `ops` without text-positioning that nothing reads (r9u0): a CONTIGUOUS run
+ *  of `penOnly` operators followed by a `Tm` — which sets the text and line
+ *  matrices outright — or by `ET`, which discards them. Anything else between
+ *  two of them, `TD` included, ends the run, so this is conservative by
+ *  construction: it drops only operators whose whole effect is overwritten
+ *  before anything is drawn.
+ *
+ *  **Why it exists:** each reflow positions what it moves with a fresh `Tm`
+ *  and restores the line matrix with another, and never removed the ones a
+ *  previous reflow wrote, so the stream grew by a pair per moved line per
+ *  edit — measured +11 `Tm` a reflow, 270 to 1,640 bytes over six. @internal */
+export function dropDeadPositioning(ops: readonly ContentOp[]): ContentOp[] {
+  const out: ContentOp[] = [];
+  let run = 0;   // trailing penOnly ops in `out`
+  for (const op of ops) {
+    if (op.operator === 'Tm' || op.operator === 'ET') out.length -= run;
+    out.push(op);
+    run = op.operator === 'ET' ? 0 : penOnly(op) ? (op.operator === 'Tm' ? 1 : run + 1) : 0;
+  }
+  return out;
 }
 
 /** The text-positioning operators after which a show operator's pen no longer
@@ -765,7 +798,7 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>, c
   for (const c of copies) {
     ensureOwnSubdict(doc, ec.ownXObjectResources(c.path), c.category).set(c.key, c.value);
   }
-  for (const { addr, perOp, kerns, restore, inserts, after, before } of streams) {
+  for (const { addr, perOp, kerns, restore, inserts, after, before, compact } of streams) {
     any = true;
     const ops = addr.path.length === 0 ? ec.topOps(addr.streamIndex) : ec.xobjectOps(addr.path);
     let fonts: PdfDict | undefined;
@@ -791,8 +824,9 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>, c
       }
       out.push(...(after.get(i) ?? []));
     });
-    if (addr.path.length === 0) ec.setTopOps(addr.streamIndex, out);
-    else ec.setXobjectOps(addr.path, out);
+    const final = compact ? dropDeadPositioning(out) : out;
+    if (addr.path.length === 0) ec.setTopOps(addr.streamIndex, final);
+    else ec.setXobjectOps(addr.path, final);
   }
   if (any) ec.commit();
 }
@@ -1251,18 +1285,38 @@ interface ReflowFaces { tiersFor(g: GlyphEvent): FontTiers; canSwitch(g: GlyphEv
  *  (`unitRun`'s foreign font, else `g`'s font through `drawCode`), then the
  *  registered same face and `fallbackFonts` where `g`'s scope can switch font.
  *  It carries the unit's style, so a styled replacement's hyphen matches it.
- *  Undefined: no face draws '-', and the point is skipped. */
+ *  Undefined: no face draws '-', and the point is skipped.
+ *
+ *  **Invariant (rhud):** the hyphen is WRITTEN as the face's soft hyphen where
+ *  that draws the same thing — `FontDriver.hyphen` for an authoring font, and
+ *  for the original font a code decoding to U+00AD whose advance equals
+ *  `'-'`'s (`softHyphenCode`) — so the next reflow rejoins it. */
 function hyphenRunFor(g: GlyphEvent, faces: ReflowFaces, unitRun?: Run): Run | undefined {
   const style = unitRun?.style;
+  const authored = (f: AuthoringFont): Run => ({ font: f, text: driverFor(f).hyphen ?? '-', style });
   if (unitRun && unitRun.font !== 'original') {
-    return driverFor(unitRun.font).probe('-') > 0 ? { font: unitRun.font, text: '-', style } : undefined;
+    return driverFor(unitRun.font).probe('-') > 0 ? authored(unitRun.font) : undefined;
   }
   const bytes = g.font.drawCode('-');
-  if (bytes) return { font: 'original', bytes, style };
+  if (bytes) return { font: 'original', bytes: softHyphenCode(g.font, bytes) ?? bytes, style };
   if (!faces.canSwitch(g)) return undefined;
   const t = faces.tiersFor(g);
   const f = [t.registered, ...t.fallbacks].find((x): x is AuthoringFont => x !== undefined && driverFor(x).probe('-') > 0);
-  return f === undefined ? undefined : { font: f, text: '-', style };
+  return f === undefined ? undefined : authored(f);
+}
+
+/** The code that draws a hyphen in `font` and reads back as U+00AD, or
+ *  undefined. `drawCode` already demands a code decoding to U+00AD whose glyph
+ *  the program DEFINES \u2014 an emptied glyph counts as missing for anything but
+ *  whitespace, which U+00AD is not, so a blank soft-hyphen glyph never
+ *  qualifies. On top of that the advance must equal the `-` code's: a producer
+ *  may give 0xAD a width of 0 (a soft hyphen nobody draws), and a different
+ *  advance would move every glyph after the break. A simple font and an
+ *  Identity-H composite font answer by the same rule. */
+function softHyphenCode(font: GlyphEvent['font'], hyphen: Uint8Array): Uint8Array | undefined {
+  const soft = font.drawCode('\u00AD');
+  if (soft === undefined) return undefined;
+  return Math.abs(font.decodeRun(soft).width - font.decodeRun(hyphen).width) < 1e-9 ? soft : undefined;
 }
 
 /** The language a reflowed paragraph hyphenates in: the anchor glyph's
@@ -1334,11 +1388,15 @@ function writeReflow(
     if (list) list.push(ins); else map.set(g.addr.opIndex, [ins]);
   };
   const after = (g: GlyphEvent, op: ContentOp) => {
-    const map = streamFor(g.addr).after;
-    const list = map.get(g.addr.opIndex);
-    if (list) list.push(op); else map.set(g.addr.opIndex, [op]);
+    const s = streamFor(g.addr);
+    if (op.operator === 'Tm') s.compact = true;
+    const list = s.after.get(g.addr.opIndex);
+    if (list) list.push(op); else s.after.set(g.addr.opIndex, [op]);
   };
+  // Every Tm the reflow writes is built here (or is a restore through `after`),
+  // which is what marks the stream for `dropDeadPositioning` (r9u0).
   const tmFor = (g: GlyphEvent, x: number, y: number): ContentOp => {
+    streamFor(g.addr).compact = true;
     const [ca, cb, cc, cd] = g.ctm;
     const dx = x - g.quad[0], dy = y - g.quad[1];
     const det = ca * cd - cb * cc;

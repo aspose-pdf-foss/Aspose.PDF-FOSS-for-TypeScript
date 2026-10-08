@@ -23,7 +23,7 @@ import {
   resolveDecor, decorRects, vmetricsFor, isTextRunList,
   type DecorationOptions, type ResolvedDecor, type LineBox, type TextRun,
 } from './textdecor.js';
-import { placeRunLinks, type RunLinkBox } from './runlink.js';
+import { placeRunLinks, isDeferredLink, type RunLinkBox, type RunLink, type LinkedRun } from './runlink.js';
 import { UnsupportedFeatureError } from './errors.js';
 import { coverageOf, drawsNothing, type Undrawable } from './textcoverage.js';
 
@@ -525,8 +525,13 @@ interface ResolvedRun {
   font: AuthoringFont;
   color: [number, number, number];
   decor: ResolvedDecor | undefined;
-  /** The /URI this run links to, or undefined. */
-  link: string | undefined;
+  /** The /URI this run links to, a deferred note link (v9j3.3.4), or undefined. */
+  link: RunLink | undefined;
+  /** Baseline shift in points (`TextRun.rise`), 0 when unset. */
+  rise: number;
+  /** Whether `decor` is the run's OWN (it follows `rise`) rather than the
+   *  block's (it stays on the line's baseline). */
+  ownDecor: boolean;
 }
 
 /** Resolve a run list against the block's options.
@@ -540,7 +545,8 @@ interface ResolvedRun {
 function resolveRuns(runs: TextRun[], o: NormalizedBlockOptions): ResolvedRun[] {
   const out: ResolvedRun[] = [];
   for (let i = 0; i < runs.length; i++) {
-    const r = runs[i];
+    // Read as a LinkedRun: a note mark's link is a DeferredLink (mba3).
+    const r: LinkedRun = runs[i];
     if (typeof r?.text !== 'string') throw new TypeError(`run ${i}: text must be a string`);
     const font = r.font ?? o.font;
     validateFont(font);
@@ -553,8 +559,18 @@ function resolveRuns(runs: TextRun[], o: NormalizedBlockOptions): ResolvedRun[] 
       throw new TypeError(`run ${i}: color must be [r, g, b] with each component in 0..1`);
     // Rejected before anything is emitted, like every other run property: a bad
     // link late in the list must leave the document byte-identical.
-    if (r.link !== undefined && (typeof r.link !== 'string' || r.link === ''))
+    if (r.link !== undefined && !isDeferredLink(r.link) && (typeof r.link !== 'string' || r.link === ''))
       throw new TypeError(`run ${i}: link must be a non-empty string`);
+    // A note reference is lowered by Flow alone (flownotes.ts). Anywhere else
+    // it would be drawn without its note — refuse rather than drop it.
+    // `!== undefined`, not hasOwnProperty: `footnote: cond ? note : undefined`
+    // is the everyday way to cite a note conditionally, and it cites nothing.
+    if ((r as { footnote?: unknown }).footnote !== undefined
+        || (r as { endnote?: unknown }).endnote !== undefined)
+      throw new TypeError(`run ${i}: footnote/endnote runs are supported only inside a Flow`);
+    const rise = r.rise ?? 0;
+    if (typeof rise !== 'number' || !Number.isFinite(rise))
+      throw new TypeError(`run ${i}: rise must be a finite number`);
     // A run that states no decoration of its own inherits the block's, which is
     // what keeps a block-level underline spanning the whole line.
     const own = r.underline !== undefined || r.strikethrough !== undefined
@@ -562,7 +578,7 @@ function resolveRuns(runs: TextRun[], o: NormalizedBlockOptions): ResolvedRun[] 
     const decor = own ? resolveDecor(r, color, fontSize, vmetricsFor(font)) : o.decor;
     out.push({
       layout: { text: r.text, driver: driverFor(font), fontSize },
-      font, color, decor, link: r.link,
+      font, color, decor, link: r.link, rise, ownDecor: own,
     });
   }
   return out;
@@ -603,6 +619,8 @@ function weaveAtomics(
       color: [0, 0, 0],
       decor: undefined,
       link: undefined,
+      rise: 0,
+      ownDecor: false,
     } as ResolvedRun;
   });
   return { woven, atomicOf };
@@ -771,6 +789,9 @@ interface SegmentBox {
    *  because it is shipped typography fenced by rich-runs-identity and because
    *  a clickable 3-6pt of blank space is felt where an underline's is not. */
   trailing: number;
+  /** The run's baseline shift (`TextRun.rise`); 0 for an atomic. `baseline`
+   *  stays the LINE's, so a block-level decoration keeps spanning the line. */
+  rise: number;
 }
 
 /** Per-segment boxes for a laid run block.
@@ -810,7 +831,8 @@ function segmentBoxes(
       // no trailing space to trim.
       const trailing = tail === '' || isAtomicRun(r.layout) ? 0
         : r.layout.driver.measure(tail, r.layout.fontSize) + tw * tail.length;
-      out.push({ run: seg.run, x: dx, baseline, width, trailing });
+      out.push({ run: seg.run, x: dx, baseline, width, trailing,
+        rise: isAtomicRun(r.layout) ? 0 : r.rise });
       dx += width;
     }
   });
@@ -831,7 +853,8 @@ function runDecorOps(
     const d = runs[b.run].decor;
     if (d === undefined) continue;
     const list = buckets.get(d) ?? [];
-    list.push({ x: b.x, baseline: b.baseline, width: b.width });
+    // A run's OWN decoration follows its rise; the block's stays on the line.
+    list.push({ x: b.x, baseline: b.baseline + (runs[b.run].ownDecor ? b.rise : 0), width: b.width });
     buckets.set(d, list);
   }
   let beneath = '';
@@ -900,12 +923,12 @@ function runLinkBoxes(
     const vm = vmetricsFor(r.font);
     const size = r.layout.fontSize;
     out.push({
-      uri: r.link,
+      target: r.link,
       rect: [
         b.x,
-        b.baseline + vm.descent * size,
+        b.baseline + b.rise + vm.descent * size,
         b.x + b.width - b.trailing,
-        b.baseline + vm.ascent * size,
+        b.baseline + b.rise + vm.ascent * size,
       ],
       mcid: linkMcids[i],
     });
@@ -954,6 +977,9 @@ function buildRunBlockBody(
   let curColor = '';
   let prevOffset = 0;
   let prevTw = 0; // Tw defaults to 0 in a fresh text object.
+  // Ts likewise: emitted only when a run's rise differs, so a block with no
+  // raised run writes exactly the bytes it always did.
+  let curRise = 0;
   // Walks `boxes`/`linkMcids` in step with the segments: all three are built by
   // the same nested iteration, so index i of one names index i of the others.
   let segIdx = 0;
@@ -997,10 +1023,12 @@ function buildRunBlockBody(
       }
       const col = `${num(r.color[0])} ${num(r.color[1])} ${num(r.color[2])} rg`;
       if (col !== curColor) { s += `${col}\n`; curColor = col; }
+      if (r.rise !== curRise) { s += `${num(r.rise)} Ts\n`; curRise = r.rise; }
       s += `${serializeString(seg.bytes)} Tj\n`;
       if (mcid !== undefined) s += 'EMC\n';
     }
   }
+  if (curRise !== 0) s += '0 Ts\n';
   s += 'ET\n';
   if (dec.above) s += dec.above;
   s += 'Q';

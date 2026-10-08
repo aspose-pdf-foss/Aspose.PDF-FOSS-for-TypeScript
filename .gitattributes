@@ -27,3 +27,9 @@ test/fixtures/compare/*.pdf binary
 # say so rather than relying on that. -text rather than binary: they are a text
 # corpus people read in a diff.
 test/fixtures/wpt/tree-construction/*.dat -text
+
+# cmark-gfm's regression.txt carries a doubled CR before a newline in its first
+# example, which eol=lf would rewrite on commit and so change the vendored
+# SHA-256 that PROVENANCE pins. Byte-exact or worthless; -text, as for the WPT
+# corpus above.
+test/fixtures/gfm-footnotes/*.txt -text

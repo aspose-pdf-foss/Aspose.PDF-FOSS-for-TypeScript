@@ -1,9 +1,12 @@
 # m2fp.4: builds the five Word-written corpus documents through Microsoft Word
 # COM. NOT run by npm test (needs Word; Word stamps docProps/core.xml, so a rerun
 # is never byte-identical — the VENDORED files are the reference). The recipes
-# mirror scripts/gen-docx-corpus-lo.py text for text; keep the two in step.
+# mirror scripts/gen-docx-corpus-lo.py text for text; keep the two in step —
+# except `notes` (v9j3.3.2): LibreOffice's footnote numbering is document-wide,
+# so its file exercises format + start where this one restarts per section.
+# -Only <topic> builds one document.
 # Styles are addressed by WdBuiltinStyle number: this Word is localized (1049).
-param([string]$OutDir = (Join-Path $PSScriptRoot '..\test\fixtures\docx'))
+param([string]$OutDir = (Join-Path $PSScriptRoot '..\test\fixtures\docx'), [string]$Only = '')
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $OutDir = [IO.Path]::GetFullPath($OutDir)
@@ -78,6 +81,7 @@ function New-Outline([object[]]$spec) {
 
 try {
   # ---- styles ----
+  if (-not $Only -or $Only -eq 'styles') {
   New-Doc
   $ch = $d.Styles.Add('Custom Heading', 1); $ch.BaseStyle = (S -3).NameLocal
   $sc = $d.Styles.Add('Strong Custom', 2); $sc.Font.Bold = 1
@@ -92,8 +96,10 @@ try {
   P (S -1) @('A ', @{ t = 'strong '; cstyle = 'Strong Custom' }, 'word.')
   P (S 'Bold Para') @(@{ t = 'toggle '; cstyle = 'Strong Custom' }, 'rest.')
   Save-Doc 'styles'
+  }
 
   # ---- lists ----
+  if (-not $Only -or $Only -eq 'lists') {
   New-Doc
   # Word's own three default bullet glyphs; the bullet gallery's template is single-level.
   $bt = New-Outline @(@([string][char]0xF0B7, 23, 'Symbol'), @('o', 23, 'Courier New'), @([string][char]0xF0A7, 23, 'Wingdings'))
@@ -108,8 +114,10 @@ try {
   L 'Restart one' $nt 1 $false; L 'Restart two' $nt 1 $true
   P (S -1) @('End of lists.')
   Save-Doc 'lists'
+  }
 
   # ---- tables ----
+  if (-not $Only -or $Only -eq 'tables') {
   New-Doc
   P (S -1) @('Table:')
   $t = $d.Tables.Add($sel.Range, 4, 3); $t.Borders.Enable = $true
@@ -127,8 +135,10 @@ try {
   Endpos
   P (S -1) @('After the table.')
   Save-Doc 'tables'
+  }
 
   # ---- media ----
+  if (-not $Only -or $Only -eq 'media') {
   New-Doc
   $sel.Style = (S -1); $sel.TypeText('Picture: '); $sel.InlineShapes.AddPicture($png) | Out-Null; Endpos; $sel.TypeParagraph()
   $sel.TypeText('A link to ')
@@ -139,8 +149,10 @@ try {
   $d.Hyperlinks.Add($sel.Range, '', 'target', [Type]::Missing, 'the target') | Out-Null
   Endpos; $sel.TypeText('.'); $sel.TypeParagraph()
   Save-Doc 'media'
+  }
 
   # ---- skipped ----
+  if (-not $Only -or $Only -eq 'skipped') {
   New-Doc
   $d.Sections.Item(1).Headers.Item(1).Range.Text = 'Running header'
   $d.Sections.Item(1).Footers.Item(1).Range.Text = 'Running footer'
@@ -165,6 +177,28 @@ try {
   P (S -1) @('Landscape page.')
   $toc.Update()
   Save-Doc 'skipped'
+  }
+  # ---- notes (v9j3.3.2) ----
+  # The table's footnote is the LAST in section 1 on purpose: the renderer drops
+  # a cell reference until v9j3.3.3, so a note after it would be numbered one
+  # lower than Word numbers it.
+  if (-not $Only -or $Only -eq 'notes') {
+  New-Doc
+  P (S -2) @('Notes')
+  $sel.TypeText('Alpha'); $d.Footnotes.Add($sel.Range).Range.Text = 'First note.'; Endpos; $sel.TypeParagraph()
+  $sel.TypeText('Beta'); $fn = $d.Footnotes.Add($sel.Range); $fn.Range.Text = 'Para one.'
+  $fn.Range.InsertParagraphAfter(); $fn.Range.InsertAfter('Para two.'); Endpos; $sel.TypeParagraph()
+  $sel.TypeText('Gamma'); $d.Footnotes.Add($sel.Range, '*').Range.Text = 'Starred note.'; Endpos; $sel.TypeParagraph()
+  $sel.TypeText('Delta'); $d.Endnotes.Add($sel.Range).Range.Text = 'An endnote.'; Endpos; $sel.TypeParagraph()
+  $t = $d.Tables.Add($sel.Range, 1, 2); $t.Borders.Enable = $true
+  $t.Cell(1, 1).Range.Text = 'Cell'; $d.Footnotes.Add($t.Cell(1, 2).Range).Range.Text = 'Cell note.'
+  Endpos; $sel.TypeParagraph()
+  $sel.InsertBreak(2)                                              # wdSectionBreakNextPage
+  $o = $d.Sections.Item(2).Range.FootnoteOptions
+  $o.NumberStyle = 2; $o.NumberingRule = 1; $o.StartingNumber = 1  # lowercase roman, restart each section
+  $sel.TypeText('Epsilon'); $d.Footnotes.Add($sel.Range).Range.Text = 'Second section note.'; Endpos; $sel.TypeParagraph()
+  Save-Doc 'notes'
+  }
 } finally {
   $w.Quit(); [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
   Remove-Item $png -ErrorAction SilentlyContinue

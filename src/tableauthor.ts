@@ -8,6 +8,8 @@ import {
   type Decoration, type Background, type TextRun,
 } from './textdecor.js';
 import { EmbeddedFont } from './embeddedfont.js';
+import type { FlowTextRun } from './flownotes.js';
+import { isDeferredLink, type LinkedRun } from './runlink.js';
 import {
   FontDriver, winAnsiDriver, layoutText, layoutRuns, weaveByBeforeRun,
   type LayoutRun,
@@ -495,11 +497,12 @@ export class RowBuilder {
     return this;
   }
 
-  /** Append a cell with `text` (default '') and optional per-cell style/span. */
   /** Append a cell. `text` may be a plain string or a {@link TextRun} list,
    *  which renders the same inline vocabulary a paragraph does — mixed fonts,
-   *  sizes, colours, decorations and links. */
-  addCell(text: string | TextRun[] = '', opts: CellOptions = {}): CellBuilder {
+   *  sizes, colours, decorations and links. A run may cite a `footnote` or
+   *  `endnote` ({@link FlowTextRun}) when the table is placed in a Flow
+   *  (v9j3.3.3); `page.AddTable` refuses such a run. */
+  addCell(text: string | FlowTextRun[] = '', opts: CellOptions = {}): CellBuilder {
     const { colSpan = 1, rowSpan = 1, header, atomics, ...style } = opts;
     validateColSpan(colSpan);
     validateRowSpan(rowSpan);
@@ -540,7 +543,7 @@ export class TableBuilder {
   /** Append a row with an optional row-level `style` and `minHeight`. With a
    *  `string[]`, appends one text cell per entry (each inheriting the row +
    *  table style). */
-  addRow(cells?: (string | TextRun[])[], opts: RowOptions = {}): RowBuilder {
+  addRow(cells?: (string | FlowTextRun[])[], opts: RowOptions = {}): RowBuilder {
     const { minHeight, ...style } = opts;
     if (minHeight !== undefined) checkNonNeg('minHeight', minHeight);
     validateStyleOpts(style);
@@ -675,6 +678,33 @@ export class TableBuilder {
     return t;
   }
 
+  /** @internal A copy of this table whose cells are what `f` answers, every
+   *  cell `f` answers `undefined` for shared as it is, and every table-level
+   *  setting (defaults, column specs, auto-fit, forced column count,
+   *  repeating rows) carried over (v9j3.3.3: `table()` lowers cited runs on a
+   *  copy so the caller's builder is never mutated). */
+  mapCells(
+    f: (cell: CellBuilder, row: RowBuilder) => { text: string | TextRun[]; atomics?: BlockAtomic[] } | undefined,
+  ): TableBuilder {
+    const t = new TableBuilder(this.defaults);
+    t.columnSpecs = this.columnSpecs;
+    t.autoFit = this.autoFit;
+    t.forcedColumnCount = this.forcedColumnCount;
+    t._repeatingRows = this._repeatingRows;
+    for (const r of this.rows) {
+      const nr = new RowBuilder(r.style, r.minHeight);
+      for (const c of r.cells) {
+        const m = f(c, r);
+        if (m === undefined) { nr.cells.push(c); continue; }
+        const nc = new CellBuilder(m.text, c.options, c.colSpan, c.rowSpan, c.header, m.atomics);
+        if (c.image !== undefined) nc.image = c.image;
+        nr.cells.push(nc);
+      }
+      t.rows.push(nr);
+    }
+    return t;
+  }
+
   /** Resolve the column specs (from {@link setColumnWidths}, or equal columns if
    *  unset) plus a `totalWidth` in points into concrete per-column widths. Fixed
    *  columns take their absolute width; fraction columns split the leftover
@@ -756,10 +786,11 @@ export class TableBuilder {
         // where resolveRuns would catch it after the caller had committed.
         if (isTextRunList(cell.text)) {
           for (let j = 0; j < cell.text.length; j++) {
-            const run = cell.text[j];
+            const run: LinkedRun = cell.text[j];
             if (typeof run?.text !== 'string')
               throw new TypeError(`cell run ${j}: text must be a string`);
-            if (run.link !== undefined && (typeof run.link !== 'string' || run.link === ''))
+            if (run.link !== undefined && !isDeferredLink(run.link)
+                && (typeof run.link !== 'string' || run.link === ''))
               throw new TypeError(`cell run ${j}: link must be a non-empty string`);
           }
         }

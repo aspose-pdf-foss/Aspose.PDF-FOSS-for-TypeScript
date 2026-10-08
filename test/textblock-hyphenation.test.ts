@@ -12,7 +12,7 @@ describe('AddTextBlock({ hyphenate }) (v9j3.2)', () => {
     const d = Document.New(PageFormat.A4);
     d.Pages[0].AddTextBlock(T, [72, 500, 90, 300], { fontSize: 12, hyphenate: { lang: 'en' } });
     const ls = lines(d);
-    expect(ls.some((l) => l.endsWith('-'))).toBe(true);
+    expect(ls.some((l) => l.endsWith('\u00AD'))).toBe(true);   // rhud: written as 0xAD
     for (const f of Document.Open(d.Save()).Pages[0].GetTextFragments()) expect(f.quad[2]).toBeLessThanOrEqual(72 + 90 + 0.01);
   });
 

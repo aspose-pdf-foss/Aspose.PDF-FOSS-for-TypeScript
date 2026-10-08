@@ -1,6 +1,11 @@
 {
   "lo26.8-lists.docx": [],
   "lo26.8-media.docx": [],
+  "lo26.8-notes.docx": [
+    "notes.footnotes[2].text",
+    "paragraphs[3].segments[0].text",
+    "paragraphs[3].text"
+  ],
   "lo26.8-skipped.docx": [
     "links.length"
   ],
@@ -20,6 +25,21 @@
   ],
   "word2010-lists.docx": [],
   "word2010-media.docx": [],
+  "word2010-notes.docx": [
+    "notes.footnotes[0].mark",
+    "notes.footnotes[1].mark",
+    "notes.footnotes[1].text",
+    "notes.footnotes[2].text",
+    "notes.footnotes[3].mark",
+    "notes.footnotes[4].mark",
+    "paragraphs.length",
+    "paragraphs[3].segments[0].text",
+    "paragraphs[3].text",
+    "paragraphs[8].segments.length",
+    "paragraphs[8].text",
+    "paragraphs[9].segments.length",
+    "paragraphs[9].text"
+  ],
   "word2010-skipped.docx": [
     "counts.fields",
     "counts.footers",

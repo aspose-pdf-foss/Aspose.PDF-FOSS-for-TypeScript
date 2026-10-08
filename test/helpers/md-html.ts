@@ -1,4 +1,6 @@
-import type { MdAlign, MdBlock, MdDocument, MdInline } from '../../src/mdast.js';
+import type {
+  MdAlign, MdBlock, MdDocument, MdFootnoteDefinition, MdInline,
+} from '../../src/mdast.js';
 import { filterDisallowedHtml } from '../../src/mdgfm.js';
 
 /** Render a CommonMark AST to the HTML the official spec suite expects.
@@ -65,6 +67,7 @@ function plainText(nodes: MdInline[]): string {
       case 'softbreak': out += '\n'; break;
       case 'linebreak': out += '\n'; break;
       case 'html_inline': break;
+      case 'footnote_reference': out += String(n.index); break;
       default: out += plainText(n.children); break;
     }
   }
@@ -112,7 +115,52 @@ class Renderer {
         this.lit(`<img src="${escapeHref(n.destination)}" alt="${esc(plainText(n.children))}"${title} />`);
         break;
       }
+      // cmark-gfm html.c, CMARK_NODE_FOOTNOTE_REFERENCE.
+      case 'footnote_reference': {
+        const l = escapeHref(n.label);
+        const id = n.occurrence > 1 ? `${l}-${n.occurrence}` : l;
+        this.lit(`<sup class="footnote-ref"><a href="#fn-${l}" id="fnref-${id}" data-footnote-ref>${n.index}</a></sup>`);
+        break;
+      }
     }
+  }
+
+  /** cmark-gfm html.c S_put_footnote_backref: one backref per citation; the
+   *  first bare, the rest suffixed `-N` with a `<sup>N</sup>`. `m` is the
+   *  definition's position, which equals its index. */
+  backrefs(d: MdFootnoteDefinition): string {
+    const l = escapeHref(d.label);
+    const m = String(d.index);
+    let s = `<a href="#fnref-${l}" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="${m}" aria-label="Back to reference ${m}">↩</a>`;
+    for (let i = 2; i <= d.references; i++) {
+      s += ` <a href="#fnref-${l}-${i}" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="${m}-${i}" aria-label="Back to reference ${m}-${i}">↩<sup class="footnote-ref">${i}</sup></a>`;
+    }
+    return s;
+  }
+
+  /** cmark-gfm html.c: the footnotes section closing the document. */
+  footnotes(defs: MdFootnoteDefinition[]): void {
+    this.cr();
+    this.lit('<section class="footnotes" data-footnotes>'); this.cr();
+    this.lit('<ol>'); this.cr();
+    for (const d of defs) {
+      this.lit(`<li id="fn-${escapeHref(d.label)}">`); this.cr();
+      const last = d.children[d.children.length - 1];
+      // A paragraph is never tight inside a definition; the backrefs go INSIDE
+      // the last one when it is a paragraph, else on a line of their own.
+      for (const c of d.children) {
+        if (c === last && c.type === 'paragraph') {
+          this.cr(); this.lit('<p>'); this.inlines(c.children);
+          this.lit(` ${this.backrefs(d)}</p>`); this.cr();
+        } else {
+          this.block(c, false);
+        }
+      }
+      if (last === undefined || last.type !== 'paragraph') { this.lit(this.backrefs(d)); this.lit('\n'); }
+      this.lit('</li>'); this.cr();
+    }
+    this.lit('</ol>'); this.cr();
+    this.lit('</section>'); this.cr();
   }
 
   inlines(nodes: MdInline[]): void {
@@ -257,5 +305,6 @@ export function renderHtml(doc: MdDocument, options?: RenderOptions): string {
   const r = new Renderer();
   r.gfm = options?.gfm === true;
   r.block(doc, false);
+  if (doc.footnotes !== undefined) r.footnotes(doc.footnotes);
   return r.buf;
 }

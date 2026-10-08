@@ -144,6 +144,12 @@ export interface TextRun extends DecorationOptions {
    *  implied: set `color` and `underline` for the usual blue-underlined look.
    *  Default: none. */
   link?: string;
+  /** Baseline shift in points; positive raises (a superscript), negative
+   *  lowers. Moves the INK only — the line band is still sized from
+   *  `fontSize` — and is emitted as `Ts`. A run's own decoration and its link
+   *  rect follow the shifted baseline; a block-level decoration does not.
+   *  Default 0. */
+  rise?: number;
 }
 
 /** Whether a `string | TextRun[]` argument is the run form. */

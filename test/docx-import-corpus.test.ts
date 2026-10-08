@@ -46,7 +46,18 @@ describe.each(files)('AddDocx renders %s', (f) => {
 
   it('names in skipped every construct both readers counted', () => {
     const names = new Set(skipped.map((s) => s.name));
-    const missing = COUNT_KEYS.filter((k) => truths.every((t) => t.counts[k] > 0) && !SKIP_MAP[k].some((n) => names.has(n)));
+    // Footnotes and endnotes RENDER since v9j3.3.2; the case below holds them.
+    const missing = COUNT_KEYS.filter((k) => k !== 'footnotes' && k !== 'endnotes'
+      && truths.every((t) => t.counts[k] > 0) && !SKIP_MAP[k].some((n) => names.has(n)));
+    expect(missing).toEqual([]);
+  });
+
+  it('renders every note text both readers agree on, outside table cells', () => {
+    const all = (t: DocxTruth) => [...t.notes.footnotes, ...t.notes.endnotes];
+    const agreed = all(truths[0]).map((n) => n.text)
+      .filter((t) => t !== '' && truths.every((u) => all(u).some((m) => m.text === t)))
+      .filter((t) => !/^Cell note/.test(t));          // a cell reference is dropped until v9j3.3.3
+    const missing = agreed.map(norm).filter((t) => !text.includes(t));
     expect(missing).toEqual([]);
   });
 });

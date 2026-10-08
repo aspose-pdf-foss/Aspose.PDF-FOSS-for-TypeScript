@@ -17,7 +17,7 @@ const read = (body: string, rels: { id: string; type: string; target: string; ex
       ...rels.map((x) => ({ source: 'word/document.xml', ...x }))]));
 
 const truth = (over: Partial<DocxTruth> = {}): DocxTruth => ({
-  reader: 'R', paragraphs: [], tables: [], links: [], images: 0,
+  reader: 'R', paragraphs: [], tables: [], links: [], images: 0, notes: { footnotes: [], endnotes: [] },
   counts: { headers: 0, footers: 0, footnotes: 0, endnotes: 0, textBoxes: 0, fields: 0, comments: 0, revisions: 0 },
   ...over,
 });
@@ -49,7 +49,7 @@ describe('comparable and readerDisagreements', () => {
     expect(readerDisagreements(a, b)).toEqual([]);
     b.counts.footnotes = 1;
     expect(readerDisagreements(a, b)).toEqual(['counts.footnotes']);
-    expect(Object.keys(comparable(a))).toEqual(['paragraphs', 'tables', 'links', 'images']);
+    expect(Object.keys(comparable(a))).toEqual(['paragraphs', 'tables', 'links', 'images', 'notes']);
   });
 });
 

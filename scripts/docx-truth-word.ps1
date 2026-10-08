@@ -38,6 +38,46 @@ function Add-Seg([System.Collections.ArrayList]$segs, $seg, [string]$t) {
   } else { $seg.text = $t; [void]$segs.Add($seg) }
 }
 
+# Notes (v9j3.3.2): text, and the mark Word shows. Word reports an
+# auto-numbered mark as a control character (0x02), so the number is derived
+# from what WORD reports — the note's section, its NumberStyle, StartingNumber
+# and NumberingRule — counting only auto-numbered notes. A custom mark is its
+# text. Per-page restart (NumberingRule 2) is not derived: no recipe uses it,
+# and a page number is Word's layout, not the document's.
+function Roman([int]$n) {
+  $vals = 1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1
+  $syms = 'm', 'cm', 'd', 'cd', 'c', 'xc', 'l', 'xl', 'x', 'ix', 'v', 'iv', 'i'
+  $s = ''; for ($i = 0; $i -lt 13; $i++) { while ($n -ge $vals[$i]) { $s += $syms[$i]; $n -= $vals[$i] } }; return $s
+}
+function Fmt([int]$n, [int]$style) {
+  switch ($style) {
+    1 { return (Roman $n).ToUpper() }
+    2 { return (Roman $n) }
+    3 { return ([string][char](64 + (($n - 1) % 26) + 1)) * ([math]::Floor(($n - 1) / 26) + 1) }
+    4 { return ([string][char](96 + (($n - 1) % 26) + 1)) * ([math]::Floor(($n - 1) / 26) + 1) }
+    9 { $sym = @('*', [string][char]0x2020, [string][char]0x2021, [string][char]0x00A7); return $sym[($n - 1) % 4] * ([math]::Floor(($n - 1) / 4) + 1) }
+    default { return [string]$n }
+  }
+}
+function NotesOf($coll, [bool]$foot) {
+  $out = @(); $count = @{}
+  for ($i = 1; $i -le $coll.Count; $i++) {
+    $n = $coll.Item($i)
+    $text = (Clean ($n.Range.Text -replace "`r", "`n")).Trim()
+    $ref = [string]$n.Reference.Text
+    if ($ref.Length -ge 1 -and [int][char]$ref[0] -ge 32) { $mark = $ref }
+    else {
+      $sec = $n.Reference.Sections.Item(1)
+      $opt = if ($foot) { $sec.Range.FootnoteOptions } else { $sec.Range.EndnoteOptions }
+      $key = if ($opt.NumberingRule -eq 1) { "s$($sec.Index)" } else { 'doc' }
+      $count[$key] = 1 + [int]$count[$key]
+      $mark = Fmt ($opt.StartingNumber + $count[$key] - 1) $opt.NumberStyle
+    }
+    $out += ,([ordered]@{ mark = $mark; text = $text })
+  }
+  return ,$out
+}
+
 $w = New-Object -ComObject Word.Application
 try {
   $w.Visible = $false; $w.DisplayAlerts = 0
@@ -59,6 +99,7 @@ try {
     for ($i = 1; $i -le $d.Shapes.Count; $i++) { try { if ($d.Shapes.Item($i).TextFrame.HasText) { $tb++ } } catch { } }
     $fields = 0
     for ($i = 1; $i -le $d.Fields.Count; $i++) { if ($d.Fields.Item($i).Type -ne 88) { $fields++ } }   # not wdFieldHyperlink
+    $notes = [ordered]@{ footnotes = (NotesOf $d.Footnotes $true); endnotes = (NotesOf $d.Endnotes $false) }
     $counts = [ordered]@{ headers = $hdr; footers = $ftr; footnotes = $d.Footnotes.Count; endnotes = $d.Endnotes.Count
       textBoxes = $tb; fields = $fields; comments = $d.Comments.Count; revisions = $d.Revisions.Count }
     if ($d.Revisions.Count -gt 0) { $d.Revisions.AcceptAll() }
@@ -125,7 +166,7 @@ try {
     for ($i = 1; $i -le $d.InlineShapes.Count; $i++) { if ($d.InlineShapes.Item($i).Type -eq 3) { $images++ } }   # wdInlineShapePicture
 
     $d.Close([ref]0)
-    $out = [ordered]@{ reader = $reader; paragraphs = $paras; tables = $tables; links = $links; images = $images; counts = $counts }
+    $out = [ordered]@{ reader = $reader; paragraphs = $paras; tables = $tables; links = $links; images = $images; counts = $counts; notes = $notes }
     $json = [IO.Path]::ChangeExtension($path, $null).TrimEnd('.') + '.word.json'
     [IO.File]::WriteAllText($json, (ConvertTo-Json -InputObject $out -Depth 10), (New-Object Text.UTF8Encoding($false)))
     "wrote $json"

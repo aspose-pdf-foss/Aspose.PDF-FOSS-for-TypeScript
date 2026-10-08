@@ -181,6 +181,10 @@ export interface MarkdownStyle {
     spaceBefore?: number;
     spaceAfter?: number;
   };
+  /** Footnote and endnote body size (points), for GFM footnotes. > 0. Default
+   *  8, the Flow engine's own default. Code, heading and spacing sizes inside a
+   *  note scale by `footnoteSize / fontSize`. */
+  footnoteSize?: number;
 }
 
 /** {@link MarkdownStyle} with every field resolved. @internal */
@@ -218,6 +222,7 @@ export interface ResolvedMarkdownStyle {
     padding: number; fontSize: number; spaceBefore: number; spaceAfter: number;
   };
   image: { align: 'left' | 'center' | 'right'; spaceBefore: number; spaceAfter: number };
+  footnoteSize: number;
 }
 
 function pos(v: number | undefined, dflt: number, name: string): number {
@@ -355,5 +360,55 @@ export function resolveMarkdownStyle(style: MarkdownStyle = {}): ResolvedMarkdow
       spaceBefore: nonNeg(im.spaceBefore, 0, 'image.spaceBefore'),
       spaceAfter: nonNeg(im.spaceAfter, 0, 'image.spaceAfter'),
     },
+    footnoteSize: pos(style.footnoteSize, 8, 'footnoteSize'),
+  };
+}
+
+/** The style a footnote body is mapped under: the body size becomes
+ *  `footnoteSize` and every SIZE scales by `footnoteSize / fontSize` with it,
+ *  so a note's code and headings keep their proportion to its text. Ratios
+ *  and colours are unchanged. @internal */
+export function noteStyle(st: ResolvedMarkdownStyle): ResolvedMarkdownStyle {
+  const k = st.footnoteSize / st.fontSize;
+  return {
+    ...st,
+    fontSize: st.footnoteSize,
+    leading: st.leading * k,
+    paragraphSpacing: st.paragraphSpacing * k,
+    heading: {
+      ...st.heading,
+      sizes: st.heading.sizes.map((n) => n * k),
+      spaceBefore: st.heading.spaceBefore * k,
+      spaceAfter: st.heading.spaceAfter * k,
+    },
+    code: {
+      ...st.code,
+      fontSize: st.code.fontSize * k,
+      padding: st.code.padding * k,
+      spaceBefore: st.code.spaceBefore * k,
+      spaceAfter: st.code.spaceAfter * k,
+    },
+    quote: {
+      ...st.quote,
+      indent: st.quote.indent * k,
+      spaceBefore: st.quote.spaceBefore * k,
+      spaceAfter: st.quote.spaceAfter * k,
+    },
+    rule: { ...st.rule, spaceBefore: st.rule.spaceBefore * k, spaceAfter: st.rule.spaceAfter * k },
+    list: {
+      ...st.list,
+      indent: st.list.indent === undefined ? undefined : st.list.indent * k,
+      itemSpacing: st.list.itemSpacing * k,
+      spaceBefore: st.list.spaceBefore * k,
+      spaceAfter: st.list.spaceAfter * k,
+    },
+    table: {
+      ...st.table,
+      fontSize: st.table.fontSize * k,
+      padding: st.table.padding * k,
+      spaceBefore: st.table.spaceBefore * k,
+      spaceAfter: st.table.spaceAfter * k,
+    },
+    image: { ...st.image, spaceBefore: st.image.spaceBefore * k, spaceAfter: st.image.spaceAfter * k },
   };
 }

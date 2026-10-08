@@ -113,7 +113,13 @@ export function findParagraph(inp: ParaInput): Paragraph | UnreflowableReason {
   // Membership: a text glyph by its key; a text-less one inherits from the
   // glyph its pen is CHAINED to, before it, else after it.
   const members = new Set<GlyphEvent>();
-  const isText = (g: GlyphEvent) => g.text !== '';
+  // **Invariant (8eew):** a WHITESPACE glyph that layout placed on no line —
+  // the trailing space of a line-final `(word ) Tj`, which `layoutLines`
+  // drops — has no key, so it joins by its pen chain like a text-less glyph.
+  // Read as a text glyph it was never a member, and the space chained to the
+  // member before it made every second reflow over our OWN output (which
+  // leaves exactly that shape) refuse 'interleaved'.
+  const isText = (g: GlyphEvent) => g.text !== '' && (g.text.trim() !== '' || keyOf(g) !== undefined);
   const lastIn = new Map<string, GlyphEvent>();
   const pendingTextless = new Map<string, GlyphEvent[]>();
   for (const g of all) {

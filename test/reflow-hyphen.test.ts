@@ -35,6 +35,9 @@ const same = (a: [string, number, number][], b: [string, number, number][]) => {
   a.forEach((x, i) => { expect(x[1]).toBeCloseTo(b[i][1], 3); expect(x[2]).toBeCloseTo(b[i][2], 3); });
 };
 const HY = { adjust: 'reflow' as const, hyphenate: { lang: 'en' } };
+/** An inserted hyphen in a simple WinAnsi face: code 0xAD, read back as U+00AD (rhud). */
+const SHY = '\u00AD';
+const isHyphen = (c: string) => c === '-' || c === SHY;
 
 describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
   for (const align of ['left', 'justify'] as const) {
@@ -55,7 +58,7 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
       const want = block(LONG.replace('Documentation', unit(R)),
         { align, hyphenate: true, width: align === 'justify' ? width : measured(block(LONG, { align })) });
       const got = origins(doc);
-      expect(got.some(([c]) => c === '-')).toBe(true);   // non-vacuous: a hyphen WAS drawn
+      expect(got.some(([c]) => c === SHY)).toBe(true);   // non-vacuous: a hyphen WAS drawn
       same(got, origins(want));
     });
   }
@@ -64,7 +67,7 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
     a.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', { adjust: 'reflow' });
     b.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', { adjust: 'reflow', hyphenate: false });
     expect(b.Pages[0].Contents).toEqual(a.Pages[0].Contents);
-    expect(origins(a).some(([c]) => c === '-')).toBe(false);
+    expect(origins(a).some(([c]) => isHyphen(c))).toBe(false);
   });
   it('no language and no lang option: whole-word, silently', () => {
     const a = block(LONG), b = block(LONG);
@@ -76,7 +79,7 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
     const doc = block(LONG);
     doc.Lang = 'en-US';
     doc.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', { adjust: 'reflow', hyphenate: {} });
-    expect(origins(doc).some(([c]) => c === '-')).toBe(true);
+    expect(origins(doc).some(([c]) => c === SHY)).toBe(true);
   });
   it('draws the hyphen in a fallback face when the font has none', () => {
     // Code 45 remapped to /bullet: the font draws no '-'.
@@ -85,18 +88,18 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
     const doc = Document.Open(buildSimpleTextPdf(s, { differences: '45 /bullet' }));
     expect(() => doc.Pages[0].ReplaceText('beta', 'betabetabeta', HY)).not.toThrow();
     const noFace = origins(doc);
-    expect(noFace.some(([c]) => c === '-')).toBe(false);   // no face: point skipped
+    expect(noFace.some(([c]) => isHyphen(c))).toBe(false);   // no face: point skipped
     const doc2 = Document.Open(buildSimpleTextPdf(s, { differences: '45 /bullet' }));
     doc2.Pages[0].ReplaceText('beta', 'betabetabeta', { ...HY, fallbackFonts: ['Times-Roman'] });
-    expect(origins(doc2).some(([c]) => c === '-')).toBe(true);
-    expect(new TextDecoder('latin1').decode(doc2.Pages[0].Contents)).toMatch(/Tf[^]*\(-\) Tj[^]*\/F1 12 Tf/);
+    expect(origins(doc2).some(([c]) => c === SHY)).toBe(true);
+    expect(new TextDecoder('latin1').decode(doc2.Pages[0].Contents)).toMatch(/Tf[^]*\(\\255\) Tj[^]*\/F1 12 Tf/);
   });
   it('a font that draws its own hyphen is not switched, fallbacks or not', () => {
     const lines = ['alpha beta gamma', 'internationalization', 'delta epsilon'];
     const s = `BT /F1 12 Tf 20 280 Td (${lines[0]}) Tj 0 -14 Td (${lines[1]}) Tj 0 -14 Td (${lines[2]}) Tj ET`;
     const doc = Document.Open(buildSimpleTextPdf(s));
     doc.Pages[0].ReplaceText('beta', 'betabetabeta', { ...HY, fallbackFonts: ['Times-Roman'] });
-    expect(origins(doc).some(([c]) => c === '-')).toBe(true);
+    expect(origins(doc).some(([c]) => c === SHY)).toBe(true);
     const content = new TextDecoder('latin1').decode(doc.Pages[0].Contents);
     expect(content.match(/Tf/g)).toHaveLength(1);
   });
@@ -108,15 +111,15 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
     // inside the SECOND operator (interna-tionalization).
     doc.Pages[0].ReplaceText('beta gamma', 'b', HY);
     const text = doc.Pages[0].GetText();
-    expect(text).toMatch(/interna-\ntionalization/);
+    expect(text).toMatch(/interna\u00AD\ntionalization/);
     // The hyphen sits where the pen left the 'a' before it, on that line.
     const all = pageLayout(doc, doc.Pages[0], {}).all;
-    const h = all.findIndex((g) => g.text === '-');
+    const h = all.findIndex((g) => g.text === SHY);
     expect(all[h - 1].text).toBe('a');
     expect(all[h].quad[0]).toBeCloseTo(all[h - 1].penEnd[0], 3);
     expect(all[h].quad[1]).toBeCloseTo(all[h - 1].quad[1], 3);
     expect(all[h + 1].quad[1]).toBeLessThan(all[h].quad[1] - 1);
-    expect(text.replace(/-\n/g, '')).toContain('internationalization');
+    expect(text.replace(/\u00AD\n/g, '')).toContain('internationalization');
   });
   // Review Focus 4: two paragraphs, two languages.
   it('each tagged paragraph hyphenates by its own /Lang', () => {
@@ -136,7 +139,7 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
       doc.ReplaceText(/und die/, 'und', { adjust: 'reflow', hyphenate: {} });
       return doc.Pages[0].GetText();
     };
-    expect(run('de')).toContain('Gesell-\nschaft');
-    expect(run()).not.toContain('Gesell-');   // the same paragraph, read as English
+    expect(run('de')).toContain('Gesell\u00AD\nschaft');
+    expect(run()).not.toMatch(/Gesell[-\u00AD]/);   // the same paragraph, read as English
   });
 });

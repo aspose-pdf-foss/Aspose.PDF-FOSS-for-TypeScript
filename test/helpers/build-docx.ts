@@ -12,6 +12,10 @@ export interface DocxParts {
   styles?: string; numbering?: string; fontTable?: string; core?: string;
   media?: { name: string; bytes: Uint8Array; contentType: string }[];
   rels?: { id: string; type: string; target: string; external?: boolean }[];
+  /** Inner XML of <w:footnotes> / <w:endnotes> / <w:settings> (v9j3.3.2). */
+  footnotes?: string; endnotes?: string; settings?: string;
+  /** Relationships OF footnotes.xml (images, hyperlinks inside a note). */
+  footnoteRels?: { id: string; type: string; target: string; external?: boolean }[];
 }
 
 export function buildDocx(bodyXml: string, parts: DocxParts = {}): Uint8Array {
@@ -37,6 +41,24 @@ export function buildDocx(bodyXml: string, parts: DocxParts = {}): Uint8Array {
       bytes: enc('<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
         + `xmlns:dc="http://purl.org/dc/elements/1.1/">${parts.core}</cp:coreProperties>`) });
     r.push({ source: '', id: 'rCore', type: `${PKG_REL}/metadata/core-properties`, target: 'docProps/core.xml' });
+  }
+  const wrap = (root: string, inner: string): Uint8Array => enc(`<w:${root} xmlns:w="${W_NS}" `
+    + 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    + `${inner}</w:${root}>`);
+  if (parts.footnotes !== undefined) {
+    p.push({ path: 'word/footnotes.xml', bytes: wrap('footnotes', parts.footnotes), contentType: `${CT}.footnotes+xml` });
+    docRel('rFn', 'footnotes', 'footnotes.xml');
+  }
+  if (parts.endnotes !== undefined) {
+    p.push({ path: 'word/endnotes.xml', bytes: wrap('endnotes', parts.endnotes), contentType: `${CT}.endnotes+xml` });
+    docRel('rEn', 'endnotes', 'endnotes.xml');
+  }
+  if (parts.settings !== undefined) {
+    p.push({ path: 'word/settings.xml', bytes: wrap('settings', parts.settings), contentType: `${CT}.settings+xml` });
+    docRel('rSe', 'settings', 'settings.xml');
+  }
+  for (const x of parts.footnoteRels ?? []) {
+    r.push({ source: 'word/footnotes.xml', id: x.id, type: `${REL}/${x.type}`, target: x.target, ...(x.external ? { external: true } : {}) });
   }
   for (const m of parts.media ?? []) {
     p.push({ path: `word/media/${m.name}`, bytes: m.bytes, contentType: m.contentType, store: true });

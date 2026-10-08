@@ -1,4 +1,5 @@
 import type { Document } from './document.js';
+import type { StructElement } from './struct.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfObject, PdfRef, PdfStream, isArray, isDict, isName, isRef, isStream, isString, name } from './types.js';
 import { decodePdfText, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
@@ -1758,14 +1759,18 @@ export interface LinkOptions {
 /** Build and attach a /Link annotation to `page`; returns its LinkAnnotation
  *  handle. Validates the action/border and (for GoTo) resolves the target page
  *  ref before mutating the page. */
-export function addLink(doc: Document, page: Page, opts: LinkOptions): LinkAnnotation {
+export function addLink(
+  doc: Document, page: Page, opts: LinkOptions,
+  /** @internal The element a GoTo's /SD names (`encodeAction`'s, mba3). */
+  structTarget?: StructElement,
+): LinkAnnotation {
   const action = opts.action;
   const border = opts.border ?? 0;
   if (typeof border !== 'number' || !Number.isFinite(border) || border < 0)
     throw new TypeError('border must be a non-negative finite number');
 
   // Validates before anything is allocated, exactly as the inline copy did.
-  const aDict = encodeAction(doc, action);
+  const aDict = encodeAction(doc, action, structTarget);
 
   const dict = createAnnotation(doc, page, { subtype: 'Link', rect: opts.rect });
   dict.set('A', aDict);

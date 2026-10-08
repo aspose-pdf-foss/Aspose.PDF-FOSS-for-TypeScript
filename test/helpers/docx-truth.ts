@@ -7,6 +7,8 @@
 import { readFileSync } from 'node:fs';
 import type { WmlDocument } from '../../src/wmlread.js';
 import type { WmlBlock, WmlCell, WmlInline, WmlLink, WmlParagraph } from '../../src/wmlbody.js';
+import { formatMark } from '../../src/flownotes.js';
+import { noteFormat, sectionNotes } from '../../src/wmlflow.js';
 
 export interface Segment { text: string; bold: boolean; italic: boolean; sizePt: number; font: string }
 export interface TruthParagraph {
@@ -23,7 +25,11 @@ export const SKIP_MAP: Record<keyof TruthCounts, string[]> = {
   textBoxes: ['w:txbxContent', 'w:pict'], fields: ['w:fldChar', 'w:fldSimple'],
   comments: ['w:commentReference'], revisions: ['w:ins', 'w:del'],
 };
+/** A footnote or endnote as a reader shows it (v9j3.3.2). */
+export interface TruthNote { mark: string; text: string }
+export interface TruthNotes { footnotes: TruthNote[]; endnotes: TruthNote[] }
 export interface DocxTruth {
+  notes: TruthNotes;
   reader: string;
   paragraphs: TruthParagraph[];
   tables: { rows: string[][] }[];
@@ -32,6 +38,7 @@ export interface DocxTruth {
   counts: TruthCounts;
 }
 export interface Comparable {
+  notes: TruthNotes;
   paragraphs: Omit<TruthParagraph, 'styleName'>[];
   tables: { rows: string[][] }[];
   links: TruthLink[];
@@ -63,6 +70,14 @@ export function assertTruthShape(t: unknown, where: string): asserts t is DocxTr
   if (typeof o.images !== 'number') fail('images');
   if (!isObj(o.counts)) fail('counts');
   for (const k of COUNT_KEYS) if (typeof (o.counts as Record<string, unknown>)[k] !== 'number') fail(`counts.${k}`);
+  if (!isObj(o.notes)) fail('notes');
+  for (const k of ['footnotes', 'endnotes']) {
+    const list = (o.notes as Record<string, unknown>)[k];
+    if (!Array.isArray(list)) fail(`notes.${k}`);
+    (list as unknown[]).forEach((n, i) => {
+      if (!isObj(n) || typeof n.mark !== 'string' || typeof n.text !== 'string') fail(`notes.${k}[${i}]`);
+    });
+  }
 }
 
 export function readTruth(path: string): DocxTruth {
@@ -100,7 +115,7 @@ export function leafDiff(a: unknown, b: unknown, path = '', out: string[] = []):
 export function comparable(t: DocxTruth): Comparable {
   return {
     paragraphs: t.paragraphs.map(({ styleName: _ignored, ...rest }) => rest),
-    tables: t.tables, links: t.links, images: t.images,
+    tables: t.tables, links: t.links, images: t.images, notes: t.notes,
   };
 }
 
@@ -188,6 +203,46 @@ export function truthOf(doc: WmlDocument, list: readonly string[] = []): Compara
     tables: doc.blocks.filter((b) => b.kind === 'table').map((t) => ({
       rows: t.rows.map((row) => row.cells.filter((c) => c.vMerge !== 'continue').map((c) => cellText(c, list))),
     })),
-    links, images,
+    links, images, notes: notesOf(doc),
   };
+}
+
+/** Our notes in the truth schema (v9j3.3.2): each reference in document order,
+ *  its note's text, and the mark Word's numbering gives it — resolved by
+ *  wmlflow.ts's own noteFormat/sectionNotes and the engine's formatMark,
+ *  counting only auto-numbered notes, restarting at an eachSect section.
+ *  Per-page restart is not projected (no recipe uses it). Cell references are
+ *  included: Word and LibreOffice number them. */
+function notesOf(doc: WmlDocument): TruthNotes {
+  const secs = sectionNotes(doc);
+  const out: TruthNotes = { footnotes: [], endnotes: [] };
+  const counters = { footnote: 0, endnote: 0 };
+  let sec = 0;
+  const noteText = (blocks: readonly WmlBlock[]): string => {
+    const flat: { p: WmlParagraph; inTable: boolean }[] = [];
+    flatten(blocks, false, flat);
+    return flat.map((x) => paraText(x.p, [])).join('\n').trim();
+  };
+  const visit = (blocks: readonly WmlBlock[], top: boolean): void => {
+    for (const b of blocks) {
+      if (b.kind === 'table') { for (const row of b.rows) for (const cell of row.cells) visit(cell.blocks, false); continue; }
+      for (const i of b.inlines) {
+        if (i.kind !== 'note') continue;
+        const part = i.note === 'footnote' ? doc.footnotes : doc.endnotes;
+        const body = part?.get(i.id);
+        if (body === undefined) continue;
+        const pr = secs[sec]?.[i.note === 'footnote' ? 'footnotePr' : 'endnotePr'];
+        const mark = i.mark ?? formatMark((pr?.numStart ?? 1) + counters[i.note]++,
+          noteFormat(pr?.numFmt) ?? (i.note === 'footnote' ? 'arabic' : 'roman'));
+        out[i.note === 'footnote' ? 'footnotes' : 'endnotes'].push({ mark, text: noteText(body) });
+      }
+      if (top && b.sectionEnd !== undefined) {
+        sec++;
+        for (const k of ['footnote', 'endnote'] as const)
+          if (secs[sec]?.[k === 'footnote' ? 'footnotePr' : 'endnotePr']?.numRestart === 'eachSect') counters[k] = 0;
+      }
+    }
+  };
+  visit(doc.blocks, true);
+  return out;
 }

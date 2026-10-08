@@ -1,6 +1,7 @@
 import type { MdDocument } from './mdast.js';
 import { parseBlocks } from './mdblock.js';
 import { parseInlines } from './mdinline.js';
+import { resolveFootnotes } from './mdgfm.js';
 
 /** Options for `parseMarkdown`. */
 export interface MarkdownOptions {
@@ -25,5 +26,6 @@ export function parseMarkdown(src: string, options?: MarkdownOptions): MdDocumen
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
   const { doc, refs } = parseBlocks(lines, gfm);
   parseInlines(doc, refs, gfm);
+  if (gfm) resolveFootnotes(doc);
   return doc;
 }

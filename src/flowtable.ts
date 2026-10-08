@@ -8,7 +8,8 @@
  *  Nothing here re-derives a table: TableBuilder already owns row measurement,
  *  the `continuationFrom` remainder and repeating headers. */
 
-import { reportTableCoverage, type TableBuilder, type BorderInfo } from './tableauthor.js';
+import { reportTableCoverage, resolveCellStyle, type TableBuilder, type BorderInfo } from './tableauthor.js';
+import { lowerNotes, refsIn, citesNote, rebaseForMarks, type NoteRef, type FlowTextRun } from './flownotes.js';
 import type { Undrawable } from './textcoverage.js';
 import { paintRowSlice } from './tablerender.js';
 import type { SpanGrid } from './tablespan.js';
@@ -37,17 +38,45 @@ export interface FlowTableOptions {
  *  as layout.ts does for lines. */
 const EPS = 1e-9;
 
-/** @internal The element behind {@link table}. */
+/** @internal The element behind {@link table}.
+ *
+ *  Notes in cells (v9j3.3.3): the references it reports are those of the rows
+ *  it keeps — a table splits by row only and a row is atomic, so more budget
+ *  keeps a superset and `settleBudget`'s bisection holds; a kept reference's
+ *  owner is its cell's /TD or /TH; and a continuation's leading repeated
+ *  header rows (`echo`) report none, the first slice having committed them,
+ *  while their marks still draw. */
 class TableElement implements FlowElement {
+  /** The lowered builder, made on FIRST USE — `Render`'s numbering pass — so
+   *  rows added to the caller's builder after `AddTable` still render, cited
+   *  or not, exactly as a note-free table shares the builder live. Lowering a
+   *  lowered builder returns it as it is, so a continuation passes through. */
+  private lowered?: TableBuilder;
+  private get t(): TableBuilder { return this.lowered ??= lowerTableNotes(this.source); }
+
   constructor(
-    private readonly t: TableBuilder,
+    private readonly source: TableBuilder,
     private readonly o: FlowTableOptions,
     readonly spaceBefore: number,
     readonly spaceAfter: number,
     readonly clear?: FlowClear,
     /** Carried across a split so a paginated table stays ONE /Table. */
     private tagger?: TableTagger,
+    /** Leading rows that REPEAT the header on a continuation: their references
+     *  were committed by the first slice, so they are left out here while
+     *  their marks still draw (v9j3.3.3). */
+    private readonly echo = 0,
   ) {}
+
+  /** References in rows [echo, to), row-major, in run order. */
+  private refsTo(to: number): NoteRef[] {
+    const out: NoteRef[] = [];
+    for (let i = this.echo; i < to; i++)
+      for (const c of this.t.rows[i].cells) if (typeof c.text !== 'string') out.push(...refsIn(c.text));
+    return out;
+  }
+
+  noteRefs(): NoteRef[] { return this.refsTo(this.t.rows.length); }
 
   /** How many leading rows fit in `availHeight`, and their height. */
   private fit(
@@ -84,11 +113,11 @@ class TableElement implements FlowElement {
     return { widths, rowHeights: m.rowHeights, grid: m.grid };
   }
 
-  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean } {
-    if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false };
+  measure(ctx: MeasureContext): { usedHeight: number; fits: boolean; notes: NoteRef[] } {
+    if (ctx.availHeight <= 0) return { usedHeight: 0, fits: false, notes: [] };
     const { rowHeights, grid } = this.metrics(ctx.width);
     const { rows, height } = this.fit(rowHeights, ctx.availHeight, grid.safeBreak);
-    return { usedHeight: height, fits: rows === this.t.rows.length && rows > 0 };
+    return { usedHeight: height, fits: rows === this.t.rows.length && rows > 0, notes: this.refsTo(rows) };
   }
 
   place(ctx: PlaceContext): PlaceResult {
@@ -115,18 +144,45 @@ class TableElement implements FlowElement {
       this.t.defaults.outerBorder as BorderInfo | undefined,
       ctx.structParent !== undefined, this.tagger);
 
+    // A tagged note is created under the cell holding its reference.
+    if (this.tagger !== undefined)
+      for (let i = this.echo; i < rows; i++)
+        for (const c of this.t.rows[i].cells) {
+          const el = this.tagger.elementOf(c);
+          if (el !== undefined && typeof c.text !== 'string') for (const r of refsIn(c.text)) r.owner = el;
+        }
+
     if (rows === this.t.rows.length)
       return { usedHeight: height, remainder: null, drew: true };
+    // continuationFrom prepends the repeating header rows on its own; the
+    // continuation carries spaceBefore 0 (already started), the SAME tagger,
+    // which is what keeps a split table one /Table, and the header rows it has
+    // ALREADY PAINTED as its echo. `fit` may cut inside a multi-row header, and
+    // a header row first painted on the continuation must still report its
+    // notes (final review): counting the whole header block lost them.
+    const next = this.t.continuationFrom(rows);
+    const echo = Math.max(this.echo, Math.min(rows, next.repeatingRowCount));
     return {
       usedHeight: height,
-      // continuationFrom prepends the repeating header rows on its own; the
-      // continuation carries spaceBefore 0 (already started) and the SAME
-      // tagger, which is what keeps a split table one /Table.
-      remainder: new TableElement(
-        this.t.continuationFrom(rows), this.o, 0, this.spaceAfter, undefined, this.tagger),
+      remainder: new TableElement(next, this.o, 0, this.spaceAfter, undefined, this.tagger, echo),
       drew: true,
     };
   }
+}
+
+/** `t` itself when no cell cites a note — the byte-identity argument, by
+ *  construction — else a private copy whose cited run lists are lowered at
+ *  the cell's cascaded size and whose atomics are rebased past the marks
+ *  (v9j3.3.3). The caller's builder is never mutated, so the same builder
+ *  passed to page.AddTable still meets resolveRuns' guard. */
+function lowerTableNotes(t: TableBuilder): TableBuilder {
+  if (!t.rows.some((r) => r.cells.some((c) => citesNote(c.text)))) return t;
+  return t.mapCells((c, row) => {
+    if (!citesNote(c.text)) return undefined;
+    const runs = c.text as FlowTextRun[];
+    const size = resolveCellStyle(c, row.style, t.defaults).fontSize;
+    return { text: lowerNotes(runs, size) as FlowTextRun[], atomics: rebaseForMarks(runs, c.atomics) };
+  });
 }
 
 /** Build a table element. The builder behind `Flow.AddTable`; use it to compose
@@ -144,5 +200,8 @@ export function table(t: TableBuilder, o: FlowTableOptions = {}): FlowElement[] 
   // Once, at BUILD time — never from measure(), which the engine runs
   // speculatively many times per table.
   if (o.onUndrawable !== undefined) reportTableCoverage(t, o.onUndrawable);
+  // Lowered once here only to VALIDATE the cited runs at build time, as
+  // paragraph() does; the element lowers again, lazily, on first use.
+  lowerTableNotes(t);
   return [new TableElement(t, o, spaceBefore, spaceAfter, normalizeClear(o.clear))];
 }

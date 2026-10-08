@@ -131,7 +131,7 @@ import { Flow, normalizeFlowOptions, type FlowOptions } from './flow.js';
 import { checkOnSkipped, type MarkdownFlowOptions } from './mdflow.js';
 import { documentTitle, type HtmlFlowOptions } from './htmlflow.js';
 import { openDocxSource, checkDocxOptions, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
-import { SkipLog, mergeSkipped } from './wmlflow.js';
+import { SkipLog, mergeSkipped, docxNoteOptions } from './wmlflow.js';
 import { parseHtml } from './htmltree.js';
 import type { HtmlDocument } from './htmldom.js';
 import type { UnsupportedDeclaration } from './cssprop.js';
@@ -3455,7 +3455,21 @@ export class Document {
     if (title !== undefined && (typeof title !== 'string' || title === ''))
       throw new TypeError('title must be a non-empty string');
     checkOnSkipped(options);
-    const flow = new Flow(this, options);
+    // A GFM note's body is mapped at `style.footnoteSize`; the engine's own
+    // note size sets the gutter mark, so forward it, a caller's explicit
+    // `footnotes`/`endnotes` options winning (v9j3.3.1).
+    // Always forwarded — its default is 8 where the engine's endnote default
+    // is 10, and the two must agree (v9j3.3.1 review). A value that is not an
+    // object is passed through untouched so the Flow still refuses it.
+    const size = options.style?.footnoteSize ?? 8;
+    const withSize = (o: unknown): unknown =>
+      o === undefined ? { fontSize: size }
+        : typeof o === 'object' && o !== null && !Array.isArray(o) ? { fontSize: size, ...o } : o;
+    const flow = new Flow(this, {
+      ...options,
+      footnotes: withSize(options.footnotes) as FlowOptions['footnotes'],
+      endnotes: withSize(options.endnotes) as FlowOptions['endnotes'],
+    });
     // Placement-time reports (kk3q), collected and concatenated on the way out
     // as Document.AddHtml does — never appended to the array flow.AddMarkdown
     // handed back. A caller's own sink still fires.
@@ -3536,6 +3550,15 @@ export class Document {
     checkDocxOptions(options);
     const src = openDocxSource(this, bytes);
     const pg = src.opened.doc.page;
+    // Word's note numbering (v9j3.3.2), the caller's explicit options winning;
+    // a value that is not an object passes through so the Flow still refuses it.
+    const word = docxNoteOptions(src.opened.doc);
+    const noteOptions = (w: object, mine: unknown): unknown =>
+      mine === undefined ? w : typeof mine === 'object' && mine !== null && !Array.isArray(mine) ? { ...w, ...mine } : mine;
+    const notes: FlowOptions = {
+      footnotes: noteOptions(word.footnotes, options.footnotes) as FlowOptions['footnotes'],
+      endnotes: noteOptions(word.endnotes, options.endnotes) as FlowOptions['endnotes'],
+    };
     // Placement-time reports: a LOCAL log merged on the way out, never an
     // append to the array flow.AddDocx handed back (AddHtml's rule).
     const late = new SkipLog();
@@ -3550,9 +3573,9 @@ export class Document {
       marginLeft: Math.abs(pg.margins.left), marginRight: Math.abs(pg.margins.right),
       marginTop: Math.abs(pg.margins.top), marginBottom: Math.abs(pg.margins.bottom),
     };
-    let flowOptions: FlowOptions = { ...(format ? { format } : {}), ...margins, ...options, paragraphSpacing: 0 };
+    let flowOptions: FlowOptions = { ...(format ? { format } : {}), ...margins, ...options, ...notes, paragraphSpacing: 0 };
     if (pg !== undefined && !flowGeometryFits(flowOptions)) {
-      flowOptions = { ...(format ? { format } : {}), ...options, paragraphSpacing: 0 };
+      flowOptions = { ...(format ? { format } : {}), ...options, ...notes, paragraphSpacing: 0 };
       if (flowGeometryFits(flowOptions)) late.add('w:pgMar', 'degraded');
     }
     const flow = new Flow(this, flowOptions);

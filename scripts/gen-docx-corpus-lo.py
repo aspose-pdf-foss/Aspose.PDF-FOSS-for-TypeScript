@@ -1,7 +1,9 @@
 # m2fp.4: builds the five LibreOffice-written corpus documents through UNO.
 # Usage: <LibreOffice program>\python.exe scripts\gen-docx-corpus-lo.py <outdir>
 # NOT run by npm test. The recipes mirror scripts/gen-docx-corpus-word.ps1 text
-# for text; keep the two in step.
+# for text; keep the two in step — except notes (v9j3.3.2): LibreOffice numbers
+# footnotes document-wide, so this file exercises format + start where Word's
+# restarts per section. An optional second argument builds one topic.
 import os, sys, struct, zlib, tempfile
 import uno
 from lo_common import Office, prop
@@ -209,6 +211,23 @@ def skipped_doc(o, tag):
     w.save('lo%s-skipped.docx' % tag)
 
 
+def notes_doc(o, tag):
+    w = Writer(o)
+    fs = w.doc.FootnoteSettings
+    fs.NumberingType = 3          # com.sun.star.style.NumberingType.ROMAN_LOWER
+    fs.StartAt = 2                # LibreOffice counts StartAt from 0: the first note reads iii
+    w.para('Heading 1', ['Notes'])
+    for word, text in (('Alpha', 'First note.'), ('Beta', 'Second note.')):
+        w.para('Standard', [word])
+        fn = w.doc.createInstance('com.sun.star.text.Footnote'); w.text.insertTextContent(w.cur, fn, False); fn.setString(text)
+    w.para('Standard', ['Gamma'])
+    fn = w.doc.createInstance('com.sun.star.text.Footnote'); fn.setLabel('*')
+    w.text.insertTextContent(w.cur, fn, False); fn.setString('Starred note.')
+    w.para('Standard', ['Delta'])
+    en = w.doc.createInstance('com.sun.star.text.Endnote'); w.text.insertTextContent(w.cur, en, False); en.setString('An endnote.')
+    w.save('lo%s-notes.docx' % tag)
+
+
 def main():
     png = os.path.join(tempfile.gettempdir(), 'gen-docx-corpus-lo.png')
     png16(png)
@@ -216,7 +235,12 @@ def main():
         v = o.version()
         tag = '.'.join(v.split('.')[:2])
         print('LibreOffice ' + v)
-        styles_doc(o, tag); lists_doc(o, tag); tables_doc(o, tag); media_doc(o, tag, png); skipped_doc(o, tag)
+        only = sys.argv[2] if len(sys.argv) > 2 else ''
+        for topic, build in (('styles', lambda: styles_doc(o, tag)), ('lists', lambda: lists_doc(o, tag)),
+                             ('tables', lambda: tables_doc(o, tag)), ('media', lambda: media_doc(o, tag, png)),
+                             ('skipped', lambda: skipped_doc(o, tag)), ('notes', lambda: notes_doc(o, tag))):
+            if not only or only == topic:
+                build()
     os.remove(png)
 
 

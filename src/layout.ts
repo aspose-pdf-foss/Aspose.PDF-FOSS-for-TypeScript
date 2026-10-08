@@ -17,14 +17,26 @@ export interface FontDriver {
   /** Count of encodable units in `text`, WITHOUT recording any glyphs. Used to
    *  detect empty / fully-unencodable input before drawing. */
   probe(text: string): number;
+  /** The text to WRITE for a hyphen hyphenation inserts, when it is not `'-'`
+   *  (rhud). It must draw exactly what `'-'` draws, at the same width: line
+   *  breaking measures `'-'` either way. Absent means `'-'`. */
+  hyphen?: string;
 }
 
-/** A {@link FontDriver} over a Standard-14 face: WinAnsi bytes + AFM metrics. */
+/** A {@link FontDriver} over a Standard-14 face: WinAnsi bytes + AFM metrics.
+ *
+ *  **Invariant (rhud):** an inserted hyphen is written as U+00AD, which
+ *  WinAnsi encodes as 0xAD — Annex D's documented duplicate /hyphen, so the
+ *  glyph and its AFM width are the hyphen's. It reads back as U+00AD, which
+ *  is what lets a later reflow tell OUR break from an author's compound `-`
+ *  and rejoin it (6y39 never rejoins a drawn `-`). An embedded face has no
+ *  such code: one Identity-H glyph has one `/ToUnicode` meaning. */
 export function winAnsiDriver(font: StdFont): FontDriver {
   return {
     measure: (t, fs) => measure(font, encodeWinAnsi(t), fs),
     encode: (t) => encodeWinAnsi(t),
     probe: (t) => encodeWinAnsi(t).length,
+    hyphen: '\u00AD',
   };
 }
 
@@ -695,7 +707,7 @@ export function layoutRuns(
       }
       if (u.hyphen) {
         const r = hyphenRun(u.end);
-        if (r >= 0) push(r, '-');
+        if (r >= 0) push(r, (scaled[r] as TextLayoutRun).driver.hyphen ?? '-');
       }
     }
     return out;

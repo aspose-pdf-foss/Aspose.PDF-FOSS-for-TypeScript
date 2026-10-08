@@ -57,6 +57,40 @@ export interface DocText {
   script?: 'sub' | 'super';
 }
 
+/** A soft hyphen (U+00AD) ending a line, before a lower-case letter: a word
+ *  broken there (5cil). The line break is REQUIRED inside one string, so a
+ *  soft hyphen drawn mid-line is left alone. */
+const SOFT_BREAK = /\u00AD[ \t]*\n[ \t]*(?=\p{Ll})/gu;
+const ENDS_SOFT = /\u00AD\s*$/;
+const STARTS_LOWER = /^\s*\p{Ll}/u;
+
+/** Whether a line ending in `prev` continues the word that `next` starts.
+ *  Mirrors reflow's rejoin (6y39): only a SOFT hyphen, which is a break by
+ *  definition. A drawn `-` may be a compound's own hyphen and is never
+ *  touched. */
+function continuesWord(prev: string, next: string): boolean {
+  return ENDS_SOFT.test(prev) && STARTS_LOWER.test(next);
+}
+
+/** Rejoin words broken at a line-end soft hyphen across a run of inline
+ *  children (5cil), within one text node and across two ADJACENT text nodes.
+ *  The second case is a style or MCID boundary falling at the break, where
+ *  neither string holds the newline. It rewrites strings only and never
+ *  merges nodes, so the builder's no-merge rule (and DOCX's one `w:r` per
+ *  `DocText`) holds. */
+function rejoinSoftBreaks(nodes: DocNode[]): void {
+  let prev: DocText | undefined;
+  for (const n of nodes) {
+    if (n.kind !== 'text') { prev = undefined; continue; }
+    n.text = n.text.replace(SOFT_BREAK, '');
+    if (prev && continuesWord(prev.text, n.text)) {
+      prev.text = prev.text.replace(ENDS_SOFT, '');
+      n.text = n.text.replace(/^\s+/, '');
+    }
+    prev = n;
+  }
+}
+
 /** A text node for one style run; the flags are omitted when false. */
 function docText(
   text: string, style: { bold?: boolean; italic?: boolean; script?: 'sub' | 'super' },
@@ -218,6 +252,7 @@ function itemBlocks(ctx: Ctx, el: StructElement): DocNode[] {
     // One P per run of text, but one DocText PER STYLE RUN inside it: struct.ts
     // already split where the emphasis changed, and joining them back into one
     // string is what would lose it.
+    rejoinSoftBreaks(runs);
     if (runs.some((r) => r.text)) out.push({ kind: 'container', type: 'P', children: runs });
   };
   const actual = el.ActualText;
@@ -400,6 +435,7 @@ function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
         if (child) children.push(child);
       }
     }
+    rejoinSoftBreaks(children);
   }
   if (!children.length) return undefined;
 
@@ -446,7 +482,10 @@ function buildList(
   let texts: string[] = [];
   const closeItem = (): void => {
     if (!item) return;
-    const text = texts.join(' ').replace(/\s+/g, ' ').trim();
+    // Lines join with a space, except across a word broken at a soft hyphen (5cil).
+    const text = texts.reduce((acc, t) => (acc === '' ? t
+      : continuesWord(acc, t) ? acc.replace(ENDS_SOFT, '') + t.replace(/^\s+/, '') : `${acc} ${t}`), '')
+      .replace(/\s+/g, ' ').trim();
     if (text)
       item.blocks.unshift({ kind: 'container', type: 'P', children: [{ kind: 'text', text }] });
     texts = [];
@@ -536,8 +575,14 @@ function blockNodes(
     const lineLevel = sized ?? (c.kind === 'heading' ? Math.min(ranks.size + 1, 6) : undefined);
     if (segs.length && lineLevel !== level) flush();
     level = lineLevel;
-    if (segs.length) segs.push({ text: ' ' });     // the join between wrapped lines
-    segs.push(...splitLineLinks(line, links));
+    const next = splitLineLinks(line, links);
+    const last = segs[segs.length - 1];
+    if (last && next.length && continuesWord(last.text, next[0].text)) {
+      // A word broken at a line-end soft hyphen joins with no space (5cil).
+      segs[segs.length - 1] = { ...last, text: last.text.replace(ENDS_SOFT, '') };
+      next[0] = { ...next[0], text: next[0].text.replace(/^\s+/, '') };
+    } else if (segs.length) segs.push({ text: ' ' });     // the join between wrapped lines
+    segs.push(...next);
     i++;
   }
   flush();

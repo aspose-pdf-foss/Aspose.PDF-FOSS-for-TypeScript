@@ -55,7 +55,8 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "gen:dfont": "node scripts/gen-dfont-fixture.mjs",
     "gen:aform": "node scripts/gen-aform-goldens.mjs",
-    "gen:zip": "node scripts/gen-zip-fixtures.mjs"
+    "gen:zip": "node scripts/gen-zip-fixtures.mjs",
+    "gen:hyph": "node scripts/gen-hyphenation.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
