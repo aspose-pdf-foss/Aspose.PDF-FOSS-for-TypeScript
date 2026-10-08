@@ -228,7 +228,10 @@ function paragraphElements(p: WmlParagraph, inlines: WmlInline[], c: Ctx, part: 
     // The face and size are stated, so heading()'s own defaults never apply
     // on top of Word's (cssflow.ts's rule).
     cur(c).push(...heading(Math.min(p.heading, 6), content.runs,
-      { ...o, font: o.font ?? DEFAULT_FONT, align: o.align === 'justify' ? 'left' : o.align }));
+      { ...o, font: o.font ?? DEFAULT_FONT, align: o.align === 'justify' ? 'left' : o.align,
+        // Word labelled it already (labelOf); a flow's headingNumbering must
+        // not number it twice (v9j3.6).
+        numbered: false }));
     return;
   }
   cur(c).push(...paragraph(content.runs, o));

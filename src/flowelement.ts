@@ -71,6 +71,14 @@ export interface PlaceResult {
   drew: boolean;
 }
 
+/** A heading awaiting its number (v9j3.6): its level, and the one way to
+ *  give it a label, which `Flow.Render` calls once, before anything is
+ *  measured. @internal */
+export interface HeadingSlot {
+  readonly level: number;
+  label(text: string): void;
+}
+
 /** A unit of flow content. */
 export interface FlowElement {
   place(ctx: PlaceContext): PlaceResult;
@@ -94,6 +102,11 @@ export interface FlowElement {
    *  reading order, whatever the budget (v9j3.3). Containers forward their
    *  child's; only text elements originate one. Absent means none. */
   noteRefs?(): NoteRef[];
+  /** The heading this element is, or wraps, for a flow's heading numbering
+   *  (v9j3.6). Containers forward their child's, as {@link noteRefs} does;
+   *  only a heading's text element originates one. Absent means not a heading,
+   *  or one built with `numbered: false`. */
+  headingSlot?(): HeadingSlot | undefined;
   /** True only for headings — the elements eligible for keep-with-next. */
   readonly keepWithNextEligible?: boolean;
   /** Per-element override of the flow keep-with-next policy; `undefined` inherits

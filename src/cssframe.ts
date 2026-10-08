@@ -46,7 +46,7 @@
 import { insetScale, type Compromise, type MeasureResult } from './flowelement.js';
 import type { NoteRef } from './flownotes.js';
 import type {
-  FlowClear, FlowElement, MeasureContext, PlaceContext, PlaceResult,
+  FlowClear, FlowElement, MeasureContext, PlaceContext, PlaceResult, HeadingSlot,
 } from './flowelement.js';
 import { fillRect, paintDecoration } from './flowblock.js';
 import { paintBox, type LayerSource } from './boxdraw.js';
@@ -193,6 +193,7 @@ class BoxElement implements FlowElement {
   }
 
   noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+  headingSlot(): HeadingSlot | undefined { return this.inner.headingSlot?.(); }
 
   measure(ctx: MeasureContext): MeasureResult {
     const width = this.innerWidth(ctx.width);
@@ -260,9 +261,8 @@ class BoxElement implements FlowElement {
     // column bottom; nothing when this slice splits, since nothing of this box
     // follows it here. The RETURNED usedHeight stays `used`: the engine still
     // owns the gap.
-    const extend = !this.last && probe.fits
-      ? Math.max(0, Math.min(this.gapAfter + (ctx.paragraphSpacing ?? 0), ctx.availHeight - used))
-      : 0;
+    const gap = !this.last && probe.fits ? this.gapAfter + (ctx.paragraphSpacing ?? 0) : 0;
+    const extend = Math.max(0, Math.min(gap, ctx.availHeight - used));
     this.paint(ctx, used + extend, width);
 
     const res = this.inner.place({
@@ -272,7 +272,14 @@ class BoxElement implements FlowElement {
       top: ctx.top - this.padTop,
       availHeight: avail,
     });
-    this.run.used += this.padTop + res.usedHeight + pad + padBottom + extend;
+    // (v9j3.8, Fixed) `run.used` is where the next slice starts in the
+    // UNBROKEN box — the box `natural` measures, gaps in full — so it takes the
+    // WHOLE gap, not the part painted here. At a column foot `extend` is cut to
+    // the room left and the engine drops the rest at the next column top; that
+    // part of the box is simply not shown (box-decoration-break: slice), and
+    // counting only `extend` started every later slice too high, so a gradient
+    // stopped short of its final colour.
+    this.run.used += this.padTop + res.usedHeight + pad + padBottom + gap;
 
     return {
       usedHeight: used,

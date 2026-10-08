@@ -16,7 +16,7 @@ import {
   type Decoration, type Background, type TextRun,
 } from './textdecor.js';
 import { buildImageXObject, drawBuiltImage, type BuiltImage } from './imageembed.js';
-import { num, appendContent, wrapMarkedContent } from './pagecontent.js';
+import { num, appendContent, wrapMarkedContent, withPaginationArtifacts } from './pagecontent.js';
 import { allocContentMcid, registerStructIds } from './structwrite.js';
 import { enc } from './serialize.js';
 import type { PdfRef } from './types.js';
@@ -28,12 +28,12 @@ import {
 import {
   insetScale, nonNegative, normalizeClear, normalizeSpacing, type Compromise,
   type FlowClear, type FlowElement, type FloatContent, type MeasureContext, type MeasureResult,
-  type PlaceContext, type PlaceResult,
+  type PlaceContext, type PlaceResult, type HeadingSlot,
 } from './flowelement.js';
 import {
   lowerNotes, rebaseForMarks, NoteLinks, refsIn, keptRefs, normalizeNoteOptions, settleBudget, NoteNumberer, NoteColumn,
-  takenIds, nextNoteId, tagNote, noteRestart, isNoteRestart,
-  type FlowTextRun, type NoteRef, type FlowNoteOptions, type FlowEndnoteOptions, type ResolvedNoteOptions,
+  takenIds, nextNoteId, tagNote, noteRestart, isNoteRestart, formatMark,
+  type FlowTextRun, type NoteRef, type MarkFormat, type FlowNoteOptions, type FlowEndnoteOptions, type ResolvedNoteOptions,
 } from './flownotes.js';
 import { UnsupportedFeatureError } from './errors.js';
 
@@ -122,6 +122,24 @@ export interface FlowOptions {
    *  `newPage`. Endnotes follow the flow's content. Default: lower roman from
    *  1, 10pt notes, continuing after the content. */
   endnotes?: FlowEndnoteOptions;
+  /** Called as Render creates each page (v9j3.5), before any of the flow's
+   *  content lands on it, with the page and its 0-based index among the
+   *  pages this flow creates — so what it draws sits UNDER the content.
+   *  The total is not known yet; for 'Page i of N' use {@link onRendered}.
+   *  In a tagged flow everything it draws through the authoring APIs is an
+   *  `/Artifact /Pagination` sequence (a body already tagged or artifacted
+   *  is left alone). An exception propagates out of Render. */
+  onPage?: (page: Page, index: number) => void;
+  /** Called once after Render has laid everything out (v9j3.5), with every
+   *  page this flow created, in order — the same array Render returns. What
+   *  it draws lands ON TOP of the content. Artifacted as {@link onPage}. */
+  onRendered?: (pages: Page[]) => void;
+  /** Number this flow's headings (v9j3.6): every heading, from `AddHeading`,
+   *  `AddMarkdown` and `AddHtml` alike, numbered once at Render in order —
+   *  DOCX headings excepted, which carry Word's own labels. A level advancing
+   *  restarts every deeper one, and a level never reached shows its start
+   *  (Word's rule). `{}` gives 1., 1.1., 1.1.1. Default: no numbering. */
+  headingNumbering?: HeadingNumbering;
 }
 
 /** Resolved, validated flow geometry (identical on every page). @internal */
@@ -324,6 +342,26 @@ export interface FlowHeadingOptions extends FlowParagraphOptions {
   /** Override the flow's {@link FlowOptions.keepHeadingsWithNext} policy for this
    *  heading. `undefined` inherits the flow default (true). */
   keepWithNext?: boolean;
+  /** `false` leaves this heading out of the flow's
+   *  {@link FlowOptions.headingNumbering}: no label, and it does not count
+   *  (v9j3.6). Default true; meaningless when the flow numbers nothing. */
+  numbered?: boolean;
+}
+
+/** One heading level's label (v9j3.6), Word's model. `text` is a template
+ *  whose `%n` is level n's counter, written in LEVEL n's `format`: `'%1.%2.'`
+ *  is 1.2., `'Chapter %1'` is Chapter 1. Defaults: `format` 'arabic',
+ *  `start` 1, `text` '%1.' at level 1, '%1.%2.' at level 2, and so on. */
+export interface HeadingLevelFormat {
+  text?: string;
+  format?: MarkFormat;
+  start?: number;
+}
+
+/** {@link FlowOptions.headingNumbering}: up to six {@link HeadingLevelFormat}s,
+ *  level 1 first; a level not given takes the defaults. */
+export interface HeadingNumbering {
+  levels?: HeadingLevelFormat[];
 }
 
 /** Default font size (points) for heading levels 1..6 when `fontSize` is unset. */
@@ -353,8 +391,8 @@ function forFirstLine(text: FlowText, firstLine: number): FlowText {
  *  logical-structure tagging when the flow is tagged. @internal */
 class TextElement implements FlowElement {
   constructor(
-    private readonly text: FlowText,
-    private readonly opts: TextBlockOptions,
+    private text: FlowText,
+    private opts: TextBlockOptions,
     private readonly structType: string,
     readonly spaceBefore: number,
     readonly spaceAfter: number,
@@ -362,7 +400,28 @@ class TextElement implements FlowElement {
     readonly keepWithNextEligible: boolean = false,
     readonly keepWithNext?: boolean,
     readonly clear?: FlowClear,
+    /** A numbered heading's level (v9j3.6); undefined for every other text,
+     *  and for a continuation, whose label was drawn with its first part. */
+    private readonly headingLevel?: number,
   ) {}
+
+  /** (v9j3.6) Prefix the label: a plain string stays a plain string, so a
+   *  numbered heading still takes the single-run path; a run list gains one
+   *  leading run, styled by the block, and every atomic moves past it. */
+  headingSlot(): HeadingSlot | undefined {
+    const level = this.headingLevel;
+    if (level === undefined) return undefined;
+    return {
+      level,
+      label: (text: string): void => {
+        const lead = `${text} `;
+        if (typeof this.text === 'string') { this.text = lead + this.text; return; }
+        this.text = [{ text: lead }, ...this.text];
+        const at = this.opts.atomics;
+        if (at !== undefined) this.opts = { ...this.opts, atomics: at.map((a) => ({ ...a, beforeRun: a.beforeRun + 1 })) };
+      },
+    };
+  }
 
   /** The options with the first-line indent scaled by an enclosing indent's
    *  squeeze (`MeasureContext.indentScale`), so a hanging line reaches back
@@ -461,6 +520,8 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
     throw new TypeError('heading level must be an integer in 1..6');
   if (o.keepWithNext !== undefined && typeof o.keepWithNext !== 'boolean')
     throw new TypeError('keepWithNext must be a boolean');
+  if (o.numbered !== undefined && typeof o.numbered !== 'boolean')
+    throw new TypeError('numbered must be a boolean');
   checkTabs(o);
   const ind = normalizeIndent(o);
   const withDefaults: FlowParagraphOptions = {
@@ -472,7 +533,56 @@ export function heading(level: number, text: FlowText, o: FlowHeadingOptions = {
   reportCoverage(text, withDefaults.font ?? 'Helvetica-Bold', o.onUndrawable);
   const { spaceBefore, spaceAfter } = normalizeSpacing(o);
   return indented([new TextElement(forFirstLine(lowerNotes(text, withDefaults.fontSize!), ind.firstLine), paragraphOptions({ ...withDefaults, atomics: rebaseForMarks(text, withDefaults.atomics) }), 'H' + String(level),
-    spaceBefore, spaceAfter, undefined, true, o.keepWithNext, normalizeClear(o.clear))], ind.left, ind.right);
+    spaceBefore, spaceAfter, undefined, true, o.keepWithNext, normalizeClear(o.clear),
+    o.numbered === false ? undefined : level)], ind.left, ind.right);
+}
+
+// ---- heading numbering (v9j3.6) ----------------------------------------------
+
+/** @internal */
+interface ResolvedHeadingLevel { text: string; format: MarkFormat; start: number }
+
+const HEADING_FORMATS: readonly MarkFormat[] = ['arabic', 'roman', 'Roman', 'alpha', 'Alpha', 'symbols'];
+
+/** Validate before anything is allocated: TypeError for the wrong kind of
+ *  thing, RangeError for a value outside its set. */
+function resolveHeadingNumbering(n: HeadingNumbering): ResolvedHeadingLevel[] {
+  if (typeof n !== 'object' || n === null || Array.isArray(n)) throw new TypeError('headingNumbering must be an object');
+  const given = n.levels ?? [];
+  if (!Array.isArray(given)) throw new TypeError('headingNumbering.levels must be an array');
+  if (given.length > 6) throw new RangeError('headingNumbering.levels holds at most 6 levels');
+  return Array.from({ length: 6 }, (_, i): ResolvedHeadingLevel => {
+    const l = given[i] ?? {};
+    if (typeof l !== 'object' || l === null) throw new TypeError(`headingNumbering.levels[${i}] must be an object`);
+    const text = l.text ?? Array.from({ length: i + 1 }, (_, k) => `%${k + 1}`).join('.') + '.';
+    if (typeof text !== 'string') throw new TypeError(`headingNumbering.levels[${i}].text must be a string`);
+    for (const m of text.matchAll(/%(\d+)/g)) {
+      const k = Number(m[1]);
+      if (!(k >= 1 && k <= 6)) throw new RangeError(`headingNumbering.levels[${i}].text names level %${m[1]}; levels are 1..6`);
+    }
+    const format = l.format ?? 'arabic';
+    if (!HEADING_FORMATS.includes(format)) throw new RangeError(`headingNumbering.levels[${i}].format must be one of ${HEADING_FORMATS.join(', ')}`);
+    const start = l.start ?? 1;
+    if (typeof start !== 'number') throw new TypeError(`headingNumbering.levels[${i}].start must be a number`);
+    if (!Number.isInteger(start) || start < 1) throw new RangeError(`headingNumbering.levels[${i}].start must be an integer >= 1`);
+    return { text, format, start };
+  });
+}
+
+/** One pass, in queue order, before anything is measured: a level advancing
+ *  restarts every deeper level, and a level never reached shows its start —
+ *  Word's rule, as wmlnumbering.ts implements it. */
+function numberHeadings(items: FlowItem[], levels: ResolvedHeadingLevel[]): void {
+  const counters: (number | undefined)[] = [];
+  for (const it of items) {
+    const slot = (it as FlowElement).headingSlot?.();
+    if (slot === undefined) continue;
+    const d = slot.level - 1;
+    counters[d] = counters[d] === undefined ? levels[d].start : counters[d]! + 1;
+    counters.length = d + 1;
+    const value = (k: number): number => counters[k] ?? levels[k].start;
+    slot.label(levels[d].text.replace(/%(\d)/g, (_, k: string) => formatMark(value(Number(k) - 1), levels[Number(k) - 1].format)));
+  }
 }
 
 /** k constant for a 4-Bézier circle approximation (mirrors graphics.ts). */
@@ -913,6 +1023,7 @@ class ListBlockElement implements FlowElement {
   }
 
   noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+  headingSlot(): HeadingSlot | undefined { return this.inner.headingSlot?.(); }
 
   measure(ctx: MeasureContext): MeasureResult {
     const indent = this.indentFor(ctx.width);
@@ -1407,6 +1518,9 @@ export class Flow {
   private readonly footOpts: ResolvedNoteOptions;
   private readonly endOpts: ResolvedNoteOptions;
   private rendered = false;
+  private readonly onPage?: (page: Page, index: number) => void;
+  private readonly onRendered?: (pages: Page[]) => void;
+  private readonly headingLevels?: ResolvedHeadingLevel[];
 
   constructor(private readonly doc: Document, options?: FlowOptions) {
     this.geometry = normalizeFlowOptions(options);
@@ -1423,6 +1537,13 @@ export class Flow {
         throw new TypeError('lang requires tagged: true — an untagged flow has no /Sect to carry it');
     }
     this.lang = options?.lang;
+    if (options?.onPage !== undefined && typeof options.onPage !== 'function')
+      throw new TypeError('onPage must be a function');
+    if (options?.onRendered !== undefined && typeof options.onRendered !== 'function')
+      throw new TypeError('onRendered must be a function');
+    this.onPage = options?.onPage;
+    this.onRendered = options?.onRendered;
+    if (options?.headingNumbering !== undefined) this.headingLevels = resolveHeadingNumbering(options.headingNumbering);
     if (options?.keepHeadingsWithNext !== undefined && typeof options.keepHeadingsWithNext !== 'boolean')
       throw new TypeError('keepHeadingsWithNext must be a boolean');
     this.keepHeadingsWithNext = options?.keepHeadingsWithNext ?? true;
@@ -1659,7 +1780,12 @@ export class Flow {
     const pages: Page[] = [];
     const ensurePage = (idx: number): Page => {
       while (pages.length <= idx) {
-        pages.push(this.doc.AddPage(g.format).page);
+        const page = this.doc.AddPage(g.format).page;
+        pages.push(page);
+        if (this.onPage !== undefined) {
+          const cb = this.onPage, i = pages.length - 1;
+          this.decorate(() => cb(page, i));
+        }
       }
       return pages[idx];
     };
@@ -1673,6 +1799,7 @@ export class Flow {
     const takenNoteIds = structRoot !== undefined ? takenIds(this.doc, structRoot.Dict) : new Set<string>();
     const noteIdEntries: Array<[string, PdfRef]> = [];
 
+    if (this.headingLevels !== undefined) numberHeadings(this.items, this.headingLevels);
     const queue: FlowItem[] = [...this.items];
     let pageIdx = 0;
     let col = 0;
@@ -2103,6 +2230,17 @@ export class Flow {
     // Every note and every citation is placed: write the links (v9j3.3.4).
     noteLinks.finish();
     if (structRoot !== undefined) registerStructIds(this.doc, structRoot.Dict, noteIdEntries);
+    if (this.onRendered !== undefined) {
+      const cb = this.onRendered;
+      this.decorate(() => cb(pages));
+    }
     return pages;
+  }
+
+  /** A page callback's drawing is decoration: in a tagged flow it runs in a
+   *  pagination-artifact scope, so running heads never read as untagged
+   *  content (v9j3.5). An untagged flow runs it as is, byte-identical. */
+  private decorate(fn: () => void): void {
+    if (this.tagged) withPaginationArtifacts(this.doc, fn); else fn();
   }
 }

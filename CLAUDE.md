@@ -1053,6 +1053,54 @@ Source (`src/`):
   the active floats exclude, where those bands end, and where a new box may go.
   It knows nothing about PDF or drawing, so the geometry that is silently wrong
   when reversed is testable without building a file.
+  **Invariant (`v9j3.5`):** `FlowOptions.onPage(page, index)` runs inside
+  `Render`'s `ensurePage`, right after the page is created and BEFORE any
+  content lands on it, so its ink is underneath; `onRendered(pages)` runs once
+  after the links and structure IDs are written, with the array `Render`
+  returns, so its ink is on top. Two hooks because the two needs conflict:
+  drawing under the content needs the page empty, and "Page i of N" needs the
+  count. Both reach `doc.AddMarkdown`/`AddHtml`/`AddDocx`, which spread their
+  options into the Flow; the one-rect `page.Add*` entries take no
+  `FlowOptions`, so there is no key to ignore silently.
+  **Invariant (`v9j3.5`):** in a TAGGED flow each callback runs inside
+  `pagecontent.ts`'s `withPaginationArtifacts`, a per-document scope that
+  makes `appendContent` and `prependContent` wrap every body as
+  `/Artifact <</Type /Pagination>> BDC … EMC`. Those two functions are where
+  EVERY authoring API writes, which is why one rule covers text, graphics,
+  images, barcodes, SVG, templates and tables; each body is self-contained,
+  so each sequence balances within its own stream. A body that is already
+  ONE marked-content sequence — the caller tagged or artifacted it — is left
+  alone rather than nested. The scope is a counter released in `finally`, so a
+  throwing callback cannot leave the document artifacting everything after
+  it. An untagged flow takes no scope and is byte-identical to making the same
+  calls after `Render`. NOT covered: `EditableContent` edits and annotations.
+  **Note, measured:** all 9 mutations redden, two only after cases were added
+  — no callback drew through `prependContent` (an underlay) until one used
+  `AddText({ behind: true })`, and nothing checked that the scope closes.
+  **Invariant (`v9j3.6`):** `FlowOptions.headingNumbering` numbers in ONE
+  pass at the start of `Render`, over the queue in order, before anything is
+  measured — the note-numbering rule, and for its reason: a label's width
+  must be known before a line is measured, and the builders have no flow, so
+  `flow.AddMarkdown` and `flow.AddHtml` headings can only be reached here. A
+  heading's text element carries its level (`headingSlot()`, a `FlowElement`
+  method every wrapper forwards — `QuotedElement`, `IndentElement`,
+  `ListBlockElement`, `BoxElement` — exactly as `noteRefs()` is forwarded),
+  and the pass prefixes `label + ' '`. A plain string STAYS a plain string,
+  so the single-run path is kept; a run list gains one leading run and every
+  atomic's `beforeRun` moves past it. A continuation carries no level, its
+  label having been drawn with the first part. With no option nothing runs,
+  so the flow is byte-identical BY CONSTRUCTION.
+  **Invariant:** the counters are Word's — a level advancing truncates every
+  deeper one, and a level never reached shows its `start`, which is
+  `wmlnumbering.ts`'s rule (an H3 straight after an H1 is 1.1.1; a lone H2 is
+  1.1.). `%n` is written in LEVEL n's format, never the visited level's.
+  `formatMark` from `flownotes.ts` is the one number speller for notes and
+  headings alike.
+  **Invariant:** DOCX headings are built with `numbered: false` in
+  `wmlflow.ts` — `readDocx` already labelled them with Word's own numbering,
+  so a flow numbering them again would print two labels.
+  **Note, measured:** all 12 mutations redden; the atomic shift only after a
+  case put an inline image in a numbered styled-run heading.
   **Invariant (`092q`):** `FlowListItem.atomics` is PER ITEM, because
   `beforeRun` indexes that item's own run list and nothing else. It cannot ride
   `bodyOptions`, which is keyed on the LIST — so `ListItemElement.bodyOpts()`
@@ -3424,8 +3472,12 @@ Source (`src/`):
   across a column break; `sliceRadii` rounds only a slice's true corners.
   That needs the whole box's height before the box has finished placing:
   `BoxRun.natural` measures every child unconstrained, the gaps between them
-  and the insets included, and `BoxRun.used` is how far down the box each
-  slice starts, the gap it painted over included. **Measured:** dropping the
+  and the insets included, and `BoxRun.used` is how far down the UNBROKEN box
+  each slice starts, the WHOLE following gap included — not just the part a
+  slice painted over, which a column foot cuts short (`v9j3.8`): counting that
+  part started every later slice too high and the ramp ended up to a gap short
+  of its final colour. `test/cssframe-gradient-break.test.ts` puts a break
+  inside a 200px gap to see it. **Measured:** dropping the
   gaps from either reddened NOTHING until
   `test/cssframe-gradient-run.test.ts` sampled a multi-child box's ramp for
   linearity — every earlier gradient fixture held one child.
@@ -3482,6 +3534,13 @@ Source (`src/`):
   `calc()`, which is linear in the basis, approximate for `min()`/`max()`.
   A `url()` that will not resolve is reported once as `image`/dropped and the
   colour still paints.
+  **Invariant (`v9j3.7`, `floatbox.ts`):** FloatingBox decoration validates
+  by the repo's split — `TypeError` for the wrong KIND of value, `RangeError`
+  for a value of the right kind outside its set — through two helpers,
+  `keyword` (gradient `kind`, radial `shape`/`size`, image `fit`) and `unit`
+  (a stop's `offset` and `opacity`). `keyword` tests against an array, never
+  `in`, so a `fit` named `constructor` cannot find `Object.prototype`'s. A
+  `null` option means unset (`??`), as everywhere else in the file.
   **Note on scope:** one layer — a comma-separated list is refused whole and
   reported as `unparsable-value` in `unsupported` — and no `repeating-*` or
   `conic` gradients, colour hints, `space`/`round`, `fixed`, or

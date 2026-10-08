@@ -315,18 +315,31 @@ function checkRadius(r: FloatBoxRadius): CornerSpec[] {
     checkCorner(r.bottomRight, 'radius.bottomRight'), checkCorner(r.bottomLeft, 'radius.bottomLeft')];
 }
 
-const SIZES = new Set(['closest-side', 'closest-corner', 'farthest-side', 'farthest-corner']);
+const SIZES = ['closest-side', 'closest-corner', 'farthest-side', 'farthest-corner'] as const;
+
+/** (v9j3.7) The repo's validation split: TypeError for the wrong KIND of
+ *  thing, RangeError for a value of the right kind outside its allowed set —
+ *  checkCorner's rule, viewerprefs.ts's and formcreate.ts's. */
+function keyword<T extends string>(v: unknown, allowed: readonly T[], what: string): T {
+  if (typeof v !== 'string') throw new TypeError(`${what} must be a string`);
+  if (!(allowed as readonly string[]).includes(v)) throw new RangeError(`${what} must be one of ${allowed.join(', ')}`);
+  return v as T;
+}
+function unit(v: unknown, what: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new TypeError(`${what} must be a finite number`);
+  if (v < 0 || v > 1) throw new RangeError(`${what} must be in 0..1`);
+  return v;
+}
 
 function checkGradient(g: BoxGradient): GradientSpec {
-  if (typeof g !== 'object' || g === null || (g.kind !== 'linear' && g.kind !== 'radial'))
-    throw new TypeError("background gradient kind must be 'linear' or 'radial'");
+  if (typeof g !== 'object' || g === null) throw new TypeError('background gradient must be an object');
+  keyword(g.kind, ['linear', 'radial'], 'background gradient kind');
   if (!Array.isArray(g.stops) || g.stops.length < 2) throw new TypeError('background gradient needs at least two stops');
   const stops = g.stops.map((st, i) => {
-    if (typeof st !== 'object' || st === null || !Number.isFinite(st.offset) || st.offset < 0 || st.offset > 1)
-      throw new TypeError(`gradient stop ${i}: offset must be in 0..1`);
+    if (typeof st !== 'object' || st === null) throw new TypeError(`gradient stop ${i} must be an object`);
+    unit(st.offset, `gradient stop ${i}: offset`);
     const color = checkColor(st.color, `gradient stop ${i} color`);
-    const alpha = st.opacity ?? 1;
-    if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) throw new TypeError(`gradient stop ${i}: opacity must be in 0..1`);
+    const alpha = unit(st.opacity ?? 1, `gradient stop ${i}: opacity`);
     return { color, alpha, pos: F(st.offset) };
   });
   if (g.kind === 'linear') {
@@ -334,10 +347,8 @@ function checkGradient(g: BoxGradient): GradientSpec {
     if (!Number.isFinite(angle)) throw new TypeError('gradient angle must be a finite number');
     return { kind: 'linear', angle, stops };
   }
-  const shape = g.shape ?? 'ellipse';
-  if (shape !== 'circle' && shape !== 'ellipse') throw new TypeError("radial shape must be 'circle' or 'ellipse'");
-  const size = g.size ?? 'farthest-corner';
-  if (!SIZES.has(size)) throw new TypeError('radial size must be a CSS extent keyword');
+  const shape = keyword(g.shape ?? 'ellipse', ['circle', 'ellipse'], 'radial shape');
+  const size = keyword(g.size ?? 'farthest-corner', SIZES, 'radial size');
   const at = g.at ?? [0.5, 0.5];
   if (!Array.isArray(at) || at.length !== 2 || !at.every((v) => Number.isFinite(v)))
     throw new TypeError('radial at must be [x, y] fractions of the box');
@@ -347,9 +358,8 @@ function checkGradient(g: BoxGradient): GradientSpec {
 function imageLayer(im: FloatBoxBackgroundImage): { source: LayerSource; layer: BgLayer } {
   if (typeof im !== 'object' || im === null || !(im.data instanceof Uint8Array))
     throw new TypeError('backgroundImage.data must be a Uint8Array');
-  const fit = im.fit ?? 'stretch';
-  if (!Object.prototype.hasOwnProperty.call(FITS, fit))
-    throw new TypeError("backgroundImage.fit must be 'stretch', 'cover', 'contain', 'tile' or 'none'");
+  // An array, not `in FITS`: a fit named `constructor` must not find Object.prototype's.
+  const fit = keyword(im.fit ?? 'stretch', ['stretch', 'cover', 'contain', 'tile', 'none'] as const, 'backgroundImage.fit');
   const built = buildImageXObject(im.data, im.format);
   const w = built.stream.dict.get('Width'), h = built.stream.dict.get('Height');
   if (typeof w !== 'number' || typeof h !== 'number') throw new TypeError('backgroundImage has no size');

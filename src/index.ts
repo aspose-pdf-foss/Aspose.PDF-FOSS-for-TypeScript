@@ -135,7 +135,7 @@ export { LoadLimits, LIMIT_FIELDS } from './loadlimits.js';
 export type { LoadLimitValues, LoadLimitPatch, LimitField } from './loadlimits.js';
 export { Flow, paragraph, heading, list, image } from './flow.js';
 export type {
-  FlowOptions, FlowParagraphOptions, FlowHeadingOptions, FlowListOptions, FlowImageOptions,
+  FlowOptions, FlowParagraphOptions, FlowHeadingOptions, HeadingLevelFormat, HeadingNumbering, FlowListOptions, FlowImageOptions,
   FlowListItem, FlowListNode, FlowElement, FlowClear, PlaceContext, PlaceResult,
   FlowNote, FlowTextRun, FlowNoteOptions, FlowEndnoteOptions, MarkFormat,
 } from './flow.js';

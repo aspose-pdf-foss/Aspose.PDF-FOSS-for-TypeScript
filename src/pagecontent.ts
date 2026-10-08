@@ -6,6 +6,7 @@ import {
 } from './types.js';
 import { enc, escapeName } from './serialize.js';
 import type { Matrix } from './text.js';
+import { parseContentStream } from './content.js';
 
 /** Format a number compactly for a content stream (no exponent, no float noise). */
 export function num(n: number): string {
@@ -309,9 +310,51 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+// ---- pagination-artifact scope (v9j3.5) ------------------------------------
+
+const artifactScopes = new WeakMap<Document, number>();
+
+/** Run `fn` with every body {@link appendContent} and {@link prependContent}
+ *  splice into `doc` wrapped as `/Artifact <</Type /Pagination>> BDC … EMC`.
+ *  A tagged Flow's `onPage`/`onRendered` callbacks run inside one, so a
+ *  running head drawn through any authoring API — text, graphics, images,
+ *  barcodes, SVG, templates, tables all end here — is a pagination artifact
+ *  rather than untagged content. Each body is self-contained (its own q/Q),
+ *  so each sequence is balanced within its own stream. Nested scopes count. */
+export function withPaginationArtifacts<T>(doc: Document, fn: () => T): T {
+  artifactScopes.set(doc, (artifactScopes.get(doc) ?? 0) + 1);
+  try { return fn(); } finally {
+    const n = (artifactScopes.get(doc) ?? 1) - 1;
+    if (n > 0) artifactScopes.set(doc, n); else artifactScopes.delete(doc);
+  }
+}
+
+/** Is `body` one marked-content sequence already — a drawing its producer
+ *  tagged or artifacted itself? It is then left alone: wrapping it again
+ *  would put tagged content inside an artifact, or nest two artifacts. */
+function isOneMarkedSequence(body: Uint8Array): boolean {
+  const ops = parseContentStream(body);
+  if (ops.length < 2) return false;
+  const first = ops[0].operator;
+  if ((first !== 'BMC' && first !== 'BDC') || ops[ops.length - 1].operator !== 'EMC') return false;
+  let depth = 0;
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i].operator;
+    if (o === 'BMC' || o === 'BDC') depth++;
+    else if (o === 'EMC' && --depth === 0 && i < ops.length - 1) return false;   // closed early
+  }
+  return depth === 0;
+}
+
+function scoped(doc: Document, body: Uint8Array): Uint8Array {
+  if (!artifactScopes.has(doc) || isOneMarkedSequence(body)) return body;
+  return concat([enc('/Artifact <</Type /Pagination>> BDC\n'), body, enc('\nEMC')]);
+}
+
 /** Splice `body` into /Contents, wrapping existing content in q/Q so prior
  *  graphics state cannot leak into the appended body. */
 export function appendContent(doc: Document, page: Page, body: Uint8Array): void {
+  body = scoped(doc, body);
   const existing = normalizeContents(doc, page.Dict.get('Contents'));
   if (existing.length === 0) {
     page.Dict.set('Contents', [doc.allocObject(streamOf(body))]);
@@ -337,6 +380,7 @@ export function transformContent(doc: Document, page: Page, cm: Matrix): void {
  *  isolated. `body` is assumed self-contained (its own q/Q), mirroring
  *  appendContent. */
 export function prependContent(doc: Document, page: Page, body: Uint8Array): void {
+  body = scoped(doc, body);
   const existing = normalizeContents(doc, page.Dict.get('Contents'));
   if (existing.length === 0) {
     page.Dict.set('Contents', [doc.allocObject(streamOf(body))]);

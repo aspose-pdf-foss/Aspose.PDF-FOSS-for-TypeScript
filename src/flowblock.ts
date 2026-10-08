@@ -8,7 +8,7 @@
 
 import {
   insetScale, nonNegative, normalizeClear, normalizeSpacing, type Compromise,
-  type FlowClear, type FlowElement, type MeasureContext, type MeasureResult, type PlaceContext, type PlaceResult,
+  type FlowClear, type FlowElement, type HeadingSlot, type MeasureContext, type MeasureResult, type PlaceContext, type PlaceResult,
 } from './flowelement.js';
 import type { StructElement } from './struct.js';
 import type { NoteRef } from './flownotes.js';
@@ -371,6 +371,7 @@ class QuotedElement implements FlowElement {
   }
 
   noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+  headingSlot(): HeadingSlot | undefined { return this.inner.headingSlot?.(); }
 
   measure(ctx: MeasureContext): MeasureResult {
     // Every element in this repo implements measure; the fallback is unreachable
@@ -447,6 +448,7 @@ class IndentElement implements FlowElement {
   private scale(width: number): number { return insetScale(width, this.left + this.right); }
 
   noteRefs(): NoteRef[] { return this.inner.noteRefs?.() ?? []; }
+  headingSlot(): HeadingSlot | undefined { return this.inner.headingSlot?.(); }
 
   measure(ctx: MeasureContext): MeasureResult {
     const k = this.scale(ctx.width);
