@@ -5,7 +5,7 @@ import { UnsupportedFeatureError } from '../src/errors.js';
 import { buildSigner } from './helpers/build-signer.js';
 import { buildXfaPlan, convertXfaToAcroForm } from '../src/xfaconvert.js';
 import {
-  buildXfaPdf, POSITIONED_TEMPLATE, FLOWED_TEMPLATE, WRONG_MEDIUM_TEMPLATE,
+  buildXfaPdf, POSITIONED_TEMPLATE, FLOWED_TEMPLATE, FLOWED_BOUNDED_TEMPLATE, HIDDEN_POSITIONED_TEMPLATE, WRONG_MEDIUM_TEMPLATE,
   GROUP_TEMPLATE, Y_FLIP_TEMPLATE, DIFFERING_DEFAULT_TEMPLATE, THREE_DEEP_TEMPLATE,
   PAIRED_ITEMS_TEMPLATE, NESTED_FLOW_TEMPLATE, FLAGS_TEMPLATE,
 } from './helpers/build-xfa-pdf.js';
@@ -59,6 +59,36 @@ describe('buildXfaPlan: classification', () => {
     const p = planOf(buildXfaPdf({ template: '<template/>' }));
     expect(p.report.fields).toEqual([]);
     expect(p.report.dataOnly).toBe(false);
+  });
+});
+
+describe('buildXfaPlan: flow layout', () => {
+  it('places the fields of a flowed page whose contentArea bounds it', () => {
+    const p = planOf(buildXfaPdf({ template: FLOWED_BOUNDED_TEMPLATE }));
+    expect(p.report.fields.map((f) => f.route)).toEqual(['positioned', 'positioned']);
+    expect(p.report.skipped).toEqual([]);
+    // contentArea at 0.5in; b sits 20pt below a. y-flipped against 792.
+    expect(p.entries[0].rect).toEqual([36, 736, 252, 756]);
+    expect(p.entries[1].rect).toEqual([36, 716, 252, 736]);
+  });
+
+  // Two unnamed page subforms give their fields the SAME SOM name. The layout
+  // result is keyed per page, so page 1's field keeps page 1's box.
+  it('keeps a field on its own page when another page repeats its SOM name', () => {
+    const PAGE = (y: string) => `<subform layout="position">
+      <field name="f" x="1in" y="${y}" w="1in" h="20pt"><ui><textEdit/></ui></field></subform>`;
+    const p = planOf(buildXfaPdf({ pages: 2, template: `<template><subform name="form1" layout="tb">
+      <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea>
+        <pageArea name="P2"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+      ${PAGE('1in')}${PAGE('2in')}</subform></template>` }));
+    const first = p.entries.find((e) => e.page === 1);
+    expect(first?.rect).toEqual([72, 700, 144, 720]);
+  });
+
+  it('converts a hidden positioned field bare, saying why', () => {
+    const p = planOf(buildXfaPdf({ template: HIDDEN_POSITIONED_TEMPLATE }));
+    expect(p.report.fields[0].route).toBe('bare');
+    expect(p.report.skipped[0].reason).toMatch(/presence="hidden" takes no space/);
   });
 });
 
@@ -578,5 +608,33 @@ describe('mutation fences', () => {
     expect(ff('ro') & 2).toBeFalsy();
     expect(ff('req') & 2).toBeTruthy();
     expect(ff('req') & 1).toBeFalsy();
+  });
+});
+
+// d3mq (part 1): a master-page field is REPORTED, never silently lost and
+// never created. Its own refusal wins where it has one.
+describe('ConvertXfaToAcroForm: master-page fields are reported', () => {
+  const MASTER = `<template><subform name="form1" layout="tb">
+    <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/>
+      <contentArea x="0.25in" y="0.25in" w="8in" h="10in"/>
+      <field name="code" x="1in" y="10.5in" w="3in" h="0.25in"><ui><barcode type="pdf417"/></ui></field>
+      <field name="who" x="5in" y="10.5in" w="2in" h="0.25in"><ui><textEdit/></ui></field>
+    </pageArea></pageSet>
+    <subform name="Page1" layout="position">
+      <field name="f1_01" x="1in" y="2in" w="3in" h="20pt"><ui><textEdit/></ui></field>
+    </subform></subform></template>`;
+
+  it('lists each in skipped with a reason and creates none of them', () => {
+    const doc = Document.Open(buildXfaPdf({ template: MASTER }));
+    const r = convertXfaToAcroForm(doc, { removeXfa: false });
+    expect(r.fields.map((f) => f.name)).toEqual(['form1[0].Page1[0].f1_01[0]']);
+    const master = r.skipped.filter((s) => s.name?.includes('#pageSet'));
+    expect(master.map((s) => [s.what, s.name])).toEqual([
+      ['field', 'form1[0].#pageSet[0].P1[0].code[0]'],
+      ['field', 'form1[0].#pageSet[0].P1[0].who[0]'],
+    ]);
+    expect(master[0].reason).toMatch(/<barcode>.*refused/);
+    expect(master[1].reason).toMatch(/master page/);
+    expect(doc.Form.Get('form1[0].#pageSet[0].P1[0].who[0]')).toBeUndefined();
   });
 });

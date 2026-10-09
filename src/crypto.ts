@@ -160,6 +160,28 @@ function filterCipher(cf: PdfObject, filterName: string | undefined, resolve: Re
   return cfmToCipher(asName(entry.get('CFM')));
 }
 
+/**
+ * The crypt filter a stream names in its OWN `/Filter` (32000-1 7.4.10), or
+ * `undefined` when it names none. A `/Crypt` entry's parameters sit at the same
+ * index of `/DecodeParms`, and with no `/Name` the filter is `/Identity`.
+ *
+ * **Invariant (lj8t):** when a stream names one, THAT filter decides how the
+ * stream is encrypted, not the document's `/StmF`. Acrobat writes a plaintext
+ * XMP packet under `/EncryptMetadata false` exactly so -- `/Filter [/Crypt]`,
+ * nothing else -- and decrypting it with `/StmF` threw on the AES unpadding and
+ * refused the whole file. Read and write both ask this one function, so the two
+ * cannot disagree about what the marker means.
+ */
+export function streamCryptFilter(dict: PdfDict, resolve: Resolve): string | undefined {
+  const f = resolve(dict.get('Filter'));
+  const filters = isArray(f) ? f.map((x) => resolve(x)) : [f];
+  const i = filters.findIndex((x) => asName(x) === 'Crypt');
+  if (i < 0) return undefined;
+  const dp = resolve(dict.get('DecodeParms'));
+  const parms = resolve(isArray(dp) ? dp[i] : i === 0 ? dp : undefined);
+  return (isDict(parms) ? asName(resolve(parms.get('Name'))) : undefined) ?? 'Identity';
+}
+
 /** Algorithm 6 (R2/R3+): validate the user password by recomputing /U. */
 function validateUserR234(fileKey: Uint8Array, U: Uint8Array, id0: Uint8Array, R: number): boolean {
   if (R === 2) {
@@ -198,8 +220,10 @@ export function buildDecryptor(
   // crypt-filter selection
   let streamCipher: Cipher;
   let stringCipher: Cipher;
+  // Crypt filters exist only from V 4; below it a stream's own /Crypt can name
+  // nothing, and filterCipher answers 'identity' for a missing /CF.
+  const cf = V >= 4 ? encrypt.get('CF') ?? null : null;
   if (V >= 4) {
-    const cf = encrypt.get('CF') ?? null;
     streamCipher = filterCipher(cf, asName(resolve(encrypt.get('StmF'))), resolve);
     stringCipher = filterCipher(cf, asName(resolve(encrypt.get('StrF'))), resolve);
   } else {
@@ -237,7 +261,9 @@ export function buildDecryptor(
     }
     if (isStream(obj)) {
       for (const [k, v] of obj.dict) obj.dict.set(k, decryptObject(v, num, gen));
-      return { kind: 'stream', dict: obj.dict, raw: applyCipher(streamCipher, obj.raw, num, gen) };
+      const own = streamCryptFilter(obj.dict, resolve);
+      const cipher = own === undefined ? streamCipher : filterCipher(cf, own, resolve);
+      return { kind: 'stream', dict: obj.dict, raw: applyCipher(cipher, obj.raw, num, gen) };
     }
     return obj;
   };

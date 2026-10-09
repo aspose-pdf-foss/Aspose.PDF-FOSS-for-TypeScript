@@ -115,11 +115,12 @@ npm run gen:hyph      # hyphdata.ts     — Liang hyphenation patterns (tex-hyph
 regenerate committed test fixtures (the corrupt files, the JPX and JBIG2
 streams, the SVG inputs, the headless-Chrome SVG and filter goldens, the
 WCS ICC goldens, `gen:dfont`'s FontForge-written Macintosh suitcase,
-`gen:aform`'s pdf.js AForm goldens, and `gen:zip`'s libarchive, .NET and git
+`gen:aform`'s pdf.js AForm goldens, `gen:xfa`'s pdf.js XFA layout goldens
+(headless Chrome), and `gen:zip`'s libarchive, .NET and git
 ZIP archives) and are likewise never run by the suite — it reads what they
 produced. Each needs something that is NOT a dependency: headless Chrome,
 `mscms.dll`, FontForge, Windows `tar.exe` and PowerShell, or network access to
-fetch pdf.js at its pinned commit.
+fetch pdf.js (or the pinned `pdfjs-dist` release) at its pinned commit.
 
 **Note, and do NOT "fix" it back:** `.gitignore` deliberately carries **no**
 rule for `examples/feature-showcase/.reference/`. That directory was a fetched
@@ -187,6 +188,19 @@ Source (`src/`):
   check because it is the only one that sees an oversized non-stream object
   made of many small tokens. `test/lexer-token-cap.test.ts` is what holds the
   cap on its own.
+  **Invariant (`lj8t`):** `ObjectParser`'s LENIENT mode is a LAST RESORT and
+  OFF by default. It skips a stray `)`, `{`, `}` or `>` where a dictionary KEY or
+  an array ELEMENT is expected, and in NO other position: one in a dictionary
+  VALUE position would pair every later key with the wrong value, so that still
+  throws. Only `Document.Open` asks for it, and only on its LAST rung, for an
+  object that would otherwise refuse a structurally sound file. Lenient parsing
+  anywhere the sweep runs would let a byte-shifted offset parse as a plausible
+  object, which is exactly what strict rejection prevents. The shape is Acrobat
+  PDFWriter 3.02's `/Title (pages))` in OPM SF 50's `/Info`.
+  **Note, measured:** the two strictness tests (`xref-recovery`,
+  `objstm-recovery`) overwrite an object's body with `#`, which lexes as a
+  keyword in VALUE position and is still refused. Allowing a stray token in
+  value position reddens only the parser's own refusal case.
 - **xref.ts** — classic cross-reference tables, cross-reference streams, and
   hybrid `/XRefStm`.
   **Invariant:** a FREE entry is recorded as `{ type: 'free', gen }`, never
@@ -320,6 +334,12 @@ Source (`src/`):
   `no indirect objects found` (nothing in the file), `no /Type /Catalog object
   found` (objects but no catalog), then a catalog we can work from. Collapsing
   any two turns a diagnosis the caller can act on into "the file is broken".
+  **Invariant (`lj8t`):** a structurally sound file holding an object that still
+  will not parse after the sweep is refused, but only after ONE more build has
+  parsed each such object in `ObjectParser`'s lenient mode. What parses then is
+  reported as REPAIRED in `doc.recovery`, and the reason stays
+  `object-parse-failure`. What does not parse is refused with the same message
+  as before. The strictness tests still throw.
   **Invariant (`ibzo.2`):** a FOURTH refusal sits beside the three, and it is a
   different kind: `ResourceLimitError`, naming the bound the sweep or the
   rebuild reached. Every `catch` on the ladder calls `rethrowLimit` first —
@@ -4753,6 +4773,28 @@ Source (`src/`):
   appearance and to which `v0tz.5` added the one body naming several faces.
 - **crypto.ts** additionally owns `CryptKeys` and `isSignatureDict`, the two
   things preserving a document's encryption needs (`0cr3`).
+  **Invariant (`lj8t`):** a stream's OWN crypt filter (`/Filter [/Crypt]`, its
+  `/DecodeParms /Name`, `/Identity` when there is none; 32000-1 7.4.10) decides
+  how that stream is encrypted, NOT `/StmF`, when reading and when writing.
+  `streamCryptFilter` is the one owner, which `decryptObject` and
+  `encrypt.ts`'s `makeEncryptor` both ask, and `filters.ts` decodes `Crypt` as a
+  pass-through because decryption already happened at load. LiveCycle writes
+  an `/EncryptMetadata false` document's XMP as plaintext under an Identity
+  `/Crypt`. Decrypting it with `/StmF` threw on the AES unpadding and refused
+  two real OPM forms.
+  **Invariant (`lj8t`), and it is a shared-convention bug the round trip could
+  not see:** under `encryptMetadata: false` the writer encrypted the metadata
+  stream ANYWAY, and our reader decrypted it again, so every round trip
+  agreed. Other readers decoded garbage. It is now written plaintext and
+  MARKED with an Identity `/Crypt`, Acrobat's shape. The reader still does NOT
+  infer plaintext from the flag alone, because files written before the fix
+  have encrypted, unmarked XMP and must still open. An unmarked plaintext XMP
+  from another producer is `hch6`.
+  **Note, measured, a REDUNDANT PAIR:** for a metadata stream the
+  `/EncryptMetadata` exemption and the stream's own `/Crypt` each keep it
+  plaintext on save, so the OPM SF 1153 round trip passes with either rule
+  alone. The own-`/Crypt` write rule is pinned only by a marked NON-metadata
+  stream under a handler that encrypts metadata (`test/crypt-filter.test.ts`).
   **Invariant:** the `/Encrypt` dict is COPIED VERBATIM and encryption is never
   RE-DERIVED. `EncryptOptions` needs an owner password, which is hashed into
   `/O` and unrecoverable, and `buildEncryptor` defaults
@@ -10612,7 +10654,7 @@ Source (`src/`):
   tree is a B-tree and a producer is entitled to rely on that — ignoring the
   limits still finds the key by brute force on a small file and silently misses
   it on a large one, which is the worst possible failure shape.
-- **xfapacket.ts**, **xfatemplate.ts**, **xfadata.ts**, **xfageom.ts**,
+- **xfapacket.ts**, **xfatemplate.ts**, **xfadata.ts**, **xfageom.ts**, **xfaflow.ts**,
   **xfaconvert.ts** — XFA read and flatten to AcroForm (`6t2v.3`),
   `doc.ConvertXfaToAcroForm()`. Four pure modules and one that touches a
   `Document`, the `svgdraw.ts`/`svgembed.ts` split: `xfapacket.ts` decodes
@@ -10673,13 +10715,57 @@ Source (`src/`):
   included (`form1[0].Page1[0].f1_01[0]`). Not cosmetic: that is exactly what
   LiveCycle writes into a hybrid's `/AcroForm`, so reconciling the two halves is
   name EQUALITY rather than a heuristic, and an FDF exported from a converted
-  document stays interchangeable with Acrobat's. An anonymous container is
-  transparent to the path, as SOM defines it.
+  document stays interchangeable with Acrobat's.
+  **Invariant (`fdq3`), and this entry said the OPPOSITE until then:** an
+  UNNAMED container is IN the name, spelled by CLASS -- `#subform[n]`,
+  `#area[n]` -- while every index below it, `name[i]` and `#class[i]` alike, is
+  counted over the scope of the nearest NAMED container, so unnamed containers
+  share one numbering. It is transparent only to the DATA path
+  (`XfaField.dataPath`, `groupDataPath`), which is what data binding reads and
+  what the datasets packet spells. Reading "transparent" as a NAMING rule meant
+  no field under an unnamed container ever reconciled: USCIS I-130, whose twelve
+  page subforms are all unnamed, gained a second copy of all 438 body fields,
+  and two same-named fields in different unnamed subforms bound ONE datum.
+  **Note, measured against Adobe's own `/AcroForm`:** this rule reproduces
+  every body-field name of all four vendored hybrids (I-130 438, I-765 154,
+  f1040 199, fw9 23). Counting per PARENT instead reproduces 428 of I-130's --
+  Adobe numbers I-130's unnamed areas 4..8 across the document, and I-765's
+  `#area[1]` follows a NAMED area. f1040 and fw9 name every container, which
+  is why they agreed with the old rule. All five rules are mutation-checked.
+  **Invariant (`d3mq`, part 1):** a field on a MASTER page is read into
+  `XfaTemplate.masterPageFields`, NEVER `fields`, and is REPORTED in `skipped`
+  without being created. Its own refusal reason is used first, so a
+  `<barcode>` still says `<barcode>`. It is named as Adobe writes a page's FIRST
+  instance: `#pageSet[n]` is counted in the parent's class numbering, but the
+  pageSet OPENS a numbering of its own. I-765 names a body subform and a
+  pageArea both `Page1`, and Adobe writes `#pageSet[0].Page1[0]`, not `[1]`.
+  One instance per page (`Page1[0..n]`) and their placement wait on page
+  identity (`164g.3`).
+  **Note, what the oracle contains, so part 2 is not overestimated:** the only
+  master-page field Adobe writes in either USCIS form is a script-valued PDF417
+  barcode (`xfa.layout.page(this)`), as a text field, which we refuse. The two
+  `presence="hidden"` off-page counters beside it are not written at all. No
+  vendored form has a FILLABLE master-page field. All five rules are
+  mutation-checked.
   **Invariant:** the `save="1"` `<items>` list is the EXPORT half and `/Opt` is
   written through `choiceopt.ts`, the one owner of that grammar. **Note the
   fixture for it must put the DISPLAY list first**: with `save="1"` on the first
   list, "the save list" and "the first list" are the same list and hard-coding
   the halves by position reddens NOTHING. Measured — it passed that way.
+  **Invariant (`cb07`), and do NOT "tidy" it back:** the item list is
+  TRANSCRIBED, never run through `normalizeOptions`. That is the validator for
+  options a CALLER authors, which refuses a repeated or empty export; a
+  document's list is data, and `/Opt` may legally hold both. USCIS I-130 holds
+  both, in its template and in Adobe's own `/Opt`, and the validator made the
+  whole conversion THROW. Write strictly, read leniently.
+  **Invariant (`cb07`):** an EMPTY datum on a `choiceList` binds NO value. It
+  means no selection; bound as `''` it reached `Field.Value`, which refuses an
+  export `/Opt` lacks (USCIS I-765). And `applyReconcile` catches what the
+  setter refuses and REPORTS it as a field skip, the existing field keeping its
+  own value: reconciling writes through the public setter, so any datum its
+  `/Opt` lacks would otherwise escape as a throw. All three rules are
+  mutation-checked against `test/xfaconvert-choice-data.test.ts` and the two
+  vendored USCIS forms.
   **Invariant:** values come from `datasets` and the template `<value>` is
   `/DV`. Conflating them destroys the difference between what a form was
   authored with and what someone entered, which for the filled archived forms
@@ -10836,6 +10922,143 @@ Source (`src/`):
   break the caption rule and the count collapses to about 1, the margin rule
   and it falls to 53 (worst 12pt), the check-button rule and it falls to 105
   (worst 6.4pt).
+  **Invariant (`b1xv`):** a field's OWN absent `x`/`y` is 0, the rule
+  the layout engine applies to every node; an absent `w`/`h` stays
+  refused, since it means the field grows to fit its content, which is layout.
+  Eight f1040 fields omit `x` (the three `c1_8` omit `y` too), and all eight
+  land exactly on Adobe's rects, so the equality covered **159** fields (199 since `164g.1`). A
+  PRESENT but empty `x=""` is still unreadable.
+  **Note (`164g.5`), the FLOW oracle, and it needed no new bytes:** Designer
+  runs Adobe's layout engine before writing `/AcroForm`, so a FLOWED field has
+  an Adobe rect too. `test/helpers/xfa-flow-oracle.ts` pairs each flowed field's
+  chain with that rect, and it holds 40 f1040 fields, all in
+  `Table_Dependents`: `table` › `row`, then `position` or `lr-tb`. Since
+  `164g.1` the engine places all 40 exactly. It has NO `tb` chain, NO `<occur>`
+  and NO page breaking; `164g.6` supplies those.
+  **Note (`164g.6`), the DYNAMIC oracle, and it is pdf.js rather than Adobe:**
+  `test/fixtures/xfa-dynamic/` vendors OPM Form 1644, the one genuinely dynamic
+  federal form found (`/NeedsRendering`, no AcroForm), and `goldens.json` holds
+  the box pdf.js 6.3.289's XFA engine gives every named node, rendered through
+  its own `XfaLayer` in headless Chrome (`npm run gen:xfa`). Three variants,
+  derived by `test/helpers/xfa-dynamic.ts` for generator and suite alike:
+  `published` (a `tb` root breaking two page-tall subforms onto two instances
+  of ONE `<pageArea>`), `header` (data-driven `<occur>` rows in a table) and
+  `pages` (a one-element template edit repeating `Page2` across pages 2-4).
+  pdf.js's field names equal `parseXfaTemplate`'s DATA paths, all 61 -- derived
+  independently, from DOM element ids. The golden `som` leaves an unnamed
+  container out and numbers by the nearest NAMED one, which is our data path,
+  not our SOM name (`fdq3`); the tests join through `dataOf`. **Page-level layout places 35 of its
+  fields** (`SectionIIIpt2`, unblocked by `164g.7`'s column rule), every one on
+  pdf.js's box; the rest wait on the `Header` rows' `<occur>` (`164g.2`) and the
+  second `Page2` instance (`164g.3`). Since `164g.7` the `SectionII` and
+  `SectionIIIpt2` tables are also checked ALONE, through `xfaMeasurer`. Raise the
+  pinned count in the issue that changes it.
+  **Note, measured, and it is the ORACLE's precision:** Chrome holds lengths in
+  1/64-px layout units, so a 5.842mm row (16.5603pt) comes back 16.547pt and the
+  loss ACCUMULATES down a table -- 0.066pt five rows down. Our sums are exact,
+  so the table test allows one layout unit per row above the field rather than
+  a flat tolerance.
+- **xfarich.ts**, **xfatext.ts**, **xfafont.ts** — XFA growable sizes
+  (`164g.7`). `xfarich.ts` (pure) turns a field's or draw's template XML into a
+  `LeafText` -- paragraphs of styled runs, insets, caption -- with XFA 3.3's
+  defaults (Template Reference p. 743: 10pt Courier, normal; p. 58's prose says
+  bold and is overruled by the normative syntax). Rich text follows ch. 27, where
+  an UNRECOGNISED element is dropped with its content (p. 1187), unlike
+  `richtext.ts`'s transparent rule for `/RC`. `xfatext.ts` (pure) measures one
+  at a box: lines broken by `layoutRuns`, the ONE wrapping engine; line height
+  the tallest hhea box on the line (p. 61), read as hhea ascender minus
+  descender, which pdf.js corroborates (10pt Arial = 11.17pt; the `head` bbox
+  would give 13.3). `xfafont.ts` holds the `Document` and resolves a run's face
+  in three tiers: embedded programs by their OWN `name` table, registered
+  folders (`Document.registeredFontFaces`, parsed without `AddFont`, so a
+  lookup changes nothing -- pinned through the sign path), then a CLOSED table
+  (Arial, Times New Roman, Courier New to the bundled Liberation faces, equal on
+  advances and on hhea/typo/win metrics; Helvetica, Times and Courier
+  deliberately absent, their vendors' vertical metrics differing).
+  **Invariant:** `xfaflow.ts` takes the measurer as a CALLBACK
+  (`layoutPage(root, measure?, warnings?)`) and stays a pure leaf; without one,
+  every leaf that needs it refuses exactly as `164g.1` did. `min*`/`max*` are
+  the engine's, a floor and ceiling in every parent layout (p. 276), and a
+  `min > max` is swapped and reported in `XfaConvertReport.warnings` (p. 277).
+  That is where we and pdf.js part: pdf.js applies `min*` only in a positioned
+  parent, so OPM 1644's `Q1` is 16.56pt here and 14.05pt there, and the oracle
+  asserts that exact difference.
+  **Invariant (p. 329), and `164g.1` read it backwards:** a stated column width
+  IS a cell's box -- "the visible representation of the object may extend beyond
+  the allotted region". A leaf, a positioned subform, a `tb` and a nested table
+  are narrowed; only a width-growable (one-line) `lr-tb` still refuses, being the
+  one container whose layout depends on the width it is given. The plan refused
+  every flowed container and the oracle overruled it: OPM 1644's `Table2SecII` is
+  0.003pt wider than its cell by mm rounding alone. Tables now resolve widths
+  BEFORE measuring cell heights, since a height-growable cell's height depends on
+  its column.
+  **Note, measured:** three mutations each redden the oracle -- typo metrics
+  for hhea, the `minH` floor dropped, and the old p. 329 refusal restored.
+  **Invariant (`164g.1`):** `xfaflow.ts` is the ONE layout engine, and
+  `position` is a case of it -- a positioned field and a flowed one cannot be
+  placed by two rules. It is a pure leaf over `xfageom.js` and never throws;
+  `layoutPage(root)` maps each field SOM name to a box or a reason.
+  `xfatemplate.ts` builds the tree (`XfaTemplate.roots`, one per resolved page,
+  rooted at the `contentArea`), and DRAWS are in it because they take up space
+  in a flow. `boxFor`/`accumulateOrigin` are gone; `editRegion` is what is left
+  of them in `xfageom.ts`.
+  **Invariant:** every rule is transcribed from the XFA Specification 3.3
+  (not vendored; SHA-256 and pages in the design doc and in the source), and a
+  shape it leaves open REFUSES: a non-left `hAlign` in a flow, an `lr-tb` wrap
+  after a line of mixed heights, a `-1` column no single-column cell sizes, a
+  row stating its own size or margin. Text-sized items are measured since
+  `164g.7`; overflow refuses to `164g.3`.
+  **Invariant (`164g.2`):** a repeating subform is INSTANTIATED in
+  `xfatemplate.ts`'s walk, never in the layout engine. The walk owns names,
+  data paths and layout nodes, so instance k is walked with the next occurrence
+  index from fdq3's scope (`R[k]` in the SOM name and the data path alike), and
+  `xfaflow.ts` learns only `LayoutNode.refusal`. N is `initial` in an EMPTY
+  merge (no `datasets`, or an `<xfa:data>` with no children), else the count of
+  same-named data groups at the parent's DATA path clamped to `[min, max]`
+  (XFA 3.3 p. 263, 339-345). `xfadata.ts`'s `parseXfaDataGroups` counts
+  ELEMENTS, empty ones included: OPM 1644's Header groups are empty, and the
+  leaf-value map cannot see them.
+  **Invariant:** a shape the rule cannot answer is walked ONCE and refused by
+  name: a repeating subform bound by `ref`/`match="none"`, an unnamed one in a
+  non-empty merge, N > 1 in a `position` parent (overlap), a repeating PAGE
+  subform (164g.3), an unreadable `occur` value, `max < min`. `N = 0` makes
+  no instance and consumes no index.
+  **Note, a spec conflict recorded:** p. 339 says a missing `<occur>` attribute
+  "defaults to 1"; p. 263/341 say `max` copies `min` and p. 340 `initial`
+  copies `min`. They differ only when `min` is stated; the specific statements
+  are followed.
+  **Note, measured:** all 16 planned mutations redden, two only after cases
+  were added: `max` defaulting to 1 stayed GREEN because every fixture stated
+  `max` beside `min`, and counting at the SOM path rather than the DATA path
+  stayed GREEN because every fixture named all its containers, where the two
+  paths coincide. The pdf.js page-level count rises only 35 -> 37, since that
+  loop runs without a text measurer; the 36pt SectionI shift is checked with
+  one.
+  **Invariant (final review):** every box under a FLOW is checked against the
+  contentArea's bottom, wherever the flow sits -- a positioned page subform
+  holding a growable tb used to place boxes past the page. A container whose
+  OWN extent fails (content past `maxH`) refuses its subtree; one whose
+  failure came from a CHILD (`Fail.fromChild`) keeps the children before
+  it. A table cell wider than its column refuses: p. 329 expands, never
+  shrinks. Two fields sharing a SOM name on one page both refuse, and the
+  converter keys layout results by PAGE and name, since two unnamed page
+  subforms give their fields one name -- a single map swapped their rects.
+  **Invariant:** in a flow a failure fails every LATER sibling, named
+  `an earlier item in its flow could not be laid out (<cause>)`; in `position`
+  it fails only itself, since nothing else's place depends on it.
+  **Invariant, and the old chain arithmetic got it wrong silently:** a
+  container's margin shifts its positioned children (Appendix A, p. 1510:
+  `Px = Cx + Mx + Ox`) and a container's `anchorType` is applied. f1040 has
+  neither on a positioned container, so the fence could not have seen the old
+  omission.
+  **Note on the oracle:** f1040's 40 flowed fields cover `table`, `row` and a
+  one-line `lr-tb` cell. The `tb` stacking, the `lr-tb` wrap, `colSpan`, `-1`
+  columns and every refusal rest on `test/xfaflow.test.ts` alone.
+  **Note, measured:** all 13 mutations aimed at the engine and its wiring
+  redden, and so does a fourteenth added during execution: bounding a broken
+  page flow by NOTHING rather than by the bottom of what placed (`fromChild`),
+  which reddens only `bounds a broken flow by the items that placed`.
+```
   **Note fw9 is an ORACLE TOO, for the geometry it refuses to place.** We
   decline that form (its `pageArea` count cannot be matched), so no test
   compares our rects there — but its `/AcroForm` still holds Adobe's, and they
@@ -12185,9 +12408,11 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/corrupt/` | `PROVENANCE.md` | Damaged files for the recovery suite (`test/corrupt-real.test.ts`). The one directory where the *source* is what is third-party — a corrupt file has no producer — so Ghostscript and qpdf lay out the bytes and the damage is recorded byte for byte, alongside what each fixture salvages and loses |
 | `fixtures/zip/` | `PROVENANCE.md` | ZIP **input** from three writers that are not ours — libarchive (`tar.exe`), .NET Framework and `git archive`. Pins the two rules no builder fixture reaches on real bytes: sizes from the central directory (libarchive's data descriptors) and data located by the LOCAL extra length (libarchive's 32-vs-24). Also a bit-11 UTF-8 name and a backslash name (.NET) and an archive comment (git). The manifest's hashes come from the INPUTS, not the archives (`test/zipread-real.test.ts`) |
 | `fixtures/docx/` | `PROVENANCE.md` | DOCX from **Microsoft Word 2010** (Russian UI, COM automation, `scripts/gen-docx-word.ps1`, not run by `npm test`). `m2fp.2` uses it to anchor OPC reading on bytes we did not write — relationships out of Id order (`rId8` first), a content type answered by a `Default` — and resolves main document, styles, numbering, image and external hyperlink. Not byte-reproducible (Word stamps `docProps/core.xml`); the vendored file is the reference. Records for `m2fp.3` that a localized Word writes LOCALIZED style ids (`heading 1` is `w:styleId="1"`); its test is `test/opcread-docx.test.ts`. **The `m2fp.4` corpus:** five recipes written by BOTH Word 2010 (COM) and LibreOffice 26.8 (UNO, a pinned MSI unpacked outside the repo), `word2010-basic` included — styles, lists, tables, media, and the constructs `readDocx` only records — each READ by both applications into `<name>.word.json`/`<name>.lo.json` (`scripts/gen-docx-corpus.ps1`). `test/docx-corpus.test.ts` pins `disagreements.json` EXACTLY and holds `readDocx` to every value the two readers agree on; past a disagreement in LENGTH it compares elements only up to the shorter reading, while `readDocx`'s OWN length must fall between the two — the final review measured that without that bound a `readDocx` stopping at a section break or a merged cell passed exactly the files covering them. The readers disagree on five shapes, each a finding (a URL's trailing slash, TOC hyperlinks, headers of a linked section, a section-break paragraph, a covered merged cell). The corpus found `readDocx` silently dropping headers, footers, section breaks and revisions from its report, and nothing else. Beside it, `wml-oracle.docx` is OURS and `wml-oracle.json` is Word 2010's COMPUTED formatting of it through COM (`scripts/gen-wml-oracle.ps1`) — the oracle for `m2fp.3`'s style resolution, toggle XOR and list counters. It corrected no rule and confirmed every open question; it did teach the builder that Word refuses a theme lacking `a:clrScheme`/`a:fmtScheme` (`test/wml-oracle.test.ts`). Since `v9j3.3.2` a sixth recipe, `notes`, has both applications read footnotes and endnotes; they DISAGREE on the Word file's marks, LibreOffice ignoring Word's per-section restart, so those marks are held to Word alone (`test/docx-corpus.test.ts`) |
+| `fixtures/opm/` | `PROVENANCE.md` | Two OPM forms `Open` refused (`lj8t`), for two different reasons. `opm-sf50.pdf` is **Acrobat PDFWriter 3.02**, with a sound file and `/Title (pages))` in its `/Info`. It now opens on the lenient last rung and reports object 1 as repaired. `opm-sf1153.pdf` is **LiveCycle Designer ES 8.2**: AESV2, `/EncryptMetadata false`, and a plaintext XMP under its own Identity `/Crypt` filter, which we used to decrypt with `/StmF`. Neither shape is one our builders write. US federal works (`test/crypt-filter.test.ts`) |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
-| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
+| `fixtures/xfa-dynamic/` | `PROVENANCE.md` | OPM Form 1644, the one genuinely **dynamic** XFA form found among ~110 OPM and other federal forms (Designer 8.0, `/NeedsRendering`, no AcroForm; US federal work), plus **pdf.js 6.3.289**'s XFA layout of it rendered in headless Chrome (`npm run gen:xfa`, not run by `npm test`). Three variants: as published, data-driven `<occur>` rows, and a page subform repeated across page breaks. Pins pdf.js's SOM naming equal to ours; our engine places none of it yet, so its agreement check waits on `164g.2`/`.3`/`.7`. pdf.js is a reimplementation: evidence, not Adobe conformance (`test/xfa-dynamic-oracle.test.ts`) |
+| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |

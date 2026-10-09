@@ -5,6 +5,10 @@ import { LoadLimits } from './loadlimits.js';
 
 export type LengthResolver = (numOrValue: PdfObject) => number | undefined;
 
+/** The delimiters no object production claims; `lexer.ts` returns each as a
+ *  one-character keyword rather than throwing. */
+const STRAY = new Set([')', '{', '}', '>']);
+
 /** The COS object grammar.
  *
  *  **Invariant (`ibzo.2`):** it bounds what it builds — nesting depth, items per
@@ -19,10 +23,25 @@ export type LengthResolver = (numOrValue: PdfObject) => number | undefined;
 export class ObjectParser {
   private depth = 0;
 
+  /**
+   * @param lenient skip a STRAY DELIMITER KEYWORD (`)`, `{`, `}`, `>`) where a
+   *   dictionary KEY or an array ELEMENT is expected, rather than throwing.
+   *
+   *   **Invariant (lj8t): it is a LAST RESORT and OFF by default.** Strict
+   *   rejection is what lets `sweepObjects` decide an offset holds no object,
+   *   so only `Document.Open` asks for it, and only for an object that would
+   *   otherwise refuse a structurally sound file. The two positions are the
+   *   ones a stray token can be dropped from without changing what anything
+   *   ELSE means; in a dictionary VALUE position it would pair every later key
+   *   with the wrong value, so it still throws there. Acrobat PDFWriter 3.02
+   *   wrote `/Title (pages))` -- an unescaped `)` closing the string early --
+   *   into OPM SF 50's /Info, and that is the shape this exists for.
+   */
   constructor(
     private readonly lx: Lexer,
     private readonly resolveLength?: LengthResolver,
     private readonly limits: LoadLimits = LoadLimits.defaults,
+    private readonly lenient = false,
   ) {
     // The one site that turns the lexer's cap on. Object parsing owns this lexer
     // for as long as it runs, and no token can be larger than the object holding
@@ -97,6 +116,12 @@ export class ObjectParser {
     return first;
   }
 
+  /** A delimiter no production claims, which the lexer hands back as a
+   *  one-character keyword -- and which the LENIENT mode may skip. */
+  private isStray(tok: Token): boolean {
+    return this.lenient && tok.t === 'kw' && STRAY.has(tok.v as string);
+  }
+
   /** Run `body` one container level deeper. */
   private nested<T>(at: number, body: () => T): T {
     this.limits.enforce('maxNestingDepth', ++this.depth, `container at byte ${at}`);
@@ -111,6 +136,7 @@ export class ObjectParser {
         const tok = this.take();
         if (tok.t === 'delim' && tok.v === ']') return arr;
         if (tok.t === 'eof') throw new PdfParseError('unterminated array', tok.pos);
+        if (this.isStray(tok)) continue;
         this.limits.enforce('maxContainerItems', arr.length + 1, `array at byte ${at}`);
         arr.push(this.parseValue(tok));
       }
@@ -124,6 +150,7 @@ export class ObjectParser {
       for (;;) {
         const k = this.take();
         if (k.t === 'delim' && k.v === '>>') return d;
+        if (this.isStray(k)) continue;
         if (k.t !== 'name') throw new PdfParseError('expected dict key', k.pos);
         // By ENTRY, which is what a dictionary holds; counting tokens would
         // halve the bound for every dictionary and for no array.

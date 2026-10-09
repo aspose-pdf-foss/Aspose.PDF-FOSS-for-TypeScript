@@ -1,16 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import { parseXml } from '../src/xml.js';
-import { parseXfaDatasets, bindFieldValue } from '../src/xfadata.js';
+import { parseXfaDatasets, bindFieldValue, parseXfaDataGroups } from '../src/xfadata.js';
 import type { XfaField } from '../src/xfatemplate.js';
 
 const ds = (inner: string) => parseXfaDatasets(parseXml(
   new TextEncoder().encode(`<datasets><data>${inner}</data></datasets>`),
 ));
 
-/** A minimal template field; only `name` and the bind keys matter to the join. */
+/** A minimal template field; only its data path and the bind keys matter to the
+ *  join. The data path is the name unless a case says otherwise. */
 const field = (name: string, extra: Partial<XfaField> = {}): XfaField => ({
-  name, ui: 'text', readOnly: false, required: false, multiLine: false,
-  geom: {}, layouts: [], offsets: [], ...extra,
+  name, dataPath: name, ui: 'text', readOnly: false, required: false, multiLine: false,
+  layouts: [], ...extra,
+});
+
+// fdq3: the SOM name counts an unnamed container (`#subform[0]`), the data has
+// no element for it, so the join is on the DATA path.
+describe('bindFieldValue: the data path, not the SOM name', () => {
+  it('binds through an unnamed container the SOM name counts', () => {
+    const v = ds(`<form1><st>UT</st></form1>`);
+    expect(bindFieldValue(field('form1[0].#subform[0].st[0]', { dataPath: 'form1[0].st[0]' }), v))
+      .toBe('UT');
+  });
 });
 
 describe('parseXfaDatasets', () => {
@@ -95,5 +106,41 @@ describe('bindFieldValue', () => {
     expect(bindFieldValue(
       field('form1[0].Page1[0].f1_01[0]', { bindRef: 'form1.missing' }), values,
     )).toBeUndefined();
+  });
+});
+
+const groups = (inner: string) => parseXfaDataGroups(parseXml(
+  new TextEncoder().encode(`<datasets><data>${inner}</data></datasets>`),
+));
+
+// 164g.2: a repeating subform is instantiated once per same-named data group,
+// and OPM 1644's Header groups are EMPTY -- which parseXfaDatasets, a map of
+// leaf values, cannot count.
+describe('parseXfaDataGroups', () => {
+  it('counts the children of each name at a data path, empty groups included', () => {
+    const g = groups(`<form1><S><Header/><Header></Header><Header><x>1</x></Header><Row1/></S></form1>`);
+    expect(g.empty).toBe(false);
+    expect(g.count('form1[0].S[0]', 'Header')).toBe(3);
+    expect(g.count('form1[0].S[0]', 'Row1')).toBe(1);
+    expect(g.count('form1[0].S[0]', 'Nope')).toBe(0);
+    expect(g.count('', 'form1')).toBe(1);
+  });
+
+  it('keys paths exactly as parseXfaDatasets does, per name among siblings', () => {
+    const inner = `<form1><R><a>one</a></R><Q/><R><a>two</a></R></form1>`;
+    const g = groups(inner);
+    expect(g.count('form1[0].R[1]', 'a')).toBe(1);
+    expect(ds(inner).get('form1[0].R[1].a[0]')).toBe('two');
+  });
+
+  it('answers 0 under a path that names no data node', () => {
+    expect(groups('<form1/>').count('form1[0].S[4]', 'Header')).toBe(0);
+  });
+
+  it('is an EMPTY merge with no data element, with an empty one, or with no packet', () => {
+    expect(parseXfaDataGroups(parseXml(new TextEncoder().encode('<datasets/>'))).empty).toBe(true);
+    expect(groups('').empty).toBe(true);
+    expect(parseXfaDataGroups(undefined).empty).toBe(true);
+    expect(parseXfaDataGroups(undefined).count('', 'form1')).toBe(0);
   });
 });

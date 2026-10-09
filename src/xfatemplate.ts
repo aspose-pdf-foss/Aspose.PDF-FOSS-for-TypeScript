@@ -1,8 +1,9 @@
 /**
  * The XFA `template` packet as a flat field model.
  *
- * **Invariant: pure, over `xml.js` alone.** No `Document`, no PDF object, no
- * `node:` import -- so every rule here is drivable from an XML string.
+ * **Invariant: pure, over `xml.js` and the pure leaf `xfarich.js`.** No
+ * `Document`, no PDF object, no `node:` import -- so every rule here is
+ * drivable from an XML string.
  *
  * **Invariant: it never throws.** `parseXml` does, and `xfapacket.ts` owns that
  * boundary; by the time a tree reaches here it parsed.
@@ -12,7 +13,10 @@
  * elements.
  */
 import type { XmlNode } from './xml.js';
-import type { XfaMargin, XfaMedium, XfaOffset, XfaRawGeom } from './xfageom.js';
+import { leafText } from './xfarich.js';
+import type { XfaMargin, XfaMedium, XfaRawGeom } from './xfageom.js';
+import type { LayoutKind, LayoutNode, XfaMinMax } from './xfaflow.js';
+import type { XfaDataGroups } from './xfadata.js';
 
 export type XfaUiKind =
   | 'text' | 'numeric' | 'dateTime' | 'password'
@@ -38,11 +42,18 @@ const UI_KIND: Record<string, XfaUiKind> = {
 export interface XfaItem { export: string; display?: string }
 
 export interface XfaField {
-  /** The SOM expression, occurrence indices included. */
+  /** The SOM expression, occurrence indices included. An UNNAMED container is
+   *  named by its class, `#subform[n]` -- what LiveCycle writes into /AcroForm. */
   name: string;
+  /** The path the DATA binds by: `name` with every unnamed container left out,
+   *  since normal data binding makes one transparent and the datasets packet
+   *  has no element for it. Equal to `name` when every container is named. */
+  dataPath: string;
   ui: XfaUiKind;
   /** The enclosing `<exclGroup>`'s SOM path, for a radio member. */
   group?: string;
+  /** The enclosing `<exclGroup>`'s data path, which its selection binds by. */
+  groupDataPath?: string;
   items?: XfaItem[];
   /** `<choiceList open="...">`, carried through verbatim. */
   open?: string;
@@ -88,20 +99,41 @@ export interface XfaField {
    *  `<caption>`, which f1040's `c1_1` also carries and which is free to
    *  disagree. It places the button inside the edit region. */
   para?: { hAlign?: string; vAlign?: string };
-  /** Filled by the geometry pass. */
-  geom: XfaRawGeom;
   /** Each container's layout between the page origin and this field, outermost
    *  first. Filled by the geometry pass. */
   layouts: string[];
-  /** Each of those containers' own x/y, in the same order. */
-  offsets: XfaOffset[];
   /** 0-based `<pageArea>` index. */
   pageIndex?: number;
 }
 
 export interface XfaPageArea { name?: string; medium?: XfaMedium }
 
-export interface XfaTemplate { fields: XfaField[]; pages: XfaPageArea[] }
+/** One page's layout tree, rooted at its `contentArea`. */
+export interface XfaLayoutRoot { pageIndex: number; node: LayoutNode }
+
+export interface XfaTemplate {
+  fields: XfaField[];
+  pages: XfaPageArea[];
+  /** One tree per page subform whose `pageArea` resolved, for `xfaflow.ts`. */
+  roots: XfaLayoutRoot[];
+  /** Fields on a MASTER page (`<pageSet>` › `<pageArea>`), named as LiveCycle
+   *  writes a page's first instance: `form1[0].#pageSet[0].Page1[0].x[0]`.
+   *
+   *  **Invariant (d3mq):** they are a list of their OWN, never in `fields`, so
+   *  layout, measuring and data binding cannot see them. Adobe writes one
+   *  instance PER PAGE (`Page1[0..n]`) and placing those needs the page
+   *  identity 164g.3 supplies, so today they are only reported. */
+  masterPageFields: XfaField[];
+}
+
+/** An `<exclGroup>` a radio member sits in, by both of its paths. */
+interface GroupPaths { som: string; data: string }
+
+/** The occurrence counters of one NAMED container. Every unnamed container
+ *  below it SHARES them rather than opening its own (fdq3). */
+interface IndexScope { byName: Map<string, number>; byClass: Map<string, number> }
+
+const newScope = (): IndexScope => ({ byName: new Map(), byClass: new Map() });
 
 /** A SOM expression from its already-indexed parts. */
 export function somName(parts: readonly string[]): string {
@@ -156,8 +188,23 @@ function positiveInt(s: string | undefined): number | undefined {
 /** One `<field>` to the model, or `undefined` when it has no name -- an
  *  unnamed field has no SOM path, so there is nothing to call it in an
  *  AcroForm and inventing one would break the hybrid name equality. */
+/** An element's OWN `<margin>` insets, absent ones omitted. `child` searches
+ *  DIRECT children only, which is what keeps the `<ui><textEdit><margin>` a
+ *  real LiveCycle field also carries out of it -- reading that one instead
+ *  drops every inset in the form. */
+function marginOf(el: XmlNode): XfaMargin | undefined {
+  const marEl = child(el, 'margin');
+  return marEl ? Object.fromEntries(
+    (['leftInset', 'rightInset', 'topInset', 'bottomInset'] as const)
+      .flatMap((k) => {
+        const v = marEl.attrs.get(k);
+        return v === undefined ? [] : [[k, v] as const];
+      }),
+  ) as XfaMargin : undefined;
+}
+
 function fieldOf(
-  el: XmlNode, path: readonly string[], group: string | undefined,
+  el: XmlNode, path: readonly string[], dpath: readonly string[], group: GroupPaths | undefined,
 ): XfaField | undefined {
   const partial = el.attrs.get('name');
   if (partial === undefined || partial === '') return undefined;
@@ -188,17 +235,7 @@ function fieldOf(
     ...(capEl.attrs.get('presence') !== undefined
       ? { presence: capEl.attrs.get('presence') } : {}),
   } : undefined;
-  // The field's OWN <margin>. `child` searches DIRECT children only, which is
-  // what keeps the <ui><textEdit><margin> a real LiveCycle field also carries
-  // out of it -- reading that one instead drops every inset in the form.
-  const marEl = child(el, 'margin');
-  const margin = marEl ? Object.fromEntries(
-    (['leftInset', 'rightInset', 'topInset', 'bottomInset'] as const)
-      .flatMap((k) => {
-        const v = marEl.attrs.get(k);
-        return v === undefined ? [] : [[k, v] as const];
-      }),
-  ) as XfaMargin : undefined;
+  const margin = marginOf(el);
   const buttonSize = uiChild?.name === 'checkButton'
     ? uiChild.attrs.get('size') : undefined;
   // The FIELD's own <para>, by the same direct-child rule the margin follows:
@@ -213,8 +250,9 @@ function fieldOf(
 
   return {
     name: somName(path),
+    dataPath: somName(dpath),
     ui,
-    ...(group !== undefined ? { group } : {}),
+    ...(group !== undefined ? { group: group.som, groupDataPath: group.data } : {}),
     ...(items ? { items } : {}),
     ...(open !== undefined ? { open } : {}),
     readOnly: access === 'readOnly' || access === 'protected',
@@ -233,9 +271,7 @@ function fieldOf(
     ...(margin ? { margin } : {}),
     ...(buttonSize !== undefined ? { buttonSize } : {}),
     ...(para && Object.keys(para).length > 0 ? { para } : {}),
-    geom: {},
     layouts: [],
-    offsets: [],
   };
 }
 
@@ -249,43 +285,125 @@ function geomOf(el: XmlNode): XfaRawGeom {
   return g;
 }
 
-/** A container's own x/y for the offset chain. */
-function offsetOf(el: XmlNode): XfaOffset {
-  const o: XfaOffset = {};
-  const x = el.attrs.get('x');
-  const y = el.attrs.get('y');
-  if (x !== undefined) o.x = x;
-  if (y !== undefined) o.y = y;
-  return o;
-}
-
-/** A container's effective layout.
- *
- *  `position` is XFA's default and the one this feature can place from. A
- *  repeating `<occur>` contributes the synthetic `'occur'` instead: the
- *  occurrence COUNT is knowable from `initial`, but the repeat DIRECTION is
- *  not, so such a subform is flow-laid and every field under it degrades. */
+/** A container's layout: `position` is XFA's default. Repetition is not a
+ *  layout -- since 164g.2 a repeating subform is walked once per instance. */
 function layoutOf(el: XmlNode): string {
-  const occur = el.children.find((c) => c.name === 'occur');
-  if (occur) {
-    const max = occur.attrs.get('max');
-    if (max !== undefined && max !== '1') return 'occur';
-  }
   return el.attrs.get('layout') ?? 'position';
 }
 
-/** The `<contentArea>` a `<pageArea>` declares, as one more level of origin. */
-function contentAreaOffset(pageArea: XmlNode | undefined): XfaOffset | undefined {
-  const ca = pageArea?.children.find((c) => c.name === 'contentArea');
-  return ca ? offsetOf(ca) : undefined;
+/** A subform's `<occur>` with XFA 3.3's defaults applied: `min` 1, `max`
+ *  copies `min` (p. 263, 341), `initial` copies `min` (p. 340); `max` -1 is
+ *  unbounded. p. 339 says a missing attribute "defaults to 1", which disagrees
+ *  only when `min` is stated; the specific statements win. */
+interface Occur { min: number; max: number; initial: number }
+
+function occurOf(el: XmlNode): Occur | { reason: string } {
+  const o = el.children.find((c) => c.name === 'occur');
+  if (!o) return { min: 1, max: 1, initial: 1 };
+  const read = (k: 'min' | 'max' | 'initial'): number | undefined | null => {
+    const v = o.attrs.get(k);
+    if (v === undefined) return undefined;
+    const t = v.trim();
+    if (/^\d+$/.test(t)) return Number(t);
+    if (k === 'max' && t === '-1') return -1;
+    return null;
+  };
+  const minR = read('min');
+  const maxR = read('max');
+  const initR = read('initial');
+  for (const [k, r] of [['min', minR], ['max', maxR], ['initial', initR]] as const)
+    if (r === null) return { reason: `occur ${k}="${o.attrs.get(k) ?? ''}" could not be read` };
+  const min = minR ?? 1;
+  const max = maxR ?? min;
+  const initial = initR ?? min;
+  // p. 342 requires max >= min and gives no recovery, so neither bound wins.
+  if (max !== -1 && max < min) return { reason: `occur max="${String(max)}" is below min="${String(min)}"` };
+  return { min, max, initial };
+}
+
+/**
+ * How many instances of a subform the merge makes, or why that cannot be
+ * answered (164g.2). A refused subform is walked ONCE, exactly as before.
+ *
+ * Empty merge -- no groups, or no data at all -- is `initial` (p. 345).
+ * Otherwise it is the count of same-named data groups at the parent's data
+ * path, raised to `min` and capped at `max` (p. 341-344). The general merge --
+ * scope matching, flat data spread across nested repeats -- is out of scope, so
+ * every shape it would be needed for refuses by name.
+ */
+function repetition(
+  c: XmlNode, anonymous: boolean, dataParent: string, parentLayout: string,
+  isPage: boolean, groups: XfaDataGroups | undefined,
+): { count: number; refusal?: string } {
+  const o = occurOf(c);
+  if ('reason' in o) return { count: 1, refusal: o.reason };
+  let n: number;
+  if (groups === undefined || groups.empty) {
+    n = o.initial;
+  } else if (anonymous) {
+    if (o.max !== 1 || o.min !== 1)
+      return { count: 1, refusal: 'an unnamed repeating subform has no data groups to count' };
+    n = 1;
+  } else {
+    const bind = c.children.find((x) => x.name === 'bind');
+    const bound = bind !== undefined
+      && ((bind.attrs.get('ref') ?? '') !== '' || bind.attrs.get('match') === 'none');
+    if (bound && (o.max !== 1 || o.min !== 1))
+      return { count: 1, refusal: 'a repeating subform bound by ref or match="none" is not instantiated' };
+    const d = groups.count(dataParent, c.attrs.get('name') ?? '');
+    n = Math.max(o.min, o.max === -1 ? d : Math.min(d, o.max));
+  }
+  const repeating = o.max !== 1 || n !== 1;
+  if (!repeating) return { count: n };
+  if (isPage) return { count: 1, refusal: 'a repeating page subform needs page breaking (164g.3)' };
+  if (n > 1 && parentLayout === 'position')
+    return { count: 1, refusal: `${String(n)} instances of a repeating subform in a positioned container would overlap` };
+  return { count: n };
+}
+
+/** One template element to its layout node. A container carries its layout,
+ *  its own margin and a table's column widths; a field or draw carries only
+ *  what positions it in its parent. */
+function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string): LayoutNode {
+  const n: LayoutNode = { kind, label, geom: geomOf(el), children: [] };
+  if (kind !== 'field' && kind !== 'draw') {
+    n.layout = layoutOf(el);
+    const m = marginOf(el);
+    if (m) n.margin = m;
+    const cw = el.attrs.get('columnWidths');
+    if (cw !== undefined) n.columnWidths = cw;
+  }
+  const mm: XfaMinMax = {};
+  for (const k of ['minW', 'minH', 'maxW', 'maxH'] as const) {
+    const v = el.attrs.get(k);
+    if (v !== undefined) mm[k] = v;
+  }
+  if (Object.keys(mm).length > 0) n.minMax = mm;
+  const colSpan = el.attrs.get('colSpan');
+  if (colSpan !== undefined) n.colSpan = colSpan;
+  const hAlign = el.attrs.get('hAlign');
+  if (hAlign !== undefined) n.hAlign = hAlign;
+  const presence = el.attrs.get('presence');
+  if (presence !== undefined) n.presence = presence;
+  if (field !== undefined) n.field = field;
+  if (kind === 'field' || kind === 'draw') n.text = leafText(el);
+  return n;
+}
+
+/** A page's root: its `contentArea`, which always uses positioned layout
+ *  (XFA 3.3 p. 280), holding the page subform. */
+function pageRootOf(pageArea: XmlNode, page: LayoutNode): LayoutNode {
+  const ca = pageArea.children.find((c) => c.name === 'contentArea');
+  return {
+    kind: 'page', label: 'contentArea', layout: 'position',
+    geom: ca ? geomOf(ca) : {}, children: [page],
+  };
 }
 
 /** What a container contributes to the fields beneath it. */
 interface ChainCtx {
   /** Layouts between the page origin and here, outermost first. */
   layouts: string[];
-  /** Those containers' own x/y, same order. */
-  offsets: XfaOffset[];
   /** 0-based `<pageArea>` index in force, or `undefined` when unresolvable. */
   pageIndex?: number;
   /** True once the walk has passed BELOW the subform carrying the `<pageSet>`.
@@ -297,8 +415,26 @@ interface ChainCtx {
  * Walk `<subform>` / `<exclGroup>` / `<field>` and yield one entry per terminal
  * field, with its geometry, its ancestor layout chain and its page.
  *
- * An ANONYMOUS container is transparent to the SOM path, as SOM defines it --
- * give it a level and no name matches the AcroForm half of a hybrid document.
+ * **An UNNAMED container is in the SOM name and transparent to everything else
+ * (fdq3).** The name gives it a level spelled by its CLASS, `#subform[n]` or
+ * `#area[n]`, which is what LiveCycle writes into a hybrid's /AcroForm. But its
+ * occurrence counters are NOT its own: every index below it -- `name[i]` and
+ * `#class[i]` alike -- is counted over the scope of the nearest NAMED
+ * container, so unnamed containers share one numbering. The DATA path leaves
+ * the level out entirely, because normal data binding makes an unnamed
+ * container transparent and the datasets packet has no element for it.
+ *
+ * **Measured, against bytes we did not write:** USCIS I-130's twelve page
+ * subforms are all unnamed, so its nearest named container is `form1` and
+ * Adobe numbers its unnamed areas 4, 5, 6, 7 and 8 across the document, and its
+ * second `Pt2Line1_AlienNumber` -- in a different page subform from the first --
+ * `[1]`. I-765's unnamed area is `#area[1]`, after a named area in the same
+ * named `Page3`. Both rules reproduce all 438 and 154 body-field names; counting
+ * per parent reproduces 428, and leaving the level out reproduces none.
+ *
+ * Until fdq3 this walk read the binding rule as the naming rule. No field under
+ * an unnamed container reconciled, conversion added a second copy of each, and
+ * two same-named fields in two unnamed subforms bound the SAME datum.
  *
  * **Where the chain BEGINS, and it is the interpretation this module adds:**
  * the chain is the containers between the field and its PAGE ORIGIN, exclusive
@@ -309,16 +445,25 @@ interface ChainCtx {
  * every LiveCycle form and this feature converts nothing.
  */
 function walk(
-  el: XmlNode, path: readonly string[], group: string | undefined,
+  el: XmlNode, path: readonly string[], dpath: readonly string[], group: GroupPaths | undefined,
   ctx: ChainCtx, pages: readonly XmlNode[], out: XfaField[],
+  parent: LayoutNode | undefined, roots: XfaLayoutRoot[], scope: IndexScope,
+  master: XfaField[], groups: XfaDataGroups | undefined,
 ): void {
-  // Occurrence indices are per NAME among siblings, so the counter is scoped to
-  // this element's own children.
-  const counts = new Map<string, number>();
+  // Occurrence indices are per NAME, counted over the scope of the nearest
+  // NAMED container -- this element's own when it is named, an ancestor's when
+  // it is not.
   const indexed = (n: string): string => {
-    const i = counts.get(n) ?? 0;
-    counts.set(n, i + 1);
+    const i = scope.byName.get(n) ?? 0;
+    scope.byName.set(n, i + 1);
     return `${n}[${String(i)}]`;
+  };
+  // A class reference's index counts EVERY element of that type in the scope,
+  // named or not: I-765's unnamed <area> after a named one is `#area[1]`.
+  const classIndex = (c: XmlNode): number => {
+    const i = scope.byClass.get(c.name) ?? 0;
+    scope.byClass.set(c.name, i + 1);
+    return i;
   };
   // A subform carrying a <pageSet> IS the page container: everything below it
   // sits on a page, and its own layout breaks pages rather than placing fields.
@@ -328,60 +473,109 @@ function walk(
 
   for (const c of el.children) {
     const partial = c.attrs.get('name');
-    if (c.name === 'field') {
-      const sub = partial === undefined || partial === ''
-        ? path : [...path, indexed(partial)];
-      const f = fieldOf(c, sub, group);
-      if (f) {
-        f.geom = geomOf(c);
-        f.layouts = [...ctx.layouts];
-        f.offsets = [...ctx.offsets];
-        if (ctx.pageIndex !== undefined) f.pageIndex = ctx.pageIndex;
-        out.push(f);
+    const nth = classIndex(c);
+    if (c.name === 'pageSet') {
+      // Counted in this scope's class numbering (`#pageSet[n]`), but it OPENS a
+      // numbering of its own: USCIS I-765 names a body subform and a pageArea
+      // both `Page1`, and Adobe writes the pageArea's first instance
+      // `#pageSet[0].Page1[0]`, not `[1]`.
+      const ps = [...path, `#pageSet[${String(nth)}]`];
+      const psScope = newScope();
+      for (const pa of c.children) {
+        const n = pa.attrs.get('name');
+        if (pa.name !== 'pageArea' || n === undefined || n === '') continue;
+        const at = [...ps, `${n}[${String(psScope.byName.get(n) ?? 0)}]`];
+        psScope.byName.set(n, (psScope.byName.get(n) ?? 0) + 1);
+        // A master page sits on no page origin and in no layout tree, so it is
+        // walked with an empty chain, no parent node, and a roots sink nobody
+        // reads; its fields land in `master` alone.
+        walk(pa, at, [], undefined, { layouts: [], inPage: false }, pages, master, undefined, [], newScope(), master, undefined);
       }
       continue;
     }
-    if (c.name !== 'subform' && c.name !== 'exclGroup' && c.name !== 'area') continue;
-    const sub = partial === undefined || partial === ''
-      ? path : [...path, indexed(partial)];
-
-    let next: ChainCtx;
-    if (carriesPageSet) {
-      // Entering a page. Its index is its ordinal among these siblings unless a
-      // <breakBefore target> names a pageArea; a target naming NO pageArea
-      // leaves it UNRESOLVED rather than guessing, because a field placed
-      // perfectly on the wrong sheet looks right and is wrong.
-      const brk = c.children.find((b) => b.name === 'breakBefore' || b.name === 'break');
-      const target = brk?.attrs.get('target');
-      let idx: number | undefined;
-      if (target !== undefined && target !== '') {
-        const t = target.replace(/^#/, '');
-        const found = pages.findIndex((p) => p.attrs.get('name') === t);
-        idx = found < 0 ? undefined : found;
-        if (found >= 0) nextPage = found + 1;
-      } else {
-        idx = nextPage < pages.length ? nextPage : undefined;
-        nextPage += 1;
+    if (c.name === 'draw') {
+      if (parent) {
+        parent.children.push(
+          nodeOf(c, 'draw', partial === undefined || partial === '' ? '<draw>' : partial),
+        );
       }
-      const ca = idx === undefined ? undefined : contentAreaOffset(pages[idx]);
-      next = {
-        layouts: [...(ca ? ['position'] : []), layoutOf(c)],
-        offsets: [...(ca ? [ca] : []), offsetOf(c)],
-        ...(idx !== undefined ? { pageIndex: idx } : {}),
-        inPage: true,
-      };
-    } else if (!ctx.inPage) {
-      // Still above any page origin: accumulate nothing.
-      next = { layouts: [], offsets: [], inPage: false };
-    } else {
-      next = {
-        layouts: [...ctx.layouts, layoutOf(c)],
-        offsets: [...ctx.offsets, offsetOf(c)],
-        ...(ctx.pageIndex !== undefined ? { pageIndex: ctx.pageIndex } : {}),
-        inPage: true,
-      };
+      continue;
     }
-    walk(c, sub, c.name === 'exclGroup' ? somName(sub) : group, next, pages, out);
+    if (c.name === 'field') {
+      const sub = partial === undefined || partial === ''
+        ? path : [...path, indexed(partial)];
+      const dsub = sub === path ? dpath : [...dpath, sub[sub.length - 1]];
+      const f = fieldOf(c, sub, dsub, group);
+      if (f) {
+        f.layouts = [...ctx.layouts];
+        if (ctx.pageIndex !== undefined) f.pageIndex = ctx.pageIndex;
+        out.push(f);
+      }
+      // An unnamed field still takes up its space in a flow, so it joins the
+      // tree with no SOM name.
+      if (parent)
+        parent.children.push(nodeOf(c, 'field', sub === path ? '<field>' : sub[sub.length - 1], f?.name));
+      continue;
+    }
+    if (c.name !== 'subform' && c.name !== 'exclGroup' && c.name !== 'area') continue;
+    const anonymous = partial === undefined || partial === '';
+    // 164g.2: only a SUBFORM repeats (p. 263; subformSet is not read at all).
+    const rep = c.name === 'subform'
+      ? repetition(c, anonymous, somName(dpath), el.attrs.get('layout') ?? 'position', carriesPageSet, groups)
+      : { count: 1 };
+    // N = 0 (`min="0"` and no data): no instance, so it consumes no index.
+    if (rep.count === 0) { scope.byClass.set(c.name, nth); continue; }
+    for (let k = 0; k < rep.count; k++) {
+      const cls = k === 0 ? nth : classIndex(c);
+      const sub = [...path, anonymous ? `#${c.name}[${String(cls)}]` : indexed(partial)];
+      const dsub = anonymous ? dpath : [...dpath, sub[sub.length - 1]];
+      const node = nodeOf(c, c.name as LayoutKind, anonymous ? `<${c.name}>` : sub[sub.length - 1]);
+      if (rep.refusal !== undefined) node.refusal = `${node.label}: ${rep.refusal}`;
+
+      let next: ChainCtx;
+      if (carriesPageSet) {
+        // Entering a page. Its index is its ordinal among these siblings unless a
+        // <breakBefore target> names a pageArea; a target naming NO pageArea
+        // leaves it UNRESOLVED rather than guessing, because a field placed
+        // perfectly on the wrong sheet looks right and is wrong.
+        const brk = c.children.find((b) => b.name === 'breakBefore' || b.name === 'break');
+        const target = brk?.attrs.get('target');
+        let idx: number | undefined;
+        if (target !== undefined && target !== '') {
+          const t = target.replace(/^#/, '');
+          const found = pages.findIndex((p) => p.attrs.get('name') === t);
+          idx = found < 0 ? undefined : found;
+          if (found >= 0) nextPage = found + 1;
+        } else {
+          idx = nextPage < pages.length ? nextPage : undefined;
+          nextPage += 1;
+        }
+        const ca = idx === undefined
+          ? undefined : pages[idx].children.find((p) => p.name === 'contentArea');
+        if (idx !== undefined) roots.push({ pageIndex: idx, node: pageRootOf(pages[idx], node) });
+        next = {
+          layouts: [...(ca ? ['position'] : []), layoutOf(c)],
+          ...(idx !== undefined ? { pageIndex: idx } : {}),
+          inPage: true,
+        };
+      } else if (!ctx.inPage) {
+        // Still above any page origin: accumulate nothing.
+        next = { layouts: [], inPage: false };
+      } else {
+        parent?.children.push(node);
+        next = {
+          layouts: [...ctx.layouts, layoutOf(c)],
+          ...(ctx.pageIndex !== undefined ? { pageIndex: ctx.pageIndex } : {}),
+          inPage: true,
+        };
+      }
+      walk(
+        c, sub, dsub,
+        c.name === 'exclGroup' ? { som: somName(sub), data: somName(dsub) } : group,
+        next, pages, out, next.inPage ? node : undefined, roots,
+        anonymous ? scope : newScope(), master, groups,
+      );
+    }
   }
 }
 
@@ -419,11 +613,16 @@ function pageAreaOf(el: XmlNode): XfaPageArea {
   };
 }
 
-/** The `template` packet's root element to the field model. */
-export function parseXfaTemplate(root: XmlNode): XfaTemplate {
+/** The `template` packet's root element to the field model. `groups` is the
+ *  datasets' data groups (164g.2); omitted, every repeating subform takes its
+ *  `initial`, the empty-merge answer. */
+export function parseXfaTemplate(root: XmlNode, groups?: XfaDataGroups): XfaTemplate {
   const pageEls: XmlNode[] = [];
   pageAreaElements(root, pageEls);
   const fields: XfaField[] = [];
-  walk(root, [], undefined, { layouts: [], offsets: [], inPage: false }, pageEls, fields);
-  return { fields, pages: pageEls.map(pageAreaOf) };
+  const roots: XfaLayoutRoot[] = [];
+  const masterPageFields: XfaField[] = [];
+  walk(root, [], [], undefined, { layouts: [], inPage: false }, pageEls, fields, undefined, roots,
+    newScope(), masterPageFields, groups);
+  return { fields, pages: pageEls.map(pageAreaOf), roots, masterPageFields };
 }

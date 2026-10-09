@@ -14,7 +14,7 @@
  * than half-populated.
  *
  * **Invariant: never an approximate rect.** Every geometry failure -- an
- * unknown unit, a flowed ancestor, a medium mismatch, a `rotate`, an
+ * unknown unit, a flow the engine refuses, a medium mismatch, a `rotate`, an
  * unresolvable page -- yields a geometry-less field plus a report entry. There
  * is no fallback that estimates a position from a sibling, a caption or a flow
  * order: a field drawn in the wrong place looks right and is wrong.
@@ -27,7 +27,7 @@ import {
   FF_READONLY, FF_REQUIRED, FF_MULTILINE, FF_PASSWORD,
   FF_COMBO, FF_EDIT, FF_MULTISELECT, FF_PUSHBUTTON, FF_RADIO,
 } from './fieldflags.js';
-import { normalizeOptions, optArray, type NormalizedOption } from './choiceopt.js';
+import { optArray, type NormalizedOption } from './choiceopt.js';
 import {
   addRadioGroup, createField, ensureAcroForm, resolvePath,
   type FieldSpec,
@@ -38,11 +38,13 @@ import { encodePdfText } from './metadata.js';
 import { hasSignatureField } from './signature.js';
 import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { decodeXfaPackets } from './xfapacket.js';
-import { parseXfaTemplate, type XfaField } from './xfatemplate.js';
-import { parseXfaDatasets, bindFieldValue, type XfaValues } from './xfadata.js';
-import {
-  boxFor, buttonBox, chainIsPositioned, mediumAgrees, rectFromBox,
-} from './xfageom.js';
+import { parseXfaTemplate, type XfaField, type XfaTemplate } from './xfatemplate.js';
+import { parseXfaDatasets, parseXfaDataGroups, bindFieldValue, type XfaValues } from './xfadata.js';
+import { buttonBox, editRegion, mediumAgrees, rectFromBox } from './xfageom.js';
+import { layoutPage, type Placed, type XfaMeasure } from './xfaflow.js';
+import { measureLeaf } from './xfatext.js';
+import { withValue } from './xfarich.js';
+import { faceLookup } from './xfafont.js';
 
 export interface XfaConvertOptions {
   /** Remove `/AcroForm /XFA` and the catalog's `/NeedsRendering` once something
@@ -74,6 +76,9 @@ export interface XfaConvertReport {
   /** What did not convert, and why. The first place to look when a converted
    *  document is missing a field or renders nothing. */
   skipped: XfaSkipped[];
+  /** Non-conforming template values corrected rather than refused -- today a
+   *  `min*` greater than its `max*`, swapped as XFA 3.3 p. 277 directs. */
+  warnings: string[];
   xfaRemoved: boolean;
   /** At least one field converted and NONE got geometry: the document converts
    *  to data and renders nothing. False for a document that converted nothing
@@ -159,7 +164,7 @@ function acroOf(doc: Document): PdfDict | undefined {
  */
 export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   const report: XfaConvertReport = {
-    packets: [], fields: [], skipped: [], xfaRemoved: false, dataOnly: false,
+    packets: [], fields: [], skipped: [], warnings: [], xfaRemoved: false, dataOnly: false,
   };
   const entries: PlanEntry[] = [];
   const groups: GroupPlan[] = [];
@@ -187,8 +192,10 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     });
     return empty;
   }
-  const tpl = parseXfaTemplate(templateNode);
   const datasetsNode = decoded.packets.get('datasets');
+  // 164g.2: a repeating subform is instantiated once per same-named data group,
+  // so the template is read WITH the data's groups.
+  const tpl = parseXfaTemplate(templateNode, parseXfaDataGroups(datasetsNode));
   const values: XfaValues = datasetsNode
     ? parseXfaDatasets(datasetsNode) : new Map<string, string | string[]>();
 
@@ -221,6 +228,18 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     }
   }
 
+  // 4b. Lay out every page that may carry geometry, once. The result is keyed
+  //     by page and field SOM name -- two unnamed page subforms give their
+  //     fields one name -- and a field the walk did not reach has no entry.
+  const placed = new Map<string, Placed>();
+  if (!noGeometry) {
+    const measure = xfaMeasurer(doc, tpl, values);
+    for (const r of tpl.roots) {
+      if (badPages.has(r.pageIndex)) continue;
+      for (const [k, v] of layoutPage(r.node, measure, report.warnings)) placed.set(`${String(r.pageIndex)} ${k}`, v);
+    }
+  }
+
   // 5. Per field.
   const groupMembers = new Map<string, Array<{ f: XfaField; entry: PlanEntry }>>();
   for (const f of tpl.fields) {
@@ -235,11 +254,19 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     let ff = t.ff;
     if (f.readOnly) ff |= FF_READONLY;
     if (f.required) ff |= FF_REQUIRED;
-    const value = bindFieldValue(f, values);
-    const options = f.items && f.ui === 'choiceList'
-      ? normalizeOptions(f.items.map(
-        (i) => (i.display === undefined ? i.export : { export: i.export, display: i.display }),
-      ))
+    // An EMPTY datum on a choice list is no selection, not an option named ''.
+    // Bound as '' it reached Field.Value, which refuses an export /Opt lacks --
+    // i-765's datasets carry exactly that on every State list (cb07).
+    const bound = bindFieldValue(f, values);
+    const value = f.ui === 'choiceList' && bound === '' ? undefined : bound;
+    // The item list is TRANSCRIBED, never run through normalizeOptions: that is
+    // the validator for options a CALLER authors, and a document's list is data.
+    // /Opt may legally repeat an export or hold '' -- Adobe's own /Opt on i-130
+    // does both -- so refusing either refused the whole conversion (cb07).
+    const options: NormalizedOption[] | undefined = f.items && f.ui === 'choiceList'
+      ? f.items.map((i) => (i.display === undefined || i.display === i.export
+        ? { export: i.export }
+        : { export: i.export, display: i.display }))
       : undefined;
 
     const entry: PlanEntry = {
@@ -257,7 +284,7 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     };
 
     // Geometry, or a named reason for having none.
-    const why = geometryFor(f, entry, doc, noGeometry, badPages);
+    const why = geometryFor(f, entry, doc, noGeometry, badPages, placed);
     // A page that failed has already reported ONCE, as a page; reporting again
     // per field would bury the one entry that names the cause.
     if (why !== undefined && why !== '')
@@ -272,15 +299,30 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     entries.push(entry);
   }
 
+  // 5b. Fields on a MASTER page (d3mq). Adobe writes one instance per page,
+  //     `#pageSet[0].Page1[0..n]`, and placing them needs page identity
+  //     (164g.3), so each is REPORTED and none is created -- never lost
+  //     silently. A field refused for its own sake says so first.
+  for (const f of tpl.masterPageFields) {
+    report.skipped.push({
+      what: 'field', name: f.name,
+      reason: typeOf(f)
+        ? 'a field on a master page (<pageArea>) is not converted yet: '
+          + 'each page carries its own instance'
+        : `a <${f.ui}> field is refused rather than synthesized`,
+    });
+  }
+
   // 6. Groups. All-or-nothing: if any member lacks geometry the whole group
   //    goes bare.
   for (const [name, members] of groupMembers) {
     const placed = members.every((m) => m.entry.rect !== undefined);
     const readOnly = members.some((m) => m.f.readOnly);
     const required = members.some((m) => m.f.required);
-    // The group's own value is bound on the GROUP's SOM path, which is what a
-    // radio group's /V carries -- not on any one member's.
-    const selected = values.get(name);
+    // The group's own value is bound on the GROUP's path, which is what a radio
+    // group's /V carries -- not on any one member's. Its DATA path, which leaves
+    // out an unnamed container the SOM name counts (fdq3).
+    const selected = values.get(members[0].f.groupDataPath ?? name);
     if (placed) {
       groups.push({
         name,
@@ -342,22 +384,22 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
 function geometryFor(
   f: XfaField, entry: PlanEntry, doc: Document,
   noGeometry: boolean, badPages: ReadonlySet<number>,
+  placed: ReadonlyMap<string, Placed>,
 ): string | undefined {
   if (noGeometry) return '';
   if (f.pageIndex === undefined)
     return 'the field could not be traced to a pageArea, so it carries no geometry';
   if (badPages.has(f.pageIndex)) return '';
-  if (!chainIsPositioned(f.layouts)) {
-    const flow = f.layouts.find((l) => l !== 'position');
-    return `an ancestor uses layout="${flow ?? ''}", which needs the dynamic layout `
-      + 'engine, so the field carries no geometry';
-  }
-  const box = boxFor(f.geom, f.offsets, f.caption, f.margin);
+  const p = placed.get(`${String(f.pageIndex)} ${f.name}`);
+  if (p === undefined)
+    return 'the field is not in its page layout tree, so it carries no geometry';
+  if ('reason' in p) return `${p.reason}, so the field carries no geometry`;
+  const box = editRegion(p.box, f.caption, f.margin);
   if ('reason' in box) return `${box.reason}, so the field carries no geometry`;
   // A check button's widget is the BUTTON, not the edit region it sits in. Only
   // this UI kind states a size of its own, so every other field takes the box
   // unchanged.
-  const placed = f.ui === 'checkButton'
+  const button = f.ui === 'checkButton'
     ? buttonBox(box, {
       ...(f.buttonSize !== undefined ? { size: f.buttonSize } : {}),
       ...(f.para?.hAlign !== undefined ? { hAlign: f.para.hAlign } : {}),
@@ -366,9 +408,9 @@ function geometryFor(
         ? { captionPlacement: f.caption.placement } : {}),
     })
     : box;
-  if ('reason' in placed) return `${placed.reason}, so the field carries no geometry`;
+  if ('reason' in button) return `${button.reason}, so the field carries no geometry`;
   entry.page = f.pageIndex + 1;
-  entry.rect = rectFromBox(placed, doc.Pages[f.pageIndex].CropBox);
+  entry.rect = rectFromBox(button, doc.Pages[f.pageIndex].CropBox);
   return undefined;
 }
 
@@ -423,12 +465,23 @@ function applyBare(doc: Document, acro: PdfDict, e: PlanEntry): boolean {
 
 /** Update an existing field's `/V` from the data and touch nothing else. Its
  *  geometry and appearance are already authoritative -- that is what makes the
- *  hybrid case fall out of name equality rather than a second code path. */
-function applyReconcile(doc: Document, e: PlanEntry): void {
-  if (e.value === undefined) return;
+ *  hybrid case fall out of name equality rather than a second code path.
+ *
+ *  The datum goes through the public `Value` setter, which REFUSES what the
+ *  existing field cannot hold -- an export its `/Opt` lacks, a type mismatch.
+ *  That costs this field's datum and is answered with a reason, never a throw:
+ *  the converter reports what it cannot convert (cb07). */
+function applyReconcile(doc: Document, e: PlanEntry): string | undefined {
+  if (e.value === undefined) return undefined;
   const f = doc.Form.Get(e.name);
-  if (!f) return;
-  f.Value = e.value;
+  if (!f) return undefined;
+  try {
+    f.Value = e.value;
+  } catch (caught) { rethrowLimit(caught);
+    const why = caught instanceof Error ? caught.message : String(caught);
+    return `the existing field refused the data value (${why}), so it keeps its own`;
+  }
+  return undefined;
 }
 
 /** The per-type half of a positioned field, in `createField`'s vocabulary. */
@@ -531,7 +584,11 @@ export function convertXfaToAcroForm(
 
   const acro = ensureAcroForm(doc);
 
-  for (const e of plan.entries) if (e.reconcile) applyReconcile(doc, e);
+  for (const e of plan.entries) {
+    if (!e.reconcile) continue;
+    const refused = applyReconcile(doc, e);
+    if (refused !== undefined) plan.report.skipped.push({ what: 'field', name: e.name, reason: refused });
+  }
 
   let created = 0;
   for (const e of plan.entries) {
@@ -594,4 +651,27 @@ export function convertXfaToAcroForm(
 
   doc.markModified();
   return plan.report;
+}
+
+/** @internal The measurer `ConvertXfaToAcroForm` lays pages out with (164g.7):
+ *  a leaf's text from the template, with a field's bound value in place of its
+ *  default, measured with `faceLookup`'s faces. Exported so the pdf.js oracle
+ *  can lay out a subtree in isolation. */
+export function xfaMeasurer(doc: Document, tpl: XfaTemplate, values: XfaValues): XfaMeasure {
+  const faces = faceLookup(doc);
+  const byName = new Map(tpl.fields.map((f) => [f.name, f]));
+  // A leaf's text from the template, with a field's bound value in place of
+  // its default (164g.7). A multi-valued datum is not text.
+  return (n, box) => {
+    if (!n.text) return { reason: `${n.label}: has no measurable content` };
+    let t = n.text;
+    const f = n.field !== undefined ? byName.get(n.field) : undefined;
+    if (f) {
+      const v = bindFieldValue(f, values);
+      if (Array.isArray(v)) return { reason: `${n.label}: is bound to several values, which are not measured as text` };
+      if (v !== undefined) t = withValue(t, v);
+    }
+    const r = measureLeaf(t, box, faces);
+    return 'reason' in r ? { reason: `${n.label}: ${r.reason}` } : r;
+  };
 }

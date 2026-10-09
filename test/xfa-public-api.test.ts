@@ -13,7 +13,7 @@ const _opts: XfaConvertOptions = { removeXfa: true };
 const _skip: XfaSkipped = { what: 'field', reason: 'x' };
 const _res: XfaFieldResult = { name: 'a', type: 'text', route: 'bare' };
 const _rep: XfaConvertReport = {
-  packets: [], fields: [], skipped: [], xfaRemoved: false, dataOnly: false,
+  packets: [], fields: [], skipped: [], warnings: [], xfaRemoved: false, dataOnly: false,
 };
 void _opts; void _skip; void _res; void _rep;
 

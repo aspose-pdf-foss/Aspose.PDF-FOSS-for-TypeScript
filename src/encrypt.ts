@@ -1,8 +1,15 @@
-import { PdfDict, PdfObject, name, isString, isArray, isDict, isStream } from './types.js';
+import { PdfDict, PdfObject, name, isString, isArray, isDict, isStream, isName } from './types.js';
 import {
   aesCbcEncrypt, aesCbcEncryptNoPad, aes256EcbEncrypt, randomBytes, hash2B,
   md5, rc4, padPassword, PASSWORD_PADDING, fileKeyR234, objectKeyV4, Cipher, CryptKeys, isSignatureDict,
+  streamCryptFilter,
 } from './crypto.js';
+
+/** A `/Type /Metadata` stream -- what `/EncryptMetadata false` exempts. */
+function isMetadataStream(d: PdfDict): boolean {
+  const t = d.get('Type');
+  return isName(t) && t.name === 'Metadata';
+}
 
 export interface Permissions {
   printing?: boolean;
@@ -72,8 +79,34 @@ export function permissionsFromP(P: number): Permissions {
 
 type CipherFn = (data: Uint8Array, num: number, gen: number) => Uint8Array;
 
-/** Wrap string/stream ciphers into an Encryptor that recurses like decryptObject. */
+/** Prepend an Identity `/Crypt` to a stream's filter chain -- it must come
+ *  FIRST (32000-1 7.4.10) -- with null parameters, since no `/Name` means
+ *  `/Identity`. A `/DecodeParms` that is a lone dict becomes an array beside the
+ *  new array, and one that is absent stays absent. */
+function markIdentityCrypt(d: PdfDict): void {
+  const f = d.get('Filter');
+  const crypt = name('Crypt');
+  const dp = d.get('DecodeParms');
+  if (f === undefined) { d.set('Filter', crypt); return; }
+  d.set('Filter', isArray(f) ? [crypt, ...f] : [crypt, f]);
+  if (dp !== undefined) d.set('DecodeParms', isArray(dp) ? [null, ...dp] : [null, dp]);
+}
+
+const identity = (o: PdfObject | undefined): PdfObject => o ?? null;
+
+/** Wrap string/stream ciphers into an Encryptor that recurses like decryptObject.
+ *
+ *  **Invariant (lj8t):** a stream follows its OWN `/Crypt` filter when it names
+ *  one, the rule `crypto.ts`'s `streamCryptFilter` applies on read -- so a
+ *  preserved document's plaintext XMP is written back plaintext rather than
+ *  encrypted under a marker that says it is not. And under `/EncryptMetadata
+ *  false` a `/Type /Metadata` stream is written PLAINTEXT and MARKED with an
+ *  Identity `/Crypt`, Acrobat's own shape: until lj8t it was encrypted anyway
+ *  with nothing to say so, which every other reader decodes as garbage. A
+ *  non-Identity named filter takes `/StmF`'s cipher, the only one this
+ *  encryptor holds. */
 export function makeEncryptor(encryptDict: PdfDict, strCipher: CipherFn, stmCipher: CipherFn): Encryptor {
+  const encryptMetadata = encryptDict.get('EncryptMetadata') !== false;
   const encryptObject = (obj: PdfObject, num: number, gen: number): PdfObject => {
     if (isString(obj)) return pdfStr(strCipher(obj.bytes, num, gen));
     if (isArray(obj)) { for (let i = 0; i < obj.length; i++) obj[i] = encryptObject(obj[i], num, gen); return obj; }
@@ -86,7 +119,12 @@ export function makeEncryptor(encryptDict: PdfDict, strCipher: CipherFn, stmCiph
     if (isStream(obj)) {
       const d = obj.dict;
       for (const [k, v] of d) d.set(k, encryptObject(v, num, gen));
-      return { kind: 'stream', dict: d, raw: stmCipher(obj.raw, num, gen) };
+      let own = streamCryptFilter(d, identity);
+      if (own === undefined && !encryptMetadata && isMetadataStream(d)) {
+        markIdentityCrypt(d);
+        own = 'Identity';
+      }
+      return { kind: 'stream', dict: d, raw: own === 'Identity' ? obj.raw : stmCipher(obj.raw, num, gen) };
     }
     return obj;
   };

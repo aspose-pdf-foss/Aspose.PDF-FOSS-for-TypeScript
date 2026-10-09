@@ -133,13 +133,9 @@ export function mediumAgrees(
     && Math.abs(size.h - h) <= MEDIUM_TOLERANCE_PT;
 }
 
-/** One ancestor container's own position, as the template spells it. */
-export interface XfaOffset { x?: string; y?: string }
-
 /** The four flow layouts, plus the synthetic marker `xfatemplate.ts` pushes for
  *  a repeating `<occur>` subform, whose repeat DIRECTION is not knowable from
- *  the template. Anything not `'position'` degrades, so this list is
- *  documentation rather than the test. */
+ *  the template. Since `164g.1` the first four are laid out by `xfaflow.ts`; repetition is not a layout since 164g.2. `chainIsPositioned` is kept for the flow oracle, which classifies fields by it. */
 export const XFA_FLOW_LAYOUTS: readonly string[] = ['tb', 'lr-tb', 'row', 'table', 'occur'];
 
 /**
@@ -158,36 +154,12 @@ export function chainIsPositioned(layouts: readonly string[]): boolean {
   return layouts.every((l) => l === 'position');
 }
 
-/** The chain's accumulated origin in points, or `undefined` when ANY level is
- *  unreadable -- a partial sum is an approximate rect by another name. */
-export function accumulateOrigin(
-  offsets: readonly XfaOffset[],
-): { x: number; y: number } | undefined {
-  let x = 0;
-  let y = 0;
-  for (const o of offsets) {
-    const ox = o.x === undefined ? 0 : measureToPt(o.x);
-    const oy = o.y === undefined ? 0 : measureToPt(o.y);
-    if (ox === undefined || oy === undefined) return undefined;
-    x += ox;
-    y += oy;
-  }
-  return { x, y };
-}
-
-/** A field's own geometry attributes, verbatim from the template. */
+/** A node's own geometry attributes, verbatim from the template. */
 export interface XfaRawGeom {
   x?: string; y?: string; w?: string; h?: string;
   anchorType?: string; rotate?: string;
 }
 
-/**
- * A field's box in the page's XFA frame, or a `reason` naming why it has none.
- *
- * Every refusal is by name, because the caller puts it straight on the report
- * and that report is the first place a caller looks when a converted document
- * is missing a field.
- */
 /** A field's `<caption>`, as the template spells it. */
 export interface XfaCaption { reserve?: string; placement?: string; presence?: string }
 
@@ -354,43 +326,20 @@ export function buttonBox(
   return { x: edit.x + dx, y: edit.y + dy, w, h };
 }
 
-export function boxFor(
-  own: XfaRawGeom, offsets: readonly XfaOffset[], caption?: XfaCaption,
-  margin?: XfaMargin,
+/**
+ * A field's EDIT region -- its laid-out box minus its caption reserve and its
+ * own `<margin>` insets. This is what a widget covers.
+ *
+ * Their ORDER is not load-bearing and the corpus provably cannot discriminate
+ * it: both subtract fixed amounts from named edges, so the resulting rect is
+ * the same either way, and f1040 never pairs a caption with an inset on the
+ * SAME edge. Only the two refusal guards differ, each testing the room left at
+ * its own step, which is the safe direction for both.
+ */
+export function editRegion(
+  box: XfaBox, caption?: XfaCaption, margin?: XfaMargin,
 ): XfaBox | { reason: string } {
-  // A rotated field would need the widget /MK /R plus /Matrix dance
-  // appearance.ts already documents as its own trap. `rotate="0"` is not a
-  // rotation and must not degrade a field.
-  if (own.rotate !== undefined && measureToPt(own.rotate) !== 0)
-    return { reason: `rotate="${own.rotate}" is not supported` };
-
-  const origin = accumulateOrigin(offsets);
-  if (!origin) return { reason: 'an ancestor position could not be read' };
-
-  const keys = ['x', 'y', 'w', 'h'] as const;
-  const vals: number[] = [];
-  for (const k of keys) {
-    const v = measureToPt(own[k]);
-    if (v === undefined)
-      return { reason: `${k}="${own[k] ?? ''}" could not be read as a measurement` };
-    vals.push(v);
-  }
-  const [x, y, w, h] = vals;
-
-  const shift = anchorShift(own.anchorType, w, h);
-  if (!shift) return { reason: `anchorType="${own.anchorType ?? ''}" is not one of the nine` };
-
-  // The caption and the margin are subtracted LAST, from the placed box: the
-  // anchor names a point on the FIELD, not on the edit region inside it.
-  //
-  // Their ORDER is not load-bearing and the corpus provably cannot discriminate
-  // it -- both subtract fixed amounts from named edges, so the resulting rect is
-  // the same either way, and f1040 never pairs a caption with an inset on the
-  // SAME edge. Only the two refusal guards differ, each testing the room left at
-  // its own step, which is the safe direction for both.
-  const edit = applyCaption(
-    { x: origin.x + x + shift.dx, y: origin.y + y + shift.dy, w, h }, caption,
-  );
+  const edit = applyCaption(box, caption);
   if ('reason' in edit) return edit;
   return applyMargin(edit, margin);
 }

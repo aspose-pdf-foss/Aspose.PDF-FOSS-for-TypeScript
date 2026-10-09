@@ -412,6 +412,9 @@ export class Document {
   /** Parsed render substitute faces, keyed `path#faceIndex`. `null` marks one
    *  that would not parse, so it is not retried. */
   private readonly renderFaces = new Map<string, SfntFont | null>();
+  /** Faces parsed for XFA measurement, keyed `path#faceIndex`; `null` marks
+   *  one that would not parse. */
+  private readonly measureFaces = new Map<string, SfntFont | null>();
   /** Faces supplied as BYTES, in registration order. Their records are stored
    *  rather than rebuilt, so {@link renderFontFaces} hands back the SAME
    *  objects every call and {@link byteFaces} can key on their identity. */
@@ -812,8 +815,21 @@ export class Document {
       // Testing `rootIsCatalog` again here would be dead code: a document whose
       // /Root is not a catalog fails in the Document constructor regardless, so
       // the condition can never change the outcome. Verified by mutation.
+      //
+      // **Invariant (lj8t):** before refusing, each object still failing is
+      // parsed ONCE MORE in the object parser's LENIENT mode, which skips a
+      // stray delimiter where a dictionary key or array element belongs. It is
+      // the last rung, never an earlier one: lenient parsing anywhere the sweep
+      // runs would let a byte-shifted offset produce a plausible object. What
+      // parses that way is REPAIRED and reported; what does not is refused
+      // exactly as before. Acrobat PDFWriter 3.02's `/Title (pages))` in OPM
+      // SF 50's /Info is the shape -- the strictness tests' `###` body sits in a
+      // value position and is still refused.
       if (pass.failed.size > 0 && report.reason === 'object-parse-failure') {
-        throw new PdfParseError(report.detail);
+        const retry = new Set(pass.failed);
+        pass = Document.build(buf, merged, trailer, opts, sweep.candidates, budget, retry);
+        if (pass.failed.size > 0) throw new PdfParseError(report.detail);
+        report.repaired = [...new Set([...pass.repaired, ...retry])];
       }
     }
 
@@ -878,6 +894,7 @@ export class Document {
     opts: OpenOptions,
     alternates: Map<number, ObjCandidate[]> | undefined,
     budget: DecodeBudget,
+    lenient?: ReadonlySet<number>,
   ): BuildResult {
     const limits = opts.limits ?? LoadLimits.defaults;
     // Raw (un-decrypted) resolver for the /Encrypt dict and /ID — these are never
@@ -953,7 +970,7 @@ export class Document {
           const parser = new ObjectParser(new Lexer(buf, entry.offset), (lenObj) => {
             const r = isRef(lenObj) ? parseEntry(lenObj.num) : lenObj;
             return typeof r === 'number' ? r : undefined;
-          }, limits);
+          }, limits, lenient?.has(num) === true);
           value = parser.parseIndirectObject().value;
           // Decrypt top-level offset objects, except the /Encrypt dict and any
           // cross-reference stream (/Type /XRef is never encrypted).
@@ -2267,6 +2284,31 @@ export class Document {
     for (const f of this.renderFontFolders) out.push(...indexFolder(f.dir, f.sniff));
     return out;
   }
+  /** @internal The faces of the folders `LoadFontByName` searches, in
+   *  registration order. `xfafont.ts` measures XFA text with them (164g.7)
+   *  without going through `LoadFontFamily`, which would create an embeddable
+   *  font and change the document. */
+  registeredFontFaces(): FaceRecord[] {
+    const out: FaceRecord[] = [];
+    for (const f of this.fontFolders) out.push(...indexFolder(f.dir, f.sniff));
+    return out;
+  }
+
+  /** @internal One registered face parsed for measurement only, memoized per
+   *  path and face; `undefined` when it will not parse. */
+  registeredFaceSfnt(rec: FaceRecord): SfntFont | undefined {
+    const key = `${rec.path}#${String(rec.faceIndex)}`;
+    if (this.measureFaces.has(key)) return this.measureFaces.get(key) ?? undefined;
+    let sfnt: SfntFont | null = null;
+    try {
+      sfnt = parseSfnt(new Uint8Array(readFileSync(rec.path)), rec.faceIndex, this.loadLimits);
+    } catch (caught) { rethrowLimit(caught);
+      sfnt = null;
+    }
+    this.measureFaces.set(key, sfnt);
+    return sfnt ?? undefined;
+  }
+
 
   /**
    * Supply one font program as BYTES for use when RENDERING a font the document

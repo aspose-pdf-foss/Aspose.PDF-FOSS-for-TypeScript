@@ -8,6 +8,8 @@ Hybrid XFA forms from a third-party producer, here to validate the
 |---|---|---|---|---|---|
 | `irs-f1040.pdf` | <https://www.irs.gov/pub/irs-pdf/f1040.pdf> | 2 | 199 | yes | **hybrid**, mostly positioned |
 | `irs-fw9.pdf` | <https://www.irs.gov/pub/irs-pdf/fw9.pdf> | 6 | 23 | yes | **hybrid**, one declared `<pageArea>` |
+| `uscis-i130.pdf` | <https://www.uscis.gov/sites/default/files/document/forms/i-130.pdf> | 12 | 450 | yes | **hybrid**, one declared `<pageArea>` |
+| `uscis-i765.pdf` | <https://www.uscis.gov/sites/default/files/document/forms/i-765.pdf> | 7 | 161 | yes | **hybrid**, one declared `<pageArea>` |
 
 - Producer, from each file's own `/Info`: **`Designer 6.5`** — Adobe LiveCycle
   Designer, which is the authoring tool this feature was designed around.
@@ -81,17 +83,101 @@ design** — that the layout chain starts *below* the subform carrying the
 root, "every ancestor must be `position`" would place **zero** fields and the
 whole positioned route would be dead code. It places 151.
 
+It then found a **fourth**, and this one was not a missing rule but a refusal
+(`b1xv`). Eight `f1040` fields omit their own `x`, and the three `c1_8` omit
+`y` too: `Address_ReadOrder`, `Checkbox_ReadOrder`, `RoutingNo` and
+`AccountNo`, all in `position` subforms. The converter read an absent
+**ancestor** `x`/`y` as XFA's default of 0 but refused the field's own, so all
+eight were left without a widget. Read as 0, every one lands exactly on Adobe's
+rect, so the equality grew from 151 fields to **159**.
+
+## The USCIS forms (`cb07`)
+
+`uscis-i130.pdf` and `uscis-i765.pdf` (Designer 6.5, fetched **2026-10-09**,
+US federal works under the same 17 U.S.C. § 105 terms) are here because they
+made `ConvertXfaToAcroForm` **throw**, where its contract is to report what it
+cannot convert. SHA-256:
+
+- `uscis-i130.pdf` — `7fc733d4639995d6ad4798f1031464d044bd0da4233caa4ada886e79e762a88f` (729,861 bytes)
+- `uscis-i765.pdf` — `9ac0eae287749d4c2dfa0a591f464cc2124c18647c10e999b59484f090e0dc7d` (467,424 bytes)
+
+They carry two shapes no hand-built fixture had. i-130's State lists repeat
+the export `UT` and its class-of-admission list holds an EMPTY item, in the
+template's `<items>` and in Adobe's own `/Opt` alike. So a document's option
+list is data, and the plan used to refuse it as if a caller had written it.
+i-765's datasets bind an EMPTY datum to its four State lists. That means no
+selection, and reconciling it used to throw `choice field has no option ''`.
+`test/xfa-real.test.ts` asserts only what `cb07` settled.
+
+**They then settled how an UNNAMED container is named (`fdq3`), which neither
+IRS form could, since those name every container.** LiveCycle spells it by
+class — `form1[0].#subform[1].Pt2Line10_State[0]` — and counts every index
+below it over the nearest NAMED container: I-130's twelve page subforms are all
+unnamed, so its unnamed areas are numbered `#area[4]` to `#area[8]` across the
+whole form, and a field name that recurs in a later page subform is `[1]`.
+I-765's one unnamed area is `#area[1]`, after a named area in the same named
+`Page3`. The converter used to leave the level out, so none of I-130's fields
+reconciled and conversion added a second copy of all 438. Converting from the
+template alone now reproduces every body-field name of both forms, and the
+hybrids reconcile every one. Counting per parent instead reproduces 428 of
+I-130's 438, which is what the scoping rests on.
+
+**What they show that is only partly settled (`d3mq`):** both forms carry three
+fields on their master page. Adobe writes one of them, a PDF417 barcode whose
+value a layout script computes, once per page as a text field
+(`#pageSet[0].Page1[n]`, 12 on I-130 and 7 on I-765). The other two are hidden
+off-page counters, and Adobe does not write them at all. The converter now
+reports all three under Adobe's name for the first instance, which the tests
+assert, and creates none of them. The barcode is refused for being a barcode,
+and per-page instances wait on page identity. The body-name comparison still
+leaves `#pageSet` out. Both forms also declare one `<pageArea>` against several
+pages, so neither is placed.
+
+## The flow oracle (`164g.5`)
+
+A static save is not only an oracle for **positioned** layout. Designer runs
+Adobe's own layout engine over the whole template before it writes
+`/AcroForm`, so a field inside a **flowed** subform has an Adobe rect too, even
+though the template states no position for it. That is the oracle the dynamic
+layout epic (`164g`) is checked against, and it needed no new bytes.
+`test/helpers/xfa-flow-oracle.ts` pairs each flowed field's template chain with
+Adobe's rect, read from the original file, and `test/xfa-flow-oracle.test.ts`
+pins what it contains.
+
+- **`f1040`: 40 flowed fields**, all in `Table_Dependents` on page 1. They
+  cover three chains: 16 text cells under `table` › `row`, 8 check buttons
+  under `table` › `row` › `position`, and 16 check buttons under `table` ›
+  `row` › `lr-tb`. Since `164g.1` the converter places all 40, so this form
+  converts with nothing left bare.
+- **`fw9`: none.** Its 73 `tb` subforms hold no fields. All 23 fields have a
+  positioned chain, and the form reaches `dataOnly` only through the
+  page-count rule.
+- The rects are internally consistent with a table. The four text rows are
+  each 12pt tall and abut exactly, and the four columns align across all rows,
+  which the test asserts so a misread fixture shows up as red.
+
+Since `164g.1` the oracle is asserted for **correctness**, not only for what it
+contains: all 40 flowed fields are laid out by `src/xfaflow.ts` and land on
+Adobe's rects to 0.01pt (`test/xfa-flow-oracle.test.ts`), and
+`test/xfa-real.test.ts`'s equality covers all 199 fields. What the oracle cannot
+see, because f1040 does not contain it: `tb` stacking, an `lr-tb` that wraps,
+`colSpan`, `-1` columns, short rows, `presence`, growable containers with
+margins, and every refusal. Those rest on hand-built cases.
+
 ## What it does NOT cover — read this before trusting a green run
 
 - **No second XFA implementation arbitrates our output.** This compares against
   one producer's `/AcroForm`, which is strong evidence for the forms it covers
   and is **not** conformance evidence. No XFA implementation is installed and
   none can be.
-- **Positioned layout only.** A flow-laid field has no Adobe rect to compare
-  against either, so the flow degrade is checked for *presence*, never for
-  correctness.
+- **The flow oracle has no `tb` chain**, no `<occur>` repetition and no
+  data-driven page breaking. It is one table on one page, and the table has a
+  fixed number of rows. Those shapes need a genuinely dynamic form, and the
+  machine that produced this oracle has Acrobat in Reader mode, which cannot
+  flatten one. `164g.6` supplies them from pdf.js instead, over a genuinely
+  dynamic federal form: see `../xfa-dynamic/PROVENANCE.md`.
 - **No residual geometry rule remains**, so `xfa-real.test.ts` asserts an
-  **equality**: all 151 placed rects reproduce Adobe's to within a hundredth of
+  **equality**: all 199 rects reproduce Adobe's to within a hundredth of
   a point, worst 0.0006pt — floating-point residue from the mm→pt conversions
   and nothing else.
 
@@ -109,7 +195,8 @@ whole positioned route would be dead code. It places 151.
   refusal is covered by `test/xfageom.test.ts` alone.
 - **No non-`topLeft` `anchorType` appears in either fixture**, so the anchor
   arithmetic is builder-covered only (`test/xfageom.test.ts`).
-- **No dynamic XFA form is vendored.** `irs-fw9.pdf` reaches the `dataOnly`
+- **No dynamic XFA form is vendored HERE** (`../xfa-dynamic/` holds one,
+  with pdf.js goldens rather than Adobe rects). `irs-fw9.pdf` reaches the `dataOnly`
   path by a different route — a single declared `<pageArea>` against six pages,
   which the page-count rule refuses to align by guess — so what is covered is
   that rule, not a genuinely geometry-less dynamic template.
@@ -121,6 +208,8 @@ whole positioned route would be dead code. It places 151.
 ```bash
 curl -o test/fixtures/xfa/irs-f1040.pdf https://www.irs.gov/pub/irs-pdf/f1040.pdf
 curl -o test/fixtures/xfa/irs-fw9.pdf   https://www.irs.gov/pub/irs-pdf/fw9.pdf
+curl -o test/fixtures/xfa/uscis-i130.pdf https://www.uscis.gov/sites/default/files/document/forms/i-130.pdf
+curl -o test/fixtures/xfa/uscis-i765.pdf https://www.uscis.gov/sites/default/files/document/forms/i-765.pdf
 ```
 
 The IRS revises these forms annually and does not version the URL, so a later

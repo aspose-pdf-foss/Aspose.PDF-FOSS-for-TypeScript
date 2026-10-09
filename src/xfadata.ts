@@ -74,5 +74,47 @@ export function bindFieldValue(
     const ref = field.bindRef.replace(/^\$(?:record|data)?\./, '');
     return values.get(indexed(ref));
   }
-  return values.get(field.name);
+  // The DATA path, never the SOM name: an unnamed container is transparent to
+  // data binding and has no element in the datasets packet (fdq3).
+  return values.get(field.dataPath);
+}
+
+/** How many data children of each name sit at each data path (164g.2). */
+export interface XfaDataGroups {
+  /** No data document, or an `<xfa:data>` with no children: the merge is EMPTY
+   *  (XFA 3.3 p. 339-340), and a repeating subform takes its `initial`. */
+  readonly empty: boolean;
+  /** How many children named `name` the data node at `path` holds; 0 when
+   *  `path` names no data node. `path` is SOM-shaped, `''` for the data root. */
+  count(path: string, name: string): number;
+}
+
+/**
+ * The `datasets` packet's data groups, for instantiating repeating subforms.
+ *
+ * **Invariant (164g.2): it counts ELEMENTS, empty ones included.** OPM 1644's
+ * repeating `Header` rows bind to `<Header xfa:dataNode="dataGroup"></Header>`,
+ * which has no value, so `parseXfaDatasets`' leaf map cannot see how many there
+ * are. Paths are keyed exactly as that function keys them -- per name among
+ * siblings -- so a template instance's data path `...Header[k]` is the path its
+ * fields bind by.
+ */
+export function parseXfaDataGroups(root: XmlNode | undefined): XfaDataGroups {
+  const counts = new Map<string, Map<string, number>>();
+  const data = root === undefined ? undefined
+    : root.name === 'data' ? root : root.children.find((c) => c.name === 'data');
+  const visit = (el: XmlNode, path: string): void => {
+    const here = new Map<string, number>();
+    counts.set(path, here);
+    for (const c of el.children) {
+      const i = here.get(c.name) ?? 0;
+      here.set(c.name, i + 1);
+      visit(c, `${path === '' ? '' : `${path}.`}${c.name}[${String(i)}]`);
+    }
+  };
+  if (data) visit(data, '');
+  return {
+    empty: data === undefined || data.children.length === 0,
+    count: (path, name) => counts.get(path)?.get(name) ?? 0,
+  };
 }

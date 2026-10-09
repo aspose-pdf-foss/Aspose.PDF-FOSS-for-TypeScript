@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   measureToPt, anchorShift, rectFromBox, XFA_ANCHORS,
-  mediumSizePt, mediumAgrees, accumulateOrigin, chainIsPositioned, boxFor,
+  mediumSizePt, mediumAgrees, chainIsPositioned, editRegion,
   MEDIUM_TOLERANCE_PT, buttonBox,
 } from '../src/xfageom.js';
 
@@ -146,110 +146,57 @@ describe('chainIsPositioned', () => {
   });
 });
 
-describe('accumulateOrigin', () => {
-  // Three deep with a non-zero offset at EACH level -- the mutation "accumulate
-  // from the immediate parent only" is invisible with fewer.
-  it('sums every level of the chain, not just the last', () => {
-    expect(accumulateOrigin([
-      { x: '0.25in', y: '0.5in' },
-      { x: '1in', y: '2in' },
-      { x: '10pt', y: '20pt' },
-    ])).toEqual({ x: 100, y: 200 });
-  });
+const mm = (v: number) => (v * 72) / 25.4;
 
-  it('treats an absent x or y as zero', () => {
-    expect(accumulateOrigin([{ y: '1in' }, {}])).toEqual({ x: 0, y: 72 });
-  });
-
-  it('refuses the whole chain when any level is unreadable', () => {
-    expect(accumulateOrigin([{ x: '1in' }, { x: '3px' }])).toBeUndefined();
-  });
-});
-
-describe('boxFor', () => {
-  it('adds the accumulated origin to the field own position', () => {
-    expect(boxFor(
-      { x: '1in', y: '2in', w: '3in', h: '0.25in' },
-      [{ x: '0.5in', y: '0.5in' }],
-    )).toEqual({ x: 108, y: 180, w: 216, h: 18 });
-  });
-
-  it('applies the anchor shift to the accumulated point', () => {
-    expect(boxFor(
-      { x: '1in', y: '1in', w: '2in', h: '1in', anchorType: 'middleCenter' },
-      [],
-    )).toEqual({ x: 0, y: 36, w: 144, h: 72 });
-  });
-
-  it('refuses a rotate, an unreadable measure and a bad anchor, each by name', () => {
-    for (const own of [
-      { x: '0', y: '0', w: '1in', h: '1in', rotate: '90' },
-      { x: '0', y: '0', w: '1px', h: '1in' },
-      { x: '0', y: '0', w: '1in', h: '1in', anchorType: 'centre' },
-      { y: '0', w: '1in', h: '1in' },
-    ]) {
-      const r = boxFor(own, []);
-      expect(r).toHaveProperty('reason');
-      expect((r as { reason: string }).reason).toBeTruthy();
-    }
-  });
-
-  it('accepts rotate="0", which is not a rotation', () => {
-    expect(boxFor({ x: '0', y: '0', w: '1in', h: '1in', rotate: '0' }, []))
-      .toEqual({ x: 0, y: 0, w: 72, h: 72 });
-  });
-});
-
-describe('boxFor: the caption reserve', () => {
+describe('editRegion: the caption reserve', () => {
   // The rule the f1040 oracle found, in miniature. A field's box includes its
   // LABEL; the widget covers only the edit region. f1_01 is the real case:
   // 280.8pt wide with a 192.8pt reserve, and Adobe's widget is exactly 88pt.
   it('eats the reserve from the left by default', () => {
-    expect(boxFor(
-      { x: '0', y: '0', w: '280.8pt', h: '12pt' }, [], { reserve: '192.8pt' },
-    )).toEqual({ x: 192.8, y: 0, w: 88, h: 12 });
+    expect(editRegion({ x: 0, y: 0, w: 280.8, h: 12 }, { reserve: '192.8pt' }))
+      .toEqual({ x: 192.8, y: 0, w: 88, h: 12 });
   });
 
   it('eats it from whichever edge placement names', () => {
-    const box = { x: '0', y: '0', w: '100pt', h: '50pt' };
-    expect(boxFor(box, [], { reserve: '20pt', placement: 'right' }))
+    const box = { x: 0, y: 0, w: 100, h: 50 };
+    expect(editRegion(box, { reserve: '20pt', placement: 'right' }))
       .toEqual({ x: 0, y: 0, w: 80, h: 50 });
     // XFA's y runs DOWNWARD, so a top caption pushes the edit region down.
-    expect(boxFor(box, [], { reserve: '20pt', placement: 'top' }))
+    expect(editRegion(box, { reserve: '20pt', placement: 'top' }))
       .toEqual({ x: 0, y: 20, w: 100, h: 30 });
-    expect(boxFor(box, [], { reserve: '20pt', placement: 'bottom' }))
+    expect(editRegion(box, { reserve: '20pt', placement: 'bottom' }))
       .toEqual({ x: 0, y: 0, w: 100, h: 30 });
   });
 
   // presence="hidden" means the caption occupies NO space; "invisible" is
   // undrawn but still reserved, so it still eats.
   it('reserves nothing for a hidden caption and still reserves for an invisible one', () => {
-    const box = { x: '0', y: '0', w: '100pt', h: '50pt' };
-    expect(boxFor(box, [], { reserve: '20pt', presence: 'hidden' }))
+    const box = { x: 0, y: 0, w: 100, h: 50 };
+    expect(editRegion(box, { reserve: '20pt', presence: 'hidden' }))
       .toEqual({ x: 0, y: 0, w: 100, h: 50 });
-    expect(boxFor(box, [], { reserve: '20pt', presence: 'invisible' }))
+    expect(editRegion(box, { reserve: '20pt', presence: 'invisible' }))
       .toEqual({ x: 20, y: 0, w: 80, h: 50 });
   });
 
   it('leaves a captionless field alone', () => {
-    expect(boxFor({ x: '0', y: '0', w: '100pt', h: '50pt' }, [], {}))
+    expect(editRegion({ x: 0, y: 0, w: 100, h: 50 }, {}))
       .toEqual({ x: 0, y: 0, w: 100, h: 50 });
   });
 
   // Never an approximate rect: a reserve that swallows the field, an unreadable
   // one, and a placement outside the four each degrade rather than guess.
   it('degrades rather than emitting a rect it cannot justify', () => {
-    const box = { x: '0', y: '0', w: '100pt', h: '50pt' };
+    const box = { x: 0, y: 0, w: 100, h: 50 };
     for (const cap of [
       { reserve: '100pt' },
       { reserve: '120pt' },
       { reserve: '3px' },
       { reserve: '20pt', placement: 'inline' },
-    ]) expect(boxFor(box, [], cap)).toHaveProperty('reason');
+    ]) expect(editRegion(box, cap)).toHaveProperty('reason');
   });
 });
 
-describe('boxFor: the margin insets', () => {
+describe('editRegion: the margin insets', () => {
   // The second rule the f1040 oracle found, and it corrects the guess this bug
   // was filed on: the residue is the <margin>, not the <border>. Measured over
   // all 54 distinct textEdit declaration shapes in that form, our width error
@@ -257,18 +204,18 @@ describe('boxFor: the margin insets', () => {
   // and with no exception -- while the border edge thickness varied
   // independently across those same rows and moved nothing.
   it('insets the edit region by all four', () => {
-    expect(boxFor(
-      { x: '0', y: '0', w: '100pt', h: '50pt' }, [], undefined,
+    expect(editRegion(
+      { x: 0, y: 0, w: 100, h: 50 }, undefined,
       { leftInset: '1pt', rightInset: '2pt', topInset: '4pt', bottomInset: '8pt' },
     )).toEqual({ x: 1, y: 4, w: 97, h: 38 });
   });
 
   it('treats an absent inset as zero and an absent margin as none', () => {
-    const box = { x: '0', y: '0', w: '100pt', h: '50pt' };
-    expect(boxFor(box, [], undefined, { rightInset: '10pt' }))
+    const box = { x: 0, y: 0, w: 100, h: 50 };
+    expect(editRegion(box, undefined, { rightInset: '10pt' }))
       .toEqual({ x: 0, y: 0, w: 90, h: 50 });
-    expect(boxFor(box, [], undefined, {})).toEqual({ x: 0, y: 0, w: 100, h: 50 });
-    expect(boxFor(box, [], undefined, undefined)).toEqual({ x: 0, y: 0, w: 100, h: 50 });
+    expect(editRegion(box, undefined, {})).toEqual({ x: 0, y: 0, w: 100, h: 50 });
+    expect(editRegion(box, undefined, undefined)).toEqual({ x: 0, y: 0, w: 100, h: 50 });
   });
 
   // f1040's f1_03, whole: a 36x12 field with a 15pt left caption reserve and
@@ -276,8 +223,8 @@ describe('boxFor: the margin insets', () => {
   // [468.6 732.502 485.6 743.501] -- 17 x 10.999 -- against a field x of
   // 160.02mm. Both rules at once, on the numbers that found them.
   it('reproduces f1_03: the caption reserve and the insets together', () => {
-    const b = boxFor(
-      { x: '160.02mm', y: '16.933mm', w: '12.7mm', h: '4.233mm' }, [],
+    const b = editRegion(
+      { x: mm(160.02), y: mm(16.933), w: mm(12.7), h: mm(4.233) },
       { reserve: '5.2917mm' },
       { rightInset: '1.4111mm', topInset: '0.1764mm', bottomInset: '0.1764mm' },
     ) as { x: number; y: number; w: number; h: number };
@@ -289,9 +236,7 @@ describe('boxFor: the margin insets', () => {
   });
 
   it('degrades on an inset it cannot read, by name', () => {
-    const r = boxFor(
-      { x: '0', y: '0', w: '100pt', h: '50pt' }, [], undefined, { leftInset: '3px' },
-    );
+    const r = editRegion({ x: 0, y: 0, w: 100, h: 50 }, undefined, { leftInset: '3px' });
     expect(r).toHaveProperty('reason');
     expect((r as { reason: string }).reason).toContain('leftInset');
   });
@@ -299,10 +244,10 @@ describe('boxFor: the margin insets', () => {
   // Never an approximate rect: insets that leave no edit region degrade rather
   // than emitting a zero-or-negative one, exactly as the caption reserve does.
   it('degrades when the insets leave no edit region', () => {
-    const box = { x: '0', y: '0', w: '100pt', h: '50pt' };
-    expect(boxFor(box, [], undefined, { leftInset: '60pt', rightInset: '40pt' }))
+    const box = { x: 0, y: 0, w: 100, h: 50 };
+    expect(editRegion(box, undefined, { leftInset: '60pt', rightInset: '40pt' }))
       .toHaveProperty('reason');
-    expect(boxFor(box, [], undefined, { topInset: '50pt' })).toHaveProperty('reason');
+    expect(editRegion(box, undefined, { topInset: '50pt' })).toHaveProperty('reason');
   });
 });
 

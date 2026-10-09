@@ -148,6 +148,24 @@ export const FLOWED_TEMPLATE = `<template><subform name="form1" layout="tb">
     <field name="f1_01" x="1in" y="2in" w="3in" h="20pt"><ui><textEdit/></ui></field>
   </subform></subform></template>`;
 
+/** Review Focus 1: a flowed page subform whose contentArea states its size,
+ *  so the flow is bounded and its fields are placed. */
+export const FLOWED_BOUNDED_TEMPLATE = `<template><subform name="form1" layout="tb">
+  <pageSet><pageArea name="P1">
+    <contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/>
+    <medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <subform name="Page1" layout="tb">
+    <field name="a" w="3in" h="20pt"><ui><textEdit/></ui></field>
+    <field name="b" w="3in" h="20pt"><ui><textEdit/></ui></field>
+  </subform></subform></template>`;
+
+/** Review Focus 5: a hidden field on a fully positioned page. */
+export const HIDDEN_POSITIONED_TEMPLATE = `<template><subform name="form1" layout="tb">
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <subform name="Page1" layout="position">
+    <field name="h" presence="hidden" x="1in" y="1in" w="1in" h="20pt"><ui><textEdit/></ui></field>
+  </subform></subform></template>`;
+
 /** A4 declared against a US Letter page: the medium mismatch, 17pt out. */
 export const WRONG_MEDIUM_TEMPLATE = `<template><subform name="form1" layout="tb">
   <pageSet><pageArea name="P1"><medium short="210mm" long="297mm"/></pageArea></pageSet>

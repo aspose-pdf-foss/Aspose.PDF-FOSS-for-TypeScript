@@ -127,6 +127,10 @@ function decodeOne(
     case 'ASCII85Decode': case 'A85': return ascii85Decode(input);
     case 'ASCIIHexDecode': case 'AHx': return asciiHexDecode(input);
     case 'RunLengthDecode': case 'RL': return runLengthDecode(input, bound.cap);
+    // A stream's own crypt filter (32000-1 7.4.10). It is applied when the
+    // object is LOADED -- crypto.ts's streamCryptFilter chooses the cipher --
+    // so by the time a stream is decoded its bytes are already plaintext (lj8t).
+    case 'Crypt': return input;
     default:
       throw new UnsupportedFeatureError(`unsupported decode filter: ${filter}`);
   }
