@@ -42,7 +42,16 @@ export const XFA_SUBSTITUTES: Readonly<Record<string, readonly [StdFont, StdFont
 /** CSS generic families: never a face (cssfont.ts's rule). */
 const GENERIC = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui']);
 
-interface Face { names?: FontNames; metrics: FaceMetrics }
+interface Face { names?: FontNames; metrics: FaceMetrics; sfnt: SfntFont }
+
+/** Where a measured face is DRAWN from (164g.4): a substitute is drawn with
+ *  the Standard-14 face whose advances equal the Liberation metrics that
+ *  measured it; an embedded or registered face with its own program. */
+export type FaceSource = { std14: StdFont } | { sfnt: SfntFont };
+/** `faceLookup` with the source kept, so text is painted in the face that
+ *  measured it. */
+export type FacePicker = (style: RunStyle, text: string) =>
+  { metrics: FaceMetrics; source: FaceSource } | { reason: string };
 
 function unicodeCmap(s: SfntFont): Map<number, number> | undefined {
   return s.cmapSubtable(3, 10) ?? s.cmapSubtable(3, 1) ?? s.cmapSubtable(0, 4) ?? s.cmapSubtable(0, 3);
@@ -69,7 +78,7 @@ function face(s: SfntFont | undefined): Face | undefined {
   const m = metricsOf(s);
   if (!m) return undefined;
   const names = readFontNames(s.raw);
-  return { ...(names ? { names } : {}), metrics: m };
+  return { ...(names ? { names } : {}), metrics: m, sfnt: s };
 }
 
 const styled = (names: FontNames, want: string, bold: boolean, italic: boolean): boolean => {
@@ -88,6 +97,14 @@ const covers = (m: FaceMetrics, text: string): number | undefined => {
 };
 
 export function faceLookup(doc: Document): FaceLookup {
+  const pick = facePicker(doc);
+  return (style, text) => {
+    const r = pick(style, text);
+    return 'reason' in r ? r : r.metrics;
+  };
+}
+
+export function facePicker(doc: Document): FacePicker {
   let embedded: Face[] | undefined;
   const embeddedFaces = (): Face[] => {
     if (embedded) return embedded;
@@ -125,25 +142,26 @@ export function faceLookup(doc: Document): FaceLookup {
       if (want === '' || GENERIC.has(want)) continue;
       tried.push(raw.trim());
       let uncovered: number | undefined;
-      const accept = (f: Face): FaceMetrics | undefined => {
+      const accept = (f: Face): Face | undefined => {
         const miss = covers(f.metrics, text);
-        if (miss === undefined) return f.metrics;
+        if (miss === undefined) return f;
         uncovered ??= miss;
         return undefined;
       };
       for (const f of embeddedFaces())
-        if (styled(f.names!, want, style.bold, style.italic)) { const m = accept(f); if (m) return m; }
+        if (styled(f.names!, want, style.bold, style.italic)) { const m = accept(f); if (m) return { metrics: m.metrics, source: { sfnt: m.sfnt } }; }
       for (const r of registeredFaces()) {
         if (!styled(r.rec.names, want, style.bold, style.italic)) continue;
         if (r.f === undefined) r.f = face(doc.registeredFaceSfnt(r.rec)) ?? null;
-        if (r.f) { const m = accept(r.f); if (m) return m; }
+        if (r.f) { const m = accept(r.f); if (m) return { metrics: m.metrics, source: { sfnt: m.sfnt } }; }
       }
       // hasOwn FIRST: the name comes from the document, and 'constructor'
       // must not find Object.prototype's (predefcmap.ts's trap).
       const sub = Object.hasOwn(XFA_SUBSTITUTES, want) ? XFA_SUBSTITUTES[want] : undefined;
       if (sub) {
-        const f = face(getStd14Sfnt(sub[(style.bold ? 1 : 0) + (style.italic ? 2 : 0)]));
-        if (f) { const m = accept(f); if (m) return m; }
+        const std = sub[(style.bold ? 1 : 0) + (style.italic ? 2 : 0)];
+        const f = face(getStd14Sfnt(std));
+        if (f) { const m = accept(f); if (m) return { metrics: m.metrics, source: { std14: std } }; }
       }
       if (uncovered !== undefined)
         return { reason: `no face of "${raw.trim()}" covers U+${uncovered.toString(16).toUpperCase().padStart(4, '0')}` };

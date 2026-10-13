@@ -302,11 +302,11 @@ export interface XfaButtonSpec {
 export function buttonBox(
   edit: XfaBox, b: XfaButtonSpec,
 ): XfaBox | { reason: string } {
-  // No size stated is not a size of zero: there is nothing to place, so the
-  // edit region stands. Inventing a default is the kind of number this module
-  // refuses -- and every field in both corpora states one.
-  if (b.size === undefined) return edit;
-  const s = measureToPt(b.size);
+  // An absent size is XFA 3.3's stated default, 10pt (Template Reference,
+  // checkButton: "The default is 10pt"). 17vo read it as "leave the edit
+  // region", which no f1040 or fw9 button could contradict; USCIS I-130 and
+  // I-765 state no size on 98 buttons and Adobe drew every one 10x10 (164g.3).
+  const s = measureToPt(b.size ?? '10pt');
   if (s === undefined)
     return { reason: `checkButton size="${b.size}" could not be read as a measurement` };
   if (s <= 0) return { reason: `checkButton size="${b.size}" is not positive` };
@@ -342,4 +342,30 @@ export function editRegion(
   const edit = applyCaption(box, caption);
   if ('reason' in edit) return edit;
   return applyMargin(edit, margin);
+}
+
+/**
+ * A field's edit region AND caption region (164g.4), from one function so the
+ * two cannot overlap or leave a gap. `edit` is `editRegion`'s answer exactly,
+ * refusal included. The caption sits in the nominal content region -- the box
+ * less the field's margin (XFA 3.3 p. 50) -- on its `placement` side,
+ * `reserve` deep; pdf.js places it the same way (its `Caption` inside the
+ * margin-padded field). No caption, a hidden one, or an unstated or zero
+ * reserve has no region.
+ */
+export function fieldRegions(
+  box: XfaBox, caption?: XfaCaption, margin?: XfaMargin,
+): { edit: XfaBox; caption?: XfaBox } | { reason: string } {
+  const edit = editRegion(box, caption, margin);
+  if ('reason' in edit) return edit;
+  if (!caption || caption.presence === 'hidden' || caption.reserve === undefined) return { edit };
+  const r = measureToPt(caption.reserve);
+  if (r === undefined || r <= 0) return { edit };
+  const content = applyMargin(box, margin);
+  if ('reason' in content) return { edit };
+  const edge = CAPTION_EDGE[caption.placement ?? 'left'];
+  if (edge === 'left') return { edit, caption: { x: content.x, y: content.y, w: r, h: content.h } };
+  if (edge === 'right') return { edit, caption: { x: content.x + content.w - r, y: content.y, w: r, h: content.h } };
+  if (edge === 'top') return { edit, caption: { x: content.x, y: content.y, w: content.w, h: r } };
+  return { edit, caption: { x: content.x, y: content.y + content.h - r, w: content.w, h: r } };
 }

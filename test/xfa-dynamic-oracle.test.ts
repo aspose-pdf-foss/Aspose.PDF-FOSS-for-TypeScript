@@ -5,7 +5,8 @@ import { isDict } from '../src/types.js';
 import { decodeStream } from '../src/filters.js';
 import { decodeXfaPackets } from '../src/xfapacket.js';
 import { parseXfaTemplate, type XfaTemplate } from '../src/xfatemplate.js';
-import { layoutPage, type LayoutNode } from '../src/xfaflow.js';
+import { layoutPage, measureExtent, type LayoutNode } from '../src/xfaflow.js';
+import { layoutPages, paginate } from '../src/xfapage.js';
 import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
 import { xfaMeasurer } from '../src/xfaconvert.js';
 import {
@@ -59,7 +60,7 @@ describe('the dynamic XFA oracle: OPM 1644', () => {
     expect(doc.catalog().get('NeedsRendering')).toBe(true);
     expect(doc.Form.Fields).toHaveLength(0);
     const tpl = templateOf(doc);
-    expect(tpl.pages).toHaveLength(1);
+    expect(tpl.body!.pageSet!.pageAreas).toHaveLength(1);
     expect(tpl.fields).toHaveLength(61);
   });
 
@@ -153,11 +154,10 @@ describe('the dynamic XFA oracle: OPM 1644', () => {
       expect(one('pages', `${prefix}SectionIV[0].Row3[0].FieldQ1FinInst[0]`).value)
         .toBe(`Bank ${String(k + 1)}`);
     }
-    // The template's own fields are the [0] instances; the rest are copies.
+    // Since 164g.3 the template instantiates the repeating page subform too, so
+    // our names and pdf.js's are the same set, Page2[1] and Page2[2] included.
     const ours = new Set(templateOf(deriveVariant(source, 'pages')).fields.map((f) => f.dataPath));
-    const theirs = fieldNames('pages');
-    for (const f of ours) expect(theirs.has(f), f).toBe(true);
-    expect(theirs.size - ours.size).toBe(2 * [...ours].filter((f) => f.includes('.Page2[0].')).length);
+    expect(ours).toEqual(fieldNames('pages'));
   });
 
   // Evidence the boxes describe a table rather than fields that happen to sit
@@ -176,29 +176,29 @@ describe('the dynamic XFA oracle: OPM 1644', () => {
   });
 
   // What the oracle is FOR. Every field our engine places must land on
-  // pdf.js's box. Since 164g.2 a repeating Header row is instantiated per data
-  // group, so the tables no longer refuse at their Header; this loop runs with
-  // NO text measurer, so text-sized fields still refuse here and the count
-  // rises only from 35 to 37 (the measured tables are checked table by table
-  // below). Page2 still resolves to no layout root, being a second instance of
-  // the one pageArea (164g.3), and `pages`' Page2 repetition is refused for
-  // 164g.3. The count is pinned so the issue that changes it updates it.
+  // pdf.js's box, on pdf.js's page. Since 164g.3 the page subforms are
+  // paginated, so Page2 lands on page 2 (and in `pages`, its three instances
+  // on pages 2-4). This loop runs with NO text measurer, so text-sized fields
+  // still refuse here (the measured tables are checked table by table below).
+  // The count is pinned so the issue that changes it updates it.
   it('agrees with every box the flow engine places', () => {
     const placed: Record<string, number> = {};
     for (const v of DYNAMIC_VARIANTS) {
       const tpl = templateOf(deriveVariant(source, v));
+      const laid = layoutPages(tpl.body!);
       placed[v] = 0;
-      for (const root of tpl.roots) {
-        for (const [name, p] of layoutPage(root.node)) {
+      laid.pages.forEach((pg, i) => {
+        for (const [name, p] of pg.placed) {
           if (!('box' in p)) continue;
           placed[v]++;
           const g = one(v, dataOf(tpl, name));
+          expect(g.page, `${v} ${name} page`).toBe(i + 1);
           for (const k of ['x', 'y', 'w', 'h'] as const)
             expect(Math.abs(p.box[k] - g[k]), `${v} ${name} ${k}`).toBeLessThanOrEqual(0.05);
         }
-      }
+      });
     }
-    expect(placed).toEqual({ published: 37, header: 37, pages: 37 });
+    expect(placed).toEqual({ published: 42, header: 42, pages: 52 });
   });
 });
 
@@ -217,7 +217,7 @@ describe('164g.7: measured layout against pdf.js, table by table', () => {
     parseXfaDataGroups(packets.packets.get('datasets')));
   const values = parseXfaDatasets(packets.packets.get('datasets')!);
   const measure = xfaMeasurer(doc, tpl, values);
-  const page1 = tpl.roots[0].node.children[0];
+  const page1 = tpl.body!.root.children[0];
   const tableNode = (label: string): LayoutNode =>
     page1.children.find((c) => c.label === label)!;
   const alone = (label: string) => layoutPage(
@@ -291,7 +291,7 @@ describe('164g.7: measured layout against pdf.js, table by table', () => {
       if ('reason' in p) throw new Error(p.reason);
       const t = parseXfaTemplate(p.packets.get('template')!, parseXfaDataGroups(p.packets.get('datasets')));
       const m = xfaMeasurer(d, t, parseXfaDatasets(p.packets.get('datasets')!));
-      const s = t.roots[0].node.children[0].children.find((c) => c.label === 'SectionI[0]')!;
+      const s = t.body!.root.children[0].children.find((c) => c.label === 'SectionI[0]')!;
       return layoutPage(
         { kind: 'page', label: 'contentArea', layout: 'position', geom: { w: '612pt', h: '792pt' }, children: [s] },
         m,
@@ -308,5 +308,44 @@ describe('164g.7: measured layout against pdf.js, table by table', () => {
       expect(b.box.y - a.box.y, name).toBeCloseTo(36, 6);
       expect(one('header', name).y - one('published', name).y, name).toBeCloseTo(36, 2);
     }
+  });
+});
+
+describe('164g.3: OPM 1644 paginated as pdf.js paginates it', () => {
+  const membership = (v: (typeof DYNAMIC_VARIANTS)[number]) => {
+    const tpl = templateOf(deriveVariant(source, v));
+    return paginate(tpl.body!, (n, limit) => measureExtent(n, limit)).pages
+      .map((p) => p.contentAreas.flatMap((c) => c.children.map((k) => k.label)));
+  };
+
+  // The tb root OF1644 holds two page-tall subforms; pdf.js puts each on its
+  // own instance of the ONE pageArea.
+  it('published: Page1 on page 1, Page2 on page 2', () => {
+    expect(membership('published')).toEqual([['Page1[0]'], ['Page2[0]']]);
+    expect(membership('published')).toHaveLength(goldens.variants.published.pages);
+  });
+
+  it('pages: Page2\'s three instances on pages 2-4', () => {
+    expect(membership('pages')).toEqual([['Page1[0]'], ['Page2[0]'], ['Page2[1]'], ['Page2[2]']]);
+    expect(membership('pages')).toHaveLength(goldens.variants.pages.pages);
+  });
+
+  // End to end: the placeholder page gives way to the laid-out ones, and each
+  // Page2 instance's FieldQ1FinInst is on its own page, bound to its own group.
+  it('pages: converts onto four pages, each Page2 instance with its own datum', () => {
+    const doc = deriveVariant(source, 'pages');
+    const r = doc.ConvertXfaToAcroForm({ removeXfa: false });
+    expect(r.pagesCreated).toBe(4);
+    expect(doc.Pages).toHaveLength(4);
+    for (let k = 0; k < 3; k++) {
+      const f = r.fields.find((x) => new RegExp(`\\.Page2\\[${String(k)}\\]\\..*FieldQ1FinInst\\[0\\]$`).test(x.name));
+      expect(f, `Page2[${String(k)}]`).toBeDefined();
+      expect(doc.Form.Get(f!.name)!.Value).toBe(`Bank ${String(k + 1)}`);
+      expect(f!.route).toBe('positioned');
+      expect(f!.page).toBe(k + 2);
+    }
+    // Every field of the variant gets a widget: the whole dynamic form lays out.
+    expect(r.fields.filter((f) => f.route !== 'positioned')).toEqual([]);
+    expect(r.fields).toHaveLength(85);
   });
 });

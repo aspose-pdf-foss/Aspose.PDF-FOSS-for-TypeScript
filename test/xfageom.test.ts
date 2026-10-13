@@ -296,12 +296,13 @@ describe('buttonBox: a checkButton is its own size, placed in the edit region', 
       .toMatchObject({ x: 12 });
   });
 
-  // No size stated is not the same as a size of zero: there is nothing to place,
-  // so the edit region stands. Inventing a default is exactly the kind of number
-  // this module refuses -- every field in both corpora states one.
-  it('leaves the region alone when no size is stated', () => {
+  // XFA 3.3's checkButton reference: "The default is 10pt." 17vo read an absent
+  // size as "leave the edit region", which no f1040 or fw9 button could
+  // contradict -- every one states a size. USCIS I-130 and I-765 state none on
+  // 98 buttons, and every one of Adobe's rects for them is 10x10 (164g.3).
+  it('takes XFA\'s 10pt default when no size is stated', () => {
     const edit = { x: 1, y: 2, w: 20, h: 12 };
-    expect(buttonBox(edit, {})).toEqual(edit);
+    expect(buttonBox(edit, {})).toEqual({ x: 11, y: 2, w: 10, h: 10 });
   });
 
   it('degrades on a size it cannot read, by name', () => {

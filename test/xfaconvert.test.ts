@@ -30,7 +30,7 @@ describe('buildXfaPlan: classification', () => {
     expect(p.report.fields[0].page).toBeUndefined();
     expect(p.report.skipped).toEqual([{
       what: 'field', name: 'form1[0].Page1[0].f1_01[0]',
-      reason: expect.stringMatching(/layout/i) as unknown as string,
+      reason: expect.stringMatching(/no pageArea declares a contentArea/) as unknown as string,
     }]);
     // At least one field converted and NONE got geometry.
     expect(p.report.dataOnly).toBe(true);
@@ -45,12 +45,25 @@ describe('buildXfaPlan: classification', () => {
     expect(p.report.skipped.filter((s) => s.what === 'field')).toHaveLength(0);
   });
 
-  it('degrades the whole document when the pageArea count disagrees with the pages', () => {
+  it('degrades the whole document when the layout\'s page count disagrees with the pages', () => {
     const p = planOf(buildXfaPdf({ template: POSITIONED_TEMPLATE, pages: 2 }));
     expect(p.report.fields.every((f) => f.route === 'bare')).toBe(true);
     expect(p.report.skipped.some(
-      (s) => s.what === 'document' && /pageArea/i.test(s.reason),
+      (s) => s.what === 'document' && /the layout produces 1 page\(s\) and the document has 2/.test(s.reason),
     )).toBe(true);
+  });
+
+  // Review Focus 1: a page subform that cannot be paginated takes every later
+  // one with it, the counts then disagree, and the document reason must still
+  // name the refusal that caused it. The bad target is on the SECOND page
+  // subform: on the first it would be the start rule, which lays out nothing.
+  it('names the first pagination refusal when the page counts then disagree', () => {
+    const t = POSITIONED_TEMPLATE.replace('</subform></subform></template>',
+      '</subform><subform name="Page2" layout="position"><breakBefore targetType="pageArea" target="Nowhere"/>'
+      + '<field name="b" x="1in" y="1in" w="1in" h="20pt"><ui><textEdit/></ui></field></subform></subform></template>');
+    const p = planOf(buildXfaPdf({ template: t, pages: 2 }));
+    const doc = p.report.skipped.find((s) => s.what === 'document');
+    expect(doc?.reason).toMatch(/layout produces 1 page\(s\) and the document has 2.*break target "Nowhere" names no pageArea/);
   });
 
   // "Converted to data and renders nothing" and "converted nothing at all" are
@@ -72,15 +85,16 @@ describe('buildXfaPlan: flow layout', () => {
     expect(p.entries[1].rect).toEqual([36, 716, 252, 736]);
   });
 
-  // Two unnamed page subforms give their fields the SAME SOM name. The layout
-  // result is keyed per page, so page 1's field keeps page 1's box.
+  // Two unnamed page subforms on two pages (the second breaks to P2; without a
+  // break both would flow onto page 1, 164g.3). The layout result is keyed per
+  // page, so page 1's field keeps page 1's box.
   it('keeps a field on its own page when another page repeats its SOM name', () => {
-    const PAGE = (y: string) => `<subform layout="position">
+    const PAGE = (y: string, brk = '') => `<subform layout="position">${brk}
       <field name="f" x="1in" y="${y}" w="1in" h="20pt"><ui><textEdit/></ui></field></subform>`;
     const p = planOf(buildXfaPdf({ pages: 2, template: `<template><subform name="form1" layout="tb">
-      <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea>
-        <pageArea name="P2"><medium short="8.5in" long="11in"/></pageArea></pageSet>
-      ${PAGE('1in')}${PAGE('2in')}</subform></template>` }));
+      <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea>
+        <pageArea name="P2"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
+      ${PAGE('1in')}${PAGE('2in', '<breakBefore targetType="pageArea" target="P2"/>')}</subform></template>` }));
     const first = p.entries.find((e) => e.page === 1);
     expect(first?.rect).toEqual([72, 700, 144, 720]);
   });
@@ -95,7 +109,7 @@ describe('buildXfaPlan: flow layout', () => {
 describe('buildXfaPlan: types, values and options', () => {
   it('maps each UI kind to its /FT and flags', () => {
     const p = planOf(buildXfaPdf({ template: `<template><subform name="f" layout="tb">
-      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
       <subform name="P1" layout="position">
         <field name="t" x="0" y="0" w="1in" h="20pt"><ui><textEdit multiLine="1"/></ui></field>
         <field name="p" x="0" y="1in" w="1in" h="20pt"><ui><passwordEdit/></ui></field>
@@ -123,7 +137,7 @@ describe('buildXfaPlan: types, values and options', () => {
 
   it('carries readOnly and required into /Ff', () => {
     const p = planOf(buildXfaPdf({ template: `<template><subform name="f" layout="tb">
-      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
       <subform name="P1" layout="position">
         <field name="ro" access="readOnly" x="0" y="0" w="1in" h="20pt">
           <ui><textEdit/></ui></field>
@@ -139,7 +153,7 @@ describe('buildXfaPlan: types, values and options', () => {
 
   it('refuses signature, imageEdit and barcode by name and creates nothing', () => {
     const p = planOf(buildXfaPdf({ template: `<template><subform name="f" layout="tb">
-      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
       <subform name="P1" layout="position">
         <field name="s" x="0" y="0" w="1in" h="20pt"><ui><signature/></ui></field>
         <field name="i" x="0" y="1in" w="1in" h="20pt"><ui><imageEdit/></ui></field>
@@ -155,7 +169,7 @@ describe('buildXfaPlan: types, values and options', () => {
   it('takes /V from datasets and /DV from the template default', () => {
     const p = planOf(buildXfaPdf({
       template: `<template><subform name="form1" layout="tb">
-        <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+        <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
         <subform name="Page1" layout="position">
           <field name="f1_01" x="1in" y="2in" w="3in" h="20pt"><ui><textEdit/></ui>
             <value><text>AUTHORED</text></value></field>
@@ -300,7 +314,7 @@ describe('convertXfaToAcroForm: bare fields', () => {
 
   it('writes /Opt through choiceopt so both halves of a pair survive', () => {
     const doc = Document.Open(buildXfaPdf({ template: `<template><subform name="f" layout="tb">
-      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
       <subform name="P" layout="tb"><field name="c"><ui><choiceList/></ui>
         <items><text>Small</text></items>
         <items save="1"><text>S</text></items></field></subform></subform></template>` }));
@@ -424,8 +438,8 @@ describe('convertXfaToAcroForm: positioned widgets', () => {
 
   it('a rejected field costs itself and the rest still convert', () => {
     const doc = Document.Open(buildXfaPdf({ template: `<template><subform name="form1" layout="tb">
-      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/></pageArea></pageSet>
-      <subform name="Page1" layout="position">
+      <pageSet><pageArea name="P"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
+      <subform name="Page1" layout="position" w="8.5in" h="11in">
         <field name="ok" x="1in" y="1in" w="1in" h="20pt"><ui><textEdit/></ui></field>
         <field name="bad" x="1px" y="1in" w="1in" h="20pt"><ui><textEdit/></ui></field>
       </subform></subform></template>` }));
@@ -518,7 +532,7 @@ describe('convertXfaToAcroForm: /XFA survives a conversion that achieved nothing
   // yields a real entry whose SOM path descends THROUGH the existing terminal
   // field f1_01[0], so resolvePath refuses it and nothing is created.
   const COLLIDING = `<template><subform name="form1" layout="tb">
-    <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+    <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
     <subform name="Page1" layout="position"><subform name="f1_01" layout="position">
       <field name="sub" x="1in" y="1in" w="1in" h="20pt"><ui><textEdit/></ui></field>
     </subform></subform></subform></template>`;
@@ -611,9 +625,9 @@ describe('mutation fences', () => {
   });
 });
 
-// d3mq (part 1): a master-page field is REPORTED, never silently lost and
-// never created. Its own refusal wins where it has one.
-describe('ConvertXfaToAcroForm: master-page fields are reported', () => {
+// d3mq: a master-page field is created once per page; one refused for its UI
+// kind is reported per instance. The full rule matrix is xfaconvert-master.test.ts.
+describe('ConvertXfaToAcroForm: master-page fields', () => {
   const MASTER = `<template><subform name="form1" layout="tb">
     <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/>
       <contentArea x="0.25in" y="0.25in" w="8in" h="10in"/>
@@ -624,17 +638,18 @@ describe('ConvertXfaToAcroForm: master-page fields are reported', () => {
       <field name="f1_01" x="1in" y="2in" w="3in" h="20pt"><ui><textEdit/></ui></field>
     </subform></subform></template>`;
 
-  it('lists each in skipped with a reason and creates none of them', () => {
+  it('creates a placeable one and reports a refused kind', () => {
     const doc = Document.Open(buildXfaPdf({ template: MASTER }));
     const r = convertXfaToAcroForm(doc, { removeXfa: false });
-    expect(r.fields.map((f) => f.name)).toEqual(['form1[0].Page1[0].f1_01[0]']);
-    const master = r.skipped.filter((s) => s.name?.includes('#pageSet'));
-    expect(master.map((s) => [s.what, s.name])).toEqual([
-      ['field', 'form1[0].#pageSet[0].P1[0].code[0]'],
-      ['field', 'form1[0].#pageSet[0].P1[0].who[0]'],
+    expect(r.fields.map((f) => [f.name, f.route, f.page])).toEqual([
+      ['form1[0].Page1[0].f1_01[0]', 'positioned', 1],
+      ['form1[0].#pageSet[0].P1[0].who[0]', 'positioned', 1],
     ]);
+    const master = r.skipped.filter((s) => s.name?.includes('#pageSet'));
+    expect(master.map((s) => s.name)).toEqual(['form1[0].#pageSet[0].P1[0].code[0]']);
     expect(master[0].reason).toMatch(/<barcode>.*refused/);
-    expect(master[1].reason).toMatch(/master page/);
-    expect(doc.Form.Get('form1[0].#pageSet[0].P1[0].who[0]')).toBeUndefined();
+    // x = 5in, bottom = 792 - 10.75in.
+    expect(doc.resolve(doc.Form.Get('form1[0].#pageSet[0].P1[0].who[0]')!.Dict.get('Rect')))
+      .toEqual([360, 18, 504, 36]);
   });
 });

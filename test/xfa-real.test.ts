@@ -184,27 +184,58 @@ describe('the hybrid oracle: IRS f1040, LiveCycle Designer 6.5', () => {
   });
 });
 
-describe('the hybrid oracle: IRS fw9, a single declared pageArea', () => {
-  // fw9 declares ONE <pageArea> for a six-page document -- LiveCycle's ordinary
-  // way of saying "this page repeats". The page-count rule refuses to align
-  // them by guess, so the whole document degrades to geometry-less. Its names
-  // and values still convert, which is the floor the design promises.
-  it('converts every field to data when the pageArea count cannot be matched', () => {
-    const bytes = load('irs-fw9.pdf');
-    const src = Document.Open(bytes);
-    const adobe = new Set(src.Form.Fields.map((f) => f.FullName));
-    const doc = stripAcroFields(bytes);
-    const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+/** Body-field counts Adobe wrote: the claim is that EVERY one is placed. */
+const EXPECTED: Record<string, number> = { 'irs-fw9.pdf': 23, 'uscis-i130.pdf': 438, 'uscis-i765.pdf': 154 };
 
-    expect([...adobe].filter((n) => !report.fields.some((f) => f.name === n))).toEqual([]);
-    expect(report.fields.every((f) => f.route === 'bare')).toBe(true);
-    expect(report.dataOnly).toBe(true);
-    expect(report.skipped.some(
-      (s) => s.what === 'document' && /pageArea/.test(s.reason),
-    )).toBe(true);
-    // Every one of them is a real, fillable field.
-    expect(doc.Form.Fields.length).toBe(adobe.size);
+/** The 0-based page Adobe put a field's widget on, from the page /Annots. */
+function adobePage(src: Document, name: string): number {
+  const f = src.Form.Get(name)!;
+  const widgets = new Set<unknown>([f.Dict]);
+  const kids = src.resolve(f.Dict.get('Kids'));
+  if (Array.isArray(kids)) for (const k of kids) widgets.add(src.resolve(k));
+  return src.Pages.findIndex((p) => {
+    const annots = src.resolve(p.Dict.get('Annots'));
+    return Array.isArray(annots) && annots.some((a) => widgets.has(src.resolve(a)));
   });
+}
+
+// 164g.3: each of these declares ONE <pageArea> for a multi-page document --
+// LiveCycle's ordinary way of saying "this page repeats" -- and was refused
+// outright until pages became an output of layout. Each page subform is as
+// tall as its content area (fw9's odd pages 0.003pt taller, placed under the
+// p. 295 override), so the layout produces exactly the document's pages, and
+// every rect is compared with the one Adobe wrote. Master-page fields (the
+// USCIS barcode) are d3mq's and left out.
+describe('the paginated hybrid oracle (164g.3)', () => {
+  for (const [file, pages] of [['irs-fw9.pdf', 6], ['uscis-i130.pdf', 12], ['uscis-i765.pdf', 7]] as const) {
+    it(`${file}: lays out ${String(pages)} pages and reproduces every placed rect and page Adobe wrote`, () => {
+      const bytes = load(file);
+      const src = Document.Open(bytes);
+      const adobe = new Map(src.Form.Fields
+        .filter((f) => !f.FullName.includes('#pageSet'))
+        .map((f) => [f.FullName, src.resolve(f.Dict.get('Rect')) as number[] | null]));
+      const doc = stripAcroFields(bytes);
+      const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+      expect(report.skipped.filter((s) => s.what === 'document' || s.what === 'page')).toEqual([]);
+      let compared = 0;
+      let exact = 0;
+      let worst = 0;
+      for (const f of report.fields) {
+        if (f.route !== 'positioned') continue;
+        const want = adobe.get(f.name);
+        if (!want || want.length !== 4) continue;
+        expect(f.page! - 1, `${f.name} page`).toBe(adobePage(src, f.name));
+        const got = rectOf(doc, f.name);
+        const d = Math.max(...[0, 1, 2, 3].map((i) => Math.abs(got[i] - want[i])));
+        compared += 1;
+        if (d <= 0.01) exact += 1;
+        if (d > worst) worst = d;
+      }
+      expect(compared, 'fields compared').toBe(EXPECTED[file]);
+      expect(exact, 'exact').toBe(compared);
+      expect(worst).toBeLessThanOrEqual(0.01);
+    });
+  }
 });
 
 // cb07: these two USCIS hybrids made ConvertXfaToAcroForm THROW, where its
@@ -267,26 +298,101 @@ describe('unnamed containers are named by class, as LiveCycle writes them (fdq3)
   }
 });
 
-// d3mq (part 1): the master-page fields are REPORTED by Adobe's own name for a
-// page's first instance, and none is created. Adobe writes one PDF417 barcode
-// per page and leaves out the two hidden off-page counters; we model the first
-// instance only, so every field is reported once.
-describe('master-page fields are reported by the name Adobe writes (d3mq)', () => {
-  for (const file of ['uscis-i130.pdf', 'uscis-i765.pdf']) {
-    it(`${file}`, () => {
+// d3mq: master-page fields, one instance per page. DD 1391 and DD 1155 carry
+// the only FILLABLE master-page fields found; the USCIS forms carry a barcode
+// on every page, which is refused for its kind but reported under every name
+// Adobe gives it.
+describe('master-page fields, against Adobe (d3mq)', () => {
+  for (const file of ['dod-dd1391.pdf', 'dod-dd1155.pdf']) {
+    it(`${file}: creates every master-page field Adobe wrote, on Adobe's page and rect`, () => {
+      const bytes = load(file);
+      const src = Document.Open(bytes);
+      const adobe = new Map(src.Form.Fields.filter((f) => f.FullName.includes('#pageSet'))
+        .map((f) => [f.FullName, src.resolve(f.Dict.get('Rect')) as number[]]));
+      const doc = stripAcroFields(bytes);
+      const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+      const made = report.fields.filter((f) => f.name.includes('#pageSet'));
+      expect(made.map((f) => f.name).sort()).toEqual([...adobe.keys()].sort());
+      let exact = 0;
+      let worst = 0;
+      for (const f of made) {
+        expect(f.page, f.name).toBe(1);
+        const got = rectOf(doc, f.name);
+        const want = adobe.get(f.name)!;
+        const d = Math.max(...[0, 1, 2, 3].map((i) => Math.abs(got[i] - want[i])));
+        if (d <= 0.01) exact += 1;
+        worst = Math.max(worst, d);
+      }
+      // EXACT, not a 1pt bound: a bound accepted a nearly-right inset rule once (mw1m).
+      expect(exact, `exact of ${String(made.length)}`).toBe(made.length);
+      expect(worst).toBeLessThanOrEqual(0.01);
+      // Adobe writes no Save/Print: they sit in a presence="inactive" subform.
+      expect(made.some((f) => /SaveButton|PrintButton/.test(f.name))).toBe(false);
+    });
+
+  }
+
+  // DD 1155 carries an (unsigned) signature field, and any document with one is
+  // refused as published -- a rule that predates master fields -- so only DD
+  // 1391 can show the hybrid reconciling. Its stripped copy is converted above.
+  it('dod-dd1391.pdf: the hybrid as published reconciles its master fields and creates none', () => {
+    const doc = Document.Open(load('dod-dd1391.pdf'));
+    const before = doc.Form.Fields.length;
+    const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+    const master = report.fields.filter((f) => f.name.includes('#pageSet'));
+    expect(master.length).toBeGreaterThan(0);
+    expect(master.filter((f) => f.route !== 'reconciled')).toEqual([]);
+    expect(doc.Form.Fields.length).toBe(before);
+  });
+
+  for (const [file, pages] of [['uscis-i130.pdf', 12], ['uscis-i765.pdf', 7]] as const) {
+    it(`${file}: reports the barcode under every one of Adobe's ${String(pages)} instance names`, () => {
       const adobe = Document.Open(load(file)).Form.Fields.map((f) => f.FullName)
-        .filter((n) => n.includes('#pageSet'));
-      expect(adobe).toContain('form1[0].#pageSet[0].Page1[0].PDF417BarCode1[0]');
+        .filter((n) => n.includes('#pageSet')).sort();
+      expect(adobe).toHaveLength(pages);
       const doc = stripAcroFields(load(file));
       const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
-      const master = report.skipped.filter((s) => s.name?.includes('#pageSet'));
-      expect(master.map((s) => s.name)).toEqual([
+      const barcode = report.skipped.filter((s) => s.name?.includes('PDF417BarCode1'));
+      expect(barcode.map((s) => s.name).sort()).toEqual(adobe);
+      for (const s of barcode) expect(s.reason).toMatch(/<barcode>/);
+      // The two hidden counters, which Adobe does not write, are reported once each.
+      expect(report.skipped.filter((s) => /CurrentPagep1|PageCountp1/.test(s.name ?? '')).map((s) => s.name)).toEqual([
         'form1[0].#pageSet[0].Page1[0].CurrentPagep1[0]',
         'form1[0].#pageSet[0].Page1[0].PageCountp1[0]',
-        'form1[0].#pageSet[0].Page1[0].PDF417BarCode1[0]',
       ]);
-      expect(master[2].reason).toMatch(/<barcode>/);
       expect(report.fields.some((f) => f.name.includes('#pageSet'))).toBe(false);
+    });
+  }
+});
+
+// bkdi: DoD DD forms flow their bodies as lr-tb lines of mixed heights. Every
+// field lands on Adobe's rect only under both rules: the next line below the
+// TALLEST item, and a container's min* unapplied in a flowed parent (DD 1155's
+// `thirty`). Each rival reddens DD 1155: the last item 84/87, the first 85/87,
+// min* applied 80/84 with page 1 overflowing.
+describe('lr-tb bodies of mixed heights, against Adobe (bkdi)', () => {
+  for (const [file, count] of [['dod-dd1391.pdf', 62], ['dod-dd1155.pdf', 87]] as const) {
+    it(`${file}: places all ${String(count)} fields on Adobe's page and rect`, () => {
+      const bytes = load(file);
+      const src = Document.Open(bytes);
+      const adobe = new Map(src.Form.Fields.map((f) =>
+        [f.FullName, src.resolve(f.Dict.get('Rect')) as number[] | null]));
+      const doc = stripAcroFields(bytes);
+      const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+      expect(report.skipped.map((s) => s.reason).filter((r) => /mixed heights|would need splitting|needs splitting/.test(r))).toEqual([]);
+      let compared = 0;
+      let exact = 0;
+      for (const f of report.fields) {
+        if (f.route !== 'positioned') continue;
+        const want = adobe.get(f.name);
+        if (!want || want.length !== 4) continue;
+        expect(f.page! - 1, `${f.name} page`).toBe(adobePage(src, f.name));
+        const got = rectOf(doc, f.name);
+        compared += 1;
+        if (Math.max(...[0, 1, 2, 3].map((i) => Math.abs(got[i] - want[i]))) <= 0.01) exact += 1;
+      }
+      expect(compared, 'fields compared').toBe(count);
+      expect(exact, 'exact').toBe(count);
     });
   }
 });

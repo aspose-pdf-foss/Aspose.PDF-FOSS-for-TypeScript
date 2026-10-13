@@ -10,6 +10,8 @@ Hybrid XFA forms from a third-party producer, here to validate the
 | `irs-fw9.pdf` | <https://www.irs.gov/pub/irs-pdf/fw9.pdf> | 6 | 23 | yes | **hybrid**, one declared `<pageArea>` |
 | `uscis-i130.pdf` | <https://www.uscis.gov/sites/default/files/document/forms/i-130.pdf> | 12 | 450 | yes | **hybrid**, one declared `<pageArea>` |
 | `uscis-i765.pdf` | <https://www.uscis.gov/sites/default/files/document/forms/i-765.pdf> | 7 | 161 | yes | **hybrid**, one declared `<pageArea>` |
+| `dod-dd1391.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd1391.pdf> | 1 | 62 | yes | **hybrid**, fillable master-page field |
+| `dod-dd1155.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd1155.pdf> | 1 | 90 | yes | **hybrid**, master-page Reset button |
 
 - Producer, from each file's own `/Info`: **`Designer 6.5`** — Adobe LiveCycle
   Designer, which is the authoring tool this feature was designed around.
@@ -164,6 +166,31 @@ see, because f1040 does not contain it: `tb` stacking, an `lr-tb` that wraps,
 `colSpan`, `-1` columns, short rows, `presence`, growable containers with
 margins, and every refusal. Those rest on hand-built cases.
 
+## Pagination (`164g.3`)
+
+fw9, I-130 and I-765 each declare ONE `<pageArea>` for 6, 12 and 7 pages --
+LiveCycle's ordinary way of saying "this page repeats" -- and every field of
+all three was refused until pages became an output of layout. Now the root
+subform's children are paginated into instances of that page area, and
+`test/xfa-real.test.ts` converts each from the template alone and compares
+every placed BODY field's rect AND page with Adobe's: **fw9 23, I-130 438,
+I-765 154 -- every body field Adobe wrote, each on Adobe's page, worst
+0.01pt.** Master-page fields (the USCIS barcode) are `d3mq`'s and left out.
+
+- **fw9's odd page subforms are `h="10.999597in"`** (791.971pt) in a 791.968pt
+  content area: 0.003pt too tall for an EMPTY page. Each lands on its own page
+  under XFA 3.3 p. 295's override, which Adobe's page assignment confirms.
+- **It found a `17vo` misreading.** 98 USCIS check buttons state no
+  `<checkButton size>`, and `17vo` left an absent size at the whole edit
+  region. Adobe drew every one 10x10, which is XFA 3.3's stated default ("The
+  default is 10pt"); f1040 and fw9 could not show it, since every button there
+  states its size. Before the fix 371 of I-130's and 122 of I-765's rects were
+  exact; after it, all.
+- **The ceiling:** one producer, and page subforms that each fill exactly one
+  page, so no content area is ever shared by two page subforms or overflowed.
+  The first page subform of each form carries no `startNew` break, so the
+  start-point rule (no blank first page) is pinned by hand-built cases alone.
+
 ## What it does NOT cover — read this before trusting a green run
 
 - **No second XFA implementation arbitrates our output.** This compares against
@@ -196,10 +223,9 @@ margins, and every refusal. Those rest on hand-built cases.
 - **No non-`topLeft` `anchorType` appears in either fixture**, so the anchor
   arithmetic is builder-covered only (`test/xfageom.test.ts`).
 - **No dynamic XFA form is vendored HERE** (`../xfa-dynamic/` holds one,
-  with pdf.js goldens rather than Adobe rects). `irs-fw9.pdf` reaches the `dataOnly`
-  path by a different route — a single declared `<pageArea>` against six pages,
-  which the page-count rule refuses to align by guess — so what is covered is
-  that rule, not a genuinely geometry-less dynamic template.
+  with pdf.js goldens rather than Adobe rects). Since `164g.3`, `irs-fw9.pdf`
+  no longer reaches the `dataOnly` path: its six pages are laid out from its
+  one page area.
 - **`<occur>` repeating subforms** are not exercised by either fixture, so
   Interpretation 3 (a repeating subform is flow-laid) is builder-covered only.
 
@@ -215,3 +241,41 @@ curl -o test/fixtures/xfa/uscis-i765.pdf https://www.uscis.gov/sites/default/fil
 The IRS revises these forms annually and does not version the URL, so a later
 fetch will **not** match the hashes above. That is why the bytes are committed
 rather than downloaded by the suite.
+
+## DoD DD 1391 and DD 1155 (d3mq)
+
+US Department of Defense forms from
+`https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/`, US federal works,
+fetched **2026-10-12**. Producer, from each file's own `/Info`: **`Designer 6.5`**.
+
+- `dod-dd1391.pdf` — `1cc33c0949c8e8cc21c0d013afe92b725ac12cddfb7e75875f70bee9b5fe12f2` (49,311 bytes)
+- `dod-dd1155.pdf` — `005699455b6c3a1c4cb61ee0af8145cf45c9e4b7d7214982085e6a2b4c1b679e` (85,219 bytes)
+
+The site refuses scripted access (an Akamai "Access Denied" page — it began
+doing so during the scan that found these), so re-fetching needs a browser.
+Compare against the hashes above.
+
+**What they show:** the only FILLABLE master-page field found in 92 federal
+forms scanned. DD 1391's `NumericField1` ("PAGE NO.", a visible `numericEdit`
+with a caption reserve, `bind match="none"`, no script) and both forms' Reset
+buttons sit on a `<pageArea>`, and Adobe wrote each as
+`form1[0].#pageSet[0].Page1[0].<name>[0]`. Converted from the template alone,
+every one lands on Adobe's name and rect — measured from the PAGE origin, not a
+content area. Adobe writes NO Save or Print button: they sit in a
+`presence="inactive"` subform.
+
+**What they do NOT show:** a master field repeated across pages (both forms are
+one page; the USCIS barcode names pin multi-instance numbering). Until `bkdi`
+they showed nothing about their BODY fields either, which were refused ("wraps
+after a line of mixed heights"); that refusal is also why the three-page DD 1610
+and DD 2952, which carry master Reset buttons on two page areas, were not
+vendored -- their body laid out one page against three.
+
+Since `bkdi` they also anchor BODY layout. Both bodies flow as `lr-tb` lines of
+mixed heights, which the engine refused until then. Converted from the template
+alone, all 62 (DD 1391) and 87 (DD 1155) positioned fields land on Adobe's page
+and rect (`test/xfa-real.test.ts`). They settled two rules the specification
+leaves open: the next line starts below the TALLEST item on the line, and a
+container's `min*` is not applied in a flowed parent (DD 1155's `thirty`). DD 1391
+alone cannot tell the tallest item from the last or the first; DD 1155 can.
+DD 1610 and DD 2952 are still not vendored; that is a follow-up issue.

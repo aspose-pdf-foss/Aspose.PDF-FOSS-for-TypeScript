@@ -10739,14 +10739,104 @@ Source (`src/`):
   instance: `#pageSet[n]` is counted in the parent's class numbering, but the
   pageSet OPENS a numbering of its own. I-765 names a body subform and a
   pageArea both `Page1`, and Adobe writes `#pageSet[0].Page1[0]`, not `[1]`.
-  One instance per page (`Page1[0..n]`) and their placement wait on page
-  identity (`164g.3`).
-  **Note, what the oracle contains, so part 2 is not overestimated:** the only
-  master-page field Adobe writes in either USCIS form is a script-valued PDF417
-  barcode (`xfa.layout.page(this)`), as a text field, which we refuse. The two
-  `presence="hidden"` off-page counters beside it are not written at all. No
-  vendored form has a FILLABLE master-page field. All five rules are
-  mutation-checked.
+  **Invariant (`d3mq`, part 2):** a master field is CREATED once per page that
+  instantiates its page area -- `XfaField.master` (`pageArea`, `base`, `rest`)
+  names instance n `${base}[${n}].${rest}`, n counted per PAGE AREA, never by
+  page index. The page area's background is a POSITIONED root at the page
+  origin (`XfaPageAreaModel.master`), built by the same walk as body content
+  with that root as the parent, and laid out once by `xfaflow.ts`'s
+  `layoutPage` (XFA 3.3 p. 271, 288); the widget rect goes through the same
+  `widgetBox` as a body field. Page areas are matched to their models by
+  ELEMENT identity -- `pageSetOf` drops an unreadable one, the walk an unnamed
+  one -- and only the FIRST page area of a repeated name is identified. An
+  UNNAMED page area is still walked, under `#pageArea[k]`, for the REPORT only:
+  pagination puts pages on it, and skipping it lost its fields with no record
+  (final review).
+  **Invariant:** a master field binds ONLY through `<bind match="dataRef" ref>`
+  (p. 271: "it has to be linked to the data by an explicit data reference")
+  or `<bind match="global">` (p. 301, since `yy09`), every instance sharing
+  the value; no data is the CORRECT answer otherwise and is not reported.
+  **Invariant (`c3jq`, `xfadata.ts`):** in a `<bind ref>`, `$data.` and `$.`
+  name the data ROOT while `$record.` names the OUTER data element, the first
+  element child of `<xfa:data>` (p. 91-92: "$record would be set to
+  $data.Receipt"), so `$record.x` is `$data.form1.x`. It read `$record` as the
+  root until `c3jq`. The record comes off the FIRST key of the values map, cut at
+  its first `]` because an XML name may hold a dot; that is sound because the
+  collect walk runs depth first in document order and every element yields a
+  key. Record mode, where `$record` advances per record, is not modelled.
+  **Note:** NO vendored form states a `<bind ref>` at all, so this rests on
+  `test/xfadata.test.ts` and one `test/xfaconvert-master.test.ts` case alone.
+  All three mutations redden: the old reading, the last key, a cut at `.`.
+  **Invariant (`yy09`):** `bind match="global"` binds the field's OWN data
+  path first and, only when that holds nothing, the FIRST data value of the
+  field's name anywhere in the data (`parseXfaGlobals`, built in the same
+  document-order walk as the value map), shared by every global field so named
+  -- body and master-page instances alike (p. 246-247, 301). An empty datum at
+  the own path is still a match; a data GROUP and an attribute never are.
+  **Note, a STATED DIVERGENCE:** p. 247 says global has "no effect" without
+  record mode, and no vendored form has a config `<record>` (p. 531). Designer
+  nevertheless writes every global datum once under the outermost group
+  (f1040's `Page1.Checkbox_ReadOrder.c1_8` has its datum at
+  `topmostSubform.c1_8`), and pdf.js 6.3.289's binder applies the flattened
+  search regardless; read literally, all 175 global fields in the corpus would
+  bind nothing. Record mode itself is not modelled. pdf.js never binds a
+  `<pageArea>` field, so it corroborates the body half only.
+  **Invariant:** the search is by `XfaField.dataName`, the raw `name`
+  attribute, never a re-split of a data path -- an XML name may hold a dot.
+  **Note:** a name global on some fields and ordinary on others (p. 247: "not
+  supported"), and an `<exclGroup>` stating global (p. 176 and p. 348
+  disagree), are each one warning; neither changes binding. Neither fires on
+  any vendored form.
+  **Invariant (`yy09`, `applyReconcile`):** a reconciled check box's `Value`
+  is a BOOLEAN, on exactly when the datum is its on-state -- the comparison
+  `specFor` already makes for a created field. Handed the datum string, the
+  setter refused every check box on every hybrid (75 on I-130, 16 on f1040),
+  silently but for a skip; global binding is what made it visible, routing
+  I-765's 36 global boxes down the same path and reddening `xfa-real`.
+  A blank check-box datum sets NOTHING, as a blank choice-list datum does.
+  **Note, measured, and the vendored files cannot see that last rule:** for a
+  box that is already off, "blank sets nothing" and "blank is not the on-state,
+  so off" agree, and every vendored box is off -- dropping the rule stayed
+  GREEN until a case checked I-130's `Pt1Line1_Spouse` in the AcroForm half
+  first. All 10 mutations aimed at `yy09` redden.
+  **Invariant (`yy09`, final review):** a CREATED choice field whose datum
+  its `/Opt` exports lack -- every value, for a multi-select -- gets NO `/V`
+  and is reported as a field skip, matching the RECONCILED path, where the
+  setter refuses the same datum. An editable combo (`FF_EDIT`) takes any text.
+  The check runs after reconcile marking, so a reconciled field is reported
+  once, by the setter. It fires on no vendored form.
+  **Invariant:** no geometry creates NOTHING and is reported ONCE (Adobe writes
+  nothing for a hidden counter or an inactive Save/Print button); a refused UI
+  KIND is reported once PER INSTANCE under Adobe's name, which is what makes the
+  USCIS barcode line up with Adobe's `Page1[0..n]`. A second page-set instance
+  (`LaidOutPage.pageSet > 0`) and a master `<exclGroup>` are refused: no oracle
+  settles either.
+  **Invariant:** master instances never justify replacing a dynamic document's
+  placeholder pages (`PlanEntry.master`); placed body content must. Without
+  that, a form whose body was refused (DD 2875 until `bkdi`, DD 1494 until
+  `164g.8`) came out cut to one page carrying only its CUI marking.
+  **Note, measured:** the medium rule's per-page granularity is held by the code
+  path and the sweep, not by a mixed fixture -- `buildXfaPdf` gives every page
+  one `mediaBox`. And in USCIS every page is `Page1`, so page-index and
+  per-page-area numbering agree there; the P1, P1, P2 builder case is what
+  separates them, through P2.
+  **Note on the oracles:** fillable master-page fields were found only in DoD
+  DD forms (see `fixtures/xfa/` and `fixtures/xfa-dynamic/` PROVENANCE). DD 1391
+  and DD 1155 land every master field on Adobe's name and rect; DD 2875 and DD
+  1494's master layouts match pdf.js on 3 and 14 pages. Their BODIES were refused
+  by the lr-tb mixed-heights rule until `bkdi`: DD 2875 now converts end to end
+  on pdf.js's 3 pages, its body positions unchecked (the goldens hold page
+  areas only); DD 1494's body splits across 14 pages since `164g.8` and is
+  compared field by field -- both in `test/xfa-master-oracle.test.ts`. The three-page DD
+  1610 and DD 2952 are still not vendored.
+  **Note, measured:** 12 of 13 mutations redden, TWO only after their cases were
+  rebuilt. Matching page areas by POSITION among `<pageArea>` elements stayed
+  green until a case put an unreadable page area BEFORE a readable one. And
+  binding by implicit name stayed green because the plan's dataset sat under
+  `<form1>`, a path no master field has -- a master page is walked from an EMPTY
+  data path, so `stamp` binds by `stamp[0]`; the datum moved there. The 13th,
+  laying a page area out per call instead of once, is a COST rule and reddens
+  nothing. The DD 1391 rect is what holds `widgetBox` on the master path.
   **Invariant:** the `save="1"` `<items>` list is the EXPORT half and `/Opt` is
   written through `choiceopt.ts`, the one owner of that grammar. **Note the
   fixture for it must put the DISPLAY list first**: with `save="1"` on the first
@@ -10875,9 +10965,11 @@ Source (`src/`):
   the widget is that button rather than the edit region it sits in. Every one
   of Adobe's 54 button rects across BOTH vendored forms is exactly 8x8 for
   `size="2.8222mm"`, where the reduced field box is commonly 12x12 — so a
-  converted checkbox was drawn half again too large. An ABSENT size leaves the
-  edit region standing rather than inventing a default, which is the same
-  refusal `px`/`pc`/`em` get; a size larger than its region CLAMPS to it,
+  converted checkbox was drawn half again too large. An ABSENT size is XFA
+  3.3's stated default, 10pt ("The default is 10pt", checkButton reference).
+  `17vo` read it as "leave the edit region", which no f1040 or fw9 button could
+  contradict; `164g.3`'s USCIS oracle has 98 buttons stating no size, and Adobe
+  drew every one 10x10. A size larger than its region CLAMPS to it,
   because a button that grew past the field would overlap whatever sits beside
   it.
   **Invariant (`17vo`), and the HORIZONTAL half is MEASURED rather than
@@ -10978,10 +11070,12 @@ Source (`src/`):
   **Invariant:** `xfaflow.ts` takes the measurer as a CALLBACK
   (`layoutPage(root, measure?, warnings?)`) and stays a pure leaf; without one,
   every leaf that needs it refuses exactly as `164g.1` did. `min*`/`max*` are
-  the engine's, a floor and ceiling in every parent layout (p. 276), and a
+  the engine's, a floor and ceiling in every parent layout (p. 276) -- except a
+  CONTAINER's `min*` in a flowed parent, which `bkdi` found Adobe does not
+  apply -- and a
   `min > max` is swapped and reported in `XfaConvertReport.warnings` (p. 277).
-  That is where we and pdf.js part: pdf.js applies `min*` only in a positioned
-  parent, so OPM 1644's `Q1` is 16.56pt here and 14.05pt there, and the oracle
+  For a LEAF that is where we and pdf.js part (for a container in a flow we now
+  agree): pdf.js applies `min*` only in a positioned parent, so OPM 1644's `Q1` is 16.56pt here and 14.05pt there, and the oracle
   asserts that exact difference.
   **Invariant (p. 329), and `164g.1` read it backwards:** a stated column width
   IS a cell's box -- "the visible representation of the object may extend beyond
@@ -11002,12 +11096,35 @@ Source (`src/`):
   rooted at the `contentArea`), and DRAWS are in it because they take up space
   in a flow. `boxFor`/`accumulateOrigin` are gone; `editRegion` is what is left
   of them in `xfageom.ts`.
+  **Invariant (`164g.4`):** `layoutPage` also reports every node it placed as
+  a `PlacedNode` -- draws, unnamed fields and containers included -- in
+  DOCUMENT ORDER, a container BEFORE its children, which is p. 38's paint
+  order and the only reason chrome needs no sort. `invisible` is inherited
+  from any ancestor (p. 630); a HIDDEN node records nothing. A NAMED field's
+  refusal is NOT a `PlacedNode`: it is already a field report, and a second
+  record would report it twice. Measured: emitting a container after its
+  children reddens 2 in `test/xfaflow-placed.test.ts`.
   **Invariant:** every rule is transcribed from the XFA Specification 3.3
   (not vendored; SHA-256 and pages in the design doc and in the source), and a
-  shape it leaves open REFUSES: a non-left `hAlign` in a flow, an `lr-tb` wrap
-  after a line of mixed heights, a `-1` column no single-column cell sizes, a
-  row stating its own size or margin. Text-sized items are measured since
-  `164g.7`; overflow refuses to `164g.3`.
+  shape it leaves open REFUSES: a non-left `hAlign` in a flow, a `-1` column
+  no single-column cell sizes, a row stating its own size or margin.
+  Text-sized items are measured since `164g.7`; overflow refuses to `164g.3`.
+  **Invariant (`bkdi`):** an `lr-tb` wrap starts the next line below the
+  TALLEST item on the line. p. 281's "immediately below it" leaves open below
+  what; Adobe's rects for DoD DD 1155 settle it, where the first, the last and
+  the shortest item each miss. A container is as tall as its lines.
+  **Invariant (`bkdi`):** a CONTAINER whose parent's layout is `tb` or `lr-tb`
+  does not apply `minW`/`minH`; `max*` still bounds it, and leaves, `position`
+  parents and table rows/cells keep the floor. DD 1155's `thirty` (an `lr-tb`
+  in an `lr-tb`, `minH` 8.89mm around 8.128mm) is the evidence, the only
+  container in six hybrids whose minimum binds. `measure` is memoized per node,
+  so the engine records each node's parent layout once (`index`), and
+  `measureExtent` takes the parent's layout as an argument -- `xfapage.ts`
+  passes `'tb'`, or pagination and layout disagree about a root child's height.
+  **Note, measured:** all 7 mutations redden. Wrapping below the last or the
+  first item reddens only DD 1155 among the oracles (DD 1391 cannot tell them
+  from the tallest), and dropping the `tb` arm or `xfapage.ts`'s `'tb'` is held
+  by unit cases alone -- no vendored container's minimum binds under a `tb`.
   **Invariant (`164g.2`):** a repeating subform is INSTANTIATED in
   `xfatemplate.ts`'s walk, never in the layout engine. The walk owns names,
   data paths and layout nodes, so instance k is walked with the next occurrence
@@ -11020,8 +11137,9 @@ Source (`src/`):
   leaf-value map cannot see them.
   **Invariant:** a shape the rule cannot answer is walked ONCE and refused by
   name: a repeating subform bound by `ref`/`match="none"`, an unnamed one in a
-  non-empty merge, N > 1 in a `position` parent (overlap), a repeating PAGE
-  subform (164g.3), an unreadable `occur` value, `max < min`. `N = 0` makes
+  non-empty merge, N > 1 in a `position` parent (overlap), an unreadable
+  `occur` value, `max < min`. A repeating PAGE subform is instantiated since
+  `164g.3`, one page subform per data group, each paginated on its own. `N = 0` makes
   no instance and consumes no index.
   **Note, a spec conflict recorded:** p. 339 says a missing `<occur>` attribute
   "defaults to 1"; p. 263/341 say `max` copies `min` and p. 340 `initial`
@@ -11059,17 +11177,176 @@ Source (`src/`):
   page flow by NOTHING rather than by the bottom of what placed (`fromChild`),
   which reddens only `bounds a broken flow by the items that placed`.
 ```
-  **Note fw9 is an ORACLE TOO, for the geometry it refuses to place.** We
-  decline that form (its `pageArea` count cannot be matched), so no test
-  compares our rects there — but its `/AcroForm` still holds Adobe's, and they
-  are what settled `17vo`'s horizontal rule and independently confirmed the 8x8
-  size. A form in the `dataOnly` path is still evidence about the arithmetic.
+  **Note fw9, I-130 and I-765 are oracles too (`164g.3`).** Each declares ONE
+  `<pageArea>` for 6, 12 and 7 pages and was refused until pages became an
+  output of layout; now all 23, 438 and 154 body fields land on Adobe's page and
+  rect (`test/xfa-real.test.ts`). fw9's `/AcroForm` had already settled
+  `17vo`'s horizontal rule and confirmed the 8x8 size before it could be placed.
   **Its ceiling, and PROVENANCE states it:** ONE producer, so this is evidence
   for the forms it covers and NOT conformance — no second XFA implementation
   arbitrates our output. Positioned layout only. NO residual geometry rule
   remains.
   `px`/`pc`, non-`topLeft` anchors and `<occur>` appear in neither fixture and
   stay builder-covered only.
+- **xfapage.ts** — XFA pagination (`164g.3`): which child of the root subform
+  lands in which content area of which page, under `orderedOccurrence` (XFA 3.3
+  p. 269-270, 288-300, 360-367), and `layoutPages`, which then lays each content
+  area out. `xfatemplate.ts` hands it `XfaBody` -- the root subform's node,
+  whose children are the page-level content, plus the `<pageSet>` model -- in
+  place of the `roots`/`pages`/`pageIndex` it used to assign by ordinal.
+  **Invariant: it decides MEMBERSHIP only.** Every position comes from
+  `xfaflow.ts`: each content area holding children becomes a `tb` root, which
+  stacks them and bounds nothing at its own level (`flowTb` skips the height
+  check for a `page` node), so a page and its layout cannot disagree.
+  **Invariant:** a pure leaf over `xfaflow.js` and `xfageom.js` that never
+  throws. A refused root child refuses EVERY child after it -- the root is a
+  `tb` flow, so where a later page subform lands depends on the one that
+  failed. The first draft of the design kept later children on their pages; it
+  was wrong by `xfaflow.ts`'s own rule one level down.
+  **Invariant, and the spec contradicts itself here:** the first child's
+  `breakBefore` chooses where layout STARTS (p. 296) and never opens a page of
+  its own. Example 9.22 (p. 362) shows a blank first page for a first child's
+  `startNew`; Adobe (I-130, I-765) and pdf.js (OPM 1644) both put page 1's
+  content on page 1. The root's own `breakBefore` outranks the first child's.
+  **Invariant (p. 295):** a child too tall for an EMPTY content area is placed
+  there past the boundary only when the NEXT region could not hold it either
+  (a snapshot of the cursor peeks at it) and nothing it draws lies past the
+  boundary (`measureExtent`'s `past`, from `inkBottom`, every descendant leaf's
+  bottom). Otherwise it needs splitting and is refused (`164g.11`-`164g.13`). fw9's odd
+  page subforms are 0.003pt taller than their content area, and Adobe puts each
+  on its own page -- this rule.
+  **Invariant (`164g.8`):** a root child that does not fit the room left and is
+  SPLITTABLE -- a `tb` subform with no stated `h`, no `refusal`, `keep intact`
+  absent or `none` -- splits BETWEEN its children, the top into the CURRENT
+  region (p. 290: "putting the top of it into the current region"). It is
+  flattened into atoms (`open` = top margin, each child whole or flattened in
+  turn, `close` = bottom margin) grouped into units: an open travels with the
+  atom after it and a close with the one before, so no split falls inside a
+  margin (p. 291) and no fragment holds only margins. Each region gets
+  FRAGMENTS, shallow copies of the containers holding that region's children,
+  with a margin only where its atom landed; `xfaflow.ts` lays them out
+  unchanged. One that fits is placed whole and never flattened -- unless its
+  chain holds a `breakBefore` -- which is why no oracle before DD 1494 moved: no
+  other vendored form has a splittable root child.
+  **Invariant (`164g.8`, spec decision #3):** a `breakBefore` inside a split
+  chain is applied with `Paginator.apply`, the root children's rules, before its
+  unit is placed. An `<overflow>` is refused only when its container is about to
+  continue into a second region, where XFA would insert the leader or trailer
+  (164g.15). A `breakAfter` in a chain stays refused (164g.16), as do `keep
+  intact="pageArea"` and adhesion (164g.14).
+  **Invariant (`164g.8`, final review):** a chain 164g.8 CANNOT split -- a
+  `breakAfter`, `keep intact="pageArea"` or adhesion in it -- falls back to
+  164g.3's whole placement (`placeSplit` returns `unsplittable`, having placed
+  nothing), and is refused, naming the chain reason, only when it does not fit
+  an empty region either. Refusing at once lost a child that converted before,
+  and every root child after it; Designer writes keep-with-next routinely.
+  **Invariant (`164g.8`, final review):** a HIDDEN child in a chain gets height
+  0 and NO break and NO chain refusal, as at the root (p. 67). Applying its break
+  added a page, which costs a hybrid every field's geometry.
+  **Invariant (`164g.8`):** the p. 295 override has ONE owner, `emptyRegion`,
+  shared by a root child and a split's unit. A failure mid-split keeps what was
+  placed and refuses from the failing leaf on -- never the whole root child,
+  whose earlier fragments are already laid out.
+  **Note, a narrowing:** everything else is placed whole -- a positioned subform
+  (164g.11), an `lr-tb` or table (164g.12), a text field (164g.13). By the
+  specification each of those may split too, so where one does not fit the room
+  left we DEFER it where XFA might split it, which is 164g.3's existing
+  behaviour for every root child.
+  **Note on the oracle, and the spike got it WRONG:** DD 1494 (pdf.js 6.3.289)
+  carries `<overflow leader>` on every `Pn.front`, `breakBefore` on P2-P6's
+  `front` and P5/P6's `lineDiagramPg`, and 33 `<keep>`. The spike reported none,
+  because its scan matched only tags on one line and DD 1494 wraps its tags;
+  the converter refusing every field is what exposed it. **Measured:** all 11
+  mutations redden, but ignoring the inner breaks reddens ONLY the builder case
+  -- every DD 1494 break lands where a new page starts anyway -- so the break
+  rule is held by `test/xfapage.test.ts` alone. The 0.44pt by which we measure
+  `P1.front` short of pdf.js is slack below its last field.
+  **Invariant:** a break target is `#`+XML id or a bare name; anything else is a
+  SOM expression and is REFUSED rather than resolved, and a target naming
+  nothing is refused where p. 361 says "go to the next available": a field
+  placed perfectly on the wrong page looks right.
+  **Invariant:** ordered occurrence moves FORWARD. Reaching a page area at or
+  behind the current one takes a new page-set instance, and its `occur max`
+  can refuse it; past every limit the rest is discarded (p. 300) and reported.
+  A page area with no content area is pure boilerplate (p. 296-298): emitted
+  empty, its `max` -1 read as 1 with a warning. A page set with no content area
+  at all refuses everything, so a hand-built template now needs one.
+  **Note:** an `<overflow target>` acts only when content splits, which never
+  happens here, so it is read and ignored rather than refused.
+  **Invariant (`xfaconvert.ts`):** pages are an OUTPUT of layout. A hybrid's
+  laid-out page count must equal its PDF's, or the whole document's geometry is
+  refused, the reason naming both counts AND the first pagination refusal. A
+  DYNAMIC document (`/NeedsRendering`, no AcroForm fields) has only Designer's
+  placeholder: its pages are removed and the laid-out ones created, each sized
+  from its `<medium>` (`report.pagesCreated`) -- only when something is PLACED,
+  since this is one-way, and a page whose area states no readable medium
+  refuses the whole document rather than shifting every later page.
+  **Note, measured:** all 18 mutations aimed at this issue redden. Two are held by hand-built cases ALONE, as the plan predicted: the first child's break exemption and `startNew`, since no vendored first page subform carries a break and every vendored page subform fills its page anyway. The converter's nothing-placed guard reddened nothing until `test/xfaconvert-pages.test.ts` grew a case whose fields convert BARE: its first fixture held only refused `<signature>` fields, which return before the guard is asked. Bounding the page root again reddens fw9 AND I-765, whose page subforms also run fractionally past their content areas.
+- **xfaborder.ts**, **xfachrome.ts**, **xfapaint.ts** — XFA chrome as page
+  content (`164g.4`): a dynamic form's draws, borders, fills and captions on
+  the pages `ConvertXfaToAcroForm` creates. `xfaborder.ts` (pure) reads
+  `<border>`/`<edge>`/`<corner>`/`<fill>` and a draw's `<line>`/`<rectangle>`/
+  `<arc>` into a model, and maps a widget's border to `/MK` + `/BS`
+  (`widgetStyleOf`); `xfachrome.ts` (pure) turns `xfaflow.ts`'s `PlacedNode`s
+  into paint operations in the XFA frame (y down); `xfapaint.ts` is the only
+  one holding a `Document` and writes them as content. The split is
+  `svgdraw.ts`/`svgembed.ts`'s.
+  **Invariant: chrome is painted ONLY on pages the converter CREATES.** A
+  hybrid's pages carry Designer's rendering already and painting again draws
+  every label twice, so `buildXfaPlan` plans chrome only when it has
+  `newPages`, and the converter paints only in the branch that REPLACED the
+  placeholder. A dynamic document whose placeholder is kept gets none.
+  `test/xfa-chrome-fence.test.ts` hashes each vendored hybrid's page content
+  before and after conversion -- a FENCE, not a golden.
+  **Note, measured, and the obvious fixture cannot see the kept-placeholder
+  half:** a placeholder kept because NOTHING converted (a lone refused
+  `<signature>`) returns before the converter decides about pages at all, so
+  painting in the kept branch stayed GREEN against it. The case that holds it
+  converts a field BARE (a `px` width), which reaches that branch.
+  **Invariant: a field paints its CAPTION and never its VALUE.** The value is
+  the widget's appearance, and a password must not reach page content -- the
+  rule `formfield.ts` records for flattening. Pinned by a `SECRET` datum in
+  `test/xfaconvert-chrome.test.ts`.
+  **Invariant: paint order is p. 38's** -- per node fill, edges and corners,
+  draw geometry, then text; nodes in document order, which `PlacedNode`
+  already is; the widget on top as an annotation. **Note, measured:** putting
+  a draw's text before its own fill stayed GREEN until
+  `test/xfachrome-text.test.ts` gave a draw a filled border -- no text case
+  had one.
+  **Invariant:** text is drawn in the face that MEASURED it -- the
+  Standard-14 face for the closed Arial/Times New Roman/Courier New table
+  (advances equal to the Liberation metrics that measured them, so nothing is
+  embedded), otherwise the measured program through `AddFont` -- so ink and
+  layout box cannot disagree. A leaf layout refused, or a face nothing
+  resolves, is reported once (`what: 'chrome'`) and painted not at all.
+  **Invariant:** each page area's master chrome is ONE Form XObject, built
+  for THAT area's page height and placed on every page using it; the y flip
+  (`pdfY = pageHeight - y`) happens in `chromeContent` and nowhere else.
+  Measured: flipping against a fixed 792 reddens 4 in `test/xfapaint.test.ts`.
+  **Invariant:** a field's caption box is `xfageom.ts`'s `fieldRegions`, the
+  complement of the edit region within the CONTENT region (p. 50) -- one
+  owner, so the caption and the widget cannot overlap. A caption with
+  `presence="invisible"` still narrows the widget and paints nothing.
+  **Invariant (`widgetStyleOf`), anchored on Adobe:** an edge below 1pt is
+  written `/W 1` (IRS f1040's 0.1pt `f2_39` and DD 1155's 0.5pt Reset button
+  both got 1); above 1pt it is written as stated, UNANCHORED. `lowered` and
+  `raised` become Inset and Beveled (32000-1 12.5.4) -- no visible Adobe
+  instance shows either. Etched and embossed are drawn solid and reported;
+  a bottom-only border is `/S /U`. A push button's caption becomes its
+  `/MK /CA`: buttons were created with no label at all until the oracle below
+  found it.
+  **Note, a stated choice:** dash and dot LENGTHS are ours, scaled by
+  thickness -- p. 688 names the strokes and gives none. The `hand` default is
+  `even` (on the vector), following p. 630 and pdf.js over p. 38's prose.
+  **Note on the oracle:** `chrome-goldens.json` in `test/fixtures/xfa-dynamic/`
+  is pdf.js 6.3.289's rendering of OPM 1644, DD 2875 and DD 1494; PROVENANCE
+  records every residual miss -- above all a rich-text span holding two or more
+  spaces, which layout refuses to measure. It compares membership, not pixels,
+  and pdf.js is evidence rather than Adobe conformance.
+  **Note, measured:** all 15 planned mutations redden, two (paint order and
+  the kept-placeholder branch) only after the cases above were added. Painting
+  an invisible node reddens `test/xfachrome-border.test.ts` alone;
+  `xfaflow-placed` checks the flag, not the paint.
 - **viewerprefs.ts** — the catalog `/ViewerPreferences` dictionary, 32000-1
   Table 150 in full (`72nc.3`): how a producer says a document should OPEN and
   PRINT. A leaf importing `Document` as a TYPE only, `docaction.ts`'s
@@ -12411,8 +12688,8 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/opm/` | `PROVENANCE.md` | Two OPM forms `Open` refused (`lj8t`), for two different reasons. `opm-sf50.pdf` is **Acrobat PDFWriter 3.02**, with a sound file and `/Title (pages))` in its `/Info`. It now opens on the lenient last rung and reports object 1 as repaired. `opm-sf1153.pdf` is **LiveCycle Designer ES 8.2**: AESV2, `/EncryptMetadata false`, and a plaintext XMP under its own Identity `/Crypt` filter, which we used to decrypt with `/StmF`. Neither shape is one our builders write. US federal works (`test/crypt-filter.test.ts`) |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
-| `fixtures/xfa-dynamic/` | `PROVENANCE.md` | OPM Form 1644, the one genuinely **dynamic** XFA form found among ~110 OPM and other federal forms (Designer 8.0, `/NeedsRendering`, no AcroForm; US federal work), plus **pdf.js 6.3.289**'s XFA layout of it rendered in headless Chrome (`npm run gen:xfa`, not run by `npm test`). Three variants: as published, data-driven `<occur>` rows, and a page subform repeated across page breaks. Pins pdf.js's SOM naming equal to ours; our engine places none of it yet, so its agreement check waits on `164g.2`/`.3`/`.7`. pdf.js is a reimplementation: evidence, not Adobe conformance (`test/xfa-dynamic-oracle.test.ts`) |
-| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
+| `fixtures/xfa-dynamic/` | `PROVENANCE.md` | OPM Form 1644, the one genuinely **dynamic** XFA form found among ~110 OPM and other federal forms (Designer 8.0, `/NeedsRendering`, no AcroForm; US federal work), plus **pdf.js 6.3.289**'s XFA layout of it rendered in headless Chrome (`npm run gen:xfa`, not run by `npm test`). Three variants: as published, data-driven `<occur>` rows, and a page subform repeated across page breaks. Pins pdf.js's SOM naming equal to ours; our engine places none of it yet, so its agreement check waits on `164g.2`/`.3`/`.7`. Since `d3mq`, DoD DD 2875 and DD 1494 too, whose master-page layouts are checked against pdf.js on 3 and 14 pages (`master-goldens.json`; since `bkdi` DD 2875's body converts on pdf.js's 3 pages, unchecked, and since `164g.8` DD 1494's body is compared too, 14 pages field by field). pdf.js is a reimplementation: evidence, not Adobe conformance (`test/xfa-dynamic-oracle.test.ts`, `test/xfa-master-oracle.test.ts`) |
+| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). Since `164g.3` fw9 and the USCIS I-130/I-765 paginate onto all of Adobe's pages and rects (one `<pageArea>` reused for 6, 12 and 7 pages), which also found the 10pt check-button default. A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. Since `d3mq`, DoD DD 1391 and DD 1155 (also Designer 6.5): the only FILLABLE master-page fields found in 92 federal forms, every one landing on Adobe's name and rect. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |

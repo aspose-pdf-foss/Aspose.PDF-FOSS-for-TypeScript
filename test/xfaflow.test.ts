@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutPage, type LayoutNode, type Placed } from '../src/xfaflow.js';
+import { layoutPage, measureExtent, type LayoutNode, type Placed } from '../src/xfaflow.js';
 import type { XfaRawGeom } from '../src/xfageom.js';
 
 /** A field leaf; its label doubles as its SOM name. */
@@ -203,8 +203,11 @@ describe('layoutPage: tb', () => {
   });
 
   it('raises a growable extent to minH, honours maxH="0" as none, and refuses content past maxH', () => {
+    // G's own parent is positioned (P), where minH is a floor; P flows in T.
     const grown = layoutPage(page([sub('T', 'tb', {}, [
-      sub('G', 'tb', {}, [fld('a', { w: '10pt', h: '30pt' })], { minMax: { minH: '50pt' } }),
+      sub('P', 'position', {}, [
+        sub('G', 'tb', {}, [fld('a', { w: '10pt', h: '30pt' })], { minMax: { minH: '50pt' } }),
+      ]),
       fld('b', S),
     ])]));
     expect(box(grown, 'b').y).toBe(50);
@@ -223,7 +226,7 @@ describe('layoutPage: tb', () => {
   it('refuses a child that would not fit a fixed-height container', () => {
     const m = layoutPage(page([sub('T', 'tb', { h: '25pt' }, [fld('a', S), fld('b', S), fld('c', S)])]));
     expect(box(m, 'b').y).toBe(10);
-    expect(why(m, 'c')).toMatch(/splitting \(164g\.3\)/);
+    expect(why(m, 'c')).toMatch(/splitting beyond a tb subform between its children \(164g\.11, 164g\.12, 164g\.13\)/);
   });
 
   it('refuses a flowed child that states a non-left hAlign, and a row outside a table', () => {
@@ -275,13 +278,21 @@ describe('layoutPage: lr-tb', () => {
     expect(box(m, 'b').y).toBe(0);
   });
 
-  // The spec's "immediately below it" does not say below what when the line's
-  // heights differ, so that wrap refuses rather than picks.
-  it('refuses a wrap after a line of mixed heights', () => {
-    const m = layoutPage(page([sub('L', 'lr-tb', { w: '35pt' }, [
-      fld('a', { w: '10pt', h: '10pt' }), fld('b', { w: '20pt', h: '20pt' }), fld('c', { w: '30pt', h: '10pt' }),
+  // bkdi: p. 281's "immediately below it" leaves open below WHAT once a line's
+  // heights differ. Adobe's rects (DD 1155) put the next line below the TALLEST
+  // item. The tallest here, b, is neither first nor last nor shortest, so each
+  // of those rivals fails this case.
+  it('wraps a line of mixed heights below its tallest item', () => {
+    const m = layoutPage(page([sub('T', 'tb', {}, [
+      sub('L', 'lr-tb', { w: '35pt' }, [
+        fld('a', { w: '10pt', h: '10pt' }), fld('b', { w: '10pt', h: '25pt' }),
+        fld('c', { w: '10pt', h: '15pt' }), fld('d', { w: '30pt', h: '10pt' }),
+      ]),
+      fld('e', S),
     ])]));
-    expect(why(m, 'c')).toMatch(/mixed heights/);
+    expect(box(m, 'd')).toEqual({ x: 0, y: 25, w: 30, h: 10 });
+    // The container is as tall as its lines: 25 + 10.
+    expect(box(m, 'e').y).toBe(35);
   });
 
   it('sizes a growable lr-tb as its line: summed widths, tallest height', () => {
@@ -293,30 +304,35 @@ describe('layoutPage: lr-tb', () => {
   });
 });
 
-describe('layoutPage: the page root', () => {
-  it('bounds a flowed page subform by the contentArea height', () => {
-    const fits = layoutPage(page([sub('P', 'tb', {}, [fld('a', S), fld('b', S)])],
-      { x: '36pt', y: '36pt', w: '540pt', h: '20pt' }));
-    expect(box(fits, 'b')).toEqual({ x: 36, y: 46, w: 10, h: 10 });
-    const over = layoutPage(page([sub('P', 'tb', {}, [fld('a', S), fld('b', S)])],
-      { w: '540pt', h: '15pt' }));
-    expect(why(over, 'a')).toMatch(/overflows its contentArea.*164g\.3/);
+// bkdi: Adobe does not apply a container's min* when its parent flows. DoD
+// DD 1155's `thirty` is an lr-tb subform in an lr-tb whose minH="8.89mm" wraps
+// 8.128mm of content; Adobe starts the next line at 8.128mm. pdf.js agrees.
+// Leaves and positioned parents keep 164g.7's floor.
+describe('layoutPage: min* on a container in a flow (bkdi)', () => {
+  const G = (minMax: { minW?: string; minH?: string }): LayoutNode =>
+    sub('G', 'tb', {}, [fld('a', { w: '10pt', h: '30pt' })], { minMax });
+
+  it('does not apply a container minH under a tb parent', () => {
+    const m = layoutPage(page([sub('T', 'tb', {}, [G({ minH: '50pt' }), fld('b', S)])]));
+    expect(box(m, 'b').y).toBe(30);
   });
 
-  // A subform whose flow broke part-way is bounded by what DID place: the
-  // break must not let a placed box past the contentArea.
-  it('bounds a broken flow by the items that placed', () => {
-    const items = () => [fld('a', S), fld('b', S), drw('d', { w: '10pt' }), fld('c', S)];
-    const fits = layoutPage(page([sub('P', 'tb', {}, items())], { w: '540pt', h: '20pt' }));
-    expect(box(fits, 'b').y).toBe(10);
-    expect(why(fits, 'c')).toMatch(/\(d: states no h/);
-    const over = layoutPage(page([sub('P', 'tb', {}, items())], { w: '540pt', h: '15pt' }));
-    expect(why(over, 'a')).toMatch(/overflows its contentArea/);
+  it('does not apply a container minH under an lr-tb parent', () => {
+    const m = layoutPage(page([sub('L', 'lr-tb', { w: '15pt' }, [G({ minH: '50pt' }), fld('b', S)])]));
+    expect(box(m, 'b')).toEqual({ x: 0, y: 30, w: 10, h: 10 });
   });
 
-  it('refuses a flowed page subform when the contentArea states no height', () => {
-    const m = layoutPage(page([sub('P', 'tb', {}, [fld('a', S)])], {}));
-    expect(why(m, 'a')).toMatch(/uses layout="tb" and its pageArea declares no contentArea height/);
+  it('does not apply a container minW under a flowed parent', () => {
+    const m = layoutPage(page([sub('L', 'lr-tb', {}, [G({ minW: '40pt' }), fld('b', S)])]));
+    expect(box(m, 'b').x).toBe(10);
+  });
+
+  it('still applies a container minH under a positioned parent', () => {
+    const m = layoutPage(page([sub('T', 'tb', {}, [
+      sub('P', 'position', {}, [G({ minH: '50pt' })]),
+      fld('b', S),
+    ])]));
+    expect(box(m, 'b').y).toBe(50);
   });
 });
 
@@ -326,6 +342,91 @@ const row = (label: string, cells: LayoutNode[], extra: Partial<LayoutNode> = {}
 const table = (cols: string | undefined, rows: LayoutNode[], geom: XfaRawGeom = {}): LayoutNode =>
   sub('T', 'table', geom, rows, cols === undefined ? {} : { columnWidths: cols });
 const H = (h: number, extra: XfaRawGeom = {}): XfaRawGeom => ({ h: `${String(h)}pt`, ...extra });
+
+describe('layoutPage: the page root (164g.3)', () => {
+  const tbPage = (children: LayoutNode[], geom: XfaRawGeom): LayoutNode =>
+    ({ kind: 'page', label: 'contentArea', layout: 'tb', geom, children });
+
+  // Pagination (xfapage.ts) decided which children share this content area, so
+  // the root stacks what it was handed and bounds nothing at its own level --
+  // that is what lets fw9's 0.003pt-too-tall page subform land (XFA 3.3 p. 295).
+  it('stacks a tb page root\'s children without bounding them', () => {
+    const m = layoutPage(tbPage([
+      sub('P', 'position', { w: '100pt', h: '15pt' }, [fld('a', S)]),
+      sub('Q', 'position', { w: '100pt', h: '15pt' }, [fld('b', S)]),
+    ], { x: '36pt', y: '36pt', w: '540pt', h: '20pt' }));
+    expect(box(m, 'a')).toEqual({ x: 36, y: 36, w: 10, h: 10 });
+    expect(box(m, 'b')).toEqual({ x: 36, y: 51, w: 10, h: 10 });
+  });
+
+  // XFA 3.3 p. 279: a flowed child's x and y are ignored.
+  it('ignores a page child\'s own x and y', () => {
+    const m = layoutPage(tbPage([sub('P', 'position', { x: '50pt', y: '50pt', w: '10pt', h: '10pt' }, [fld('a', S)])],
+      { w: '540pt', h: '720pt' }));
+    expect(box(m, 'a')).toEqual({ x: 0, y: 0, w: 10, h: 10 });
+  });
+
+  it('still refuses a flowed box past the contentArea bottom, naming splitting', () => {
+    const m = layoutPage(tbPage([sub('P', 'tb', {}, [fld('a', S), fld('b', S)])], { w: '540pt', h: '15pt' }));
+    expect(box(m, 'a').y).toBe(0);
+    expect(why(m, 'b')).toMatch(/overflows its contentArea, which needs splitting beyond a tb subform between its children \(164g\.11, 164g\.12, 164g\.13\)/);
+  });
+
+  // A positioned root (the shape every older case here builds) holding a flow
+  // whose content area states no height: the leaves say why.
+  it('refuses a flow\'s leaves when the contentArea states no height', () => {
+    const m = layoutPage(page([sub('P', 'tb', {}, [fld('a', S)])], {}));
+    expect(why(m, 'a')).toMatch(/sits under layout="tb" and its pageArea declares no contentArea height/);
+  });
+});
+
+describe('measureExtent (164g.3)', () => {
+  it('answers a stated height, with nothing past the limit', () => {
+    expect(measureExtent(sub('P', 'position', { w: '100pt', h: '50pt' }, [fld('a', { y: '10pt', ...S })]), 40))
+      .toEqual({ h: 50, past: false });
+  });
+
+  // fw9's shape: a page subform taller than its content area whose contents all
+  // end inside it. Only a descendant box below the limit is "past". Q states a
+  // height (30pt) taller than its ink (25pt): reading a container's extent
+  // instead of recursing into it would call 50 "past" a 45pt limit.
+  it('reports past only when a descendant box ends below the limit', () => {
+    const p = sub('P', 'position', { w: '100pt', h: '50pt' }, [
+      sub('Q', 'position', { y: '20pt', w: '50pt', h: '30pt' }, [fld('a', { y: '15pt', ...S })]),
+    ]);
+    expect(measureExtent(p, 45)).toEqual({ h: 50, past: false });
+    expect(measureExtent(p, 44)).toEqual({ h: 50, past: true });
+  });
+
+  it('counts a draw as ink', () => {
+    const p = sub('P', 'position', { w: '100pt', h: '50pt' }, [drw('d', { y: '40pt', ...S })]);
+    expect(measureExtent(p, 45)).toEqual({ h: 50, past: true });
+  });
+
+  it('reads ink inside a table row at the row\'s expanded height', () => {
+    const t = table('20pt', [row('R', [fld('c', { h: '30pt' })])]);
+    expect(measureExtent(t, 30)).toEqual({ h: 30, past: false });
+    expect(measureExtent(t, 29)).toEqual({ h: 30, past: true });
+  });
+
+  it('measures a growable child from its content', () => {
+    expect(measureExtent(sub('T', 'tb', {}, [fld('a', S), fld('b', S)]), 100)).toEqual({ h: 20, past: false });
+  });
+
+  // bkdi: the parent's layout decides whether a container's min* applies, so a
+  // caller measuring a node out of its tree says what its parent is.
+  it('applies a container minH only when the parent does not flow', () => {
+    const g = sub('G', 'tb', {}, [fld('a', { w: '10pt', h: '30pt' })], { minMax: { minH: '50pt' } });
+    expect(measureExtent(g, 100)).toEqual({ h: 50, past: false });
+    expect(measureExtent(g, 100, undefined, [], 'position')).toEqual({ h: 50, past: false });
+    expect(measureExtent(g, 100, undefined, [], 'tb')).toEqual({ h: 30, past: false });
+  });
+
+  it('passes a refusal through', () => {
+    const r = measureExtent(sub('P', 'position', { w: '1pt', h: '1pt', rotate: '90' }, []), 100);
+    expect(r).toEqual({ reason: expect.stringMatching(/rotate="90" is not supported/) as unknown as string });
+  });
+});
 
 describe('layoutPage: tables', () => {
   // XFA 3.3 p. 329: rows stacked top to bottom, each cell expanded to its
@@ -482,7 +583,7 @@ describe('layoutPage: review fixes', () => {
       sub('T', 'tb', { y: '5pt' }, [fld('a', S), fld('b', S)]),
     ])], { w: '540pt', h: '20pt' }));
     expect(box(m, 'a').y).toBe(5);
-    expect(why(m, 'b')).toMatch(/overflows its contentArea.*164g\.3/);
+    expect(why(m, 'b')).toMatch(/overflows its contentArea, which needs splitting beyond a tb subform between its children \(164g\.11, 164g\.12, 164g\.13\)/);
   });
 
   it('refuses a flow under a positioned page subform when the contentArea states no height', () => {

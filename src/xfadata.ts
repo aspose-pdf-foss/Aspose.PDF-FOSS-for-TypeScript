@@ -47,12 +47,53 @@ export function parseXfaDatasets(root: XmlNode): XfaValues {
   return out;
 }
 
+/** Element local name to the FIRST leaf value of that name (yy09). */
+export type XfaGlobals = ReadonlyMap<string, string | string[]>;
+
+/**
+ * The index `bind match="global"` searches (yy09): every data VALUE by its
+ * element name, the FIRST in document order winning.
+ *
+ * XFA 3.3 p. 247: the search "treats the Data DOM as though it was completely
+ * flattened", and of several matches picks "the one with the same index as the
+ * current record number" -- record 0 here, since record mode is not modelled.
+ * A data GROUP is not a value and an ATTRIBUTE never binds ("Attributes of
+ * global data elements can not bind to fields"); `collect`'s leaf rule gives
+ * both for free, and walking the SAME tree in the SAME order is what keeps the
+ * two maps from disagreeing about which datum is first.
+ */
+export function parseXfaGlobals(root: XmlNode): XfaGlobals {
+  const out = new Map<string, string | string[]>();
+  const walk = (el: XmlNode): void => {
+    for (const c of el.children) {
+      if (c.children.some((g) => g.name !== 'value')) walk(c);
+      else if (!out.has(c.name)) out.set(c.name, leafValue(c));
+    }
+  };
+  const data = root.name === 'data' ? root : root.children.find((c) => c.name === 'data');
+  if (data) walk(data);
+  return out;
+}
+
 /** Supply `[0]` for any path step that states no occurrence index, so an
  *  explicit `<bind ref>` written in SOM's abbreviated form still resolves. */
 function indexed(path: string): string {
   return path.split('.')
     .map((p) => (p.endsWith(']') ? p : `${p}[0]`))
     .join('.');
+}
+
+/**
+ * `$record`'s data path: the first element child of `<xfa:data>`, read off the
+ * first key. That is sound because `collect` walks depth first in document
+ * order and every element yields at least one key -- a leaf records itself
+ * (an empty one as `''`), a container recurses until it reaches one -- so the
+ * first key always begins with the first element. `undefined` for no data.
+ */
+function recordOf(values: XfaValues): string | undefined {
+  const first = values.keys().next();
+  // Cut at the first ']', never the first '.': an XML name may contain a dot.
+  return first.done ? undefined : first.value.slice(0, first.value.indexOf(']') + 1);
 }
 
 /**
@@ -65,18 +106,38 @@ function indexed(path: string): string {
  * where this field's data lives, and it is not there.
  */
 export function bindFieldValue(
-  field: XfaField, values: XfaValues,
+  field: XfaField, values: XfaValues, globals?: XfaGlobals,
 ): string | string[] | undefined {
   if (field.bindMatch === 'none') return undefined;
   if (field.bindRef !== undefined && field.bindRef !== '') {
-    // A leading '$record.' / '$data.' / '$.' names the data root, which is what
-    // the paths in `values` are already relative to.
-    const ref = field.bindRef.replace(/^\$(?:record|data)?\./, '');
-    return values.get(indexed(ref));
+    // '$data.' and '$.' name the data root, which is what the paths in
+    // `values` are already relative to. '$record.' does NOT (c3jq): with
+    // record processing off it is the OUTER data element -- XFA 3.3 p. 91-92,
+    // "$record would be set to $data.Receipt" -- so it resolves under that
+    // element. Record mode, where $record advances per record, is not modelled.
+    const root = /^\$(?:data)?\./.exec(field.bindRef);
+    if (root) return values.get(indexed(field.bindRef.slice(root[0].length)));
+    if (field.bindRef.startsWith('$record.')) {
+      const record = recordOf(values);
+      if (record === undefined) return undefined;
+      return values.get(`${record}.${indexed(field.bindRef.slice('$record.'.length))}`);
+    }
+    return values.get(indexed(field.bindRef));
   }
   // The DATA path, never the SOM name: an unnamed container is transparent to
   // data binding and has no element in the datasets packet (fdq3).
-  return values.get(field.dataPath);
+  const own = values.get(field.dataPath);
+  if (own !== undefined || field.bindMatch !== 'global' || globals === undefined) return own;
+  // yy09, XFA 3.3 p. 246-247: a global field that does not match directly takes
+  // a global datum of its name, shared by every global field so named.
+  // STATED DIVERGENCE: p. 247 says that "in non-record mode ... marking a field
+  // as global has no effect", and no vendored form enables record mode (no
+  // config <record>, p. 531). Read literally, all 175 of the corpus's global
+  // fields would bind nothing -- yet Designer stores each such datum once,
+  // under the outermost data group, and pdf.js 6.3.289
+  // (_findDataByNameToConsume) applies the flattened search regardless. We do
+  // the same. Record mode itself is not modelled.
+  return field.dataName === undefined ? undefined : globals.get(field.dataName);
 }
 
 /** How many data children of each name sit at each data path (164g.2). */

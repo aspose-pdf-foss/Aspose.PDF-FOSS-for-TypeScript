@@ -87,10 +87,56 @@ describe('bindFieldValue', () => {
     )).toBe('Other');
   });
 
-  it('strips a $record. / $data. prefix from an explicit ref', () => {
+  // c3jq: XFA 3.3 p. 91-92 -- with record processing off, $record is the OUTER
+  // data element ("$record would be set to $data.Receipt"), while $data is the
+  // data root. So $record.alt is $data.form1.alt.
+  it('reads $record. as the outer data element', () => {
+    expect(bindFieldValue(
+      field('form1[0].Page1[0].f1_01[0]', { bindRef: '$record.alt' }), values,
+    )).toBe('Other');
+    expect(bindFieldValue(
+      field('form1[0].Page1[0].f1_01[0]', { bindRef: '$record.Page1.f1_01' }), values,
+    )).toBe('Bob');
+  });
+
+  // The reading c3jq corrected: $record is NOT the data root, so naming the
+  // outer element again under it names nothing.
+  it('does not read $record. as the data root', () => {
     expect(bindFieldValue(
       field('form1[0].Page1[0].f1_01[0]', { bindRef: '$record.form1.alt' }), values,
-    )).toBe('Other');
+    )).toBeUndefined();
+  });
+
+  it('reads $data. and $. as the data root', () => {
+    for (const bindRef of ['$data.form1.alt', '$.form1.alt'])
+      expect(bindFieldValue(field('form1[0].Page1[0].f1_01[0]', { bindRef }), values))
+        .toBe('Other');
+  });
+
+  // The outer element is whatever the data's first element is -- the template's
+  // root subform name is not consulted (f1040's data root is topmostSubform).
+  it('takes $record from the data, whatever its outer element is called', () => {
+    const v = ds(`<topmostSubform><x>1</x></topmostSubform>`);
+    expect(bindFieldValue(field('form1[0].f[0]', { bindRef: '$record.x' }), v)).toBe('1');
+  });
+
+  // The first element child of <xfa:data>, even when it is itself a leaf and a
+  // later sibling is a container: the record is chosen by position, not shape.
+  it('takes the FIRST data element as $record', () => {
+    const v = ds(`<a>leaf</a><b><x>2</x></b>`);
+    expect(bindFieldValue(field('f[0]', { bindRef: '$record.x' }), v)).toBeUndefined();
+    expect(bindFieldValue(field('f[0]', { bindRef: '$data.b.x' }), v)).toBe('2');
+  });
+
+  // An XML name may hold a dot, so the record is cut at its first ']'.
+  it('takes a dotted outer element whole as $record', () => {
+    const v = ds(`<my.form><x>3</x></my.form>`);
+    expect(v.get('my.form[0].x[0]')).toBe('3');
+    expect(bindFieldValue(field('f[0]', { bindRef: '$record.x' }), v)).toBe('3');
+  });
+
+  it('binds nothing through $record when the data is empty', () => {
+    expect(bindFieldValue(field('f[0]', { bindRef: '$record.x' }), ds(''))).toBeUndefined();
   });
 
   // match="none" says this field is deliberately unbound. Binding it anyway

@@ -98,6 +98,12 @@ function edit(doc: Document, name: string, f: (s: string) => string): void {
   doc.replaceObject(p.num, encodeStream(new Uint8Array(Buffer.from(f(p.text), 'utf8')), 'FlateDecode'));
 }
 
+/** Replace the ONE match of `re` in a packet, or throw (yy09 uses it on the
+ *  hybrids' datasets, which are blank as vendored). */
+export function editPacket(doc: Document, name: string, re: RegExp, f: (m: string) => string): void {
+  edit(doc, name, (s) => once(s, re, f));
+}
+
 /**
  * The vendored form, as published or with ONE documented edit.
  *
@@ -130,4 +136,47 @@ export function deriveVariant(bytes: Uint8Array, v: DynamicVariant): Document {
           `<FieldQ1FinInst>Bank ${String(k)}</FieldQ1FinInst>`))).join('')));
   }
   return doc;
+}
+
+/** d3mq: dynamic DoD forms with FILLABLE master-page fields, laid out by pdf.js.
+ *  Their master boxes are the oracle; see PROVENANCE. */
+export const MASTER_FILES = ['dod-dd2875.pdf', 'dod-dd1494.pdf'] as const;
+export type MasterFile = (typeof MASTER_FILES)[number];
+
+export interface MasterGoldens {
+  meta: Record<string, string>;
+  /** Per file: pages pdf.js laid out, and every node pdf.js named under a page
+   *  area (`som` starts `#pageArea[<name>].`). `body` is every OTHER node
+   *  pdf.js named, kept for DD 1494 only: the oracle for splitting (164g.8). */
+  files: Record<MasterFile, { pages: number; sha256: string; nodes: GoldenNode[]; body?: GoldenNode[] }>;
+}
+
+export function loadMasterPdf(file: MasterFile): Uint8Array {
+  return new Uint8Array(readFileSync(fixture(file)));
+}
+
+export function masterGoldens(): MasterGoldens {
+  return JSON.parse(readFileSync(fixture('master-goldens.json'), 'utf8')) as MasterGoldens;
+}
+
+/** The pdf.js chrome oracle (164g.4): border boxes and draw/caption text per
+ *  page, as pdf.js 6.3.289 renders them into headless Chrome. Coordinates are
+ *  CSS px at scale 1, which is points, from the page's top-left. */
+export interface GoldenBorder {
+  page: number; x: number; y: number; w: number; h: number;
+  widths: [number, number, number, number];
+  styles: [string, string, string, string];
+  colors: [string, string, string, string];
+  radius: string;
+}
+export interface GoldenText { page: number; kind: 'draw' | 'caption'; x: number; y: number; w: number; h: number; text: string }
+export interface ChromeGoldens {
+  meta: Record<string, string>;
+  files: Record<string, { pages: number; sha256: string; borders: GoldenBorder[]; texts: GoldenText[] }>;
+}
+
+export const CHROME_FILES = ['opm1644.pdf', 'dod-dd2875.pdf', 'dod-dd1494.pdf'] as const;
+
+export function chromeGoldens(): ChromeGoldens {
+  return JSON.parse(readFileSync(fixture('chrome-goldens.json'), 'utf8')) as ChromeGoldens;
 }

@@ -12,7 +12,7 @@ const NAME = 'form1[0].Page1[0].st[0]';
 
 /** One positioned choice list; `items` is the template's item list. */
 const choiceTemplate = (items: string): string => `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="st" x="1in" y="2in" w="3in" h="20pt"><ui><choiceList/></ui>
       <items>${items}</items></field>
@@ -86,7 +86,7 @@ describe('ConvertXfaToAcroForm: a radio group under an unnamed subform binds its
   it('selects the datum by the data path, not the SOM name', () => {
     const p = buildXfaPlan(Document.Open(buildXfaPdf({
       template: `<template><subform name="form1" layout="tb">
-        <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+        <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
         <subform layout="position"><exclGroup name="colour">
           <field name="r" x="1in" y="1in" w="20pt" h="20pt"><ui><checkButton/></ui>
             <items><text>Red</text></items></field>

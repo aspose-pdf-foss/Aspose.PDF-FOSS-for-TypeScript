@@ -13,9 +13,11 @@
  * elements.
  */
 import type { XmlNode } from './xml.js';
-import { leafText } from './xfarich.js';
-import type { XfaMargin, XfaMedium, XfaRawGeom } from './xfageom.js';
-import type { LayoutKind, LayoutNode, XfaMinMax } from './xfaflow.js';
+import { captionText, leafText } from './xfarich.js';
+import { parseBorder, parseGeometry, type NodeChrome, type XfaBorder } from './xfaborder.js';
+import type { XfaCaption, XfaMargin, XfaMedium, XfaRawGeom } from './xfageom.js';
+import type { LayoutKind, LayoutNode, XfaBreak, XfaKeep, XfaMinMax } from './xfaflow.js';
+import type { XfaBody, XfaContentArea, XfaPageAreaModel, XfaPageSet } from './xfapage.js';
 import type { XfaDataGroups } from './xfadata.js';
 
 export type XfaUiKind =
@@ -71,6 +73,12 @@ export interface XfaField {
   bindRef?: string;
   /** `<bind match="...">`. `'none'` means deliberately unbound. */
   bindMatch?: string;
+  /** The field's own `name` attribute: what `bind match="global"` searches the
+   *  data for (yy09). Never re-split from a path -- an XML name may hold a dot. */
+  dataName?: string;
+  /** Its `<exclGroup>` states `<bind match="global">` (yy09) -- reported, not
+   *  modelled: p. 176 and p. 348 disagree on whether that is allowed. */
+  groupGlobal?: true;
   /** `<caption>`'s `reserve`, `placement` and `presence`, verbatim.
    *
    *  A field's WIDGET covers the field box MINUS this reserve: the caption is
@@ -95,6 +103,10 @@ export interface XfaField {
    *  one of Adobe's 54 button rects across both vendored forms is exactly 8x8
    *  for `size="2.8222mm"`, where the field box is commonly 12x12. */
   buttonSize?: string;
+  /** A push button's caption as plain text: its FACE, written to `/MK /CA`
+   *  (164g.4) and never painted as chrome. Absent when the caption is absent,
+   *  empty, or hidden, inactive or invisible. */
+  buttonCaption?: string;
   /** The FIELD's own `<para>` alignment, verbatim -- never the one nested in
    *  `<caption>`, which f1040's `c1_1` also carries and which is free to
    *  disagree. It places the button inside the edit region. */
@@ -102,32 +114,39 @@ export interface XfaField {
   /** Each container's layout between the page origin and this field, outermost
    *  first. Filled by the geometry pass. */
   layouts: string[];
-  /** 0-based `<pageArea>` index. */
-  pageIndex?: number;
+  /** A MASTER-page field's page area and how an instance is named (d3mq):
+   *  instance n -- the n-th page instantiating page area `pageArea` -- is
+   *  `${base}[${n}].${rest}`, which is what LiveCycle writes into a hybrid's
+   *  /AcroForm (`form1[0].#pageSet[0].Page1[11].PDF417BarCode1[0]` on USCIS
+   *  I-130's twelfth page). Absent when pagination cannot identify the page
+   *  area: a second `<pageSet>`, an unreadable `<pageArea>`, or a page area
+   *  whose name repeats an earlier one's. */
+  master?: { pageArea: number; base: string; rest: string };
+  /** The WIDGET's border (164g.4): `<ui>/<*>/<border>`, or for a push button
+   *  the field's own `<border>`. Mapped to `/MK` + `/BS`, never painted. */
+  widgetBorder?: XfaBorder;
 }
 
 export interface XfaPageArea { name?: string; medium?: XfaMedium }
 
-/** One page's layout tree, rooted at its `contentArea`. */
-export interface XfaLayoutRoot { pageIndex: number; node: LayoutNode }
-
 export interface XfaTemplate {
   fields: XfaField[];
-  pages: XfaPageArea[];
-  /** One tree per page subform whose `pageArea` resolved, for `xfaflow.ts`. */
-  roots: XfaLayoutRoot[];
+  /** The root subform's layout node -- its children are the page-level content
+   *  -- and its `<pageSet>`. Pages are an OUTPUT of layout (`xfapage.ts`,
+   *  164g.3), so nothing here says which page a field is on. Absent only for a
+   *  template with no root subform. */
+  body?: XfaBody;
   /** Fields on a MASTER page (`<pageSet>` › `<pageArea>`), named as LiveCycle
    *  writes a page's first instance: `form1[0].#pageSet[0].Page1[0].x[0]`.
    *
    *  **Invariant (d3mq):** they are a list of their OWN, never in `fields`, so
    *  layout, measuring and data binding cannot see them. Adobe writes one
-   *  instance PER PAGE (`Page1[0..n]`) and placing those needs the page
-   *  identity 164g.3 supplies, so today they are only reported. */
+   *  instance PER PAGE (`Page1[0..n]`); placing those is d3mq part 2. */
   masterPageFields: XfaField[];
 }
 
 /** An `<exclGroup>` a radio member sits in, by both of its paths. */
-interface GroupPaths { som: string; data: string }
+interface GroupPaths { som: string; data: string; global?: true }
 
 /** The occurrence counters of one NAMED container. Every unnamed container
  *  below it SHARES them rather than opening its own (fdq3). */
@@ -203,6 +222,45 @@ function marginOf(el: XmlNode): XfaMargin | undefined {
   ) as XfaMargin : undefined;
 }
 
+/** A field's `<caption>` reserve, placement and presence, verbatim -- ONE
+ *  reader for `XfaField.caption` and the chrome's `fieldCaption` (164g.4). */
+function captionAttrs(el: XmlNode): XfaCaption | undefined {
+  const capEl = child(el, 'caption');
+  return capEl ? {
+    ...(capEl.attrs.get('reserve') !== undefined
+      ? { reserve: capEl.attrs.get('reserve') } : {}),
+    ...(capEl.attrs.get('placement') !== undefined
+      ? { placement: capEl.attrs.get('placement') } : {}),
+    ...(capEl.attrs.get('presence') !== undefined
+      ? { presence: capEl.attrs.get('presence') } : {}),
+  } : undefined;
+}
+
+/** The page-content half of a node's chrome (164g.4). A push button's field
+ *  border is its widget's, so it is left to `XfaField.widgetBorder`. */
+function chromeOf(el: XmlNode, kind: LayoutKind): NodeChrome | undefined {
+  const c: NodeChrome = {};
+  const isButton = kind === 'field' && child(el, 'ui')?.children[0]?.name === 'button';
+  const border = child(el, 'border');
+  if (border && !isButton) c.border = parseBorder(border);
+  if (kind === 'draw') {
+    const v = child(el, 'value');
+    const g = v ? parseGeometry(v) : undefined;
+    if (g) c.geometry = g;
+  }
+  if (kind === 'field') {
+    const cap = captionText(el);
+    if (cap) c.caption = cap;
+    const pr = child(el, 'caption')?.attrs.get('presence');
+    if (pr !== undefined) c.captionPresence = pr;
+    const fc = captionAttrs(el);
+    if (fc) c.fieldCaption = fc;
+    const fm = marginOf(el);
+    if (fm) c.fieldMargin = fm;
+  }
+  return Object.keys(c).length > 0 ? c : undefined;
+}
+
 function fieldOf(
   el: XmlNode, path: readonly string[], dpath: readonly string[], group: GroupPaths | undefined,
 ): XfaField | undefined {
@@ -226,16 +284,10 @@ function fieldOf(
   const bind = child(el, 'bind');
   const bindRef = bind?.attrs.get('ref');
   const bindMatch = bind?.attrs.get('match');
-  const capEl = child(el, 'caption');
-  const caption = capEl ? {
-    ...(capEl.attrs.get('reserve') !== undefined
-      ? { reserve: capEl.attrs.get('reserve') } : {}),
-    ...(capEl.attrs.get('placement') !== undefined
-      ? { placement: capEl.attrs.get('placement') } : {}),
-    ...(capEl.attrs.get('presence') !== undefined
-      ? { presence: capEl.attrs.get('presence') } : {}),
-  } : undefined;
+  const caption = captionAttrs(el);
+  const buttonCaption = uiChild?.name === 'button' ? buttonCaptionOf(el) : undefined;
   const margin = marginOf(el);
+  const wbEl = uiChild?.name === 'button' ? child(el, 'border') : uiChild ? child(uiChild, 'border') : undefined;
   const buttonSize = uiChild?.name === 'checkButton'
     ? uiChild.attrs.get('size') : undefined;
   // The FIELD's own <para>, by the same direct-child rule the margin follows:
@@ -267,12 +319,41 @@ function fieldOf(
     ...(ui === 'checkButton' ? { onState: items?.[0]?.export ?? '1' } : {}),
     ...(bindRef !== undefined ? { bindRef } : {}),
     ...(bindMatch !== undefined ? { bindMatch } : {}),
+    dataName: partial,
+    ...(group?.global ? { groupGlobal: true as const } : {}),
     ...(caption ? { caption } : {}),
     ...(margin ? { margin } : {}),
     ...(buttonSize !== undefined ? { buttonSize } : {}),
+    ...(buttonCaption !== undefined ? { buttonCaption } : {}),
     ...(para && Object.keys(para).length > 0 ? { para } : {}),
+    ...(wbEl ? { widgetBorder: parseBorder(wbEl) } : {}),
     layouts: [],
   };
+}
+
+/** A push button's caption text, read from the XML rather than from
+ *  `captionText`'s measured leaf: a face needs no measurement, so a span the
+ *  measurer refuses (an `xfa-spacerun`) must not cost the label. Whitespace
+ *  collapses to one space and the ends are trimmed, which is what a centred
+ *  face draws -- Adobe writes DD 1155's "Reset " with its space, and that space
+ *  only shifts the centring. A paragraph or a <br> is a space. */
+function buttonCaptionOf(field: XmlNode): string | undefined {
+  const cap = child(field, 'caption');
+  const value = cap ? child(cap, 'value') : undefined;
+  if (!cap || !value) return undefined;
+  const pr = cap.attrs.get('presence');
+  if (pr === 'hidden' || pr === 'inactive' || pr === 'invisible') return undefined;
+  const parts: string[] = [];
+  const walk = (n: XmlNode): void => {
+    const block = n.name === 'p' || n.name === 'br' || n.name === 'div';
+    if (block) parts.push(' ');
+    if (n.nodes.length > 0) for (const c of n.nodes) { if (typeof c === 'string') parts.push(c); else walk(c); }
+    else parts.push(n.text);
+    if (block) parts.push(' ');
+  };
+  walk(value);
+  const t = parts.join('').replace(/\s+/g, ' ').trim();
+  return t === '' ? undefined : t;
 }
 
 /** The geometry attributes a container or field states, absent keys omitted. */
@@ -321,6 +402,61 @@ function occurOf(el: XmlNode): Occur | { reason: string } {
   return { min, max, initial };
 }
 
+/** Why a `<pageSet>` or `<pageArea>`'s `<occur min>` cannot be honoured, or
+ *  undefined. A minimum forces BLANK pages to be appended when content runs out
+ *  (p. 298, 300-301), and that padding is not laid out -- so a min that could
+ *  demand it is refused rather than producing too few pages in silence. `floor`
+ *  is what any layout that places anything already meets: 1 for a page set,
+ *  0 for a page area. */
+function minRefusal(el: XmlNode, floor: number): string | undefined {
+  const v = child(el, 'occur')?.attrs.get('min');
+  if (v === undefined || Number(v.trim()) <= floor) return undefined;
+  return `${el.name} occur min="${v}" would demand blank pages, which are not laid out`;
+}
+
+/** A `<pageSet>` or `<pageArea>`'s `<occur max>`: -1 (the default, p. 300) or a
+ *  positive integer; anything else is unreadable. */
+function layoutMax(el: XmlNode): number | undefined {
+  const o = child(el, 'occur');
+  const v = o?.attrs.get('max');
+  if (v === undefined) return -1;
+  const t = v.trim();
+  if (t === '-1') return -1;
+  return /^\d+$/.test(t) && Number(t) > 0 ? Number(t) : undefined;
+}
+
+/** `<breakBefore>`/`<breakAfter>`, else the deprecated `<break>`'s half
+ *  (p. 632-636), or `undefined` when it asks for nothing: `auto` continues in
+ *  the current container (p. 635). `label` prefixes a refusal. */
+function breakOf(el: XmlNode, which: 'before' | 'after', label: string): XfaBreak | undefined {
+  const modern = child(el, which === 'before' ? 'breakBefore' : 'breakAfter');
+  const legacy = modern ? undefined : child(el, 'break');
+  if (!modern && !legacy) return undefined;
+  const tag = `<${(modern ?? legacy)!.name}>`;
+  const targetType = (modern ? modern.attrs.get('targetType') : legacy!.attrs.get(which)) ?? 'auto';
+  const target = modern ? modern.attrs.get('target')
+    : legacy!.attrs.get(which === 'before' ? 'beforeTarget' : 'afterTarget');
+  const startNew = modern ? modern.attrs.get('startNew') === '1'
+    : which === 'before' && legacy!.attrs.get('startNew') === '1';
+  const shown = modern ? `${tag} targetType="${targetType}"` : `${tag} ${which}="${targetType}"`;
+  let refusal: string | undefined;
+  const script = modern ? child(modern, 'script') : undefined;
+  if (script && script.text.trim() !== '') refusal = `${label}: ${tag} with a script is not implemented`;
+  else if (modern && ((modern.attrs.get('leader') ?? '').trim() !== '' || (modern.attrs.get('trailer') ?? '').trim() !== ''))
+    refusal = `${label}: ${tag} with a leader or trailer is not implemented (164g.15)`;
+  else if (targetType === 'pageEven' || targetType === 'pageOdd')
+    refusal = `${label}: ${shown} is not implemented (164g.9)`;
+  else if (!['auto', 'pageArea', 'contentArea'].includes(targetType))
+    refusal = `${label}: ${shown} is not one XFA defines`;
+  if (targetType === 'auto' && refusal === undefined) return undefined;
+  return {
+    targetType,
+    ...(target !== undefined && target.trim() !== '' ? { target } : {}),
+    startNew,
+    ...(refusal !== undefined ? { refusal } : {}),
+  };
+}
+
 /**
  * How many instances of a subform the merge makes, or why that cannot be
  * answered (164g.2). A refused subform is walked ONCE, exactly as before.
@@ -333,7 +469,7 @@ function occurOf(el: XmlNode): Occur | { reason: string } {
  */
 function repetition(
   c: XmlNode, anonymous: boolean, dataParent: string, parentLayout: string,
-  isPage: boolean, groups: XfaDataGroups | undefined,
+  groups: XfaDataGroups | undefined,
 ): { count: number; refusal?: string } {
   const o = occurOf(c);
   if ('reason' in o) return { count: 1, refusal: o.reason };
@@ -355,7 +491,6 @@ function repetition(
   }
   const repeating = o.max !== 1 || n !== 1;
   if (!repeating) return { count: n };
-  if (isPage) return { count: 1, refusal: 'a repeating page subform needs page breaking (164g.3)' };
   if (n > 1 && parentLayout === 'position')
     return { count: 1, refusal: `${String(n)} instances of a repeating subform in a positioned container would overlap` };
   return { count: n };
@@ -387,28 +522,52 @@ function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string): L
   if (presence !== undefined) n.presence = presence;
   if (field !== undefined) n.field = field;
   if (kind === 'field' || kind === 'draw') n.text = leafText(el);
+  if (kind === 'subform') {
+    const bb = breakOf(el, 'before', label);
+    if (bb) n.breakBefore = bb;
+    const ba = breakOf(el, 'after', label);
+    if (ba) n.breakAfter = ba;
+    // 164g.8: pagination honours keep intact and refuses what it cannot do.
+    const keep = child(el, 'keep');
+    if (keep) {
+      const k: XfaKeep = {};
+      for (const a of ['intact', 'next', 'previous'] as const) {
+        const v = keep.attrs.get(a);
+        if (v !== undefined) k[a] = v;
+      }
+      if (Object.keys(k).length > 0) n.keep = k;
+    }
+    const of = child(el, 'overflow');
+    if (of && ['leader', 'trailer', 'target'].some((a) => (of.attrs.get(a) ?? '').trim() !== ''))
+      n.overflow = true;
+  }
+  const ch = chromeOf(el, kind);
+  if (ch) n.chrome = ch;
   return n;
-}
-
-/** A page's root: its `contentArea`, which always uses positioned layout
- *  (XFA 3.3 p. 280), holding the page subform. */
-function pageRootOf(pageArea: XmlNode, page: LayoutNode): LayoutNode {
-  const ca = pageArea.children.find((c) => c.name === 'contentArea');
-  return {
-    kind: 'page', label: 'contentArea', layout: 'position',
-    geom: ca ? geomOf(ca) : {}, children: [page],
-  };
 }
 
 /** What a container contributes to the fields beneath it. */
 interface ChainCtx {
   /** Layouts between the page origin and here, outermost first. */
   layouts: string[];
-  /** 0-based `<pageArea>` index in force, or `undefined` when unresolvable. */
-  pageIndex?: number;
-  /** True once the walk has passed BELOW the subform carrying the `<pageSet>`.
-   *  Above it there is no page origin, so nothing is accumulated. */
+  /** True once the walk has passed BELOW the root subform, which carries the
+   *  `<pageSet>`. Above it there is no page origin, so nothing is accumulated. */
   inPage: boolean;
+}
+
+/** The walk's view of the template as a whole. */
+interface Top {
+  /** The root subform; its node becomes `XfaBody.root`. Undefined for the walk
+   *  over a master page. */
+  rootEl?: XmlNode;
+  /** Some page area declares a content area: the chain then starts at one. */
+  hasCa: boolean;
+  root?: LayoutNode;
+  /** The paginated page set's page areas by ELEMENT, with their index in
+   *  `pageSet.pageAreas`. By identity, never by position: `pageSetOf` drops
+   *  an unreadable page area while the walk drops an unnamed one, so the two
+   *  orders can differ. */
+  masters?: Map<XmlNode, { index: number; area: XfaPageAreaModel }>;
 }
 
 /**
@@ -436,19 +595,17 @@ interface ChainCtx {
  * an unnamed container reconciled, conversion added a second copy of each, and
  * two same-named fields in two unnamed subforms bound the SAME datum.
  *
- * **Where the chain BEGINS, and it is the interpretation this module adds:**
- * the chain is the containers between the field and its PAGE ORIGIN, exclusive
- * of the subform that carries the `<pageSet>`. LiveCycle's root `<subform>` --
- * the one carrying the `<pageSet>` -- is routinely `layout="tb"`, because that
- * flow is what breaks PAGES rather than what places FIELDS. Read as starting at
- * the document root, "every ancestor must be position" degrades every field of
- * every LiveCycle form and this feature converts nothing.
+ * **Where the chain BEGINS:** at the content area, below the root subform.
+ * LiveCycle's root `<subform>` -- the one carrying the `<pageSet>` -- is
+ * routinely `layout="tb"`, because that flow is what breaks PAGES (164g.3,
+ * `xfapage.ts`) rather than what places FIELDS. Read as starting at the
+ * document root, "every ancestor must be position" degrades every field of
+ * every LiveCycle form.
  */
 function walk(
   el: XmlNode, path: readonly string[], dpath: readonly string[], group: GroupPaths | undefined,
-  ctx: ChainCtx, pages: readonly XmlNode[], out: XfaField[],
-  parent: LayoutNode | undefined, roots: XfaLayoutRoot[], scope: IndexScope,
-  master: XfaField[], groups: XfaDataGroups | undefined,
+  ctx: ChainCtx, out: XfaField[], parent: LayoutNode | undefined, scope: IndexScope,
+  master: XfaField[], groups: XfaDataGroups | undefined, top: Top,
 ): void {
   // Occurrence indices are per NAME, counted over the scope of the nearest
   // NAMED container -- this element's own when it is named, an ancestor's when
@@ -465,12 +622,6 @@ function walk(
     scope.byClass.set(c.name, i + 1);
     return i;
   };
-  // A subform carrying a <pageSet> IS the page container: everything below it
-  // sits on a page, and its own layout breaks pages rather than placing fields.
-  const carriesPageSet = el.children.some((c) => c.name === 'pageSet');
-  // Page index advances across the page container's own subform children.
-  let nextPage = 0;
-
   for (const c of el.children) {
     const partial = c.attrs.get('name');
     const nth = classIndex(c);
@@ -482,14 +633,42 @@ function walk(
       const ps = [...path, `#pageSet[${String(nth)}]`];
       const psScope = newScope();
       for (const pa of c.children) {
+        if (pa.name !== 'pageArea') continue;
         const n = pa.attrs.get('name');
-        if (pa.name !== 'pageArea' || n === undefined || n === '') continue;
-        const at = [...ps, `${n}[${String(psScope.byName.get(n) ?? 0)}]`];
-        psScope.byName.set(n, (psScope.byName.get(n) ?? 0) + 1);
-        // A master page sits on no page origin and in no layout tree, so it is
-        // walked with an empty chain, no parent node, and a roots sink nobody
-        // reads; its fields land in `master` alone.
-        walk(pa, at, [], undefined, { layouts: [], inPage: false }, pages, master, undefined, [], newScope(), master, undefined);
+        if (n === undefined || n === '') {
+          // An UNNAMED page area is still paginated onto pages, but no oracle
+          // says how Adobe names its instances, so its fields are walked for
+          // the REPORT only: no layout root, no `master`, refused by the
+          // converter rather than lost silently (d3mq final review).
+          const k = psScope.byClass.get('pageArea') ?? 0;
+          psScope.byClass.set('pageArea', k + 1);
+          walk(pa, [...ps, `#pageArea[${String(k)}]`], [], undefined, { layouts: [], inPage: false },
+            master, undefined, newScope(), master, undefined, { hasCa: false });
+          continue;
+        }
+        const idx = psScope.byName.get(n) ?? 0;
+        const at = [...ps, `${n}[${String(idx)}]`];
+        psScope.byName.set(n, idx + 1);
+        // d3mq: the page area's background is laid out from the PAGE ORIGIN,
+        // positioned (XFA 3.3 p. 271, 288), copied onto every page that
+        // instantiates it. Walked with a root of its own as the parent, so its
+        // fields, draws and subforms build a layout tree exactly as body
+        // content does; its fields land in `master` alone. A <contentArea> is
+        // not content and adds no node.
+        const root: LayoutNode = { kind: 'page', label: `<pageArea ${n}>`, layout: 'position', geom: {}, children: [] };
+        const before = master.length;
+        walk(pa, at, [], undefined, { layouts: ['position'], inPage: true }, master, root,
+          newScope(), master, undefined, { hasCa: false });
+        // Only the FIRST page area of a name is identified: the instance
+        // numbering of a repeated name is something no oracle settles.
+        const model = top.masters?.get(pa);
+        if (model === undefined || idx !== 0) continue;
+        model.area.master = root;
+        const prefix = `${somName(at)}.`;
+        for (const f of master.slice(before)) {
+          if (f.name.startsWith(prefix))
+            f.master = { pageArea: model.index, base: somName([...ps, n]), rest: f.name.slice(prefix.length) };
+        }
       }
       continue;
     }
@@ -508,7 +687,6 @@ function walk(
       const f = fieldOf(c, sub, dsub, group);
       if (f) {
         f.layouts = [...ctx.layouts];
-        if (ctx.pageIndex !== undefined) f.pageIndex = ctx.pageIndex;
         out.push(f);
       }
       // An unnamed field still takes up its space in a flow, so it joins the
@@ -521,7 +699,7 @@ function walk(
     const anonymous = partial === undefined || partial === '';
     // 164g.2: only a SUBFORM repeats (p. 263; subformSet is not read at all).
     const rep = c.name === 'subform'
-      ? repetition(c, anonymous, somName(dpath), el.attrs.get('layout') ?? 'position', carriesPageSet, groups)
+      ? repetition(c, anonymous, somName(dpath), el.attrs.get('layout') ?? 'position', groups)
       : { count: 1 };
     // N = 0 (`min="0"` and no data): no instance, so it consumes no index.
     if (rep.count === 0) { scope.byClass.set(c.name, nth); continue; }
@@ -533,69 +711,45 @@ function walk(
       if (rep.refusal !== undefined) node.refusal = `${node.label}: ${rep.refusal}`;
 
       let next: ChainCtx;
-      if (carriesPageSet) {
-        // Entering a page. Its index is its ordinal among these siblings unless a
-        // <breakBefore target> names a pageArea; a target naming NO pageArea
-        // leaves it UNRESOLVED rather than guessing, because a field placed
-        // perfectly on the wrong sheet looks right and is wrong.
-        const brk = c.children.find((b) => b.name === 'breakBefore' || b.name === 'break');
-        const target = brk?.attrs.get('target');
-        let idx: number | undefined;
-        if (target !== undefined && target !== '') {
-          const t = target.replace(/^#/, '');
-          const found = pages.findIndex((p) => p.attrs.get('name') === t);
-          idx = found < 0 ? undefined : found;
-          if (found >= 0) nextPage = found + 1;
-        } else {
-          idx = nextPage < pages.length ? nextPage : undefined;
-          nextPage += 1;
-        }
-        const ca = idx === undefined
-          ? undefined : pages[idx].children.find((p) => p.name === 'contentArea');
-        if (idx !== undefined) roots.push({ pageIndex: idx, node: pageRootOf(pages[idx], node) });
-        next = {
-          layouts: [...(ca ? ['position'] : []), layoutOf(c)],
-          ...(idx !== undefined ? { pageIndex: idx } : {}),
-          inPage: true,
-        };
+      if (c === top.rootEl) {
+        // The root subform: a tb flow that pagination (xfapage.ts) pours into
+        // content areas. Its node IS the body; the chain of everything below
+        // starts at the content area, which places its first child at its
+        // origin.
+        top.root = node;
+        next = { layouts: top.hasCa ? ['position'] : [], inPage: true };
       } else if (!ctx.inPage) {
         // Still above any page origin: accumulate nothing.
         next = { layouts: [], inPage: false };
       } else {
         parent?.children.push(node);
-        next = {
-          layouts: [...ctx.layouts, layoutOf(c)],
-          ...(ctx.pageIndex !== undefined ? { pageIndex: ctx.pageIndex } : {}),
-          inPage: true,
-        };
+        next = { layouts: [...ctx.layouts, layoutOf(c)], inPage: true };
       }
       walk(
         c, sub, dsub,
-        c.name === 'exclGroup' ? { som: somName(sub), data: somName(dsub) } : group,
-        next, pages, out, next.inPage ? node : undefined, roots,
-        anonymous ? scope : newScope(), master, groups,
+        c.name === 'exclGroup'
+          ? { som: somName(sub), data: somName(dsub),
+            ...(child(c, 'bind')?.attrs.get('match') === 'global' ? { global: true as const } : {}) }
+          : group,
+        next, out, next.inPage ? node : undefined,
+        anonymous ? scope : newScope(), master, groups, top,
       );
     }
   }
 }
 
-/** Every `<pageArea>` element in document order, wherever the `<pageSet>` sits.
- *  Page identity is this order mapped onto the document's page index.
- *
- *  ONE traversal: the models below are derived from these elements rather than
- *  found by a second walk, which is how a model and an index come to disagree
- *  about how many pages there are. */
-function pageAreaElements(root: XmlNode, out: XmlNode[]): void {
-  for (const c of root.children) {
-    if (c.name === 'pageArea') { out.push(c); continue; }
-    pageAreaElements(c, out);
+/** Every `<pageSet>` in the template, with the element holding it. */
+function pageSets(el: XmlNode, out: Array<{ ps: XmlNode; parent: XmlNode }>): void {
+  for (const c of el.children) {
+    if (c.name === 'pageSet') out.push({ ps: c, parent: el });
+    pageSets(c, out);
   }
 }
 
-/** One `<pageArea>` element to its model. */
-function pageAreaOf(el: XmlNode): XfaPageArea {
+/** One `<pageArea>` element to its model. A content area's node is the `tb`
+ *  root `xfapage.ts` lays out (XFA 3.3 p. 288). */
+function pageAreaOf(el: XmlNode): XfaPageAreaModel | string {
   const m = child(el, 'medium');
-  const name = el.attrs.get('name');
   let medium: XfaMedium | undefined;
   if (m) {
     const short = m.attrs.get('short');
@@ -607,9 +761,52 @@ function pageAreaOf(el: XmlNode): XfaPageArea {
       ...(orientation !== undefined ? { orientation } : {}),
     };
   }
+  const max = layoutMax(el);
+  if (max === undefined)
+    return `pageArea occur max="${child(el, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
+  const short = minRefusal(el, 0);
+  if (short !== undefined) return short;
+  const named = (x: XmlNode) => {
+    const name = x.attrs.get('name');
+    const id = x.attrs.get('id');
+    return { ...(name !== undefined ? { name } : {}), ...(id !== undefined ? { id } : {}) };
+  };
+  const contentAreas: XfaContentArea[] = el.children.filter((c) => c.name === 'contentArea').map((c) => ({
+    ...named(c),
+    node: { kind: 'page', label: 'contentArea', layout: 'tb', geom: geomOf(c), children: [] },
+  }));
+  return { ...named(el), ...(medium ? { medium } : {}), max, contentAreas };
+}
+
+/** The root subform's `<pageSet>` model, or why it cannot be paginated. */
+function pageSetOf(
+  template: XmlNode, rootEl: XmlNode,
+  masters: Map<XmlNode, { index: number; area: XfaPageAreaModel }>,
+): XfaPageSet | undefined {
+  const found: Array<{ ps: XmlNode; parent: XmlNode }> = [];
+  pageSets(template, found);
+  if (found.length === 0) return undefined;
+  const { ps, parent } = found[0];
+  const areas: XfaPageAreaModel[] = [];
+  let refusal: string | undefined;
+  for (const c of ps.children) {
+    if (c.name !== 'pageArea') continue;
+    const a = pageAreaOf(c);
+    if (typeof a === 'string') { refusal ??= a; continue; }
+    masters.set(c, { index: areas.length, area: a });
+    areas.push(a);
+  }
+  const max = layoutMax(ps);
+  if (max === undefined)
+    refusal = `pageSet occur max="${child(ps, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
+  refusal = minRefusal(ps, 1) ?? refusal;
+  if (found.length > 1) refusal = 'more than one pageSet, or a nested one, is not paginated (164g.9)';
+  if (parent !== rootEl) refusal = 'a pageSet not on the root subform is not paginated';
   return {
-    ...(name !== undefined ? { name } : {}),
-    ...(medium ? { medium } : {}),
+    relation: ps.attrs.get('relation') ?? 'orderedOccurrence',
+    max: max ?? -1,
+    pageAreas: areas,
+    ...(refusal !== undefined ? { refusal } : {}),
   };
 }
 
@@ -617,12 +814,18 @@ function pageAreaOf(el: XmlNode): XfaPageArea {
  *  datasets' data groups (164g.2); omitted, every repeating subform takes its
  *  `initial`, the empty-merge answer. */
 export function parseXfaTemplate(root: XmlNode, groups?: XfaDataGroups): XfaTemplate {
-  const pageEls: XmlNode[] = [];
-  pageAreaElements(root, pageEls);
+  const rootEl = root.children.find((c) => c.name === 'subform');
+  const masters = new Map<XmlNode, { index: number; area: XfaPageAreaModel }>();
+  const pageSet = rootEl ? pageSetOf(root, rootEl, masters) : undefined;
+  const top: Top = {
+    ...(rootEl ? { rootEl } : {}),
+    hasCa: pageSet?.pageAreas.some((p) => p.contentAreas.length > 0) ?? false,
+    masters,
+  };
   const fields: XfaField[] = [];
-  const roots: XfaLayoutRoot[] = [];
   const masterPageFields: XfaField[] = [];
-  walk(root, [], [], undefined, { layouts: [], inPage: false }, pageEls, fields, undefined, roots,
-    newScope(), masterPageFields, groups);
-  return { fields, pages: pageEls.map(pageAreaOf), roots, masterPageFields };
+  walk(root, [], [], undefined, { layouts: [], inPage: false }, fields, undefined, newScope(),
+    masterPageFields, groups, top);
+  const body: XfaBody | undefined = top.root ? { root: top.root, ...(pageSet ? { pageSet } : {}) } : undefined;
+  return { fields, ...(body ? { body } : {}), masterPageFields };
 }

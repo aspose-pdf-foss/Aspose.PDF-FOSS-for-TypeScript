@@ -24,6 +24,9 @@ function buildGrowForm(value: string | string[], extra = ''): Document {
   return Document.Open(buildXfaPdf({ template, datasets, needsRendering: true }));
 }
 
+/** The warnings about the template, without the notice that this dynamic
+ *  form's placeholder page was replaced (164g.3). */
+const swaps = (ws: string[]) => ws.filter((w) => !/placeholder page/.test(w));
 const rect = (doc: Document, n: string) => doc.resolve(doc.Form.Get(n)!.Dict.get('Rect')) as number[];
 
 describe('ConvertXfaToAcroForm measures growable fields', () => {
@@ -36,7 +39,7 @@ describe('ConvertXfaToAcroForm measures growable fields', () => {
     const lines = Math.round((g[3] - g[1]) / ((1854 + 434) / 2048 * 10));
     expect(lines).toBeGreaterThan(1);
     expect(a[3]).toBeCloseTo(g[1], 2);
-    expect(r.warnings).toEqual([]);
+    expect(swaps(r.warnings)).toEqual([]);
   });
 
   it('measures an empty growable field as one line', () => {
@@ -57,6 +60,6 @@ describe('ConvertXfaToAcroForm measures growable fields', () => {
   it('reports a swapped min/max as a warning', () => {
     const doc = buildGrowForm('a', 'minH="40pt" maxH="30pt"');
     const r = doc.ConvertXfaToAcroForm();
-    expect(r.warnings).toEqual(['grow[0]: minH exceeds maxH, so the two are swapped (XFA 3.3 p. 277)']);
+    expect(swaps(r.warnings)).toEqual(['grow[0]: minH exceeds maxH, so the two are swapped (XFA 3.3 p. 277)']);
   });
 });

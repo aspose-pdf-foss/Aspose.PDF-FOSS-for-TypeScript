@@ -136,12 +136,13 @@ export function buildXfaPdf(spec: XfaPdfSpec): Uint8Array {
  *  whole chain positioned. The rect is therefore
  *  [72, 792-144-20, 72+216, 792-144] = [72, 628, 288, 648]. */
 export const POSITIONED_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="f1_01" x="1in" y="2in" w="3in" h="20pt"><ui><textEdit/></ui></field>
   </subform></subform></template>`;
 
-/** The same field under a layout="tb" subform, so it must degrade. */
+/** The same field under a page set with no content area, so it degrades: no
+ *  content can be laid out (XFA 3.3 p. 296). */
 export const FLOWED_TEMPLATE = `<template><subform name="form1" layout="tb">
   <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="tb">
@@ -161,21 +162,21 @@ export const FLOWED_BOUNDED_TEMPLATE = `<template><subform name="form1" layout="
 
 /** Review Focus 5: a hidden field on a fully positioned page. */
 export const HIDDEN_POSITIONED_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="h" presence="hidden" x="1in" y="1in" w="1in" h="20pt"><ui><textEdit/></ui></field>
   </subform></subform></template>`;
 
 /** A4 declared against a US Letter page: the medium mismatch, 17pt out. */
 export const WRONG_MEDIUM_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="210mm" long="297mm"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="210mm" long="297mm"/><contentArea w="210mm" h="297mm"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="f1_01" x="1in" y="2in" w="3in" h="20pt"><ui><textEdit/></ui></field>
   </subform></subform></template>`;
 
 /** An exclGroup of two positioned check buttons. */
 export const GROUP_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position"><exclGroup name="colour">
     <field name="r" x="1in" y="1in" w="20pt" h="20pt"><ui><checkButton/></ui>
       <items><text>Red</text></items></field>
@@ -191,7 +192,7 @@ export const GROUP_TEMPLATE = `<template><subform name="form1" layout="tb">
  *  BOTTOM -- which a field at the page centre could never show. Pair it with
  *  `mediaBox: [10, 20, 622, 812]`, whose non-zero origin also pins the offset. */
 export const Y_FLIP_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="f" x="0.5in" y="0.5in" w="1in" h="18pt"><ui><textEdit/></ui></field>
   </subform></subform></template>`;
@@ -199,18 +200,20 @@ export const Y_FLIP_TEMPLATE = `<template><subform name="form1" layout="tb">
 /** A template default that DIFFERS from the datum. With equal values, /V and
  *  /DV are indistinguishable and the swap is green. */
 export const DIFFERING_DEFAULT_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="f" x="1in" y="1in" w="3in" h="20pt"><ui><textEdit/></ui>
       <value><text>AUTHORED</text></value></field>
   </subform></subform></template>`;
 
-/** Three levels with a NON-ZERO offset at each: 0.25in + 1in + 10pt = 100pt.
+/** Three levels with a NON-ZERO offset at each -- the content area, A and B:
+ *  0.25in + 1in + 10pt = 100pt. A page subform's own x/y is ignored, being a
+ *  flowed child of the root (XFA 3.3 p. 279).
  *  Two levels, or a zero anywhere, and "sum every level" and "read the last"
  *  give the same answer. */
 export const THREE_DEEP_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
-  <subform name="Page1" layout="position" x="0.25in" y="0.25in">
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea x="0.25in" y="0.25in" w="8in" h="10.5in"/></pageArea></pageSet>
+  <subform name="Page1" layout="position">
     <subform name="A" layout="position" x="1in" y="1in">
       <subform name="B" layout="position" x="10pt" y="10pt">
         <field name="f" x="0" y="0" w="1in" h="20pt"><ui><textEdit/></ui></field>
@@ -219,7 +222,7 @@ export const THREE_DEEP_TEMPLATE = `<template><subform name="form1" layout="tb">
 /** A choice whose export and display halves DIFFER, with the display list
  *  written first so "the save list" is not also "the first list". */
 export const PAIRED_ITEMS_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="c" x="1in" y="1in" w="2in" h="20pt"><ui><choiceList/></ui>
       <items><text>United States</text></items>
@@ -238,7 +241,7 @@ export const NESTED_FLOW_TEMPLATE = `<template><subform name="form1" layout="tb"
 
 /** One field carrying each flag, so each /Ff bit is asserted alone. */
 export const FLAGS_TEMPLATE = `<template><subform name="form1" layout="tb">
-  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea></pageSet>
+  <pageSet><pageArea name="P1"><medium short="8.5in" long="11in"/><contentArea w="8.5in" h="11in"/></pageArea></pageSet>
   <subform name="Page1" layout="position">
     <field name="ro" access="readOnly" x="1in" y="1in" w="1in" h="20pt">
       <ui><textEdit/></ui></field>

@@ -19,13 +19,19 @@ import { parseDeclarationList, type CssValue } from './cssparse.js';
 import { trimWs } from './cssvalue.js';
 
 export interface RunStyle { family: string[]; size: number; bold: boolean; italic: boolean }
-export interface RunSpec extends RunStyle { text: string }
+/** Paint-only run properties (164g.4): written only when the template states a
+ *  non-default value, so measurement and every existing `toEqual` see nothing. */
+export interface RunPaint { color?: [number, number, number]; underline?: true; lineThrough?: true }
+export interface RunSpec extends RunStyle, RunPaint { text: string }
+export type XfaHAlign = 'center' | 'right' | 'justify' | 'justifyAll';
 export interface ParaSpec {
   runs: RunSpec[];
   /** The style an empty paragraph (or an empty line) measures in. */
   base: RunStyle;
   marginLeft: number; marginRight: number; textIndent: number;
   lineHeight: number; spaceAbove: number; spaceBelow: number;
+  /** Absent means left (164g.4). Ignored by measurement. */
+  hAlign?: XfaHAlign;
 }
 export type CaptionSide = 'left' | 'right' | 'top' | 'bottom';
 export interface LeafText {
@@ -38,6 +44,10 @@ export interface LeafText {
   /** The field states a display `<format><picture>`, which is not formatted. */
   picture: boolean;
   refusal?: string;
+  /** Absent means top (164g.4). Ignored by measurement. */
+  vAlign?: 'middle' | 'bottom';
+  /** Paint values that could not be read and fell back to a default (164g.4). */
+  notes?: string[];
 }
 
 type ParaBox = Omit<ParaSpec, 'runs' | 'base'>;
@@ -87,11 +97,13 @@ function paraOf(el: XmlNode): ParaBox | { refusal: string } {
   const hy = child(p, 'hyphenation');
   if (hy && hy.attrs.get('hyphenate') === '1') return { refusal: 'para hyphenation is not measured' };
   const out = { ...ZERO_PARA };
-  for (const k of Object.keys(ZERO_PARA) as (keyof ParaBox)[]) {
+  for (const k of Object.keys(ZERO_PARA) as Exclude<keyof ParaBox, 'hAlign'>[]) {
     const v = pt(p.attrs.get(k), `para ${k}`, 0);
     if (typeof v === 'object') return v;
     out[k] = v;
   }
+  const h = p.attrs.get('hAlign');
+  if (h === 'center' || h === 'right' || h === 'justify' || h === 'justifyAll') out.hAlign = h;
   return out;
 }
 
@@ -124,21 +136,67 @@ function captionOf(el: XmlNode): LeafText['caption'] | { refusal: string } | und
 
 /** Plain text: one paragraph per record (p. 56: a newline or U+2029 delimits a
  *  record). An empty string is ONE empty paragraph, which measures one line. */
-export function plainParas(text: string, base: RunStyle, para: ParaBox): ParaSpec[] {
+export function plainParas(text: string, base: RunStyle, para: ParaBox, paint: RunPaint = {}): ParaSpec[] {
   return text.split(/\r\n|\r|\n|\u2029/).map((rec) => ({
-    ...para, base, runs: rec === '' ? [] : [{ ...base, text: rec }],
+    ...para, base, runs: rec === '' ? [] : [{ ...base, ...paint, text: rec }],
   }));
 }
+
+/** A paragraph's vertical alignment, from the leaf's own `<para>` (p. 800). */
+function vAlignOf(el: XmlNode): LeafText['vAlign'] {
+  const v = child(el, 'para')?.attrs.get('vAlign');
+  return v === 'middle' || v === 'bottom' ? v : undefined;
+}
+
+/** A `<color value="r,g,b">` as 0..1 RGB, `null` when unreadable. */
+function colorValue(v: string): [number, number, number] | null {
+  const n = v.split(',').map((s) => Number(s.trim()));
+  return n.length === 3 && n.every((x) => Number.isFinite(x) && x >= 0 && x <= 255)
+    ? [n[0] / 255, n[1] / 255, n[2] / 255] : null;
+}
+
+/** `<font>`'s colour (`<fill><color>`) and decoration, p. 741. Black, the
+ *  default, writes no key. */
+function paintOf(el: XmlNode, notes: string[]): RunPaint {
+  const f = child(el, 'font');
+  if (!f) return {};
+  const out: RunPaint = {};
+  const fill = child(f, 'fill');
+  const v = fill ? child(fill, 'color')?.attrs.get('value') : undefined;
+  if (v !== undefined) {
+    const c = colorValue(v);
+    if (c === null) notes.push(`font color value="${v}" could not be read, so black is used`);
+    else if (c.some((x) => x !== 0)) out.color = c;
+  }
+  const u = f.attrs.get('underline');
+  if (u !== undefined && u !== '0') out.underline = true;
+  const lt = f.attrs.get('lineThrough');
+  if (lt !== undefined && lt !== '0') out.lineThrough = true;
+  return out;
+}
+
+/** Only the paint half of a run. */
+function pickPaint(r: RunPaint): RunPaint {
+  return {
+    ...(r.color ? { color: r.color } : {}),
+    ...(r.underline ? { underline: true as const } : {}),
+    ...(r.lineThrough ? { lineThrough: true as const } : {}),
+  };
+}
+
+const samePaint = (a: RunPaint, b: RunPaint): boolean =>
+  (a.color ?? []).join() === (b.color ?? []).join()
+  && !!a.underline === !!b.underline && !!a.lineThrough === !!b.lineThrough;
 
 // ---- rich text ------------------------------------------------------------------
 
 /** p. 1187-1188: the elements, and the CSS properties that change no size. */
 const INLINE = new Set(['span', 'b', 'i', 'a']);
 const CONTAINER = new Set(['html', 'body']);
-const NO_SIZE = new Set(['color', 'text-decoration', 'orphans', 'widows', 'page-break-after',
-  'page-break-before', 'page-break-inside', 'text-align']);
+const NO_SIZE = new Set(['orphans', 'widows', 'page-break-after',
+  'page-break-before', 'page-break-inside']);
 
-interface Ctx { style: RunStyle; spacerun: boolean }
+interface Ctx { style: RunStyle; paint: RunPaint; spacerun: boolean }
 
 function familyList(v: CssValue[]): string[] | undefined {
   const out: string[] = [];
@@ -158,8 +216,9 @@ function cssPt(t: CssValue): number | undefined {
 }
 
 /** Apply one element's `style`; a refusal names the property. */
-function applyCss(css: string, ctx: Ctx, para: ParaBox | undefined): Ctx | { refusal: string } {
+function applyCss(css: string, ctx: Ctx, para: ParaBox | undefined, notes: string[]): Ctx | { refusal: string } {
   const style = { ...ctx.style };
+  const paint: RunPaint = { ...ctx.paint };
   let spacerun = ctx.spacerun;
   for (const d of parseDeclarationList(css)) {
     if (d.kind !== 'declaration') continue;
@@ -212,19 +271,56 @@ function applyCss(css: string, ctx: Ctx, para: ParaBox | undefined): Ctx | { ref
       case 'vertical-align':
         if (kw !== 'baseline') return { refusal: 'vertical-align in rich text is not measured' };
         break;
+      // 164g.4: paint-only properties. An unreadable one falls back and is
+      // noted -- a wrong colour must not cost the leaf.
+      case 'color': {
+        const c = cssColor(v);
+        if (c === undefined) { notes.push('color in rich text could not be read, so black is used'); break; }
+        if (c.some((x) => x !== 0)) paint.color = c; else delete paint.color;
+        break;
+      }
+      case 'text-decoration': {
+        const words = v.filter((t) => t.kind === 'ident').map((t) => (t as { value: string }).value.toLowerCase());
+        if (words.includes('none')) { delete paint.underline; delete paint.lineThrough; }
+        if (words.includes('underline')) paint.underline = true;
+        if (words.includes('line-through')) paint.lineThrough = true;
+        break;
+      }
+      case 'text-align': {
+        if (!para) break;
+        if (kw === 'center' || kw === 'right' || kw === 'justify') para.hAlign = kw;
+        else delete para.hAlign;
+        break;
+      }
       default:
         // margin shorthand, tab stops, font shorthand, font scale: not modelled.
         return { refusal: `${name} in rich text is not measured` };
     }
   }
-  return { style, spacerun };
+  return { style, paint, spacerun };
+}
+
+/** A CSS colour as 0..1 RGB: `#rgb`, `#rrggbb` or `rgb(r, g, b)`. */
+function cssColor(v: CssValue[]): [number, number, number] | undefined {
+  if (v.length !== 1) return undefined;
+  const t = v[0];
+  if (t.kind === 'hash') {
+    const six = t.value.length === 3 ? [...t.value].map((c) => c + c).join('') : t.value;
+    if (!/^[0-9a-fA-F]{6}$/.test(six)) return undefined;
+    return [0, 2, 4].map((i) => parseInt(six.slice(i, i + 2), 16) / 255) as [number, number, number];
+  }
+  if (t.kind === 'function' && 'args' in t && t.name.toLowerCase() === 'rgb') {
+    const n = t.args.filter((a) => a.kind === 'number').map((a) => (a as { value: number }).value);
+    if (n.length === 3 && n.every((x) => x >= 0 && x <= 255)) return [n[0] / 255, n[1] / 255, n[2] / 255];
+  }
+  return undefined;
 }
 
 class RichBuilder {
   readonly paras: ParaSpec[] = [];
   private cur: ParaSpec | undefined;
   refusal: string | undefined;
-  constructor(private readonly base: RunStyle, private readonly para: ParaBox) {}
+  constructor(private readonly base: RunStyle, private readonly para: ParaBox, readonly notes: string[]) {}
 
   open(p: ParaBox, s: RunStyle): void { this.close(); this.cur = { ...p, base: s, runs: [] }; }
   close(): void {
@@ -241,7 +337,10 @@ class RichBuilder {
     return this.cur;
   }
   text(raw: string, ctx: Ctx): void {
-    const p = this.para0(ctx.style);
+    // The paragraph is opened only once there is text to put in it (164g.4):
+    // whitespace between block elements is not content, and opening one for it
+    // measured a phantom blank line.
+    const open = this.cur;
     let t: string;
     if (ctx.spacerun) {
       // p. 1220: each U+00A0 or space in a spacerun is one space. Two or more
@@ -250,21 +349,22 @@ class RichBuilder {
       if (/ {2,}/.test(t)) { this.refusal ??= 'two or more spaces in an xfa-spacerun span are not measured'; return; }
     } else {
       t = raw.replace(/[ \t\r\n\f]+/g, ' ');
-      const prev = p.runs[p.runs.length - 1];
-      if (!prev || /[ \n]$/.test(prev.text)) t = t.replace(/^ /, '');
+      const before = open?.runs[open.runs.length - 1];
+      if (!before || /[ \n]$/.test(before.text)) t = t.replace(/^ /, '');
     }
     if (t === '') return;
+    const p = this.para0(ctx.style);
     const prev = p.runs[p.runs.length - 1];
     const s = ctx.style;
     if (prev && prev.size === s.size && prev.bold === s.bold && prev.italic === s.italic
-      && prev.family.join('\0') === s.family.join('\0')) prev.text += t;
-    else p.runs.push({ ...s, text: t });
+      && prev.family.join('\0') === s.family.join('\0') && samePaint(prev, ctx.paint)) prev.text += t;
+    else p.runs.push({ ...s, ...ctx.paint, text: t });
   }
   br(ctx: Ctx): void {
     const p = this.para0(ctx.style);
     const prev = p.runs[p.runs.length - 1];
     if (prev) prev.text = prev.text.replace(/ +$/, '');
-    p.runs.push({ ...ctx.style, text: '\n' });
+    p.runs.push({ ...ctx.style, ...ctx.paint, text: '\n' });
   }
 }
 
@@ -280,12 +380,12 @@ function walkRich(n: XmlNode, ctx: Ctx, b: RichBuilder): void {
     const isP = name === 'p';
     if (!isP && !INLINE.has(name) && !CONTAINER.has(name)) continue; // p. 1187: dropped with content
     const para: ParaBox | undefined = isP ? { ...ZERO_PARA } : undefined;
-    let next: Ctx = { ...ctx, style: { ...ctx.style } };
+    let next: Ctx = { ...ctx, style: { ...ctx.style }, paint: { ...ctx.paint } };
     if (name === 'b') next.style.bold = true;
     if (name === 'i') next.style.italic = true;
     const css = c.attrs.get('style');
     if (css !== undefined) {
-      const r = applyCss(css, next, para);
+      const r = applyCss(css, next, para, b.notes);
       if ('refusal' in r) { b.refusal = r.refusal; return; }
       next = r;
     }
@@ -297,46 +397,51 @@ function walkRich(n: XmlNode, ctx: Ctx, b: RichBuilder): void {
 
 /** The leaf's whole measurable description. Never throws. */
 export function leafText(el: XmlNode): LeafText {
+  const notes: string[] = [];
+  const done = (t: LeafText): LeafText => (notes.length ? { ...t, notes } : t);
   const insets = insetsOf(el);
   const font = fontOf(el);
   const para = paraOf(el);
   const caption = el.name === 'field' ? captionOf(el) : undefined;
   const uiEl = child(el, 'ui')?.children[0];
   const fmt = child(el, 'format');
+  const vAlign = vAlignOf(el);
   const out: LeafText = {
     kind: 'text', paras: [],
     insets: 'refusal' in insets ? { l: 0, r: 0, t: 0, b: 0 } : insets,
     ...(caption && !('refusal' in caption) ? { caption } : {}),
     password: uiEl?.name === 'passwordEdit',
     picture: fmt !== undefined && child(fmt, 'picture') !== undefined,
+    ...(vAlign ? { vAlign } : {}),
   };
   const fail = [insets, font, para, caption].find((x) => x !== undefined && 'refusal' in x) as { refusal: string } | undefined;
   if (fail) return { ...out, refusal: fail.refusal };
   const base = font as RunStyle;
   const pb = para as ParaBox;
+  const paint = paintOf(el, notes);
   if (el.name === 'field' && uiEl && !TEXT_UI.has(uiEl.name))
-    return { ...out, refusal: `a growable <${uiEl.name}> field is not measured` };
+    return done({ ...out, refusal: `a growable <${uiEl.name}> field is not measured` });
   const value = child(el, 'value');
   const v = value?.children[0];
-  if (v && GEOMETRY.has(v.name)) return { ...out, kind: 'geometry' };
-  if (v && v.name === 'image') return { ...out, refusal: 'a growable image draw is not measured' };
+  if (v && GEOMETRY.has(v.name)) return done({ ...out, kind: 'geometry' });
+  if (v && v.name === 'image') return done({ ...out, refusal: 'a growable image draw is not measured' });
   if (v && v.name === 'exData') {
     const ct = v.attrs.get('contentType');
-    if (ct !== 'text/html') return { ...out, refusal: `exData contentType="${ct ?? ''}" is not measured` };
-    const b = new RichBuilder(base, pb);
-    walkRich(v, { style: base, spacerun: false }, b);
+    if (ct !== 'text/html') return done({ ...out, refusal: `exData contentType="${ct ?? ''}" is not measured` });
+    const b = new RichBuilder(base, pb, notes);
+    walkRich(v, { style: base, paint, spacerun: false }, b);
     b.close();
     // A refusal about the VALUE keeps the base paragraph, so a bound datasets
     // value can still replace it (withValue); every other refusal has none.
-    if (b.refusal) return { ...out, paras: plainParas('', base, pb), refusal: b.refusal };
+    if (b.refusal) return done({ ...out, paras: plainParas('', base, pb), refusal: b.refusal });
     const paras = b.paras.length ? b.paras : plainParas('', base, pb);
-    return { ...out, paras };
+    return done({ ...out, paras });
   }
   const text = v ? v.text : '';
   const keep = plainParas('', base, pb);
-  if (text.includes('\t')) return { ...out, paras: keep, refusal: 'a tab character is not measured' };
-  if (out.picture && text !== '') return { ...out, paras: keep, refusal: 'a value under a display picture is not formatted' };
-  return { ...out, paras: plainParas(text, base, pb) };
+  if (text.includes('\t')) return done({ ...out, paras: keep, refusal: 'a tab character is not measured' });
+  if (out.picture && text !== '') return done({ ...out, paras: keep, refusal: 'a value under a display picture is not formatted' });
+  return done({ ...out, paras: plainParas(text, base, pb, paint) });
 }
 
 /** A field's description with its bound datasets value as plain text. */
@@ -351,6 +456,23 @@ export function withValue(t: LeafText, value: string): LeafText {
   const p = t.paras[0];
   const base = p ? p.base : DEFAULT_STYLE;
   const box: ParaBox = p ? { marginLeft: p.marginLeft, marginRight: p.marginRight, textIndent: p.textIndent,
-    lineHeight: p.lineHeight, spaceAbove: p.spaceAbove, spaceBelow: p.spaceBelow } : { ...ZERO_PARA };
-  return { ...rest, paras: plainParas(value, base, box) };
+    lineHeight: p.lineHeight, spaceAbove: p.spaceAbove, spaceBelow: p.spaceBelow,
+    ...(p.hAlign ? { hAlign: p.hAlign } : {}) } : { ...ZERO_PARA };
+  return { ...rest, paras: plainParas(value, base, box, p?.runs[0] ? pickPaint(p.runs[0]) : {}) };
 }
+
+/** A field's `<caption>` text, laid out in its caption region (164g.4). Its
+ *  `<font>`, else the FIELD's -- pdf.js inherits the field's through CSS, and
+ *  XFA's own default (Courier 10) would put a different face beside every
+ *  field. Undefined when there is no caption, it holds no value, or it is
+ *  hidden or inactive. */
+export function captionText(field: XmlNode): LeafText | undefined {
+  const cap = child(field, 'caption');
+  if (!cap || !child(cap, 'value')) return undefined;
+  const pr = cap.attrs.get('presence');
+  if (pr === 'hidden' || pr === 'inactive') return undefined;
+  const ff = child(field, 'font');
+  const el = child(cap, 'font') || !ff ? cap : { ...cap, children: [...cap.children, ff] };
+  return leafText(el);
+}
+

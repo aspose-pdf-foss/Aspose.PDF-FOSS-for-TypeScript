@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseXml } from '../src/xml.js';
 import { parseXfaTemplate, somName, type XfaField } from '../src/xfatemplate.js';
 import { parseXfaDataGroups } from '../src/xfadata.js';
-import type { LayoutNode } from '../src/xfaflow.js';
+import { layoutPage, type LayoutNode } from '../src/xfaflow.js';
 
 const tpl = (inner: string) => parseXfaTemplate(parseXml(
   new TextEncoder().encode(
@@ -241,28 +241,124 @@ describe('parseXfaTemplate: exclGroup', () => {
   });
 });
 
-describe('parseXfaTemplate: pageAreas', () => {
-  it('lists pageAreas in document order with their media', () => {
-    const t = tpl(`<subform name="f"><pageSet>
-      <pageArea name="P1"><medium short="8.5in" long="11in"/></pageArea>
-      <pageArea name="P2"><medium short="8.5in" long="11in" orientation="landscape"/></pageArea>
-      </pageSet></subform>`);
-    expect(t.pages).toEqual([
-      { name: 'P1', medium: { short: '8.5in', long: '11in' } },
-      { name: 'P2', medium: { short: '8.5in', long: '11in', orientation: 'landscape' } },
-    ]);
+describe('parseXfaTemplate: the page set', () => {
+  const ps = (inner: string) => tpl(`<subform name="f" layout="tb">${inner}</subform>`).body?.pageSet;
+
+  it('models page areas in document order with their media, ids, occur and content areas', () => {
+    expect(ps(`<pageSet>
+      <pageArea name="P1" id="a1"><medium short="8.5in" long="11in"/>
+        <contentArea name="C" id="c1" x="1pt" y="2pt" w="3pt" h="4pt"/></pageArea>
+      <pageArea name="P2"><occur max="2"/><medium short="8.5in" long="11in" orientation="landscape"/></pageArea>
+      </pageSet>`)).toEqual({
+      relation: 'orderedOccurrence', max: -1,
+      pageAreas: [
+        {
+          name: 'P1', id: 'a1', medium: { short: '8.5in', long: '11in' }, max: -1,
+          contentAreas: [{
+            name: 'C', id: 'c1',
+            node: { kind: 'page', label: 'contentArea', layout: 'tb', geom: { x: '1pt', y: '2pt', w: '3pt', h: '4pt' }, children: [] },
+          }],
+          // d3mq: each page area carries its background as a positioned root,
+          // empty here.
+          master: { kind: 'page', label: '<pageArea P1>', layout: 'position', geom: {}, children: [] },
+        },
+        {
+          name: 'P2', medium: { short: '8.5in', long: '11in', orientation: 'landscape' }, max: 2, contentAreas: [],
+          master: { kind: 'page', label: '<pageArea P2>', layout: 'position', geom: {}, children: [] },
+        },
+      ],
+    });
   });
 
-  it('records a pageArea with no medium rather than dropping it', () => {
-    const t = tpl(`<subform name="f"><pageSet><pageArea/></pageSet></subform>`);
-    expect(t.pages).toHaveLength(1);
-    expect(t.pages[0].medium).toBeUndefined();
+  it('reads relation and the page set\'s own occur max', () => {
+    expect(ps('<pageSet relation="duplexPaginated"><occur max="3"/><pageArea/></pageSet>'))
+      .toMatchObject({ relation: 'duplexPaginated', max: 3 });
+  });
+
+  it('refuses an occur max that is not -1 or positive (p. 300)', () => {
+    expect(ps('<pageSet><pageArea><occur max="0"/></pageArea></pageSet>')?.refusal)
+      .toBe('pageArea occur max="0" could not be read (XFA 3.3 p. 300: -1 or positive)');
+    expect(ps('<pageSet><occur max="x"/><pageArea/></pageSet>')?.refusal)
+      .toBe('pageSet occur max="x" could not be read (XFA 3.3 p. 300: -1 or positive)');
+  });
+
+  // p. 298, 300-301: a minimum forces blank pages to be appended when content
+  // runs out. That padding is not implemented, so a min that could demand it is
+  // refused by name rather than producing too few pages in silence. A page
+  // set's min of 1 is met by any layout that places anything.
+  it('refuses an occur min that would demand blank pages', () => {
+    expect(ps('<pageSet><pageArea><occur min="1" max="3"/></pageArea></pageSet>')?.refusal)
+      .toBe('pageArea occur min="1" would demand blank pages, which are not laid out');
+    expect(ps('<pageSet><occur min="5" initial="5"/><pageArea/></pageSet>')?.refusal)
+      .toBe('pageSet occur min="5" would demand blank pages, which are not laid out');
+    expect(ps('<pageSet><occur min="1"/><pageArea><occur min="0"/></pageArea></pageSet>')?.refusal).toBeUndefined();
+  });
+
+  it('refuses a nested pageSet, a second one, and one not on the root subform', () => {
+    expect(ps('<pageSet><pageSet><pageArea/></pageSet></pageSet>')?.refusal).toMatch(/more than one pageSet, or a nested one.*164g\.9/);
+    expect(ps('<pageSet><pageArea/></pageSet><pageSet><pageArea/></pageSet>')?.refusal).toMatch(/more than one pageSet/);
+    const t = tpl('<subform name="f" layout="tb"><subform name="S"><pageSet><pageArea/></pageSet></subform></subform>');
+    expect(t.body?.pageSet?.refusal).toBe('a pageSet not on the root subform is not paginated');
+  });
+
+  it('has no page set when the root declares none', () => {
+    const t = tpl('<subform name="f"><field name="a"><ui><textEdit/></ui></field></subform>');
+    expect(t.body?.pageSet).toBeUndefined();
+    expect(t.body?.root.label).toBe('f[0]');
+  });
+});
+
+describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
+  const kid = (inner: string) => tpl(`<subform name="f" layout="tb"><pageSet><pageArea/></pageSet>
+    <subform name="P">${inner}</subform></subform>`).body!.root.children[0];
+
+  // 164g.8: pagination reads keep and overflow; nothing else does.
+  it("reads a subform's direct <keep> and flags an <overflow> that names anything", () => {
+    const p = kid('<keep intact="contentArea" next="contentArea"/><overflow leader="#L"/>');
+    expect(p.keep).toEqual({ intact: 'contentArea', next: 'contentArea' });
+    expect(p.overflow).toBe(true);
+    const q = kid('<overflow/>');
+    expect(q.keep).toBeUndefined();
+    expect(q.overflow).toBeUndefined();
+  });
+
+  it('reads breakBefore and breakAfter', () => {
+    const k = kid('<breakBefore targetType="pageArea" target="P1" startNew="1"/><breakAfter targetType="contentArea"/>');
+    expect(k.breakBefore).toEqual({ targetType: 'pageArea', target: 'P1', startNew: true });
+    expect(k.breakAfter).toEqual({ targetType: 'contentArea', startNew: false });
+  });
+
+  it('reads the deprecated break element\'s two halves', () => {
+    const k = kid('<break before="pageArea" startNew="1" beforeTarget="#x" after="contentArea"/>');
+    expect(k.breakBefore).toEqual({ targetType: 'pageArea', target: '#x', startNew: true });
+    expect(k.breakAfter).toEqual({ targetType: 'contentArea', startNew: false });
+  });
+
+  // OPM 1644's <break overflowLeader="..."> on its tables asks for nothing at
+  // either edge.
+  it('reads an auto break, or none, as no break', () => {
+    expect(kid('<breakBefore targetType="auto" target="P1"/>').breakBefore).toBeUndefined();
+    expect(kid('<break overflowLeader="#h"/>').breakBefore).toBeUndefined();
+    expect(kid('').breakBefore).toBeUndefined();
+  });
+
+  it('refuses a script, a leader, a trailer and pageEven/pageOdd by name', () => {
+    expect(kid('<breakBefore targetType="pageArea"><script>true</script></breakBefore>').breakBefore?.refusal)
+      .toBe('P[0]: <breakBefore> with a script is not implemented');
+    expect(kid('<breakBefore targetType="pageArea" leader="#L"/>').breakBefore?.refusal)
+      .toBe('P[0]: <breakBefore> with a leader or trailer is not implemented (164g.15)');
+    expect(kid('<breakAfter targetType="pageArea" trailer="#T"/>').breakAfter?.refusal)
+      .toBe('P[0]: <breakAfter> with a leader or trailer is not implemented (164g.15)');
+    expect(kid('<breakBefore targetType="pageOdd"/>').breakBefore?.refusal)
+      .toBe('P[0]: <breakBefore> targetType="pageOdd" is not implemented (164g.9)');
+    expect(kid('<break before="pageEven"/>').breakBefore?.refusal)
+      .toBe('P[0]: <break> before="pageEven" is not implemented (164g.9)');
   });
 });
 
 describe('parseXfaTemplate: geometry', () => {
   const PAGE = `<subform name="form1" layout="tb"><pageSet><pageArea/></pageSet>`;
-  const leafOf = (t: ReturnType<typeof tpl>) => t.roots[0].node.children[0].children[0];
+  const leafOf = (t: ReturnType<typeof tpl>) => t.body!.root.children[0].children[0];
 
   it('carries the field own geometry attributes verbatim on its layout node', () => {
     const t = tpl(`${PAGE}<subform name="f" layout="position">
@@ -295,7 +391,7 @@ describe('parseXfaTemplate: the layout chain', () => {
       </subform></subform>`);
     const a = by(t.fields, 'form1[0].Page1[0].a[0]');
     expect(a.layouts).toEqual(['position']);
-    expect(t.roots[0].node.children[0].geom).toEqual({ x: '0in', y: '0in' });
+    expect(t.body!.root.children[0].geom).toEqual({ x: '0in', y: '0in' });
   });
 
   it('records every container below the page origin, outermost first', () => {
@@ -307,7 +403,7 @@ describe('parseXfaTemplate: the layout chain', () => {
         </subform></subform></subform>`);
     const a = by(t.fields, 'form1[0].P[0].Q[0].a[0]');
     expect(a.layouts).toEqual(['position', 'position']);
-    const P = t.roots[0].node.children[0];
+    const P = t.body!.root.children[0];
     expect(P.geom).toEqual({ x: '1in', y: '2in' });
     expect(P.children[0].geom).toEqual({ x: '3pt' });
   });
@@ -329,7 +425,7 @@ describe('parseXfaTemplate: the layout chain', () => {
   });
 
   // 164g.2: there is no synthetic occur layout any more. P is a PAGE subform,
-  // so its repetition is refused for 164g.3, and its chain carries its real layout.
+  // instantiated since 164g.3, and its chain carries its real layout.
   it('carries a repeating page subform\'s REAL layout in the chain', () => {
     const t = tpl(`<subform name="form1" layout="tb"><pageSet><pageArea/></pageSet>
       <subform name="P" layout="position"><occur max="5"/>
@@ -356,48 +452,8 @@ describe('parseXfaTemplate: the layout chain', () => {
         <field name="a" x="1in" y="1in" w="1in" h="1in"><ui><textEdit/></ui></field>
       </subform></subform>`);
     const a = by(t.fields, 'form1[0].Page1[0].a[0]');
-    expect(t.roots[0].node.geom).toMatchObject({ x: '0.25in', y: '0.5in' });
+    expect(t.body!.pageSet!.pageAreas[0].contentAreas[0].node.geom).toMatchObject({ x: '0.25in', y: '0.5in' });
     expect(a.layouts[0]).toBe('position');
-  });
-});
-
-describe('parseXfaTemplate: page identity', () => {
-  it('maps each page subform to its pageArea by order', () => {
-    const t = tpl(`<subform name="form1" layout="tb">
-      <pageSet><pageArea name="P1"/><pageArea name="P2"/></pageSet>
-      <subform name="Page1" layout="position">
-        <field name="a" x="0" y="0" w="1in" h="1in"><ui><textEdit/></ui></field></subform>
-      <subform name="Page2" layout="position">
-        <field name="b" x="0" y="0" w="1in" h="1in"><ui><textEdit/></ui></field></subform>
-      </subform>`);
-    expect(by(t.fields, 'form1[0].Page1[0].a[0]').pageIndex).toBe(0);
-    expect(by(t.fields, 'form1[0].Page2[0].b[0]').pageIndex).toBe(1);
-  });
-
-  it('honours an explicit break to a named pageArea', () => {
-    const t = tpl(`<subform name="form1" layout="tb">
-      <pageSet><pageArea name="P1"/><pageArea name="P2"/></pageSet>
-      <subform name="S1" layout="position"><breakBefore target="P2"/>
-        <field name="a" x="0" y="0" w="1in" h="1in"><ui><textEdit/></ui></field></subform>
-      </subform>`);
-    expect(by(t.fields, 'form1[0].S1[0].a[0]').pageIndex).toBe(1);
-  });
-
-  it('leaves pageIndex undefined when the break names a pageArea that is not there', () => {
-    const t = tpl(`<subform name="form1" layout="tb">
-      <pageSet><pageArea name="P1"/></pageSet>
-      <subform name="S1" layout="position"><breakBefore target="Nowhere"/>
-        <field name="a" x="0" y="0" w="1in" h="1in"><ui><textEdit/></ui></field></subform>
-      </subform>`);
-    expect(by(t.fields, 'form1[0].S1[0].a[0]').pageIndex).toBeUndefined();
-  });
-
-  it('leaves pageIndex undefined when the template declares no pageArea at all', () => {
-    const t = tpl(`<subform name="form1"><subform name="P" layout="position">
-      <field name="a" x="0" y="0" w="1in" h="1in"><ui><textEdit/></ui></field>
-      </subform></subform>`);
-    expect(by(t.fields, 'form1[0].P[0].a[0]').pageIndex).toBeUndefined();
-    expect(t.pages).toEqual([]);
   });
 });
 
@@ -475,25 +531,30 @@ describe('parseXfaTemplate: the layout tree', () => {
       <contentArea x="0.25in" y="0.5in" w="8in" h="10in"/>
       <medium short="8.5in" long="11in"/></pageArea></pageSet>`;
 
-  it('roots each resolved page at its contentArea, with the page subform as its child', () => {
+  it('roots the tree at the root subform, its page subforms its children', () => {
     const t = tpl(`${PAGE}<subform name="Page1" layout="position" x="1pt">
       <field name="a" x="0" y="0" w="1in" h="1in"><ui><textEdit/></ui></field>
       </subform></subform>`);
-    expect(t.roots).toHaveLength(1);
-    const r = t.roots[0];
-    expect(r.pageIndex).toBe(0);
-    expect(r.node).toMatchObject({
-      kind: 'page', label: 'contentArea', layout: 'position',
-      geom: { x: '0.25in', y: '0.5in', w: '8in', h: '10in' },
-    });
-    expect(r.node.children).toHaveLength(1);
-    expect(r.node.children[0]).toMatchObject({
+    const r = t.body!.root;
+    expect(r).toMatchObject({ kind: 'subform', label: 'form1[0]', layout: 'tb' });
+    expect(r.children).toHaveLength(1);
+    expect(r.children[0]).toMatchObject({
       kind: 'subform', label: 'Page1[0]', layout: 'position', geom: { x: '1pt' },
     });
-    expect(r.node.children[0].children[0]).toMatchObject({
+    expect(r.children[0].children[0]).toMatchObject({
       kind: 'field', label: 'a[0]', field: 'form1[0].Page1[0].a[0]',
       geom: { x: '0', y: '0', w: '1in', h: '1in' },
     });
+    expect(t.body!.pageSet!.pageAreas[0].contentAreas[0].node).toMatchObject({
+      kind: 'page', label: 'contentArea', layout: 'tb',
+      geom: { x: '0.25in', y: '0.5in', w: '8in', h: '10in' },
+    });
+  });
+
+  // The root is a tb flow, so content directly under it takes up space there.
+  it('puts a field directly under the root in the tree', () => {
+    const t = tpl(`${PAGE}<field name="z" w="1in" h="1in"><ui><textEdit/></ui></field></subform>`);
+    expect(t.body!.root.children[0]).toMatchObject({ kind: 'field', field: 'form1[0].z[0]' });
   });
 
   // Draws take up space in a flow, so they are in the tree, in document order.
@@ -504,7 +565,7 @@ describe('parseXfaTemplate: the layout tree', () => {
       <field h="10pt" w="1in"><ui><textEdit/></ui></field>
       <field name="b" h="10pt" w="1in"><ui><textEdit/></ui></field>
       </subform></subform>`);
-    const kids = t.roots[0].node.children[0].children;
+    const kids = t.body!.root.children[0].children;
     expect(kids.map((k) => [k.kind, k.label, k.field])).toEqual([
       ['draw', 'd', undefined],
       ['field', '<field>', undefined],
@@ -521,7 +582,7 @@ describe('parseXfaTemplate: the layout tree', () => {
           <field name="c" colSpan="2" h="10pt"><ui><textEdit/></ui>
             <margin leftInset="9pt"/></field>
         </subform></subform></subform></subform>`);
-    const T = t.roots[0].node.children[0].children[0];
+    const T = t.body!.root.children[0].children[0];
     expect(T).toMatchObject({
       kind: 'subform', layout: 'table', columnWidths: '1in -1',
       minMax: { minH: '2in', maxW: '3in' }, presence: 'invisible', hAlign: 'left',
@@ -539,23 +600,17 @@ describe('parseXfaTemplate: the layout tree', () => {
       <subform name="R"><occur max="3"/></subform>
       <exclGroup name="G"><field name="o" w="1pt" h="1pt"><ui><checkButton/></ui></field></exclGroup>
       </subform></subform>`);
-    const kids = t.roots[0].node.children[0].children;
+    const kids = t.body!.root.children[0].children;
     expect(kids[0]).toMatchObject({ kind: 'subform', layout: 'position' });
     expect(kids[0].refusal).toBeUndefined();
     expect(kids[1]).toMatchObject({ kind: 'exclGroup', layout: 'position' });
     expect(kids[1].children[0].field).toBe('form1[0].Page1[0].G[0].o[0]');
   });
 
-  it('roots no page whose pageArea cannot be resolved', () => {
-    const t = tpl(`<subform name="form1" layout="tb"><pageSet><pageArea name="P1"/></pageSet>
-      <subform name="Page1"><breakBefore target="Nowhere"/></subform></subform>`);
-    expect(t.roots).toEqual([]);
-  });
-
-  it('gives a pageArea with no contentArea an empty root geometry', () => {
+  it('models a pageArea with no contentArea as having none', () => {
     const t = tpl(`<subform name="form1" layout="tb"><pageSet><pageArea name="P1"/></pageSet>
       <subform name="Page1"/></subform>`);
-    expect(t.roots[0].node.geom).toEqual({});
+    expect(t.body!.pageSet!.pageAreas[0].contentAreas).toEqual([]);
   });
 });
 
@@ -584,13 +639,68 @@ describe('parseXfaTemplate: master-page fields', () => {
   it('keeps them out of fields, so layout and binding never see them', () => {
     const t = tpl(MASTER);
     expect(t.fields.map((f) => f.name)).toEqual(['form1[0].P1[0].body[0]']);
-    expect(t.pages).toHaveLength(2);
+    expect(t.body!.pageSet!.pageAreas).toHaveLength(2);
   });
 
   it('counts the pageSet in its parent\'s class numbering', () => {
     const t = tpl(`<subform name="form1"><pageSet/><pageSet><pageArea name="A">
       <field name="f"><ui><textEdit/></ui></field></pageArea></pageSet></subform>`);
     expect(t.masterPageFields.map((f) => f.name)).toEqual(['form1[0].#pageSet[1].A[0].f[0]']);
+  });
+
+  it('identifies each field\'s page area and how an instance is named', () => {
+    const t = tpl(MASTER);
+    expect(t.masterPageFields.map((f) => f.master)).toEqual([
+      { pageArea: 0, base: 'form1[0].#pageSet[0].P1', rest: 'code[0]' },
+      { pageArea: 0, base: 'form1[0].#pageSet[0].P1', rest: 'hdr[0].who[0]' },
+      { pageArea: 1, base: 'form1[0].#pageSet[0].P2', rest: 'code[0]' },
+    ]);
+  });
+
+  it('builds each page area a positioned root at the PAGE origin (XFA 3.3 p. 271, 288)', () => {
+    const t = tpl(`<subform name="form1"><pageSet><pageArea name="P1">
+      <contentArea x="1in" y="1in" w="6in" h="9in"/>
+      <subform name="hdr" x="1in" y="0.5in"><field name="who" x="2in" y="10pt" w="1in" h="12pt"><ui><textEdit/></ui></field></subform>
+      <draw name="logo" x="0" y="0" w="1in" h="1in"/>
+    </pageArea></pageSet><subform name="Page1"/></subform>`);
+    const root = t.body!.pageSet!.pageAreas[0].master!;
+    expect(root).toMatchObject({ kind: 'page', layout: 'position' });
+    expect(root.children.map((c) => c.label)).toEqual(['hdr[0]', 'logo']);
+    // The subform's offset carries to its field; the contentArea adds nothing.
+    expect(layoutPage(root).get('form1[0].#pageSet[0].P1[0].hdr[0].who[0]'))
+      .toEqual({ box: { x: 216, y: 46, w: 72, h: 12 } });
+  });
+
+  it('identifies only the FIRST page area of a repeated name', () => {
+    const t = tpl(`<subform name="form1"><pageSet>
+      <pageArea name="A"><contentArea w="8in" h="10in"/><field name="f"><ui><textEdit/></ui></field></pageArea>
+      <pageArea name="A"><contentArea w="8in" h="10in"/><field name="g"><ui><textEdit/></ui></field></pageArea>
+    </pageSet><subform name="P"/></subform>`);
+    expect(t.masterPageFields.map((f) => [f.name, f.master?.pageArea])).toEqual([
+      ['form1[0].#pageSet[0].A[0].f[0]', 0],
+      ['form1[0].#pageSet[0].A[1].g[0]', undefined],
+    ]);
+    expect(t.body!.pageSet!.pageAreas[1].master).toBeUndefined();
+  });
+
+  // The model list drops an unreadable page area while the walk still visits
+  // it, so a match by POSITION among <pageArea> elements is off by one here.
+  it('matches a page area to its model by ELEMENT, past an unreadable one', () => {
+    const t = tpl(`<subform name="form1"><pageSet>
+      <pageArea name="Bad"><occur max="0"/><field name="x"><ui><textEdit/></ui></field></pageArea>
+      <pageArea name="Good"><contentArea w="8in" h="10in"/><field name="f"><ui><textEdit/></ui></field></pageArea>
+    </pageSet><subform name="P"/></subform>`);
+    expect(t.body!.pageSet!.pageAreas.map((a) => a.name)).toEqual(['Good']);
+    expect(t.masterPageFields.map((f) => [f.name, f.master?.pageArea])).toEqual([
+      ['form1[0].#pageSet[0].Bad[0].x[0]', undefined],
+      ['form1[0].#pageSet[0].Good[0].f[0]', 0],
+    ]);
+  });
+
+  it('leaves a second pageSet\'s fields unidentified', () => {
+    const t = tpl(`<subform name="form1"><pageSet/><pageSet><pageArea name="A">
+      <field name="f"><ui><textEdit/></ui></field></pageArea></pageSet></subform>`);
+    expect(t.masterPageFields.map((f) => f.master)).toEqual([undefined]);
   });
 });
 
@@ -672,7 +782,7 @@ describe('parseXfaTemplate: <occur> instantiation', () => {
     const t = tplWith(`<subform name="form1"><pageSet><pageArea name="P"><contentArea w="8in" h="10in"/></pageArea></pageSet>
       <subform name="Page1" layout="tb"><subform name="R" layout="row"><occur initial="2" max="-1"/>
       <field name="a" w="1in" h="1in"><ui><textEdit/></ui></field></subform></subform></subform>`);
-    const kids = t.roots[0].node.children[0].children;
+    const kids = t.body!.root.children[0].children;
     expect(kids.map((k) => [k.label, k.layout, k.refusal])).toEqual([
       ['R[0]', 'row', undefined], ['R[1]', 'row', undefined],
     ]);
@@ -688,7 +798,7 @@ describe('parseXfaTemplate: <occur> instantiation', () => {
       ${inner}</subform>`, data);
     const all: LayoutNode[] = [];
     const visit = (n: LayoutNode) => { all.push(n); n.children.forEach(visit); };
-    t.roots.forEach((r) => visit(r.node));
+    if (t.body) visit(t.body.root);
     return { names: names(t), refusals: all.map((n) => n.refusal).filter((r) => r !== undefined) };
   };
 
@@ -737,11 +847,14 @@ describe('parseXfaTemplate: <occur> instantiation', () => {
     expect(r.refusals).toEqual([]);
   });
 
-  it('refuses a repeating PAGE subform (164g.3)', () => {
-    const r = refused(`<subform name="Page1" layout="tb"><occur max="-1"/>
-      <field name="a"><ui><textEdit/></ui></field></subform>`, '<form1><Page1/><Page1/></form1>');
-    expect(r.names).toEqual(['form1[0].Page1[0].a[0]']);
-    expect(r.refusals).toEqual(['Page1[0]: a repeating page subform needs page breaking (164g.3)']);
+  it('instantiates a repeating PAGE subform (164g.3)', () => {
+    const t = tplWith(`<subform name="form1" layout="tb">
+      <pageSet><pageArea name="P"><contentArea w="8in" h="10in"/></pageArea></pageSet>
+      <subform name="Page1" layout="tb"><occur max="-1"/>
+      <field name="a"><ui><textEdit/></ui></field></subform></subform>`, '<form1><Page1/><Page1/></form1>');
+    expect(names(t)).toEqual(['form1[0].Page1[0].a[0]', 'form1[0].Page1[1].a[0]']);
+    expect(t.body!.root.children.map((c) => [c.label, c.refusal]))
+      .toEqual([['Page1[0]', undefined], ['Page1[1]', undefined]]);
   });
 });
 
@@ -768,5 +881,22 @@ describe('parseXfaTemplate: <occur> rules the obvious fixtures cannot see', () =
       ['form1[0].#subform[0].R[1].a[0]', 'form1[0].R[1].a[0]'],
       ['form1[0].#subform[0].R[2].a[0]', 'form1[0].R[2].a[0]'],
     ]);
+  });
+});
+
+describe('parseXfaTemplate: global binding inputs (yy09)', () => {
+  // The global search is by the field's OWN name, never a re-split of its data
+  // path (an XML name may hold a dot).
+  it("records a field's raw name and whether its exclGroup is global", () => {
+    const t = tpl(`<subform name="form1" layout="tb">
+      <pageSet><pageArea name="P"><contentArea x="0" y="0" w="8in" h="10in"/></pageArea></pageSet>
+      <subform name="S" layout="position" w="8in" h="10in">
+        <field name="a.b" x="0" y="0" w="1in" h="12pt"><ui><textEdit/></ui></field>
+        <exclGroup name="g"><bind match="global"/>
+          <field name="r" w="10pt" h="10pt"><ui><checkButton shape="round"/></ui><items><text>1</text></items></field>
+        </exclGroup></subform></subform>`);
+    expect(t.fields.map((f) => f.dataName)).toEqual(['a.b', 'r']);
+    expect(t.fields.find((f) => f.dataName === 'r')!.groupGlobal).toBe(true);
+    expect(t.fields.find((f) => f.dataName === 'a.b')!.groupGlobal).toBeUndefined();
   });
 });

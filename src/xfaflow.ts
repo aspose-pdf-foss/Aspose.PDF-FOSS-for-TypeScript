@@ -21,10 +21,30 @@ import {
   type XfaBox, type XfaMargin, type XfaRawGeom,
 } from './xfageom.js';
 import type { LeafText } from './xfarich.js';
+import type { NodeChrome } from './xfaborder.js';
 
 export type LayoutKind = 'page' | 'subform' | 'exclGroup' | 'area' | 'field' | 'draw';
 
 export interface XfaMinMax { minW?: string; minH?: string; maxW?: string; maxH?: string }
+
+/** A subform's `<breakBefore>`/`<breakAfter>`, or the deprecated `<break>`'s
+ *  half (XFA 3.3 p. 632-636), as `xfatemplate.ts` reads it. `refusal` names a
+ *  shape pagination does not implement; `xfapage.ts` acts on it (164g.3). */
+export interface XfaBreak {
+  /** `pageArea`, `contentArea`, or what the template wrote. */
+  targetType: string;
+  /** `#id` or a name, verbatim; absent when the break names none. */
+  target?: string;
+  startNew: boolean;
+  refusal?: string;
+}
+
+/** A subform's `<keep>` (XFA 3.3 p. 291-292, 311), as `xfatemplate.ts` reads
+ *  it. Only pagination reads it (164g.8). */
+export interface XfaKeep { intact?: string; next?: string; previous?: string }
+
+/** What a refusal names when content would need a split 164g.8 does not do. */
+export const SPLIT_LATER = 'splitting beyond a tb subform between its children (164g.11, 164g.12, 164g.13)';
 
 /** One node of a page's layout tree, as the template states it. */
 export interface LayoutNode {
@@ -52,10 +72,29 @@ export interface LayoutNode {
   /** A field's or draw's text, insets and caption, measured when its size is
    *  not stated (164g.7). Absent on containers. */
   text?: LeafText;
+  /** A subform's break conditions (164g.3). Only `xfapage.ts` reads them: on
+   *  the root subform and its children, and since 164g.8 a `breakBefore` on a
+   *  child inside a subform being split. */
+  breakBefore?: XfaBreak;
+  breakAfter?: XfaBreak;
+  /** A subform's `<keep>` and whether it states an `<overflow>` leader, trailer
+   *  or target. Only `xfapage.ts` reads them, on a split chain (164g.8). */
+  keep?: XfaKeep;
+  overflow?: boolean;
+  /** What this node paints beside its box (164g.4): its border, a draw's
+   *  geometry, a field's caption. Absent when it paints nothing of its own. */
+  chrome?: NodeChrome;
   children: LayoutNode[];
 }
 
 export type Placed = { box: XfaBox } | { reason: string };
+
+/** One node the layout placed, or why it has no box (164g.4): chrome is
+ *  painted from these. Document order, a container before its children; a
+ *  named field's refusal is NOT here, being reported as a field. */
+export type PlacedNode =
+  | { node: LayoutNode; box: XfaBox; invisible: boolean }
+  | { node: LayoutNode; reason: string };
 
 /** Where a measured leaf's text must fit: a fixed (stated or column-imposed)
  *  width, or a width-growable leaf wrapping at `maxW` when one is stated. */
@@ -67,9 +106,20 @@ export type XfaMeasure = (n: LayoutNode, box: XfaMeasureBox) => { w: number; h: 
 /** The layouts this engine places. An allowlist: anything else refuses. */
 const LAID_OUT: ReadonlySet<string> = new Set(['position', 'tb', 'lr-tb', 'table', 'row']);
 
+/** The parent layouts under which a container's `min*` is not applied (bkdi):
+ *  Adobe lays such a container out at its content size. */
+const FLOWS: ReadonlySet<string> = new Set(['tb', 'lr-tb']);
+
 /** Tolerance for comparing summed measurements: mm-to-pt conversions leave
  *  ulps of residue, and `17.78mm + 20.32mm` must fit a `38.1mm` column. */
 const EPS = 1e-6;
+
+/** How far past its contentArea's bottom a leaf may end and still be placed
+ *  (164g.4): three-decimal mm values are accurate to ~0.0014pt each, and DoD
+ *  DD 1494's Line1 ends at 17.463mm + 236.538mm = 254.001mm in a 254mm area
+ *  -- 0.0028pt over, from rounding alone, and pdf.js draws it. A few summed
+ *  values stay well under 0.01pt; real overflow is far larger. */
+const BOTTOM_ROUNDING = 0.01;
 
 interface Size { w: number; h: number }
 /** `fromChild`: the node itself is sound and a CHILD could not be placed, so
@@ -148,7 +198,7 @@ function stated(n: LayoutNode, k: 'x' | 'y' | 'w' | 'h'): number | undefined | F
     ? { reason: `${n.label}: ${k}="${s}" could not be read as a measurement` } : v;
 }
 
-function insetsOf(n: LayoutNode): Insets | Fail {
+export function insetsOf(n: LayoutNode): Insets | Fail {
   const m = n.margin ?? {};
   const out: number[] = [];
   for (const k of ['leftInset', 'rightInset', 'topInset', 'bottomInset'] as const) {
@@ -198,6 +248,17 @@ class Engine {
   ) {}
 
   private readonly sizes = new Map<LayoutNode, Size | Fail>();
+  /** Each node's parent layout, recorded once by `index`. `measure` is memoized
+   *  per node and cannot see its parent, so it reads the parent from here. */
+  private readonly parentOf = new Map<LayoutNode, string>();
+
+  /** Record the layout every node under `n` is laid out in. `parent` is `n`'s
+   *  own parent's layout, when the caller knows one. */
+  index(n: LayoutNode, parent?: string): void {
+    if (parent !== undefined) this.parentOf.set(n, parent);
+    const lay = n.layout ?? 'position';
+    for (const c of n.children) this.index(c, lay);
+  }
   /** Swap warnings already recorded, so a memoized axis warns once. */
   private readonly warned = new Set<string>();
   private get hasMeasurer(): boolean { return this.measurer !== undefined; }
@@ -231,9 +292,12 @@ class Engine {
     if (isFail(m)) return m;
     const c = this.contentExtent(n, m);
     if (isFail(c)) return c;
-    const width = this.grow(n, 'minW', 'maxW', w, c.w + m.l + m.r);
+    // bkdi: in a flowed parent Adobe lays a container out at its content size,
+    // its min* unapplied (DoD DD 1155's `thirty`); max* still bounds it.
+    const floor = !FLOWS.has(this.parentOf.get(n) ?? '');
+    const width = this.grow(n, 'minW', 'maxW', w, c.w + m.l + m.r, floor);
     if (isFail(width)) return width;
-    const height = this.grow(n, 'minH', 'maxH', h, c.h + m.t + m.b);
+    const height = this.grow(n, 'minH', 'maxH', h, c.h + m.t + m.b, floor);
     if (isFail(height)) return height;
     return { w: width, h: height };
   }
@@ -290,15 +354,15 @@ class Engine {
   }
 
   /** One axis of a growable extent. Content past a stated maximum would be
-   *  clipped, which is not modelled. */
+   *  clipped, which is not modelled. `floor` false skips the minimum (bkdi). */
   private grow(
     n: LayoutNode, minKey: 'minW' | 'minH', maxKey: 'maxW' | 'maxH',
-    fixed: number | undefined, content: number,
+    fixed: number | undefined, content: number, floor = true,
   ): number | Fail {
     if (fixed !== undefined) return fixed;
     const lim = this.limits(n, minKey, maxKey);
     if (isFail(lim)) return lim;
-    const v = Math.max(content, lim.min ?? 0);
+    const v = Math.max(content, floor ? lim.min ?? 0 : 0);
     if (lim.max !== undefined && v > lim.max + EPS)
       return { reason: `${n.label}: its content exceeds ${maxKey}, and clipping is not laid out` };
     return v;
@@ -383,41 +447,7 @@ class Engine {
       dy = sh.dy;
     }
     const slot: Slot = { x: m.l + (x ?? 0) + dx, y: m.t + (y ?? 0) + dy };
-    if (n.kind === 'page' && (c.layout ?? 'position') !== 'position') return this.bounded(n, c, slot);
     return slot;
-  }
-
-  /** A flowed page subform must fit its contentArea; past it is page breaking
-   *  (164g.3). Without a stated height nothing bounds the flow. */
-  private bounded(page: LayoutNode, c: LayoutNode, slot: Slot): Slot | Fail {
-    const h = stated(page, 'h');
-    if (typeof h !== 'number')
-      return {
-        reason: `${c.label}: uses layout="${c.layout ?? ''}" and its pageArea declares no `
-          + 'contentArea height, so the flow cannot be bounded',
-      };
-    // A container whose content broke part-way still places what came before
-    // the break; what failed emits nothing, so the bottom of what placed
-    // bounds every box this subform produces.
-    const s = this.extent(c);
-    if (isFail(s) && !s.fromChild) return s;
-    const bottom = isFail(s) ? this.placedBottom(c) : s.h;
-    if (slot.y + bottom > h + EPS)
-      return { reason: `${c.label}: overflows its contentArea, which needs page breaking (164g.3)` };
-    return slot;
-  }
-
-  /** The lowest edge of anything under `n` that placed, relative to its top. */
-  private placedBottom(n: LayoutNode): number {
-    if (isLeaf(n)) return 0;
-    let bottom = 0;
-    for (const [c, sl] of this.arrange(n)) {
-      if (isFail(sl)) continue;
-      const size = sl.size ?? this.extent(c);
-      const h = !isFail(size) ? size.h : isLeaf(c) ? 0 : this.placedBottom(c);
-      bottom = Math.max(bottom, sl.y + h);
-    }
-    return bottom;
   }
 
   /** The height a fixed-height flowed container offers its children. */
@@ -432,13 +462,16 @@ class Engine {
   }
 
   private splitFail(n: LayoutNode, c: LayoutNode): Fail {
-    return { reason: `${c.label}: does not fit the remaining height of ${n.label}, which needs splitting (164g.3)` };
+    return { reason: `${c.label}: does not fit the remaining height of ${n.label}, which needs ${SPLIT_LATER}` };
   }
 
   /** XFA 3.3 p. 280: each child "immediately below the nominal extent of the
    *  previous contained object and aligned with the left edge". */
   private flowTb(n: LayoutNode, kids: LayoutNode[], m: Insets, out: Slots): void {
-    const avail = this.available(n, m);
+    // A content area's children were chosen by pagination (`xfapage.ts`), which
+    // has already decided that each fits -- or is the p. 295 override, placed past
+    // the boundary on purpose -- so the root bounds nothing at its own level.
+    const avail = n.kind === 'page' ? undefined : this.available(n, m);
     let y = 0;
     let broken: Fail | undefined;
     for (const c of kids) {
@@ -459,7 +492,11 @@ class Engine {
   /** XFA 3.3 p. 281: each child "immediately to the right of the nominal extent
    *  of the previous object, or if this fails immediately below it aligned with
    *  the left edge". A child on the same line keeps the line's top. With no
-   *  stated `w` the container is growable in width and never wraps. */
+   *  stated `w` the container is growable in width and never wraps.
+   *
+   *  "Below it" leaves open below WHAT once a line's heights differ. Adobe's own
+   *  rects settle it (bkdi, DoD DD 1155): the next line starts below the TALLEST
+   *  item on the line, where the first, the last and the shortest each miss. */
   private flowLrTb(n: LayoutNode, kids: LayoutNode[], m: Insets, out: Slots): void {
     const sw = stated(n, 'w');
     const width = typeof sw === 'number' ? sw - m.l - m.r : Infinity;
@@ -467,28 +504,15 @@ class Engine {
     let x = 0;
     let y = 0;
     let lineH = 0;
-    let line: number[] = [];
     let broken: Fail | undefined;
     for (const c of kids) {
       if (broken) { out.set(c, after(broken)); continue; }
       const size = this.flowSize(c);
       if (isFail(size)) { out.set(c, size); broken = size; continue; }
       if (x > 0 && x + size.w > width + EPS) {
-        // "immediately below it" does not say below WHAT once the line's
-        // heights differ, so that wrap refuses rather than picks.
-        if (line.some((v) => Math.abs(v - line[0]) > EPS)) {
-          const f: Fail = {
-            reason: `${c.label}: wraps after a line of mixed heights, where the specification `
-              + 'does not say how far below it goes',
-          };
-          out.set(c, f);
-          broken = f;
-          continue;
-        }
         y += lineH;
         x = 0;
         lineH = 0;
-        line = [];
       }
       if (avail !== undefined && y + size.h > avail + EPS) {
         const f = this.splitFail(n, c);
@@ -499,7 +523,6 @@ class Engine {
       out.set(c, { x: m.l + x, y: m.t + y });
       x += size.w;
       lineH = Math.max(lineH, size.h);
-      line.push(size.h);
     }
   }
 
@@ -688,34 +711,40 @@ class Engine {
   /** Walk top-down, recording every field's box or reason. `forced` is a table
    *  cell's expanded size, which replaces a leaf's own. `flow` names the
    *  nearest flowed ancestor's layout: a box under one is checked against the
-   *  contentArea's bottom wherever the flow sits, since past it is page
-   *  breaking (164g.3). */
+   *  contentArea's bottom wherever the flow sits, since past it is
+   *  splitting (164g.8 splits a tb subform between its children; the rest is 164g.11-13). */
   emit(
     n: LayoutNode, x: number, y: number, forced: Size | undefined,
     flow: string | undefined, out: Map<string, Placed>,
+    nodes: PlacedNode[] | undefined, invisible: boolean,
   ): void {
     const hid = concealed(n);
     if (hid !== undefined) { this.assignAll(n, hid, out); return; }
+    // p. 630: a container's contents inherit its presence.
+    const inv = invisible || n.presence === 'invisible';
     if (isLeaf(n)) {
-      if (n.field === undefined) return;
+      // A named field's refusal is reported as a FIELD; anything else (a draw,
+      // an unnamed field) is reported through `nodes` so its chrome can say so.
+      const refuse = (reason: string): void => {
+        if (n.field !== undefined) this.put(out, n.field, { reason });
+        else nodes?.push({ node: n, reason });
+      };
       const size = forced ?? this.extent(n);
-      if (isFail(size)) { this.put(out, n.field, { reason: size.reason }); return; }
+      if (isFail(size)) { refuse(size.reason); return; }
       if (flow !== undefined) {
         if (this.bottom === undefined) {
-          this.put(out, n.field, {
-            reason: `${n.label}: sits under layout="${flow}" and its pageArea declares no `
-              + 'contentArea height, so the flow cannot be bounded',
-          });
+          refuse(`${n.label}: sits under layout="${flow}" and its pageArea declares no `
+            + 'contentArea height, so the flow cannot be bounded');
           return;
         }
-        if (y + size.h > this.bottom + EPS) {
-          this.put(out, n.field, {
-            reason: `${n.label}: overflows its contentArea, which needs page breaking (164g.3)`,
-          });
+        if (y + size.h > this.bottom + BOTTOM_ROUNDING) {
+          refuse(`${n.label}: overflows its contentArea, which needs ${SPLIT_LATER}`);
           return;
         }
       }
-      this.put(out, n.field, { box: { x, y, w: size.w, h: size.h } });
+      const box = { x, y, w: size.w, h: size.h };
+      nodes?.push({ node: n, box, invisible: inv });
+      if (n.field !== undefined) this.put(out, n.field, { box });
       return;
     }
     // A container whose OWN extent failed -- content past maxH, an unreadable
@@ -723,7 +752,16 @@ class Engine {
     // failure that came from a child leaves the earlier children placed.
     if (n.kind !== 'page') {
       const e = this.extent(n);
-      if (isFail(e) && !e.fromChild) { this.assignAll(n, e.reason, out); return; }
+      if (isFail(e) && !e.fromChild) {
+        nodes?.push({ node: n, reason: e.reason });
+        this.assignAll(n, e.reason, out);
+        return;
+      }
+      // 164g.4: a container is recorded BEFORE its children (document order).
+      // One whose size is not known has no border to draw.
+      const size = forced ?? (isFail(e) ? undefined : e);
+      if (size === undefined) nodes?.push({ node: n, reason: (e as Fail).reason });
+      else nodes?.push({ node: n, box: { x, y, w: size.w, h: size.h }, invisible: inv });
     }
     const lay = n.layout ?? 'position';
     const inner = flow ?? (n.kind !== 'page' && lay !== 'position' ? lay : undefined);
@@ -733,8 +771,10 @@ class Engine {
       if (hidden !== undefined) { this.assignAll(c, hidden, out); continue; }
       const s = slots.get(c);
       if (s === undefined) continue;
-      if (isFail(s)) this.assignAll(c, s.reason, out);
-      else this.emit(c, x + s.x, y + s.y, s.size, inner, out);
+      if (isFail(s)) {
+        if (c.field === undefined) nodes?.push({ node: c, reason: s.reason });
+        this.assignAll(c, s.reason, out);
+      } else this.emit(c, x + s.x, y + s.y, s.size, inner, out, nodes, inv);
     }
   }
 
@@ -750,6 +790,27 @@ class Engine {
     out.set(name, v);
   }
 
+  /** The lowest edge of any field or draw under `n`, relative to its top: what
+   *  the p. 295 override reads (164g.3). A child that could not be placed draws
+   *  nothing and contributes nothing; a concealed one is not arranged at all. */
+  inkBottom(n: LayoutNode): number {
+    if (isLeaf(n)) {
+      const s = this.extent(n);
+      return isFail(s) ? 0 : s.h;
+    }
+    let bottom = 0;
+    for (const [c, sl] of this.arrange(n)) {
+      if (isFail(sl)) continue;
+      if (isLeaf(c)) {
+        const size = sl.size ?? this.extent(c);
+        if (!isFail(size)) bottom = Math.max(bottom, sl.y + size.h);
+        continue;
+      }
+      bottom = Math.max(bottom, sl.y + this.inkBottom(c));
+    }
+    return bottom;
+  }
+
   /** Give every field under `n` the same reason. */
   assignAll(n: LayoutNode, reason: string, out: Map<string, Placed>): void {
     if (n.field !== undefined) this.put(out, n.field, { reason });
@@ -762,15 +823,37 @@ class Engine {
  * stated `x`/`y`. The result maps every field SOM name under it to a box in
  * the page's XFA frame, or the reason it has none.
  */
-export function layoutPage(root: LayoutNode, measure?: XfaMeasure, warnings: string[] = []): Map<string, Placed> {
+export function layoutPage(
+  root: LayoutNode, measure?: XfaMeasure, warnings: string[] = [], nodes?: PlacedNode[],
+): Map<string, Placed> {
   const out = new Map<string, Placed>();
   const x = stated(root, 'x');
   const y = stated(root, 'y');
   const h = stated(root, 'h');
   const bottom = typeof h === 'number' && typeof y !== 'object' ? (y ?? 0) + h : undefined;
   const engine = new Engine(bottom, measure, warnings);
+  engine.index(root);
   if (typeof x === 'object') { engine.assignAll(root, x.reason, out); return out; }
   if (typeof y === 'object') { engine.assignAll(root, y.reason, out); return out; }
-  engine.emit(root, x ?? 0, y ?? 0, undefined, undefined, out);
+  engine.emit(root, x ?? 0, y ?? 0, undefined, undefined, out, nodes, false);
   return out;
+}
+
+/**
+ * A node's laid-out height, and whether any field or draw inside it ends below
+ * `limit` -- what pagination (`xfapage.ts`, 164g.3) needs to decide where a
+ * root child lands. `past` is the p. 295 test: a child too tall for an EMPTY
+ * content area may be placed past the boundary only when nothing it draws lies
+ * past it; otherwise it would need splitting (164g.8 splits a tb subform between its children; the rest is 164g.11-13). `parentLayout` is the
+ * layout `n` is laid out in, which decides whether a container's `min*`
+ * applies (bkdi).
+ */
+export function measureExtent(
+  n: LayoutNode, limit: number, measure?: XfaMeasure, warnings: string[] = [], parentLayout?: string,
+): { h: number; past: boolean } | { reason: string } {
+  const engine = new Engine(undefined, measure, warnings);
+  engine.index(n, parentLayout);
+  const e = engine.extent(n);
+  if (isFail(e)) return { reason: e.reason };
+  return { h: e.h, past: engine.inkBottom(n) > limit + EPS };
 }

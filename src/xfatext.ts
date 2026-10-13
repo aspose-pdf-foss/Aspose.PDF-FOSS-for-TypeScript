@@ -59,20 +59,49 @@ function mask(t: LeafText, faces: FaceLookup): LeafText {
   return { ...t, paras };
 }
 
-interface ParaSize { w: number; h: number }
+interface ParaSize { w: number; h: number; lines: LeafLine[] }
 
-function measurePara(p: ParaSpec, width: number, grow: boolean, faces: FaceLookup): ParaSize | { reason: string } {
+/** One run's piece of a laid-out line. */
+export interface LeafSegment { run: number; text: string; width: number }
+/** One laid-out line of a leaf's text (164g.4), in the text block's own frame:
+ *  top inset excluded, left inset excluded, caption reserve excluded. */
+export interface LeafLine {
+  /** Baseline, from the top of the leaf's text block. */
+  baseline: number;
+  /** Left edge of the line before alignment: marginLeft, plus textIndent on a
+   *  paragraph's first line. */
+  left: number;
+  /** Width the line may align within. */
+  room: number;
+  width: number;
+  para: number;
+  /** Last line of its paragraph (justify leaves it ragged). */
+  last: boolean;
+  segments: LeafSegment[];
+}
+/** The lines `measureLeaf` measures, with the extent it reports and the leaf
+ *  they were laid from (masked, for a password). */
+export interface LeafLayout { lines: LeafLine[]; w: number; h: number; text: LeafText }
+
+function layoutPara(
+  p: ParaSpec, width: number, grow: boolean, faces: FaceLookup, para: number, top: number,
+): ParaSize | { reason: string } {
   const avail = width - p.marginLeft - p.marginRight;
   if (avail <= EPS) return { reason: 'its paragraph margins leave no room for its text' };
-  const baseLine = (s: RunStyle): number | { reason: string } => {
+  const baseLine = (s: RunStyle): { asc: number; h: number } | { reason: string } => {
     const m = faces(s, '');
     if ('reason' in m) return m;
     const e = extent(m, s.size);
-    return Math.max(e.asc + e.desc, p.lineHeight);
+    return { asc: e.asc, h: Math.max(e.asc + e.desc, p.lineHeight) };
   };
   if (p.runs.length === 0) {
-    const h = baseLine(p.base);
-    return typeof h === 'number' ? { w: p.marginLeft + p.marginRight, h } : h;
+    const b = baseLine(p.base);
+    if ('reason' in b) return b;
+    return {
+      w: p.marginLeft + p.marginRight, h: b.h,
+      lines: [{ baseline: top + b.asc, left: p.marginLeft + p.textIndent, room: avail - p.textIndent,
+        width: 0, para, last: true, segments: [] }],
+    };
   }
   if (grow) {
     for (const line of p.runs.map((r) => r.text).join('').split('\n'))
@@ -89,6 +118,7 @@ function measurePara(p: ParaSpec, width: number, grow: boolean, faces: FaceLooku
   const res = layoutRuns(runs, avail, WIDE, 1, p.base.size, p.textIndent);
   let h = 0;
   let w = 0;
+  const lines: LeafLine[] = [];
   res.lines.forEach((line, i) => {
     let asc = 0;
     let desc = 0;
@@ -101,18 +131,30 @@ function measurePara(p: ParaSpec, width: number, grow: boolean, faces: FaceLooku
       const e = extent(metrics[0], p.base.size);
       asc = e.asc; desc = e.desc;
     }
+    // p. 61: the line is as tall as its tallest glyph box; extra leading from
+    // lineHeight sits below the baseline, which stays one ascent down.
+    lines.push({
+      baseline: top + h + asc,
+      left: p.marginLeft + (i === 0 ? p.textIndent : 0),
+      room: avail - (i === 0 ? p.textIndent : 0),
+      width: line.width,
+      para,
+      last: i === res.lines.length - 1,
+      segments: line.segments.map((sg) => ({ run: sg.run, text: sg.text, width: sg.width })),
+    });
     h += Math.max(asc + desc, p.lineHeight);
     w = Math.max(w, line.width + (i === 0 ? p.textIndent : 0));
   });
-  return { w: w + p.marginLeft + p.marginRight, h };
+  return { w: w + p.marginLeft + p.marginRight, h, lines };
 }
 
-/** The leaf's nominal extent at `box`, insets and caption included. */
-export function measureLeaf(
+/** The leaf's laid-out lines at `box` (164g.4) -- the SAME `layoutRuns` call
+ *  that measures it, so a painted leaf and its layout box cannot disagree. */
+export function layoutLeaf(
   t0: LeafText, box: MeasureBox, faces: FaceLookup,
-): { w: number; h: number } | { reason: string } {
+): LeafLayout | { reason: string } {
   if (t0.refusal !== undefined) return { reason: t0.refusal };
-  if (t0.kind === 'geometry') return { w: 0, h: 0 };
+  if (t0.kind === 'geometry') return { lines: [], w: 0, h: 0, text: t0 };
   const t = t0.password ? mask(t0, faces) : t0;
   const cap = t.caption;
   if (cap && cap.reserve === undefined)
@@ -127,13 +169,24 @@ export function measureLeaf(
   let h = 0;
   let w = 0;
   let prev: ParaSpec | undefined;
-  for (const p of t.paras) {
-    const s = measurePara(p, wrapAt, fixed === undefined, faces);
-    if ('reason' in s) return s;
+  const lines: LeafLine[] = [];
+  for (let i = 0; i < t.paras.length; i++) {
+    const p = t.paras[i];
     if (prev) h += Math.max(prev.spaceBelow, p.spaceAbove);
+    const s = layoutPara(p, wrapAt, fixed === undefined, faces, i, h);
+    if ('reason' in s) return s;
+    lines.push(...s.lines);
     h += s.h;
     w = Math.max(w, s.w);
     prev = p;
   }
-  return { w: fixed ?? w + l + r + capW, h: h + top + b + capH };
+  return { lines, w: fixed ?? w + l + r + capW, h: h + top + b + capH, text: t };
+}
+
+/** The leaf's nominal extent at `box`, insets and caption included. */
+export function measureLeaf(
+  t0: LeafText, box: MeasureBox, faces: FaceLookup,
+): { w: number; h: number } | { reason: string } {
+  const l = layoutLeaf(t0, box, faces);
+  return 'reason' in l ? l : { w: l.w, h: l.h };
 }
