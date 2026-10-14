@@ -271,8 +271,11 @@ describe('parseXfaTemplate: the page set', () => {
   });
 
   it('reads relation and the page set\'s own occur max', () => {
+    expect(ps('<pageSet><occur max="3"/><pageArea/></pageSet>'))
+      .toMatchObject({ relation: 'orderedOccurrence', max: 3 });
+    // 164g.9: a qualified page set ignores its occur (p. 296).
     expect(ps('<pageSet relation="duplexPaginated"><occur max="3"/><pageArea/></pageSet>'))
-      .toMatchObject({ relation: 'duplexPaginated', max: 3 });
+      .toMatchObject({ relation: 'duplexPaginated', max: -1 });
   });
 
   it('refuses an occur max that is not -1 or positive (p. 300)', () => {
@@ -295,7 +298,7 @@ describe('parseXfaTemplate: the page set', () => {
   });
 
   it('refuses a nested pageSet, a second one, and one not on the root subform', () => {
-    expect(ps('<pageSet><pageSet><pageArea/></pageSet></pageSet>')?.refusal).toMatch(/more than one pageSet, or a nested one.*164g\.9/);
+    expect(ps('<pageSet><pageSet><pageArea/></pageSet></pageSet>')?.refusal).toMatch(/more than one pageSet, or a nested one.*164g\.22/);
     expect(ps('<pageSet><pageArea/></pageSet><pageSet><pageArea/></pageSet>')?.refusal).toMatch(/more than one pageSet/);
     const t = tpl('<subform name="f" layout="tb"><subform name="S"><pageSet><pageArea/></pageSet></subform></subform>');
     expect(t.body?.pageSet?.refusal).toBe('a pageSet not on the root subform is not paginated');
@@ -342,17 +345,18 @@ describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
     expect(kid('').breakBefore).toBeUndefined();
   });
 
-  it('refuses a script, a leader, a trailer and pageEven/pageOdd by name', () => {
+  it('refuses a script, a leader, a trailer and an unknown targetType by name', () => {
     expect(kid('<breakBefore targetType="pageArea"><script>true</script></breakBefore>').breakBefore?.refusal)
       .toBe('P[0]: <breakBefore> with a script is not implemented');
     expect(kid('<breakBefore targetType="pageArea" leader="#L"/>').breakBefore?.refusal)
       .toBe('P[0]: <breakBefore> with a leader or trailer is not implemented (164g.15)');
     expect(kid('<breakAfter targetType="pageArea" trailer="#T"/>').breakAfter?.refusal)
       .toBe('P[0]: <breakAfter> with a leader or trailer is not implemented (164g.15)');
-    expect(kid('<breakBefore targetType="pageOdd"/>').breakBefore?.refusal)
-      .toBe('P[0]: <breakBefore> targetType="pageOdd" is not implemented (164g.9)');
-    expect(kid('<break before="pageEven"/>').breakBefore?.refusal)
-      .toBe('P[0]: <break> before="pageEven" is not implemented (164g.9)');
+    expect(kid('<breakBefore targetType="pageMiddle"/>').breakBefore?.refusal)
+      .toBe('P[0]: <breakBefore> targetType="pageMiddle" is not one XFA defines');
+    // 164g.9: pageEven and pageOdd are read, in both spellings.
+    expect(kid('<breakBefore targetType="pageOdd"/>').breakBefore).toEqual({ targetType: 'pageOdd', startNew: false });
+    expect(kid('<break before="pageEven"/>').breakBefore).toEqual({ targetType: 'pageEven', startNew: false });
   });
 });
 

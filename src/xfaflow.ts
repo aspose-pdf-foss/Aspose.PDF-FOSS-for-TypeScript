@@ -44,7 +44,7 @@ export interface XfaBreak {
 export interface XfaKeep { intact?: string; next?: string; previous?: string }
 
 /** What a refusal names when content would need a split 164g.8 does not do. */
-export const SPLIT_LATER = 'splitting beyond a tb subform between its children (164g.11, 164g.12, 164g.13)';
+export const SPLIT_LATER = 'splitting beyond a tb subform between its children (164g.12, 164g.13, 164g.19)';
 
 /** One node of a page's layout tree, as the template states it. */
 export interface LayoutNode {
@@ -856,4 +856,34 @@ export function measureExtent(
   const e = engine.extent(n);
   if (isFail(e)) return { reason: e.reason };
   return { h: e.h, past: engine.inkBottom(n) > limit + EPS };
+}
+
+/** One child of a positioned container as pagination sees it (164g.11): its
+ *  top in the container's CONTENT box and its laid-out height. */
+export interface ChildBox { node: LayoutNode; top: number; h: number }
+
+/**
+ * A positioned container's visible children, in document order, each with its
+ * top relative to the container's content box -- the frame XFA's `x`/`y` and
+ * Adobe's `xfa.layout.y` both use -- and its laid-out height. What
+ * `xfasplitpos.ts` decides a cut from. Hidden and inactive children take no
+ * space (p. 67) and are left out.
+ */
+export function positionedChildBoxes(n: LayoutNode, measure?: XfaMeasure): ChildBox[] | { reason: string } {
+  const engine = new Engine(undefined, measure, []);
+  engine.index(n);
+  const m = insetsOf(n);
+  if (isFail(m)) return { reason: m.reason };
+  const slots = engine.arrange(n);
+  const out: ChildBox[] = [];
+  for (const c of n.children) {
+    if (concealed(c) !== undefined) continue;
+    const s = slots.get(c);
+    if (s === undefined) return { reason: `${c.label}: was not laid out` };
+    if (isFail(s)) return { reason: s.reason };
+    const e = engine.extent(c);
+    if (isFail(e)) return { reason: e.reason };
+    out.push({ node: c, top: s.y - m.t, h: e.h });
+  }
+  return out;
 }

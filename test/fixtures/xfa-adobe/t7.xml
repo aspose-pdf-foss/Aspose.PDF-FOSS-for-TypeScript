@@ -1,0 +1,6 @@
+  <subform name="pos" layout="position" w="7.5in" h="12in"><keep intact="none"/>
+    <field name="a" x="0in" y="1in" w="2in" h="0.3in"><ui><textEdit/></ui></field>
+    <field name="b" x="2.5in" y="5.5in" w="2in" h="0.3in"><ui><textEdit/></ui></field>
+    <field name="c" x="0in" y="6.9in" w="2in" h="0.3in"><ui><textEdit/></ui></field>
+    <field name="d" x="0in" y="11in" w="2in" h="0.3in"><ui><textEdit/></ui></field>
+  </subform>

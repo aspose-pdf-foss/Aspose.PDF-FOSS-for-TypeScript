@@ -31,7 +31,7 @@ const chromeWidth = (w: number) => (w < 1 ? 1 : Math.floor(w));
 /** Pinned exactly. Raise only in the issue that changes it. Every text miss
  *  is a leaf `report.skipped` names (see PROVENANCE); the two OPM border
  *  misses sit below Q1, which pdf.js lays out 2.5pt shorter than we do. */
-const MATCHED_TEXT: Record<string, number> = { 'opm1644.pdf': 49, 'dod-dd2875.pdf': 74, 'dod-dd1494.pdf': 268 };
+const MATCHED_TEXT: Record<string, number> = { 'opm1644.pdf': 52, 'dod-dd2875.pdf': 74, 'dod-dd1494.pdf': 304 };
 const MATCHED_BORDERS: Record<string, number> = { 'opm1644.pdf': 46, 'dod-dd2875.pdf': 62, 'dod-dd1494.pdf': 53 };
 const BUTTON_CAPTIONS: Record<string, number> = { 'opm1644.pdf': 3, 'dod-dd2875.pdf': 0, 'dod-dd1494.pdf': 24 };
 

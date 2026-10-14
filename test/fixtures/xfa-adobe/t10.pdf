@@ -1,0 +1,73 @@
+%PDF-1.7
+%âãÏÓ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R /NeedsRendering true >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [3 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 612 792] /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 0 >>
+stream
+
+endstream
+endobj
+5 0 obj
+<< /Fields [] /XFA 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2638 >>
+stream
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/"><template xmlns="http://www.xfa.org/schema/xfa-template/2.8/"><subform name="form1" layout="tb" locale="en_US">
+  <pageSet><pageArea name="P1" id="P1"><medium short="8.5in" long="11in" stock="letter"/>
+    <contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/></pageArea></pageSet>
+  <event activity="docReady" ref="$host"><script contentType="application/x-javascript">
+if (typeof spikeDone == "undefined") {
+  spikeDone = true;
+  var rows = [];
+  function walk(n) {
+    for (var i = 0; i &lt; n.nodes.length; i++) {
+      var c = n.nodes.item(i);
+      if (c.className == "field" || c.className == "subform" || c.className == "draw") {
+        var span = xfa.layout.pageSpan(c);
+        var frags = [];
+        for (var k = 0; k &lt; span; k++)
+          frags.push([xfa.layout.page(c) + k, xfa.layout.x(c, "pt", k), xfa.layout.y(c, "pt", k), xfa.layout.w(c, "pt", k), xfa.layout.h(c, "pt", k)].join(","));
+        rows.push(c.somExpression + "=" + frags.join(";"));
+        walk(c);
+      }
+    }
+  }
+  var msg = "";
+  try { walk(xfa.form); msg = "pages=" + xfa.layout.pageCount() + "\n" + rows.join("\n") + "\nspikeSave=" + (typeof spikeSave); }
+  catch (e) { msg = "ERR " + e; }
+  xfa.form.form1.oracle.out.rawValue = msg;
+  if (typeof spikeSave != "undefined") try { spikeSave(event.target, "C:/unused.pdf"); } catch (e2) { xfa.form.form1.oracle.out.rawValue = msg + "\nSAVEERR " + e2; }
+}</script></event>
+  <subform name="oracle" layout="tb" w="7.5in"><field name="out" w="7.5in" h="3in"><font typeface="Courier New" size="8pt"/><ui><textEdit multiLine="1"/></ui></field></subform>
+    <subform name="filler" layout="position" w="7.5in" h="5in"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="pos" layout="position" w="7.5in" h="4in"><keep intact="none"/>
+    <field name="f" x="0" y="132pt" w="2in" h="48pt"><ui><textEdit/></ui></field>
+    <field name="z" x="5in" y="0.2in" w="1in" h="0.3in"><ui><textEdit/></ui></field>
+  </subform>
+
+</subform></template><xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data/></xfa:datasets><config xmlns="http://www.xfa.org/schema/xci/2.8/"><agent name="designer"><destination>pdf</destination></agent><present><pdf><version>1.7</version><scriptModel>XFA</scriptModel><interactive>1</interactive></pdf><common><data><adjustData>1</adjustData></data></common><script><runScripts>both</runScripts></script></present><acrobat><acrobat7><dynamicRender>required</dynamicRender></acrobat7><common><validate>preSubmit</validate></common></acrobat></config></xdp:xdp>
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000019 00000 n 
+0000000105 00000 n 
+0000000162 00000 n 
+0000000266 00000 n 
+0000000315 00000 n 
+0000000358 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+3048
+%%EOF

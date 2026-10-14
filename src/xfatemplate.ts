@@ -333,7 +333,7 @@ function fieldOf(
 
 /** A push button's caption text, read from the XML rather than from
  *  `captionText`'s measured leaf: a face needs no measurement, so a span the
- *  measurer refuses (an `xfa-spacerun`) must not cost the label. Whitespace
+ *  measurer refuses (a tab, an embedded object) must not cost the label. Whitespace
  *  collapses to one space and the ends are trimmed, which is what a centred
  *  face draws -- Adobe writes DD 1155's "Reset " with its space, and that space
  *  only shifts the centring. A paragraph or a <br> is a space. */
@@ -444,9 +444,7 @@ function breakOf(el: XmlNode, which: 'before' | 'after', label: string): XfaBrea
   if (script && script.text.trim() !== '') refusal = `${label}: ${tag} with a script is not implemented`;
   else if (modern && ((modern.attrs.get('leader') ?? '').trim() !== '' || (modern.attrs.get('trailer') ?? '').trim() !== ''))
     refusal = `${label}: ${tag} with a leader or trailer is not implemented (164g.15)`;
-  else if (targetType === 'pageEven' || targetType === 'pageOdd')
-    refusal = `${label}: ${shown} is not implemented (164g.9)`;
-  else if (!['auto', 'pageArea', 'contentArea'].includes(targetType))
+  else if (!['auto', 'pageArea', 'contentArea', 'pageEven', 'pageOdd'].includes(targetType))
     refusal = `${label}: ${shown} is not one XFA defines`;
   if (targetType === 'auto' && refusal === undefined) return undefined;
   return {
@@ -746,9 +744,31 @@ function pageSets(el: XmlNode, out: Array<{ ps: XmlNode; parent: XmlNode }>): vo
   }
 }
 
+const QUALIFIERS = {
+  pagePosition: ['any', 'first', 'last', 'rest', 'only'],
+  oddOrEven: ['any', 'odd', 'even'],
+  blankOrNotBlank: ['any', 'blank', 'notBlank'],
+} as const;
+type Qualifiers = Pick<XfaPageAreaModel, 'pagePosition' | 'oddOrEven' | 'blankOrNotBlank'>;
+
+/** A qualified page area's pagePosition, oddOrEven and blankOrNotBlank (XFA 3.3
+ *  p. 302-303), or why one cannot be read. Absent reads as `any`. */
+function qualifiersOf(el: XmlNode): Qualifiers | string {
+  const out: Record<string, string> = {};
+  for (const [key, allowed] of Object.entries(QUALIFIERS)) {
+    const v = el.attrs.get(key);
+    if (v === undefined) continue;
+    if (!(allowed as readonly string[]).includes(v)) return `pageArea ${key}="${v}" is not one XFA defines (XFA 3.3 p. 302)`;
+    out[key] = v;
+  }
+  return out as Qualifiers;
+}
+
 /** One `<pageArea>` element to its model. A content area's node is the `tb`
- *  root `xfapage.ts` lays out (XFA 3.3 p. 288). */
-function pageAreaOf(el: XmlNode): XfaPageAreaModel | string {
+ *  root `xfapage.ts` lays out (XFA 3.3 p. 288). Under a qualified relation
+ *  (`qualified`) its qualifiers are read and its `<occur>` is ignored with a
+ *  warning (p. 296, 302); under the ordered relation the reverse. */
+function pageAreaOf(el: XmlNode, qualified?: string, warnings: string[] = []): XfaPageAreaModel | string {
   const m = child(el, 'medium');
   let medium: XfaMedium | undefined;
   if (m) {
@@ -761,11 +781,21 @@ function pageAreaOf(el: XmlNode): XfaPageAreaModel | string {
       ...(orientation !== undefined ? { orientation } : {}),
     };
   }
-  const max = layoutMax(el);
-  if (max === undefined)
-    return `pageArea occur max="${child(el, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
-  const short = minRefusal(el, 0);
-  if (short !== undefined) return short;
+  let max: number | undefined = -1;
+  let quals: Qualifiers = {};
+  if (qualified) {
+    if (child(el, 'occur'))
+      warnings.push(`pageArea ${el.attrs.get('name') ?? '(unnamed)'} states <occur>, which ${qualified} ignores (XFA 3.3 p. 296)`);
+    const q = qualifiersOf(el);
+    if (typeof q === 'string') return q;
+    quals = q;
+  } else {
+    max = layoutMax(el);
+    if (max === undefined)
+      return `pageArea occur max="${child(el, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
+    const short = minRefusal(el, 0);
+    if (short !== undefined) return short;
+  }
   const named = (x: XmlNode) => {
     const name = x.attrs.get('name');
     const id = x.attrs.get('id');
@@ -775,7 +805,7 @@ function pageAreaOf(el: XmlNode): XfaPageAreaModel | string {
     ...named(c),
     node: { kind: 'page', label: 'contentArea', layout: 'tb', geom: geomOf(c), children: [] },
   }));
-  return { ...named(el), ...(medium ? { medium } : {}), max, contentAreas };
+  return { ...named(el), ...(medium ? { medium } : {}), max, ...quals, contentAreas };
 }
 
 /** The root subform's `<pageSet>` model, or why it cannot be paginated. */
@@ -787,25 +817,37 @@ function pageSetOf(
   pageSets(template, found);
   if (found.length === 0) return undefined;
   const { ps, parent } = found[0];
+  const relation = ps.attrs.get('relation') ?? 'orderedOccurrence';
+  const qualified = relation === 'simplexPaginated' || relation === 'duplexPaginated' ? relation : undefined;
+  const warnings: string[] = [];
   const areas: XfaPageAreaModel[] = [];
   let refusal: string | undefined;
   for (const c of ps.children) {
     if (c.name !== 'pageArea') continue;
-    const a = pageAreaOf(c);
+    const a = pageAreaOf(c, qualified, warnings);
     if (typeof a === 'string') { refusal ??= a; continue; }
     masters.set(c, { index: areas.length, area: a });
     areas.push(a);
   }
-  const max = layoutMax(ps);
-  if (max === undefined)
-    refusal = `pageSet occur max="${child(ps, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
-  refusal = minRefusal(ps, 1) ?? refusal;
-  if (found.length > 1) refusal = 'more than one pageSet, or a nested one, is not paginated (164g.9)';
+  let max: number | undefined = -1;
+  if (qualified) {
+    // p. 296, 310: occurrence limits do not apply to a qualified page set.
+    if (child(ps, 'occur')) warnings.push(`pageSet states <occur>, which ${qualified} ignores (XFA 3.3 p. 296)`);
+  } else {
+    max = layoutMax(ps);
+    if (max === undefined)
+      refusal = `pageSet occur max="${child(ps, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
+    refusal = minRefusal(ps, 1) ?? refusal;
+  }
+  if (!qualified && relation !== 'orderedOccurrence')
+    refusal = `pageSet relation="${relation}" is not one XFA defines (XFA 3.3 p. 798)`;
+  if (found.length > 1) refusal = 'more than one pageSet, or a nested one, is not paginated (164g.22)';
   if (parent !== rootEl) refusal = 'a pageSet not on the root subform is not paginated';
   return {
-    relation: ps.attrs.get('relation') ?? 'orderedOccurrence',
+    relation,
     max: max ?? -1,
     pageAreas: areas,
+    ...(warnings.length > 0 ? { warnings } : {}),
     ...(refusal !== undefined ? { refusal } : {}),
   };
 }

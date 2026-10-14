@@ -226,7 +226,7 @@ describe('layoutPage: tb', () => {
   it('refuses a child that would not fit a fixed-height container', () => {
     const m = layoutPage(page([sub('T', 'tb', { h: '25pt' }, [fld('a', S), fld('b', S), fld('c', S)])]));
     expect(box(m, 'b').y).toBe(10);
-    expect(why(m, 'c')).toMatch(/splitting beyond a tb subform between its children \(164g\.11, 164g\.12, 164g\.13\)/);
+    expect(why(m, 'c')).toMatch(/splitting beyond a tb subform between its children \(164g\.12, 164g\.13, 164g\.19\)/);
   });
 
   it('refuses a flowed child that states a non-left hAlign, and a row outside a table', () => {
@@ -369,7 +369,7 @@ describe('layoutPage: the page root (164g.3)', () => {
   it('still refuses a flowed box past the contentArea bottom, naming splitting', () => {
     const m = layoutPage(tbPage([sub('P', 'tb', {}, [fld('a', S), fld('b', S)])], { w: '540pt', h: '15pt' }));
     expect(box(m, 'a').y).toBe(0);
-    expect(why(m, 'b')).toMatch(/overflows its contentArea, which needs splitting beyond a tb subform between its children \(164g\.11, 164g\.12, 164g\.13\)/);
+    expect(why(m, 'b')).toMatch(/overflows its contentArea, which needs splitting beyond a tb subform between its children \(164g\.12, 164g\.13, 164g\.19\)/);
   });
 
   // A positioned root (the shape every older case here builds) holding a flow
@@ -583,7 +583,7 @@ describe('layoutPage: review fixes', () => {
       sub('T', 'tb', { y: '5pt' }, [fld('a', S), fld('b', S)]),
     ])], { w: '540pt', h: '20pt' }));
     expect(box(m, 'a').y).toBe(5);
-    expect(why(m, 'b')).toMatch(/overflows its contentArea, which needs splitting beyond a tb subform between its children \(164g\.11, 164g\.12, 164g\.13\)/);
+    expect(why(m, 'b')).toMatch(/overflows its contentArea, which needs splitting beyond a tb subform between its children \(164g\.12, 164g\.13, 164g\.19\)/);
   });
 
   it('refuses a flow under a positioned page subform when the contentArea states no height', () => {

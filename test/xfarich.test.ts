@@ -106,7 +106,22 @@ describe('leafText: rich text (XFA 3.3 ch. 27)', () => {
     expect(rich('<p style="letter-spacing:1pt">a</p>').refusal).toMatch(/letter-spacing/);
     expect(rich('<ul><li>a</li></ul>').refusal).toMatch(/list/);
     expect(rich('<p style="font-size:12px">a</p>').refusal).toMatch(/font-size/);
-    expect(rich('<p>a<span style="xfa-spacerun:yes">  </span>b</p>').refusal).toMatch(/spacerun/);
+  });
+
+  // 164g.17: every space of a spacerun but the last of each run becomes
+  // U+00A0, so layoutRuns cannot collapse it and the break stays after it.
+  it('keeps two or more spacerun spaces as U+00A0 plus one breakable space', () => {
+    const txt = (body: string) => { const t = rich(body); expect(t.refusal).toBeUndefined(); return t.paras[0].runs.map((r) => r.text).join(''); };
+    expect(txt('<p>a<span style="xfa-spacerun:yes">  </span>b</p>')).toBe('a  b');
+    expect(txt('<p>a<span style="xfa-spacerun:yes">   </span>b</p>')).toBe('a   b');
+    expect(txt('<p>a<span style="xfa-spacerun:yes"> </span>b</p>')).toBe('a b');
+    expect(txt('<p>a<span style="xfa-spacerun:yes">  </span>b</p>')).toBe('a  b');
+  });
+
+  it('protects a spacerun space that follows a space in the run before it', () => {
+    const t = rich('<p>a<span style="xfa-spacerun:yes"> </span><span style="xfa-spacerun:yes;font-size:9pt"> </span>b</p>');
+    expect(t.refusal).toBeUndefined();
+    expect(t.paras[0].runs.map((r) => r.text)).toEqual(['a ', ' ', 'b']);
   });
 });
 
@@ -135,5 +150,42 @@ describe('leafText: refusals and geometry', () => {
   it('never throws on junk', () => {
     expect(() => leafText(el('<draw><font size="huge"/><value><text>a</text></value></draw>'))).not.toThrow();
     expect(leafText(el('<draw><font size="huge"/><value><text>a</text></value></draw>')).refusal).toMatch(/size/);
+  });
+});
+
+// 164g.18: U+2029 is XFA's new paragraph indicator (p. 56), in rich text as in
+// plain. Left in a run it reached face coverage and cost DD 1494's headings.
+describe('leafText: U+2029 in rich text (164g.18)', () => {
+  const rich = (body: string) => leafText(el(
+    `<draw><font typeface="Arial"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml">${body}</body></exData></value></draw>`));
+  const texts = (t: ReturnType<typeof leafText>) => t.paras.map((p) => p.runs.map((r) => r.text).join(''));
+
+  it('starts a new paragraph inside a <p>', () => {
+    const t = rich('<p>FORM 1494\u2029"APPLICATION"</p><p>PAGE</p>');
+    expect(t.refusal).toBeUndefined();
+    expect(texts(t)).toEqual(['FORM 1494', '"APPLICATION"', 'PAGE']);
+  });
+  it("repeats the enclosing <p>'s box on the new paragraph", () => {
+    const t = rich('<p style="margin-top:2pt;text-indent:5pt;margin-left:3pt">a\u2029b</p>');
+    expect(t.paras).toHaveLength(2);
+    for (const p of t.paras) expect(p).toMatchObject({ spaceAbove: 2, textIndent: 5, marginLeft: 3 });
+  });
+  it('splits inside an xfa-spacerun span too', () => {
+    const t = rich('<p>a<span style="xfa-spacerun:yes">  \u2029  </span>b</p>');
+    expect(t.refusal).toBeUndefined();
+    expect(t.paras).toHaveLength(2);
+    expect(t.paras.every((p) => p.runs.every((r) => !r.text.includes('\u2029')))).toBe(true);
+  });
+  it('gives an empty paragraph for a trailing U+2029, as plain text does', () => {
+    expect(texts(rich('<p>a\u2029</p>'))).toEqual(['a', '']);
+  });
+  it('measures an empty new paragraph in the style in force', () => {
+    const t = rich('<p><span style="font-size:20pt">a </span></p>');
+    expect(t.paras[1].runs).toEqual([]);
+    expect(t.paras[1].base.size).toBe(20);
+  });
+  it('keeps the style in force for the new paragraph', () => {
+    const t = rich('<p><span style="font-weight:bold">a\u2029b</span></p>');
+    expect(t.paras[1].runs[0]).toMatchObject({ text: 'b', bold: true });
   });
 });

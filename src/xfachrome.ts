@@ -203,7 +203,8 @@ const SLACK = 1e-6;
 /** One piece of text to show, in its run's style and paint. */
 function textOp(x: number, y: number, text: string, run: RunSpec): ChromeOp {
   return {
-    kind: 'text', x, y, text,
+    // A spacerun's protected U+00A0 (164g.17) is the space it stands for.
+    kind: 'text', x, y, text: text.replace(/ /g, ' '),
     style: { family: run.family, size: run.size, bold: run.bold, italic: run.italic },
     color: run.color ?? [0, 0, 0], underline: !!run.underline, lineThrough: !!run.lineThrough,
   };

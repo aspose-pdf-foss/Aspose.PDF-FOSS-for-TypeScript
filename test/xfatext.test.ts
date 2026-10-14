@@ -29,6 +29,16 @@ describe('measureLeaf', () => {
     expect(measureLeaf(draw('aa\naaaa'), {}, faces)).toEqual({ w: 20, h: 20 });
   });
 
+  // 164g.17: a spacerun's spaces are each measured, and the break stays after them.
+  it('measures every space of a spacerun and breaks after the run', () => {
+    const sr = (w: number | undefined) => measureLeaf(el('<draw><font typeface="Mono" size="10pt"/><value><exData contentType="text/html">'
+      + '<body><p>aa<span style="xfa-spacerun:yes">   </span>bb</p></body></exData></value></draw>'),
+    w === undefined ? {} : { width: w }, faces);
+    expect(sr(undefined)).toEqual({ w: 35, h: 10 });
+    // 'aa' plus two protected spaces is 20pt; 'bb' wraps to the next line.
+    expect(sr(25)).toEqual({ w: 25, h: 20 });
+  });
+
   it('wraps a width-growable leaf at maxWidth', () => {
     expect(measureLeaf(draw('aaaa bbbb'), { maxWidth: 30 }, faces)).toEqual({ w: 20, h: 20 });
   });

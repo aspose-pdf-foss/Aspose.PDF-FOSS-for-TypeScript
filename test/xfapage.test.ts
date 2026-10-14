@@ -6,6 +6,8 @@ import {
 import type { LayoutNode, XfaBreak, Placed } from '../src/xfaflow.js';
 import { SPLIT_LATER } from '../src/xfaflow.js';
 import type { XfaRawGeom } from '../src/xfageom.js';
+import type { XfaChildBoxes } from '../src/xfasplitpos.js';
+import type { LeafText } from '../src/xfarich.js';
 
 /** A root child of stated height. A label ending in '!' has ink past any limit. */
 const kid = (label: string, h: number, extra: Partial<LayoutNode> = {}): LayoutNode =>
@@ -198,7 +200,7 @@ describe('paginate: the p. 295 override', () => {
   it('refuses one whose content lies past the boundary, and every child after it', () => {
     const b = body([area([ca(100)])], [kid('A!', 110), kid('B', 10)]);
     const r = refusals(b);
-    expect(r[0]).toEqual(['A!', 'A!: does not fit an empty content area and would need splitting beyond a tb subform between its children (164g.11, 164g.12, 164g.13)']);
+    expect(r[0]).toEqual(['A!', 'A!: does not fit an empty content area and would need splitting beyond a tb subform between its children (164g.12, 164g.13, 164g.19)']);
     expect(r[1][0]).toBe('B');
     expect(r[1][1]).toMatch(AFTER);
   });
@@ -351,8 +353,8 @@ describe('paginate: refusals, by name', () => {
     expect(all(body([area([ca(100)])], two, { rootLayout: 'position' }))[0]).toMatch(/layout "position" is not paginated \(only tb\)/);
   });
 
-  it('refuses a qualified pagination relation', () => {
-    expect(all(body([area([ca(100)])], two, { relation: 'simplexPaginated' }))[0]).toMatch(/simplexPaginated.*164g\.9/);
+  it('paginates a qualified pagination relation rather than refusing it (164g.9)', () => {
+    expect(all(body([area([ca(100)])], two, { relation: 'simplexPaginated' }))).toEqual([]);
   });
 
   it('passes the page set\'s own refusal through', () => {
@@ -465,5 +467,92 @@ describe('layoutPages', () => {
     ]));
     const p = r.pages[0].placed.get('d');
     expect(p && 'reason' in p ? p.reason : '').toMatch(/two fields share the SOM name d/);
+  });
+});
+
+// 164g.11: a positioned subform stating keep intact="none" splits where Adobe
+// Reader does (test/fixtures/xfa-adobe/). Content area 720 tall; O + F leave 144.
+describe('paginate: splitting a keep-none positioned root child (164g.11)', () => {
+  const fld = (label: string, y: number, h: number): LayoutNode => ({
+    kind: 'field', label, field: `pos.${label}`, geom: { x: '0pt', y: `${String(y)}pt`, w: '100pt', h: `${String(h)}pt` },
+    children: [], text: { paras: [{ base: { size: 10 } }] } as unknown as LeafText,
+  });
+  const drw = (label: string, y: number, h: number): LayoutNode =>
+    ({ kind: 'draw', label, geom: { x: '0pt', y: `${String(y)}pt`, w: '100pt', h: `${String(h)}pt` }, children: [] });
+  const P = (h: number | undefined, children: LayoutNode[], extra: Partial<LayoutNode> = {}): LayoutNode => ({
+    kind: 'subform', label: 'P', layout: 'position', geom: h === undefined ? { w: '540pt' } : { w: '540pt', h: `${String(h)}pt` },
+    keep: { intact: 'none' }, children, ...extra,
+  });
+  const posBoxes: XfaChildBoxes = (n) => n.children
+    .filter((k) => k.presence !== 'hidden' && k.presence !== 'inactive')
+    .map((k) => ({ node: k, top: pt(k.geom.y), h: hOf(k) }));
+  // A growable positioned subform's height is its lowest child's bottom.
+  const posHeight: XfaHeight = (n) => (n.layout === 'position' && n.geom.h === undefined
+    ? { h: Math.max(0, ...n.children.map((k) => pt(k.geom.y) + hOf(k))), past: false } : flowHeight(n, Infinity));
+  const lead = [kid('O', 216), kid('F', 360)];
+  const run = (kids: LayoutNode[], b = body([area([ca(720)])], kids)) => paginate(b, posHeight, posBoxes);
+  const regions = (kids: LayoutNode[], b?: XfaBody) => run(kids, b).pages.map((p) => p.contentAreas.map((c) => c.children
+    .map((k) => (k.label === 'P' ? `P:${k.geom.h ?? ''}(${k.children.map((x) => `${x.label}@${x.geom.y ?? ''}`).join(',')})` : k.label))
+    .join(' ')).join('|'));
+
+  it('puts the top into the room left and the rest on the next page (t5)', () => {
+    expect(regions([...lead, P(288, [fld('a', 36, 21.6), fld('b', 108, 21.6), fld('c', 216, 21.6)])]))
+      .toEqual(['O F P:144pt(a@36pt,b@108pt)', 'P:144pt(c@72pt)']);
+  });
+  it('moves a default positioned subform whole, as before (t3)', () => {
+    expect(regions([...lead, P(288, [fld('a', 36, 21.6)], { keep: undefined })])).toEqual(['O F', 'P:288pt(a@36pt)']);
+  });
+  it('does not split without the boxes callback', () => {
+    const r = paginate(body([area([ca(720)])], [...lead, P(288, [fld('a', 36, 21.6)])]), posHeight);
+    expect(r.pages.map((p) => p.contentAreas[0].children.map((k) => k.label).join(' '))).toEqual(['O F', 'P']);
+  });
+  it('splits again while the rest is taller than a page (t15)', () => {
+    expect(regions([...lead, P(1800, [fld('f', 100, 20), fld('h', 900, 20), fld('k', 1700, 20)])]))
+      .toEqual(['O F P:144pt(f@100pt)', 'P:720pt()', 'P:720pt(h@36pt)', 'P:216pt(k@116pt)']);
+  });
+  it('moves it whole when the cut reaches the top (t25)', () => {
+    expect(regions([...lead, P(288, [drw('dr', 0, 200), fld('g', 250, 20)])])).toEqual(['O F', 'P:288pt(dr@0pt,g@250pt)']);
+  });
+  it('splits a growable keep-none subform, stating h on each fragment', () => {
+    expect(regions([...lead, P(undefined, [fld('a', 36, 20), fld('c', 216, 20)])]))
+      .toEqual(['O F P:144pt(a@36pt)', 'P:92pt(c@72pt)']);
+  });
+  it('refuses a split it cannot make and places nothing of it (t6)', () => {
+    const p = P(288, [fld('a', 36, 21.6), fld('b', 108, 72)]);
+    const r = run([...lead, p, kid('Z', 10)]);
+    expect(r.refused.get(p)).toBe('b: Adobe splits a field straddling a content-area break between its lines, which is not implemented (164g.13)');
+    expect(r.pages.map((pg) => pg.contentAreas[0].children.map((k) => k.label).join(' '))).toEqual(['O F']);
+    expect([...r.refused.keys()].map((n) => n.label)).toEqual(['P', 'Z']);
+  });
+  it('refuses a split whose rest has no page left, placing nothing (occur max)', () => {
+    const p = P(1000, [fld('a', 36, 20)]);
+    const b = body([area([ca(720)], { max: 1 })], [...lead, p], { max: 1 });
+    const r = run([], b);
+    expect(r.refused.get(p)).toMatch(/discarded/);
+    expect(r.pages[0].contentAreas[0].children.map((k) => k.label)).toEqual(['O', 'F']);
+  });
+  it('refuses a keep-none subform with an <overflow> that would continue (164g.15)', () => {
+    const p = P(288, [fld('a', 36, 21.6)], { overflow: true });
+    expect(run([...lead, p]).refused.get(p)).toMatch(/164g\.15/);
+  });
+  it('names 164g.19 when a default positioned subform is taller than an empty page', () => {
+    expect(SPLIT_LATER).toMatch(/164g\.19/);
+    expect(SPLIT_LATER).not.toMatch(/164g\.11/);
+  });
+});
+
+describe('layoutPages: a split positioned subform (164g.11)', () => {
+  const fld = (label: string, y: number, h: number): LayoutNode => ({
+    kind: 'field', label, field: label, geom: { x: '0pt', y: `${String(y)}pt`, w: '100pt', h: `${String(h)}pt` }, children: [],
+  });
+  it("lays each fragment's fields out on its own page (t24's nesting)", () => {
+    const inner: LayoutNode = { kind: 'subform', label: 'inner', layout: 'position', keep: { intact: 'none' },
+      geom: { x: '0pt', y: '100pt', w: '216pt', h: '120pt' }, children: [fld('g', 0, 20), fld('k', 80, 20)] };
+    const p: LayoutNode = { kind: 'subform', label: 'P', layout: 'position', keep: { intact: 'none' },
+      geom: { w: '540pt', h: '288pt' }, children: [inner] };
+    const r = layoutPages(body([area([ca(720)])], [kid('O', 216), kid('F', 360), p]));
+    expect(r.pages.length).toBe(2);
+    expect(r.pages[0].placed.get('g')).toEqual({ box: { x: 0, y: 676, w: 100, h: 20 } });
+    expect(r.pages[1].placed.get('k')).toEqual({ box: { x: 0, y: 36, w: 100, h: 20 } });
   });
 });

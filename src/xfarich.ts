@@ -17,6 +17,7 @@ import type { XmlNode } from './xml.js';
 import { measureToPt } from './xfageom.js';
 import { parseDeclarationList, type CssValue } from './cssparse.js';
 import { trimWs } from './cssvalue.js';
+import { NBSP } from './preformat.js';
 
 export interface RunStyle { family: string[]; size: number; bold: boolean; italic: boolean }
 /** Paint-only run properties (164g.4): written only when the template states a
@@ -336,17 +337,41 @@ class RichBuilder {
     if (!this.cur) this.cur = { ...this.para, base: s, runs: [] };
     return this.cur;
   }
+  /** A text node. U+2029 is XFA's new paragraph indicator (p. 56), in rich
+   *  text as in plain (`plainParas`): it ends the paragraph in force and opens
+   *  another with the same box -- the enclosing `<p>`'s margins, indent and
+   *  spacing -- in the style in force (164g.18). Left in a run it reached face
+   *  coverage and cost the whole leaf, since no face draws it. pdf.js breaks
+   *  the LINE there instead; the two differ only for a `<p>` stating spacing. */
   text(raw: string, ctx: Ctx): void {
+    raw.split(' ').forEach((seg, i) => {
+      if (i > 0) this.paraBreak(ctx);
+      this.segment(seg, ctx);
+    });
+  }
+  private paraBreak(ctx: Ctx): void {
+    const { runs: _runs, base: _base, ...box } = this.para0(ctx.style);
+    this.close();
+    this.cur = { ...box, base: ctx.style, runs: [] };
+  }
+  private segment(raw: string, ctx: Ctx): void {
     // The paragraph is opened only once there is text to put in it (164g.4):
     // whitespace between block elements is not content, and opening one for it
     // measured a phantom blank line.
     const open = this.cur;
     let t: string;
     if (ctx.spacerun) {
-      // p. 1220: each U+00A0 or space in a spacerun is one space. Two or more
-      // would be collapsed by layoutRuns, changing the wrap: refuse.
-      t = raw.replace(/\u00A0/g, ' ').replace(/[\t\r\n]/g, '');
-      if (/ {2,}/.test(t)) { this.refusal ??= 'two or more spaces in an xfa-spacerun span are not measured'; return; }
+      // p. 1220: each U+00A0 or space in a spacerun is one space. layoutRuns
+      // COLLAPSES a run of spaces, so every space but the LAST of a run becomes
+      // U+00A0 (preformat.ts's substitution, 164g.17): it is never collapsed and
+      // never a break, so the line still breaks after the run, as pre-wrap
+      // does. A run may begin in the run before -- a spacerun span after one
+      // ending in a space -- so that trailing space is protected too. Faces
+      // measure U+00A0 at the space's advance and it is painted as U+0020
+      // (xfafont.ts, xfachrome.ts).
+      t = raw.replace(/\u00A0/g, ' ').replace(/[\t\r\n]/g, '').replace(/ (?= )/g, NBSP);
+      const last = open?.runs[open.runs.length - 1];
+      if (last && t.startsWith(' ') && last.text.endsWith(' ')) last.text = last.text.slice(0, -1) + NBSP;
     } else {
       t = raw.replace(/[ \t\r\n\f]+/g, ' ');
       const before = open?.runs[open.runs.length - 1];

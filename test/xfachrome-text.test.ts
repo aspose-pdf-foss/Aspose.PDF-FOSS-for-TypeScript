@@ -53,6 +53,13 @@ describe('chromeOps: a draw\'s text (164g.4)', () => {
     expect(texts(chromeOps([at(draw(text([p])))], faces).ops)[0]).toMatchObject({ color: [1, 0, 0], underline: true, lineThrough: false });
   });
 
+  // 164g.17: a spacerun's protected U+00A0 is painted as the space it stands
+  // for, so a face lacking U+00A0 draws it and a copy reads as real spaces.
+  it('paints a protected spacerun space as U+0020', () => {
+    const o = texts(chromeOps([at(draw(text([para('a  b')])))], faces).ops);
+    expect(o.map((t) => t.text).join('')).toBe('a  b');
+  });
+
   // Review Focus 1: a face nothing resolves.
   it('reports text in a face nothing resolves, and paints none of it', () => {
     const t = text([{ ...para('ab'), runs: [{ ...base, family: ['Missing'], text: 'ab' }], base: { ...base, family: ['Missing'] } }]);

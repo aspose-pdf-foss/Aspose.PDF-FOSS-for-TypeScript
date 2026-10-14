@@ -1,7 +1,8 @@
 /**
  * XFA pagination (`164g.3`): which child of the root subform lands in which
- * content area of which page, under `orderedOccurrence` (XFA Specification 3.3,
- * pinned by 164g.1; p. 269-270, 288-300, 360-367).
+ * content area of which page, under `orderedOccurrence` and, since `164g.9`,
+ * `simplexPaginated` and `duplexPaginated` (XFA Specification 3.3, pinned by
+ * 164g.1; p. 269-270, 288-310, 360-367).
  *
  * **Invariant: it decides MEMBERSHIP only.** Every position comes from
  * `xfaflow.ts`: each content area holding children is laid out as a `tb` root,
@@ -18,10 +19,18 @@
  * break chooses where layout STARTS and never opens a page of its own.
  */
 import {
-  layoutPage, measureExtent, insetsOf, SPLIT_LATER,
+  layoutPage, measureExtent, insetsOf, positionedChildBoxes, SPLIT_LATER,
   type LayoutNode, type Placed, type PlacedNode, type XfaBreak, type XfaMeasure,
 } from './xfaflow.js';
 import { measureToPt, type XfaMedium } from './xfageom.js';
+import {
+  positionedCut, positionedFragment, positionedSplittable, type XfaChildBoxes,
+} from './xfasplitpos.js';
+
+/** A qualified page area's qualifiers (XFA 3.3 p. 302-303); absent reads as `any`. */
+export type XfaPagePosition = 'any' | 'first' | 'last' | 'rest' | 'only';
+export type XfaOddOrEven = 'any' | 'odd' | 'even';
+export type XfaBlankOrNotBlank = 'any' | 'blank' | 'notBlank';
 
 export interface XfaContentArea { name?: string; id?: string; node: LayoutNode }
 export interface XfaPageAreaModel {
@@ -30,6 +39,12 @@ export interface XfaPageAreaModel {
   medium?: XfaMedium;
   /** `<occur max>`; -1 (the default, p. 300) is no limit. */
   max: number;
+  /** Read only under a qualified relation (p. 302): the page's position in its set. */
+  pagePosition?: XfaPagePosition;
+  /** Read only under a qualified relation (p. 303): the surface's parity. */
+  oddOrEven?: XfaOddOrEven;
+  /** Read only under a qualified relation (p. 303): why the page was included. */
+  blankOrNotBlank?: XfaBlankOrNotBlank;
   contentAreas: XfaContentArea[];
   /** The page area's own background -- fields, draws and subforms outside its
    *  content areas -- as a POSITIONED root at the page origin (XFA 3.3 p. 271,
@@ -44,6 +59,8 @@ export interface XfaPageSet {
   pageAreas: XfaPageAreaModel[];
   /** Why this page set cannot be paginated, as the template found it. */
   refusal?: string;
+  /** Warnings found while reading the page set (an ignored occur). */
+  warnings?: string[];
 }
 /** The root subform (whose children are the page-level content) and its page set. */
 export interface XfaBody { root: LayoutNode; pageSet?: XfaPageSet }
@@ -55,6 +72,8 @@ export interface PaginatedPage {
   pageSet: number;
   /** Per content area of that page area, the children that landed there. */
   contentAreas: Array<{ index: number; children: LayoutNode[] }>;
+  /** A page holding no content by design: a parity filler or an appended last page. */
+  blank?: true;
 }
 export interface Pagination {
   pages: PaginatedPage[];
@@ -69,6 +88,32 @@ export type XfaHeight = (n: LayoutNode, limit: number) => { h: number; past: boo
 /** Tolerance for comparing summed measurements (`xfaflow.ts`'s). */
 const EPS = 1e-6;
 const DISCARDED = "content past every pageArea's occur max is discarded (XFA 3.3 p. 300)";
+
+export type PaginationMode = 'ordered' | 'simplex' | 'duplex';
+/** The layout state a qualified page area is matched against (p. 304). */
+export interface PageState { position: 'first' | 'rest'; parity: 'odd' | 'even'; blank: boolean }
+
+/** The one owner of qualified matching (164g.9): the first page area, in
+ *  document order, whose qualifiers fit `s` (XFA 3.3 p. 302-304), or undefined.
+ *  `last` and `only` never match here; termination alone uses them (p. 308).
+ *  `oddOrEven` is matched under simplex too, where every page is odd -- so an
+ *  even-only area never matches, as Adobe probe q3 shows (p. 798 says simplex
+ *  ignores it; p. 303-304 and Adobe do not). `blankOrNotBlank` is ignored under
+ *  simplex (p. 798). */
+export function chooseArea(areas: readonly XfaPageAreaModel[], s: PageState, mode: 'simplex' | 'duplex'): number | undefined {
+  const i = areas.findIndex((pa) => {
+    const pos = pa.pagePosition ?? 'any';
+    if (pos !== 'any' && pos !== s.position) return false;
+    const oe = pa.oddOrEven ?? 'any';
+    if (oe !== 'any' && oe !== s.parity) return false;
+    if (mode === 'duplex') {
+      const b = pa.blankOrNotBlank ?? 'any';
+      if (b !== 'any' && (b === 'blank') !== s.blank) return false;
+    }
+    return true;
+  });
+  return i < 0 ? undefined : i;
+}
 
 const concealed = (n: LayoutNode): boolean => n.presence === 'hidden' || n.presence === 'inactive';
 const after = (cause: string): string => `an earlier item in its flow could not be laid out (${cause})`;
@@ -99,7 +144,8 @@ function resolveTarget(
  *  stated h whose keep intact is none splits BETWEEN its children. Its parent is
  *  always a flow -- the content area, or a tb being split -- where a subform's
  *  intact defaults to none (a positioned parent would default it to
- *  contentArea). */
+ *  contentArea). A positioned subform splits geometrically instead, when it
+ *  states keep intact="none" (xfasplitpos.ts, 164g.11). */
 export function splittable(n: LayoutNode): boolean {
   return n.kind === 'subform' && n.layout === 'tb' && n.geom.h === undefined
     && n.refusal === undefined && (n.keep?.intact ?? 'none') === 'none';
@@ -193,7 +239,38 @@ class Paginator {
   constructor(
     private readonly ps: XfaPageSet, private readonly maxOf: readonly number[],
     private readonly heights: readonly number[][],
+    readonly mode: PaginationMode = 'ordered',
+    private readonly force?: ReadonlyMap<number, number>,
   ) { this.uses = ps.pageAreas.map(() => 0); }
+
+  /** Page `i`'s parity (p. 303): under duplex the physical surface count's,
+   *  which starts at zero, so page 1 is odd. Otherwise every page is a front
+   *  and so odd -- simplex by p. 303, and the ordered relation by Adobe probe
+   *  q11, where a pageOdd break takes the very next page. */
+  parityOf(i: number): 'odd' | 'even' {
+    if (this.mode !== 'duplex') return 'odd';
+    return i % 2 === 0 ? 'odd' : 'even';
+  }
+
+  /** Consecutive boilerplate pages opened by `qualifiedNext`. */
+  private boiler = 0;
+
+  /** The next page under a qualified strategy (p. 302-304): the forced page
+   *  area for a termination rerun, else `chooseArea` for this page's state. */
+  qualifiedNext(blank = false): string | undefined {
+    const i = this.pages.length;
+    const s: PageState = { position: i === 0 ? 'first' : 'rest', parity: this.parityOf(i), blank };
+    const a = this.force?.get(i) ?? chooseArea(this.ps.pageAreas, s, this.mode as 'simplex' | 'duplex');
+    if (a === undefined)
+      return `no pageArea matches position=${s.position} parity=${s.parity} blank=${String(s.blank)} (XFA 3.3 p. 304)`;
+    if (this.ps.pageAreas[a].contentAreas.length === 0 && !blank) {
+      // p. 296: boilerplate is emitted and the advance continues; with no
+      // occurrence limits a rest/any boilerplate area would match forever.
+      if (++this.boiler > this.ps.pageAreas.length)
+        return `pageArea ${this.ps.pageAreas[a].name ?? String(a)} has no contentArea and qualifies for every later page, so it would repeat without end (XFA 3.3 p. 296)`;
+    } else this.boiler = 0;
+    return this.open(a, blank);
+  }
 
   capacity(): number { return this.heights[this.area][this.ca]; }
 
@@ -218,19 +295,21 @@ class Paginator {
 
   /** A page of page area `a`. One with no content area is pure boilerplate
    *  (p. 296): emitted holding nothing, and the advance continues. */
-  private open(a: number): string | undefined {
+  private open(a: number, blank = false): string | undefined {
     this.uses[a] += 1;
-    this.pages.push({ pageArea: a, pageSet: this.set, contentAreas: [] });
+    this.pages.push({ pageArea: a, pageSet: this.set, contentAreas: [], ...(blank ? { blank: true as const } : {}) });
     this.area = a;
     this.ca = 0;
     this.used = 0;
-    return this.ps.pageAreas[a].contentAreas.length === 0 ? this.nextPage() : undefined;
+    // A blank page holds nothing by design; its caller opens the content page.
+    return blank || this.ps.pageAreas[a].contentAreas.length > 0 ? undefined : this.nextPage();
   }
 
   /** The natural next page (p. 298-300): another instance of the current page
    *  area while its max allows, then the next page area in order, then a new
    *  page-set instance from the first. */
   nextPage(): string | undefined {
+    if (this.mode !== 'ordered') return this.qualifiedNext();
     const n = this.ps.pageAreas.length;
     if (this.area >= 0 && this.canUse(this.area)) return this.open(this.area);
     for (let a = this.area + 1; a < n; a++) if (this.canUse(a)) return this.open(a);
@@ -253,17 +332,43 @@ class Paginator {
    *  FORWARD: a page area at or behind the current one is reached through a new
    *  page-set instance once the current instance cannot hold another. */
   private toPageArea(a: number): string | undefined {
+    if (this.mode !== 'ordered') {
+      const why = this.blankTarget(a);
+      if (why !== undefined) return why;
+      // p. 305: a target of the other parity is reached through a blank filler.
+      const oe = this.ps.pageAreas[a].oddOrEven ?? 'any';
+      if (this.mode === 'duplex' && oe !== 'any' && oe !== this.parityOf(this.pages.length)) {
+        const f = this.qualifiedNext(true);
+        if (f !== undefined) return f;
+      }
+      return this.open(a);
+    }
     if (a >= this.area && this.canUse(a)) return this.open(a);
     if (!this.newSet()) return DISCARDED;
     return this.open(a);
   }
 
+  /** p. 310: no break may name a page area qualified `blank`. */
+  private blankTarget(a: number): string | undefined {
+    const pa = this.ps.pageAreas[a];
+    if (this.mode === 'ordered' || pa.blankOrNotBlank !== 'blank') return undefined;
+    return `break target "${pa.name ?? pa.id ?? String(a)}" is a pageArea qualified blankOrNotBlank="blank", which no break may name (XFA 3.3 p. 310)`;
+  }
+
   /** Where layout starts (p. 296): the break's target, else the first page area. */
   start(b: XfaBreak | undefined): string | undefined {
     if (b?.refusal !== undefined) return b.refusal;
+    // A parity break chooses where layout starts by the mid-document rule:
+    // page 1 is odd, so pageEven needs a filler, or can never be met (final review).
+    if (b && (b.targetType === 'pageEven' || b.targetType === 'pageOdd'))
+      return this.toParity(b.targetType === 'pageEven' ? 'even' : 'odd', b.startNew);
     const want = b?.target !== undefined && (b.targetType === 'pageArea' || b.targetType === 'contentArea')
       ? resolveTarget(this.ps, b.targetType, b.target) : undefined;
     if (want && 'reason' in want) return want.reason;
+    if (want) {
+      const why = this.blankTarget(want.area);
+      if (why !== undefined) return why;
+    }
     if (!want) return this.nextPage();
     const r = this.open(want.area);
     if (r !== undefined) return r;
@@ -271,8 +376,26 @@ class Paginator {
     return undefined;
   }
 
+  /** `pageEven`/`pageOdd` (p. 296, 305): the next page of that parity, a page
+   *  of the other parity in between being a blank filler. Outside duplex every
+   *  page is odd, so pageOdd needs no filler and pageEven can never be met --
+   *  Adobe lays out nothing at all for one (probes q12, q15), and we refuse. */
+  toParity(want: 'odd' | 'even', startNew: boolean): string | undefined {
+    const cur = this.pages.length - 1;
+    if (this.mode !== 'duplex' && want === 'even')
+      return 'a pageEven break can never be met: outside duplexPaginated every page is a front (odd) surface (Adobe probes q12, q15)';
+    if (!startNew && cur >= 0 && this.parityOf(cur) === want) return undefined;
+    if (this.parityOf(cur + 1) !== want) {
+      const f = this.qualifiedNext(true);
+      if (f !== undefined) return f;
+    }
+    return this.nextPage();
+  }
+
   apply(b: XfaBreak): string | undefined {
     if (b.refusal !== undefined) return b.refusal;
+    if (b.targetType === 'pageEven' || b.targetType === 'pageOdd')
+      return this.toParity(b.targetType === 'pageEven' ? 'even' : 'odd', b.startNew);
     if (b.targetType !== 'pageArea' && b.targetType !== 'contentArea')
       return `a break with targetType="${b.targetType}" is not implemented`;
     const tgt = b.target !== undefined ? resolveTarget(this.ps, b.targetType, b.target) : undefined;
@@ -360,6 +483,48 @@ function emptyRegion(
   return { reason: `${label}: does not fit an empty content area and would need ${SPLIT_LATER}` };
 }
 
+/** Split a keep-none positioned root child from the room left (164g.11, spec
+ *  R1-R8). EVERY cut is decided before anything is placed, so a refusal places
+ *  nothing and the child is refused whole: its fields would otherwise land on
+ *  some pages and be refused on others. `'whole'` is R5 at the first region --
+ *  the cut reached the top -- and the caller places it whole by today's rules. */
+function placePositioned(p: Paginator, c: LayoutNode, h: number, boxes: XfaChildBoxes): 'whole' | string | undefined {
+  const s = p.snapshot();
+  const plan: Array<{ node: LayoutNode; h: number }> = [];
+  let cur = c;
+  let left = h;
+  for (;;) {
+    const room = p.capacity() - p.used;
+    if (left <= room + EPS) { plan.push({ node: cur, h: left }); break; }
+    const cut = positionedCut(cur, room, boxes);
+    if (typeof cut === 'object') { p.restore(s); return cut.refusal; }
+    if (cut <= EPS) {
+      p.restore(s);
+      return plan.length === 0 ? 'whole'
+        : `${c.label}: does not fit an empty content area and would need ${SPLIT_LATER}`;
+    }
+    if (c.overflow) {
+      p.restore(s);
+      return `${c.label}: its <overflow> leader or trailer would be inserted as it continues into the next region, which is not implemented (164g.15)`;
+    }
+    const head = positionedFragment(cur, 0, cut, boxes);
+    const tail = positionedFragment(cur, cut, left, boxes);
+    if ('refusal' in head) { p.restore(s); return head.refusal; }
+    if ('refusal' in tail) { p.restore(s); return tail.refusal; }
+    plan.push({ node: head, h: cut });
+    const moved = p.advance();
+    if (moved !== undefined) { p.restore(s); return moved; }
+    cur = tail;
+    left -= cut;
+  }
+  p.restore(s);
+  plan.forEach((f, i) => {
+    if (i > 0) p.advance();
+    p.place(f.node, f.h);
+  });
+  return undefined;
+}
+
 /** Place a splittable root child unit by unit, from the room left in the
  *  current region (XFA 3.3 p. 290). A unit that does not fit a region holding
  *  content moves to the next; one too tall for an EMPTY region takes the p. 295
@@ -428,8 +593,57 @@ function placeSplit(
   return undefined;
 }
 
-/** Paginate `body` (spec section 2). */
-export function paginate(body: XfaBody, height: XfaHeight): Pagination {
+/** Paginate `body` (spec section 2); a qualified page set then runs
+ *  termination processing (164g.9). */
+export function paginate(
+  body: XfaBody, height: XfaHeight, boxes?: XfaChildBoxes, force?: ReadonlyMap<number, number>,
+): Pagination {
+  const first = paginateOnce(body, height, boxes, force);
+  const rel = body.pageSet?.relation;
+  if (force || (rel !== 'simplexPaginated' && rel !== 'duplexPaginated')) return first;
+  return terminate(body, height, boxes, first);
+}
+
+/** Termination processing (XFA 3.3 p. 306-308): the final page is laid out
+ *  again on the page area qualified `only` (a single page) or `last`, by
+ *  RERUNNING pagination with that one page forced -- never by rewinding it, so
+ *  164g.8 and 164g.11 splitting need nothing of their own. A rerun is accepted
+ *  only if it yields as many pages and refuses nothing the first run placed,
+ *  which is what "the content fits" means here. A `last` redo that cannot be
+ *  made appends a blank `last` page; an `only` one leaves the page as it was.
+ *  No blank back page ends a duplex document, contrary to Example 8.27: Adobe
+ *  adds none (probes q4, q9). */
+function terminate(body: XfaBody, height: XfaHeight, boxes: XfaChildBoxes | undefined, first: Pagination): Pagination {
+  const areas = body.pageSet!.pageAreas;
+  const n = first.pages.length;
+  if (n === 0) return first;
+  const k = n - 1;
+  const fin = first.pages[k];
+  const holds = !fin.blank && fin.contentAreas.length > 0;
+  const redo = (a: number): Pagination | undefined => {
+    const r = paginateOnce(body, height, boxes, new Map([[k, a]]));
+    // The force reaches only a page `qualifiedNext` chooses: one opened by a
+    // break or by the start is the break's to name, so a rerun that did not
+    // put `a` there redid nothing (final review).
+    const same = r.pages.length === n && r.pages[k].pageArea === a
+      && r.refused.size === first.refused.size && [...first.refused.keys()].every((x) => r.refused.has(x));
+    return same ? r : undefined;
+  };
+  const find = (q: XfaPagePosition): number => areas.findIndex((pa) => pa.pagePosition === q);
+  const only = find('only');
+  const last = find('last');
+  if (n === 1 && only >= 0) return holds ? redo(only) ?? first : first;
+  if (last < 0) return first;
+  const cur = areas[fin.pageArea];
+  const ok = holds && areas[last].contentAreas.length === cur.contentAreas.length
+    && cur.pagePosition !== 'first' && cur.pagePosition !== 'last';
+  return (ok ? redo(last) : undefined)
+    ?? { ...first, pages: [...first.pages, { pageArea: last, pageSet: 0, contentAreas: [], blank: true }] };
+}
+
+function paginateOnce(
+  body: XfaBody, height: XfaHeight, boxes?: XfaChildBoxes, force?: ReadonlyMap<number, number>,
+): Pagination {
   const refused = new Map<LayoutNode, string>();
   const warnings: string[] = [];
   const kids = body.root.children;
@@ -440,8 +654,7 @@ export function paginate(body: XfaBody, height: XfaHeight): Pagination {
   const ps = body.pageSet;
   if (!ps) return refuseAll('the root subform declares no <pageSet>, so no page can be laid out');
   if (ps.refusal !== undefined) return refuseAll(ps.refusal);
-  if (ps.relation !== 'orderedOccurrence')
-    return refuseAll(`pageSet relation="${ps.relation}" is not implemented (164g.9)`);
+  warnings.push(...(ps.warnings ?? []));
   const lay = body.root.layout ?? 'position';
   if (lay !== 'tb') return refuseAll(`the root subform's layout "${lay}" is not paginated (only tb)`);
   if (!ps.pageAreas.some((p) => p.contentAreas.length > 0))
@@ -459,13 +672,15 @@ export function paginate(body: XfaBody, height: XfaHeight): Pagination {
   }
   // p. 298: a pure-boilerplate page area with no max would emit pages forever;
   // read its max as 1, with a warning.
-  const maxOf = ps.pageAreas.map((pa, i) => {
+  const mode: PaginationMode = ps.relation === 'simplexPaginated' ? 'simplex'
+    : ps.relation === 'duplexPaginated' ? 'duplex' : 'ordered';
+  const maxOf = mode !== 'ordered' ? ps.pageAreas.map(() => -1) : ps.pageAreas.map((pa, i) => {
     if (pa.contentAreas.length > 0 || pa.max !== -1) return pa.max;
     warnings.push(`pageArea ${pa.name ?? String(i)} has no contentArea and no occur max, so its max is read as 1 (XFA 3.3 p. 298)`);
     return 1;
   });
 
-  const p = new Paginator(ps, maxOf, heights);
+  const p = new Paginator(ps, maxOf, heights, mode, force);
   // p. 296: the root's break, else its first subform child's, chooses the start.
   // Rule 2 applies only "Else": when the ROOT's break chose the start, the
   // first child's break is an ordinary break on entry and still runs.
@@ -501,6 +716,12 @@ export function paginate(body: XfaBody, height: XfaHeight): Pagination {
         if (typeof why === 'object') { unsplit = why.unsplittable; continue; }
         if (why !== undefined) cause = why; else placed = true;
         break;
+      }
+      if (boxes && positionedSplittable(c)) {
+        // 164g.11: a keep-none positioned root child splits where Adobe does.
+        const why = placePositioned(p, c, r.h, boxes);
+        if (why === undefined) { placed = true; break; }
+        if (why !== 'whole') { fail(why); break; }
       }
       if (p.used === 0) {
         // p. 295: the region is EMPTY. Override its boundary only when the next
@@ -542,7 +763,8 @@ export function layoutPages(body: XfaBody, measure?: XfaMeasure, warnings: strin
   // every body content area with layout tb), so it is measured as one: a
   // container's min* does not apply there (bkdi), and pagination and layout
   // must agree on its height.
-  const pg = paginate(body, (n, limit) => measureExtent(n, limit, measure, [], 'tb'));
+  const pg = paginate(body, (n, limit) => measureExtent(n, limit, measure, [], 'tb'),
+    (n) => positionedChildBoxes(n, measure));
   warnings.push(...pg.warnings);
   const refused = new Map<string, string>();
   const mark = (n: LayoutNode, why: string): void => {

@@ -11067,6 +11067,26 @@ Source (`src/`):
   (Arial, Times New Roman, Courier New to the bundled Liberation faces, equal on
   advances and on hhea/typo/win metrics; Helvetica, Times and Courier
   deliberately absent, their vendors' vertical metrics differing).
+  **Invariant (`164g.18`):** U+2029 is a PARAGRAPH break in rich text as in
+  plain (`plainParas`, p. 56): `RichBuilder.text` splits on it before any
+  whitespace rule, and the new paragraph copies the box of the one in force
+  (the enclosing `<p>`'s margins, indent, spacing) in the style in force. Left
+  in a run it reached face coverage, which no face passes, and the whole leaf
+  was refused. pdf.js breaks only the LINE there; the two differ only for a
+  `<p>` stating spacing, which no vendored form has. U+2028 is NOT handled:
+  p. 56 names only the newline and U+2029.
+  **Invariant (`164g.17`):** an `xfa-spacerun:yes` span keeps every space
+  but the LAST of each run as U+00A0, `preformat.ts`'s substitution, a run
+  begun by a trailing space in the run before included — `layoutRuns`
+  collapses a run of spaces, and U+00A0 is neither collapsed nor a break, so
+  the line still breaks after the run (pre-wrap). The three halves are ONE
+  rule: `xfafont.ts`'s `metricsOf` measures U+00A0 at the SPACE's advance and
+  `xfachrome.ts`'s `textOp` paints it as U+0020, so a subset face holding a
+  space and no U+00A0 covers it and painted width cannot differ from
+  measured. **Note, measured:** OPM 1644's embedded Arial holds U+00A0 at the
+  space's width, so the oracle cannot see the `metricsOf` mapping; a minimal
+  TTF with no U+00A0 in `test/xfafont.test.ts` is what holds it. All four
+  halves redden alone.
   **Invariant:** `xfaflow.ts` takes the measurer as a CALLBACK
   (`layoutPage(root, measure?, warnings?)`) and stays a pure leaf; without one,
   every leaf that needs it refuses exactly as `164g.1` did. `min*`/`max*` are
@@ -11189,8 +11209,9 @@ Source (`src/`):
   `px`/`pc`, non-`topLeft` anchors and `<occur>` appear in neither fixture and
   stay builder-covered only.
 - **xfapage.ts** — XFA pagination (`164g.3`): which child of the root subform
-  lands in which content area of which page, under `orderedOccurrence` (XFA 3.3
-  p. 269-270, 288-300, 360-367), and `layoutPages`, which then lays each content
+  lands in which content area of which page, under `orderedOccurrence` and,
+  since `164g.9`, the qualified `simplexPaginated`/`duplexPaginated` (XFA 3.3
+  p. 269-270, 288-310, 360-367), and `layoutPages`, which then lays each content
   area out. `xfatemplate.ts` hands it `XfaBody` -- the root subform's node,
   whose children are the page-level content, plus the `<pageSet>` model -- in
   place of the `roots`/`pages`/`pageIndex` it used to assign by ordinal.
@@ -11282,6 +11303,85 @@ Source (`src/`):
   since this is one-way, and a page whose area states no readable medium
   refuses the whole document rather than shifting every later page.
   **Note, measured:** all 18 mutations aimed at this issue redden. Two are held by hand-built cases ALONE, as the plan predicted: the first child's break exemption and `startNew`, since no vendored first page subform carries a break and every vendored page subform fills its page anyway. The converter's nothing-placed guard reddened nothing until `test/xfaconvert-pages.test.ts` grew a case whose fields convert BARE: its first fixture held only refused `<signature>` fields, which return before the guard is asked. Bounding the page root again reddens fw9 AND I-765, whose page subforms also run fractionally past their content areas.
+  **Invariant (`164g.9`):** qualified page choice has ONE owner, `chooseArea`
+  -- the first page area in document order whose `pagePosition`, `oddOrEven`
+  and `blankOrNotBlank` fit the page's state (p. 302-304) -- and the ordered
+  path is untouched, which is what kept every pre-164g.9 oracle unedited.
+  `last` and `only` never match in normal layout; termination alone uses them.
+  `occur` is ignored on a qualified page set and page area, with a warning,
+  and qualifiers are ignored under the ordered relation (p. 302), so an
+  unknown value there refuses nothing.
+  **Invariant, and ADOBE overruled the spec to get it:** parity is physical
+  ONLY under duplex (page 1 odd, p. 303). Under simplex AND under the ordered
+  relation every page is a front, hence odd -- p. 303 says so for simplex, and
+  probe q11 shows Adobe taking the very next page for an ordered `pageOdd`
+  break. So outside duplex `pageOdd` needs no filler and `pageEven` can NEVER
+  be met: Reader opens no document at all for one (q12, q15), and we refuse it
+  by name rather than guess. It follows that simplex never uses an even-only
+  page area (q3), though p. 798 says simplex ignores `oddOrEven`.
+  **Invariant:** a filler page is `blank: true`, holds nothing, and is created
+  with its master chrome; `chooseArea` matches `blankOrNotBlank` against it
+  under duplex only (p. 798). No break may name a page area qualified `blank`
+  (p. 310).
+  **Invariant:** termination RERUNS pagination with the final page forced
+  (`paginate`'s `force`), never rewinds one, so 164g.8 and 164g.11 splitting
+  need nothing of their own. A rerun is accepted only with the same page count
+  AND no new refusal AND the forced area actually on page k: the force reaches
+  only a page `qualifiedNext` chooses, so a final page opened by a break or by
+  the start is never replaced, and `last` is appended instead (final review).
+  A parity break on the root or first child goes through `toParity` at the
+  start too, so it is refused or filled exactly as mid-document. No blank
+  back page ends a duplex document -- Adobe adds
+  none (q4, q9), though Example 8.27 shows one.
+  **Note, measured:** all 24 mutations aimed at these rules redden. The
+  refused-set comparison in the rerun reddened NOTHING until a case existed
+  where a forced `last` page's overflow cannot advance -- under duplex, no rest
+  area matching the next page's parity -- so the rerun keeps its page count and
+  refuses a child; the plan had expected it to stay held by reasoning alone.
+  **Note on the oracle:** `test/xfa-adobe-qualified-oracle.test.ts` converts
+  15 Reader probes and reads each created page's area back from the
+  `AREA-X` text its master chrome paints, so it checks pagination END TO END
+  through the converter, not `paginate` alone.
+- **xfasplitpos.ts** — splitting a positioned XFA subform across content
+  areas (`164g.11`): `positionedSplittable` (R1), `positionedCut` (Adobe's
+  split consensus, R2-R8) and `positionedFragment` (R6), over child boxes from
+  `xfaflow.ts`'s `positionedChildBoxes`. A pure leaf over `xfaflow.js` TYPES
+  and `xfageom.js`; it never throws. `xfapage.ts`'s root-child loop calls it
+  through `placePositioned`, and only when `paginate` is handed a boxes
+  callback, which `layoutPages` always does.
+  **Invariant, and XFA 3.3 says otherwise:** a positioned subform splits ONLY
+  when it states `<keep intact="none"/>`. p. 292 makes `none` the default under
+  a flowing parent; Adobe Reader moves such a subform whole (probe t3) and
+  splits it only when told (t5). Adobe is the oracle.
+  **Invariant:** every cut is planned BEFORE anything is placed, so a refusal
+  places nothing and the subform is refused whole; placing as it plans would
+  leave its fields on some pages and refused on others.
+  **Invariant:** the cut moves up to a straddling draw, an unsplittable
+  subform, or a field whose piece above the cut is below its font size, and
+  repeats until nothing straddles (t7, t8, t12, t13, t17-t19, t22); a field
+  whose piece reaches its font size is one Adobe SPLITS, and that is refused
+  (164g.13), as are top/bottom margins (164g.20) and anchored children. A
+  fragment may hold nothing (t26). Only ROOT children split; in a 164g.8 chain
+  a positioned subform is still whole (164g.21).
+  **Invariant (final review):** a child above the top or at or below a STATED
+  height, or a keep-none child running past it, refuses the split by name --
+  it belongs to no fragment and no probe says where Adobe puts it; dropped, it
+  vanished with only a generic "not on any laid-out page" reason. A nested
+  keep-none child stating `<overflow>` refuses too (164g.15), as the root does.
+  **Invariant (final review):** every number written back into `geom` goes
+  through `ptStr`: snapped to 0 within EPS, never in exponent notation. mm
+  templates leave residues like -2.8e-14 where a child sits on the cut, which
+  `measureToPt` cannot read, and the field lost its geometry.
+  **Note, measured:** all 8 planned mutations redden. The REPEAT of the
+  consensus search is held by `test/xfasplitpos.test.ts` alone -- no Adobe
+  probe has a straddler that only a moved cut exposes, so a single-pass build
+  passes the oracle. Do not read the oracle as covering it.
+  **Note on the oracle:** `test/fixtures/xfa-adobe/` is ADOBE's layout, read
+  through `xfa.layout` in Reader and transcribed by hand from window captures
+  -- Reader will not save these forms and a folder-level trusted function is
+  invisible to XFA scripts. One producer, one version. Unlike pdf.js
+  (`fixtures/xfa-dynamic/`), it is Adobe itself, but it is not re-runnable in
+  CI.
 - **xfaborder.ts**, **xfachrome.ts**, **xfapaint.ts** — XFA chrome as page
   content (`164g.4`): a dynamic form's draws, borders, fills and captions on
   the pages `ConvertXfaToAcroForm` creates. `xfaborder.ts` (pure) reads
@@ -12690,6 +12790,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
 | `fixtures/xfa-dynamic/` | `PROVENANCE.md` | OPM Form 1644, the one genuinely **dynamic** XFA form found among ~110 OPM and other federal forms (Designer 8.0, `/NeedsRendering`, no AcroForm; US federal work), plus **pdf.js 6.3.289**'s XFA layout of it rendered in headless Chrome (`npm run gen:xfa`, not run by `npm test`). Three variants: as published, data-driven `<occur>` rows, and a page subform repeated across page breaks. Pins pdf.js's SOM naming equal to ours; our engine places none of it yet, so its agreement check waits on `164g.2`/`.3`/`.7`. Since `d3mq`, DoD DD 2875 and DD 1494 too, whose master-page layouts are checked against pdf.js on 3 and 14 pages (`master-goldens.json`; since `bkdi` DD 2875's body converts on pdf.js's 3 pages, unchecked, and since `164g.8` DD 1494's body is compared too, 14 pages field by field). pdf.js is a reimplementation: evidence, not Adobe conformance (`test/xfa-dynamic-oracle.test.ts`, `test/xfa-master-oracle.test.ts`) |
 | `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). Since `164g.3` fw9 and the USCIS I-130/I-765 paginate onto all of Adobe's pages and rects (one `<pageArea>` reused for 6, 12 and 7 pages), which also found the 10pt check-button default. A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. Since `d3mq`, DoD DD 1391 and DD 1155 (also Designer 6.5): the only FILLABLE master-page fields found in 92 federal forms, every one landing on Adobe's name and rect. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
+| `fixtures/xfa-adobe/` | `PROVENANCE.md` | 24 dynamic XFA probes laid out by **Adobe Acrobat Reader 26.1** itself, each reporting Adobe's `xfa.layout` page and box for every node into a field on page 1, transcribed by hand from window captures into `adobe.json` (Reader will not save them). The oracle for splitting a positioned subform (164g.11): it showed Adobe splits one only under `keep intact="none"`, contrary to XFA 3.3's default, and pinned the split-consensus rules; 16 probes land every field on Adobe's page and box and 8 are refused by name. pdf.js cannot serve here -- it never splits a positioned subform. Since `164g.9`, 15 qualified-pagination probes (q1-q15) report each page's page area too; they settled four rules XFA 3.3 contradicts or leaves open, and pdf.js cannot serve there either, starting every form on its first page area (`test/xfa-adobe-qualified-oracle.test.ts`). One producer, one version (`test/xfa-adobe-oracle.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |

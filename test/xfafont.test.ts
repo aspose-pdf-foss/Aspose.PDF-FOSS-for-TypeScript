@@ -3,7 +3,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Document } from '../src/document.js';
-import { faceLookup, XFA_SUBSTITUTES } from '../src/xfafont.js';
+import { faceLookup, metricsOf, XFA_SUBSTITUTES } from '../src/xfafont.js';
+import { parseSfnt } from '../src/sfnt.js';
+import { buildCmapTable, buildMinimalTtf, cmapFormat4 } from './helpers/build-sfnt.js';
 import { getStd14Sfnt } from '../src/std14fonts.js';
 import { buildSigner } from './helpers/build-signer.js';
 
@@ -29,6 +31,26 @@ describe('faceLookup: tier 1, faces embedded in the document', () => {
     const b = metrics(faces(style(['Arial'], true, false), 'x'));
     expect(b.advance(0x41)).toBe(1479);
     expect(i).not.toBe(metrics(faces(style(['Arial']), 'x')));
+  });
+});
+
+// 164g.17: a spacerun's protected U+00A0 is painted as a space, so it is
+// measured as one -- and an embedded subset holding U+0020 covers it.
+describe('faceLookup: U+00A0', () => {
+  it('measures U+00A0 at the space advance, in the same embedded face', () => {
+    const faces = faceLookup(Document.Open(opm()));
+    const m = metrics(faces(style(['Arial']), 'a b'));
+    expect(m).toBe(metrics(faces(style(['Arial']), 'ab')));
+    expect(m.advance(0xA0)).toBe(m.advance(0x20));
+  });
+
+  // The OPM subset happens to hold U+00A0 at the space's width; this face
+  // has a space and no U+00A0, the shape a subset of plain text takes.
+  it('covers U+00A0 by the space in a face that has no U+00A0', () => {
+    const cmap = buildCmapTable([{ plat: 3, enc: 1, data: cmapFormat4([[0x20, 1], [0x41, 2]]) }]);
+    const m = metricsOf(parseSfnt(buildMinimalTtf({ cmap })))!;
+    expect(m.advance(0x20)).toBe(600);
+    expect(m.advance(0xA0)).toBe(600);
   });
 });
 

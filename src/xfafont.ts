@@ -57,7 +57,9 @@ function unicodeCmap(s: SfntFont): Map<number, number> | undefined {
   return s.cmapSubtable(3, 10) ?? s.cmapSubtable(3, 1) ?? s.cmapSubtable(0, 4) ?? s.cmapSubtable(0, 3);
 }
 
-function metricsOf(s: SfntFont): FaceMetrics | undefined {
+/** A face's measuring metrics, or undefined with no Unicode cmap or hhea.
+ *  Exported for its tests only. */
+export function metricsOf(s: SfntFont): FaceMetrics | undefined {
   const cmap = unicodeCmap(s);
   const hhea = s.table('hhea', false);
   if (!cmap || !hhea || hhea.length < 8) return undefined;
@@ -66,7 +68,12 @@ function metricsOf(s: SfntFont): FaceMetrics | undefined {
     unitsPerEm: s.unitsPerEm,
     ascent: v.getInt16(4),
     descent: -v.getInt16(6),
-    advance: (cp) => {
+    advance: (cp0) => {
+      // U+00A0 is a spacerun's protected space (xfarich.ts, 164g.17): measured
+      // at the space's advance, because it is painted AS a space -- so a
+      // subset face holding U+0020 and not U+00A0 still covers it, and the
+      // painted width cannot differ from the measured one.
+      const cp = cp0 === 0xA0 ? 0x20 : cp0;
       const gid = cmap.get(cp);
       return gid === undefined || gid === 0 || gid >= s.numGlyphs ? undefined : s.advanceWidth(gid);
     },

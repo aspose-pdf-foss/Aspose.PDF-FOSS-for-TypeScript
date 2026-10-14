@@ -1,0 +1,2 @@
+  <subform name="filler" layout="position" w="7.5in" h="5in"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="pos" layout="position" w="7.5in" h="4in"><keep intact="none"/><draw name="dr" x="0" y="0" w="2in" h="200pt"><value><text>tall draw</text></value></draw><field name="g" x="3in" y="250pt" w="1in" h="20pt"><ui><textEdit/></ui></field></subform>

@@ -198,8 +198,10 @@ pinned pdf.js and Chrome (SHA-256 of the JSON
 - **Page count**, and that every page carries chrome (`report.chromePages`).
 - **Text membership:** the page-content fragments whose centre falls in each
   pdf.js box, joined, must spell its text, spaces ignored -- pdf.js wraps with
-  browser metrics, so a line break may swallow a different space. Matched 49 of
-  55, 74 of 78 and 268 of 335.
+  browser metrics, so a line break may swallow a different space. Matched 52 of
+  55, 74 of 78 and 304 of 335 (49 and 268 until `164g.17` measured
+  `xfa-spacerun` spans; those spans were 43 of the misses, and 36 match now;
+  301 until `164g.18` read U+2029 in rich text as a paragraph break).
 - **Push-button captions** separately: a button's caption is its FACE, so it is
   checked against the widget's `/MK /CA`, not page text. 3, 0 and 24 buttons,
   every one equal to pdf.js's text. This case found that the converter created
@@ -216,10 +218,8 @@ pinned pdf.js and Chrome (SHA-256 of the JSON
 **The residual misses, every one accounted for:**
 
 - **Refused text**, each named in `report.skipped` as `what: 'chrome'`:
-  two or more spaces in an `xfa-spacerun` span (43 draws and captions, by far
-  the largest class -- Designer writes one wherever an author typed a double
-  space), a tab, `margin-top` on an inline element, `tab-interval`,
-  `text-valign`, U+2029 in a run, the embedded-object `Page n of m` span, and
+  a tab, `margin-top` on an inline element, `tab-interval`,
+  `text-valign`, the embedded-object `Page n of m` span, and
   faces with no substitute (`Myriad Pro`, `Arial Narrow`). These were
   `164g.7`'s measurement refusals all along; before this oracle a refused leaf
   whose runs the refusal had emptied was dropped by `textOps` with NO report.
