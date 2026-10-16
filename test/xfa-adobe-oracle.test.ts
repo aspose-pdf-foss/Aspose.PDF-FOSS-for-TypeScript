@@ -1,13 +1,24 @@
 // test/xfa-adobe-oracle.test.ts
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
-import type { PdfObject } from '../src/types.js';
+import { isDict, type PdfDict, type PdfObject } from '../src/types.js';
+import { decodeXfaPackets } from '../src/xfapacket.js';
+import { decodeStream } from '../src/filters.js';
+import { parseXfaTemplate } from '../src/xfatemplate.js';
+import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
+import { layoutPages, type XfaLayoutResult } from '../src/xfapage.js';
+import { xfaMeasurer } from '../src/xfaconvert.js';
 import { ADOBE_PROBES, adobeGoldens, loadAdobeProbe, type AdobeFrag, type AdobeProbe } from './helpers/xfa-adobe.js';
 
 /**
- * The Adobe Reader oracle for splitting a positioned subform (164g.11): each
- * probe in test/fixtures/xfa-adobe/ converted from its template and compared,
- * field by field, with the layout Adobe Reader 26.1 reported for it.
+ * The Adobe Reader oracle for splitting: a positioned subform (164g.11, t3-t26)
+ * and an lr-tb or table (164g.12, t27-t39). Field splitting is t40-t54
+ * (164g.13); adhesion and keep intact="pageArea" are t55-t72 (164g.14) -- t65
+ * is compared in part, its field D splitting directly under the content area,
+ * which 164g.27 will do. Each probe in
+ * test/fixtures/xfa-adobe/ is converted from its template and compared, field
+ * by field, with the layout Adobe Reader 26.1 reported for it; a probe's draws
+ * have no widget, so they are compared through our layout of the template.
  *
  * Its ceiling: one producer, one version, hand-transcribed numbers.
  */
@@ -18,10 +29,12 @@ const ORIGIN = 36;
 const TOL = 0.05;
 const som = (path: string): string => path.split('.').map((s) => `${s}[0]`).join('.');
 
-/** A field's expected rect in PDF space: its own fragment plus, on the same
- *  page, every ancestor subform's fragment and content inset. */
-function expected(probe: AdobeProbe, path: string, f: AdobeFrag): { page: number; rect: number[] } | string {
+interface TopBox { page: number; x: number; y: number; w: number; h: number }
+/** A node's box, top-down from the page's top-left: its own fragment plus, on
+ *  the same page, every ancestor subform's fragment and content inset. */
+function boxOf(probe: AdobeProbe, path: string, f: AdobeFrag): TopBox | string {
   const [page, fx, fy, w, h] = f;
+  if (probe.absolute) return { page, x: ORIGIN + fx, y: ORIGIN + fy, w, h };
   let x = ORIGIN + fx;
   let y = ORIGIN + fy;
   const parts = path.split('.');
@@ -33,7 +46,19 @@ function expected(probe: AdobeProbe, path: string, f: AdobeFrag): { page: number
     x += frag[1] + l;
     y += frag[2] + t;
   }
-  return { page, rect: [x, PAGE_H - y - h, x + w, PAGE_H - y] };
+  return { page, x, y, w, h };
+}
+
+/** Our layout of a probe's template, measured as the converter measures it. */
+function laidOut(name: string): XfaLayoutResult {
+  const doc = Document.Open(loadAdobeProbe(name));
+  const acro = doc.resolve(doc.catalog().get('AcroForm'));
+  const set = decodeXfaPackets(isDict(acro) ? acro : undefined, (o) => doc.resolve(o), (s) => decodeStream(s));
+  if ('reason' in set) throw new Error(set.reason);
+  const datasets = set.packets.get('datasets');
+  const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(datasets));
+  const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
+  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), []);
 }
 
 for (const name of ADOBE_PROBES) {
@@ -48,24 +73,55 @@ for (const name of ADOBE_PROBES) {
         expect(doc.Pages.length).toBe(probe.pages);
       });
       it("puts every field on Adobe's page and box", () => {
-        const widgets = new Map(doc.Form.Fields.map((fld) => {
-          const page = doc.Pages.findIndex((pg) => ((doc.resolve(pg.Dict.get('Annots')) ?? []) as PdfObject[])
-            .some((a) => doc.resolve(a) === fld.Dict));
-          return [fld.FullName, { page: page + 1, rect: doc.resolve(fld.Dict.get('Rect')) as number[] }];
-        }));
+        /** A field's widgets: its /Kids, or the merged dict itself. */
+        const widgetsOf = (d: PdfDict): PdfDict[] => {
+          const kids = doc.resolve(d.get('Kids'));
+          return Array.isArray(kids) ? kids.map((k) => doc.resolve(k) as PdfDict) : [d];
+        };
+        const pageOf = (w: PdfDict): number => doc.Pages.findIndex((pg) => ((doc.resolve(pg.Dict.get('Annots')) ?? []) as PdfObject[])
+          .some((a) => doc.resolve(a) === w)) + 1;
+        const widgets = new Map(doc.Form.Fields.map((fld) => [fld.FullName,
+          widgetsOf(fld.Dict).map((w) => ({ page: pageOf(w), rect: doc.resolve(w.get('Rect')) as number[] }))
+            .sort((a, b) => a.page - b.page)]));
         const wrong: string[] = [];
-        for (const [path, frags] of Object.entries(probe.fields)) {
-          const want = expected(probe, path, frags[0]);
-          const got = widgets.get(som(path));
-          if (typeof want === 'string') { wrong.push(`${path}: ${want}`); continue; }
-          if (!got || got.page !== want.page || got.rect.some((v, i) => Math.abs(v - want.rect[i]) > TOL))
-            wrong.push(`${path}: want p${String(want.page)} [${want.rect.join(' ')}], got ${got ? `p${String(got.page)} [${got.rect.join(' ')}]` : 'nothing'}`);
+        for (const [path, frags] of Object.entries(probe.fields).filter(([q]) => !probe.only || probe.only.includes(q))) {
+          const got = widgets.get(som(path)) ?? [];
+          if (got.length !== frags.length) { wrong.push(`${path}: ${String(frags.length)} fragments, ${String(got.length)} widgets`); continue; }
+          frags.forEach((frag, i) => {
+            const b = boxOf(probe, path, frag);
+            if (typeof b === 'string') { wrong.push(`${path}: ${b}`); return; }
+            const want = { page: b.page, rect: [b.x, PAGE_H - b.y - b.h, b.x + b.w, PAGE_H - b.y] };
+            const g2 = got[i];
+            if (g2.page !== want.page || g2.rect.some((v, k) => Math.abs(v - want.rect[k]) > TOL))
+              wrong.push(`${path}#${String(i)}: want p${String(want.page)} [${want.rect.join(' ')}], got p${String(g2.page)} [${g2.rect.join(' ')}]`);
+          });
         }
         expect(wrong).toEqual([]);
       });
+      if (probe.draws) {
+        it("puts every draw on Adobe's page and box", () => {
+          const laid = laidOut(name);
+          expect(laid.pages.length).toBe(probe.pages);
+          const wrong: string[] = [];
+          for (const [path, frags] of Object.entries(probe.draws!).filter(([q]) => !probe.only || probe.only.includes(q))) {
+            const want = boxOf(probe, path, frags[0]);
+            if (typeof want === 'string') { wrong.push(`${path}: ${want}`); continue; }
+            // A draw's layout label is its bare name, with no occurrence index.
+            const label = path.split('.').pop()!;
+            const hits = (laid.pages[want.page - 1]?.nodes ?? [])
+              .filter((n) => n.node.kind === 'draw' && n.node.label === label && 'box' in n);
+            if (hits.length !== 1) { wrong.push(`${path}: ${String(hits.length)} placed draws labelled ${label} on page ${String(want.page)}`); continue; }
+            const got = (hits[0] as { box: { x: number; y: number; w: number; h: number } }).box;
+            if ([got.x - want.x, got.y - want.y, got.w - want.w, got.h - want.h].some((d) => Math.abs(d) > TOL))
+              wrong.push(`${path}: want p${String(want.page)} ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+          }
+          expect(wrong).toEqual([]);
+        });
+      }
     } else {
-      it(`refuses the positioned subform's fields, naming ${String(probe.reason)}`, () => {
-        const hits = report.skipped.filter((s) => s.what === 'field' && s.name?.startsWith('form1[0].pos[0].'));
+      const under = `${som(probe.refusedUnder ?? 'form1.pos')}.`;
+      it(`refuses the split subform's fields, naming ${String(probe.reason)}`, () => {
+        const hits = report.skipped.filter((s) => s.what === 'field' && s.name?.startsWith(under));
         expect(hits.length).toBeGreaterThan(0);
         for (const h of hits) expect(h.reason).toContain(String(probe.reason));
       });

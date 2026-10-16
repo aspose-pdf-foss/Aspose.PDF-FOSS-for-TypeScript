@@ -101,3 +101,136 @@ sets (164g.22), page-number initialization and scripting.
 | `q13.pdf` | `2c2b84216ff8dd1ed4a7ec49194e62d7e0731d183ec92b66ea370bb9b34078a5` |
 | `q14.pdf` | `d7bad2dc3ffe301d7fd964b66721d20f46772cd0dcc9fd2cf96d3b8a4027ddd9` |
 | `q15.pdf` | `5a53baee797ce5a76770c760131ed1174655e7176c17c45393fea34327130919` |
+
+## lr-tb and table splitting probes (164g.12)
+
+**Producer:** as above, 2026-10-14. Every probe holds the 216pt oracle field and
+a 400pt positioned filler, leaving 104pt of a 720pt content area on page 1, then
+the shape under test: an `lr-tb` of 180pt items, three to a 540pt line (t27,
+t28, t33, t35, t37, t38), a table (t29, t30, t34, t36), a `tb` holding one of
+those (t31, t32), or a `tb` of draws (t39). The spec's probe table
+(`docs/superpowers/specs/2026-10-14-xfa-split-lrtb-table-design.md`) says what
+each settled.
+
+**Captures are uncropped.** `captures/t27.png`-`t39.png` are whole Reader
+windows, not crops of the field. Only `t29`'s `c4c` is derived rather than read:
+its line is cut off at the bottom of the field, and `r4`, `c4a` and `c4b` on the
+same capture fix it at `2,360,0,180,60`.
+
+**What Adobe overruled:** 164g.8 gave a split `tb` its top margin on the first
+fragment and its bottom margin on the last; Adobe puts both on every fragment
+(t35, t36, t39). DD 1494, 164g.8's oracle, has no margins on a split subform, so
+it could not see this.
+
+**Ceiling:** one producer, one version, hand transcription. Not covered: a field
+split between its lines (t27, t28, t31 -- refused, 164g.13), an `lr-tb` item that
+is itself a splittable subform straddling the cut (164g.25), repeated table
+header rows (164g.15).
+
+| File | SHA-256 |
+|---|---|
+| `t27.pdf` | `c833a641344ef987b5e6cf78bc31851817ca40b7488ad3849bffbd345c2a811d` |
+| `t28.pdf` | `c4e3478622b8fd94bad34ea1cf959d22211376f74df25df0b0f3b2d1b422ac96` |
+| `t29.pdf` | `7185008738847bf17dfa47cdba2b2ba4d32fe9cc989d39cced9d7fb966ab51f5` |
+| `t30.pdf` | `462fdaa9ccd18b02a4fba71637ebec9bb66bde550cc29263c4afa2e339042c77` |
+| `t31.pdf` | `e41eb249e8737be4062040afcd671a4b17ad6db3e35a072626f6b6e38a8f920b` |
+| `t32.pdf` | `86d49a7337cb98c83a038cfce786e4a55933221054876fd6350d8d77403d9bd4` |
+| `t33.pdf` | `b9b936e3415ec40524ab045104bb2a82db4e0409c556fff1ee3ee6c1bf432fcc` |
+| `t34.pdf` | `c571d9a399a7173d8029ba24c5d6dd60669a9a79d7bf6984489f5b1a8909cbb8` |
+| `t35.pdf` | `fcfaab6634921e33843ac74dc9fb6563c6522cd894a4b11e42c5a5856767b8ad` |
+| `t36.pdf` | `6fcbfacd0717f0934f97efce796ac0a6f53f9d32fd34e360e1078eab4ec0708e` |
+| `t37.pdf` | `b9b6f6c05b63e8d20998f8407f381d4ac53d0acd2658172a39932b11c8b4b9fb` |
+| `t38.pdf` | `5abf1611bc5fc80feca47735a87e8e8391279e559f46f2fc29eaaa79828245d8` |
+| `t39.pdf` | `0357ed849401015802df2960d07d61125fd1992e3f9745af34410f5f28eb5e26` |
+
+## Field splitting probes (164g.13)
+
+**Producer:** as above, 2026-10-15. t40-t46 and t50-t54 hold one field `f` in a
+`keep intact="none"` positioned subform cut 144pt below its top; t47 and t48 a
+130pt field and draw in a `tb` after a 400pt filler; t49 a text field on an
+`lr-tb`'s second line. t40-t44 are EMPTY fields, the rest hold ten one-word
+lines (`line 01` ... `line 10`; t54 three) in Courier New, Arial (t50) or 20pt
+Courier New (t51). The spec's tables
+(`docs/superpowers/specs/2026-10-15-xfa-split-field-design.md`) give each
+probe's room and Adobe's pieces.
+
+**What it settled:** a field's lines sit on a `1.2 x font size` grid whatever
+the font; inside the text the cut snaps to a whole line, below it the cut is
+free; a bottom piece under one font size moves the cut up by exactly one font
+size; no orphan or widow control; a field in a `tb` splits (164g.8 moved it),
+a draw does not.
+
+**Captures are uncropped** whole Reader windows, as for t27-t39.
+
+**Ceiling:** one producer, one version, hand transcription. Not covered:
+captions, insets, `vAlign`, `lineHeight`, orphans/widows, non-text fields and
+mixed sizes (164g.26), and how Reader draws a split field's text.
+
+| File | SHA-256 |
+|---|---|
+| `t40.pdf` | `b5d8a4cf40daddcf2416d6ee9ef2e01d77204a68a8b9c2c2cdc4b2ff787f422b` |
+| `t41.pdf` | `2eeaa44da27b02b70027c70621d9ff63f00ca4e45d36c1e3e23751f240ea6039` |
+| `t42.pdf` | `6af623884e50adecf90b01df19a5c9dcde47f55d846dc9809db1b6e6fbb68ac3` |
+| `t43.pdf` | `1eeb1391677175ceaa91e421d46ddb7a7a5e0f63e764813e37e7923b813db1f7` |
+| `t44.pdf` | `56b466013ef79d88d479f28cc08fcb22999fd08fa395a575134cbac59a5bdf02` |
+| `t45.pdf` | `25e4b9697bef9546f6ad68e99b9e99d0abca4f2a12dc11b55d37c035cdf6a5eb` |
+| `t46.pdf` | `e057a14097c46418b6abb3a9a42a46e75770ccb2c94408d57cb5ffa1abaea9ef` |
+| `t47.pdf` | `94bf30c9b0e3e72970a0b9082e161f69bd205ab3d1108aee93820082ee74eec9` |
+| `t48.pdf` | `7232dc380a4180fea11ef10740a4df6bbc1c94bf916b4a90af6a8858c21d2a81` |
+| `t49.pdf` | `1ad727668a0bfb3710b69ae5e90eeb2d7685620c6aebb6de0a3e05033b8ffbb0` |
+| `t50.pdf` | `75f2803ec2bcaa34222dfabda4841ce6f379eaa7545ecb2a6cd291d8f59561b5` |
+| `t51.pdf` | `1dea81e24f3631f70dc212ec99cc06cd26e18235a47198ed05370cbc8214ad61` |
+| `t52.pdf` | `1fc031463ef64b08dfefc11a1228990897e6957f716c404af38ca469b8ea3174` |
+| `t53.pdf` | `12c7938332dca76ea9d9d72d8fabdd2625f148c23f6cc93d0ce30c0ffb3d4d7f` |
+| `t54.pdf` | `167d12fb8f9c0157f6eac2dfb19754a6d02f7db37d50ff24c4fbcc700e4d8a88` |
+
+## Adhesion and keep intact probes (164g.14)
+
+**Producer:** as above, 2026-10-16. `t55.xml`-`t72.xml` as committed;
+`captures/tN.png` are full Reader windows (not cropped). Every probe but t71
+places a positioned `filler` after the 216pt oracle field, so page 1 has 504pt
+less the filler left. Capital names are positioned subforms with a stated h
+(unsplittable); lower-case names are draws.
+
+**What Adobe settled, against the spec text:** a chain that cannot fit even
+an EMPTY content area does not move to a fresh one -- the first member stays
+where it would go alone and the next runs past (t69: C at 316, D from 616 to
+1116 on ONE page; p. 312 reads as moving the chain). A flowed subform's
+`keep intact="pageArea"` splits like `none`, across pages included (t67, t68;
+p. 291 says not across pages), while a positioned one with `pageArea` still
+moves whole (t71). `keep next="pageArea"` is no adhesion (t64). A splittable
+subform that fits whole but not with its adhering next moves whole, not split
+(t61).
+
+**Derived, not read:** t66 and t67 state two content areas of 360pt (A above
+B). Reader's `pageSpan` counts PAGES, so a subform split across A and B of one
+page reports only its first fragment, and t67's second reported fragment
+(`2,0,0,540,350`) is in fact B on page 1, mislabelled `page(c) + 1` by the
+probe script. Their goldens are therefore `absolute` -- every draw's y is
+relative to the A origin with B 360pt down -- and the subform fragments are
+derived from the draws, which are read.
+
+**t65 is compared in part (`only`):** Reader splits the empty field D 44/16
+across the break; a field directly under the content area does not split here
+(164g.13; follow-up 164g.27). C, the object adhesion moves, is compared.
+
+| File | SHA-256 |
+|---|---|
+| `t55.pdf` | `883fc3b88e6c684a3642645093ac7b7b82193fce3893f0e45e6b7aa44d7a1f70` |
+| `t56.pdf` | `d040653911588fa02ada8e4197fe4dc42b5a663f6356822d8ba615785bae32ec` |
+| `t57.pdf` | `40f4977d50578fad78b6df5d4e30437cc52dfdfc57aa34ea4e665064496666b0` |
+| `t58.pdf` | `ac3ad7e44d1555968df39dff42a99dce8fc7471a89179330540d538ae7bcb143` |
+| `t59.pdf` | `506c1937220e1de20613388b57676b29680b242b8f7948e85565763019c563ae` |
+| `t60.pdf` | `708c8f9755fa5dac88d13dcb2f39fbd425e5fd87e0c5854a4099d064346d7e97` |
+| `t61.pdf` | `030dac3e585a5c12cff22ef3dff6a77d981af147e2418d0a3334f122f8a236b6` |
+| `t62.pdf` | `be72431a739d64b7c6bab3a2aad4093635c9d78c84f230b74c415ba1593a972c` |
+| `t63.pdf` | `18c26f434f2d550c7b59bd5241f9431fc2987226c61e20369385b9f8a4ae04f6` |
+| `t64.pdf` | `3ee9a3a1293aefc6a8320cd8c90be9d62cc111a0ec009ecd16e362c0a93bbefb` |
+| `t65.pdf` | `779fffba4e60fb50721a5e124a6dc4963df7b7a64de90be029980ad287be4fa9` |
+| `t66.pdf` | `c0be7a5852d05109891d5cb32bf4ba02bf92723e0ad382edd0790af729d8e79f` |
+| `t67.pdf` | `276a0e18ccd4c8981832c71de2878961bf2af3c5d8b5de26ad4388748de92ba9` |
+| `t68.pdf` | `97f3af665b8dbdc317b58ec33419b712aef35b5dd793219a5e84d569567de427` |
+| `t69.pdf` | `8c82be02af3a3d7db85a48152405ac8ddc3ccb191650a62ba29584604d6da08b` |
+| `t70.pdf` | `27532f576db4d2ef6863c7de0afdc99b7017e9d9483491ddf66d653f4be68644` |
+| `t71.pdf` | `46ed6e3cc5e7af6b47c102e23e6ab1ecab5a4f6f55cb27a6545d3e9e0d5f3415` |
+| `t72.pdf` | `5ea1bde51d6c8f59b38b0c413b864bb5293551275b0304c10b0a260ed080b1ea` |

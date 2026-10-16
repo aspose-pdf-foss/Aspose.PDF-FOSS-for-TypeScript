@@ -12,6 +12,7 @@ Hybrid XFA forms from a third-party producer, here to validate the
 | `uscis-i765.pdf` | <https://www.uscis.gov/sites/default/files/document/forms/i-765.pdf> | 7 | 161 | yes | **hybrid**, one declared `<pageArea>` |
 | `dod-dd1391.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd1391.pdf> | 1 | 62 | yes | **hybrid**, fillable master-page field |
 | `dod-dd1155.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd1155.pdf> | 1 | 90 | yes | **hybrid**, master-page Reset button |
+| `dod-dd2952.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd2952.pdf>, via the Wayback Machine | 3 | 53 | yes | **hybrid**, three page areas, master Reset on the second |
 
 - Producer, from each file's own `/Info`: **`Designer 6.5`** — Adobe LiveCycle
   Designer, which is the authoring tool this feature was designed around.
@@ -278,4 +279,47 @@ and rect (`test/xfa-real.test.ts`). They settled two rules the specification
 leaves open: the next line starts below the TALLEST item on the line, and a
 container's `min*` is not applied in a flowed parent (DD 1155's `thirty`). DD 1391
 alone cannot tell the tallest item from the last or the first; DD 1155 can.
-DD 1610 and DD 2952 are still not vendored; that is a follow-up issue.
+DD 2952 is vendored since `164g.10` (below); DD 1610 is not, and is not XFA.
+
+## DoD DD 2952 (`164g.10`)
+
+US Department of Defense form, a US federal work. Producer and creator, from
+its own `/Info`: **`Designer 6.5`**. The DoD site refuses scripted access
+(above), so it was fetched from the **Wayback Machine** capture of
+`https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd2952.pdf` at
+`20260201221730`, as raw bytes (the `id_` form), on **2026-10-14**. Its SHA-1
+matches the digest Wayback's CDX index records for that capture
+(`CLRG2JAGZRVT7SECTKTLS5LFMRKE4XCC`).
+
+- `dod-dd2952.pdf` — `bc89e80391224731da10adc83367052cffa12c92ddee6e4d1d93e65879b1d6c4` (82,511 bytes)
+
+```bash
+curl -o test/fixtures/xfa/dod-dd2952.pdf   'https://web.archive.org/web/20260201221730id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd2952.pdf'
+```
+
+**What it shows that DD 1391 and DD 1155 cannot:** three pages on THREE
+DIFFERENT page areas (`Page1`, `Page2`, `Instructions`), each later one
+reached by a `breakBefore targetType="pageArea"` on its page subform -- the
+first Adobe-checked targeted page-area break here -- with the master Reset
+button on `Page2`, the second page. Adobe names it `Page2[0]` on page 2, so
+it is the first real-world evidence that master instances are counted per
+PAGE AREA rather than by page index (until now that rested on a builder case
+and the USCIS barcode, where every page is `Page1` and the two agree).
+Converted from the template alone, all 53 fields land on Adobe's page and
+rect, and the hybrid as published reconciles all of them.
+
+**Measured:** numbering master instances by page index, or ignoring a
+page-area break's target, each reddens exactly the three DD 2952 cases in
+`test/xfa-real.test.ts` and nothing else.
+
+**What it does NOT show:** a master field repeated across pages -- `Page2`
+is used once. The Save/Print buttons on `Page1` sit in a
+`presence="inactive"` subform, as on DD 1391.
+
+**DD 1610 is not vendored.** Every Wayback capture of `dd1610.pdf` from
+2024-09 to 2026-02 has one digest (`BF2VOFP32Y6IDAC65SA5DEPFCAMFGJTX`), and that
+file is 2 pages of PScript5/Acrobat Distiller 8.2.2 with a plain AcroForm and no
+`/XFA`. `d3mq`'s scan, whose downloads were not kept, listed DD 1610 among the
+XFA hybrids with a master Reset; either the site served a later revision or the
+scan misattributed it. The design's "Reset buttons on two page areas" does not
+hold for DD 2952 either: it has one.

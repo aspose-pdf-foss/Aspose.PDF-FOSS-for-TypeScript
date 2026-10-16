@@ -1,0 +1,1 @@
+<subform name="S" layout="tb" w="7.5in"><draw name="s1" w="2in" h="400pt"><value><text>s1</text></value></draw><draw name="s2" w="2in" h="60pt"><keep next="contentArea"/><value><text>s2</text></value></draw><draw name="s3" w="2in" h="60pt"><value><text>s3</text></value></draw><draw name="s4" w="2in" h="60pt"><value><text>s4</text></value></draw></subform>

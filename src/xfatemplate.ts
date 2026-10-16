@@ -165,6 +165,18 @@ const child = (n: XmlNode, name: string): XmlNode | undefined =>
 const childrenNamed = (n: XmlNode, name: string): XmlNode[] =>
   n.children.filter((c) => c.name === name);
 
+/** An element's direct `<keep>`, the named attributes only; undefined when it states none. */
+function keepOf(el: XmlNode, attrs: ReadonlyArray<'intact' | 'next' | 'previous'>): XfaKeep | undefined {
+  const keep = child(el, 'keep');
+  if (!keep) return undefined;
+  const k: XfaKeep = {};
+  for (const a of attrs) {
+    const v = keep.attrs.get(a);
+    if (v !== undefined) k[a] = v;
+  }
+  return Object.keys(k).length > 0 ? k : undefined;
+}
+
 /** The `<items>` lists paired into export/display entries.
  *
  *  **The `save="1"` list is the EXPORT half.** That is the half `/V` carries;
@@ -520,21 +532,29 @@ function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string): L
   if (presence !== undefined) n.presence = presence;
   if (field !== undefined) n.field = field;
   if (kind === 'field' || kind === 'draw') n.text = leafText(el);
+  if (kind === 'field') {
+    const ui = child(el, 'ui')?.children[0];
+    if (ui) {
+      n.ui = ui.name;
+      if (child(ui, 'comb')) n.comb = true;
+    }
+    const para = child(el, 'para');
+    if (para && ['orphans', 'widows'].some((a) => Number(para.attrs.get(a) ?? '0') !== 0)) n.lineKeep = true;
+  }
+  if (kind === 'field' || kind === 'draw') {
+    // 164g.14: a leaf adheres to its siblings (t60, t65). Its intact is not
+    // read: whether a field splits is fieldCut's (164g.13), and is unprobed.
+    const k = keepOf(el, ['next', 'previous']);
+    if (k) n.keep = k;
+  }
   if (kind === 'subform') {
     const bb = breakOf(el, 'before', label);
     if (bb) n.breakBefore = bb;
     const ba = breakOf(el, 'after', label);
     if (ba) n.breakAfter = ba;
     // 164g.8: pagination honours keep intact and refuses what it cannot do.
-    const keep = child(el, 'keep');
-    if (keep) {
-      const k: XfaKeep = {};
-      for (const a of ['intact', 'next', 'previous'] as const) {
-        const v = keep.attrs.get(a);
-        if (v !== undefined) k[a] = v;
-      }
-      if (Object.keys(k).length > 0) n.keep = k;
-    }
+    const k = keepOf(el, ['intact', 'next', 'previous']);
+    if (k) n.keep = k;
     const of = child(el, 'overflow');
     if (of && ['leader', 'trailer', 'target'].some((a) => (of.attrs.get(a) ?? '').trim() !== ''))
       n.overflow = true;

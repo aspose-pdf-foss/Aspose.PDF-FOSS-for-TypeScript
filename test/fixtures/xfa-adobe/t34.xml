@@ -1,0 +1,6 @@
+  <subform name="filler" layout="position" w="7.5in" h="400pt"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="tbl" layout="table" columnWidths="180pt 180pt" h="180pt">
+    <subform name="r1" layout="row"><field name="c1a" w="180pt" h="60pt"><ui><textEdit/></ui></field><field name="c1b" w="180pt" h="60pt"><ui><textEdit/></ui></field></subform>
+    <subform name="r2" layout="row"><field name="c2a" w="180pt" h="60pt"><ui><textEdit/></ui></field><field name="c2b" w="180pt" h="60pt"><ui><textEdit/></ui></field></subform>
+    <subform name="r3" layout="row"><field name="c3a" w="180pt" h="60pt"><ui><textEdit/></ui></field><field name="c3b" w="180pt" h="60pt"><ui><textEdit/></ui></field></subform>
+  </subform>

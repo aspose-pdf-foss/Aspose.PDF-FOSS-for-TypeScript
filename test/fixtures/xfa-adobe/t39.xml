@@ -1,0 +1,7 @@
+  <subform name="filler" layout="position" w="7.5in" h="400pt"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="stack" layout="tb" w="7.5in"><margin topInset="20pt" bottomInset="20pt"/>
+    <draw name="d1" w="180pt" h="30pt"><value><text>d1</text></value></draw>
+    <draw name="d2" w="180pt" h="30pt"><value><text>d2</text></value></draw>
+    <draw name="d3" w="180pt" h="30pt"><value><text>d3</text></value></draw>
+    <draw name="d4" w="180pt" h="30pt"><value><text>d4</text></value></draw>
+  </subform>

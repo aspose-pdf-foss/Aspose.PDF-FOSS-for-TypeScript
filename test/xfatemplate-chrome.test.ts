@@ -58,4 +58,13 @@ describe('xfatemplate: chrome on the layout tree (164g.4)', () => {
     const m = t.body!.pageSet!.pageAreas[0].master!;
     expect(find(m, (n) => n.kind === 'draw')?.chrome?.border).toBeDefined();
   });
+  it("records a field's ui, comb and orphans/widows for splitting (164g.13)", () => {
+    const t = tpl(`<field name="a" w="1in" h="1in"><ui><textEdit><comb numberOfCells="4"/></textEdit></ui></field>
+      <field name="b" w="1in" h="1in"><para orphans="2"/><ui><checkButton/></ui></field>
+      <field name="c" w="1in" h="1in"><ui><textEdit/></ui></field>`);
+    const at = (l: string) => find(t.body!.root, (n) => n.label === l)!;
+    expect([at('a[0]').ui, at('a[0]').comb, at('a[0]').lineKeep]).toEqual(['textEdit', true, undefined]);
+    expect([at('b[0]').ui, at('b[0]').comb, at('b[0]').lineKeep]).toEqual(['checkButton', undefined, true]);
+    expect([at('c[0]').ui, at('c[0]').comb, at('c[0]').lineKeep]).toEqual(['textEdit', undefined, undefined]);
+  });
 });

@@ -1,0 +1,2 @@
+<subform name="filler" layout="position" w="7.5in" h="400pt"><draw name="fillerd" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+<subform name="S" layout="tb" w="7.5in"><keep intact="pageArea"/><draw name="S1" w="2in" h="50pt"><value><text>S1</text></value></draw><draw name="S2" w="2in" h="50pt"><value><text>S2</text></value></draw><draw name="S3" w="2in" h="50pt"><value><text>S3</text></value></draw><draw name="S4" w="2in" h="50pt"><value><text>S4</text></value></draw></subform>

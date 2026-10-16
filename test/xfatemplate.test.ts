@@ -325,6 +325,16 @@ describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
     expect(q.overflow).toBeUndefined();
   });
 
+  // 164g.14: a field's or draw's adhesion is read; its intact is not (164g.13's fieldCut decides splitting).
+  it("reads a field's and a draw's keep next/previous, and not their intact", () => {
+    const f = kid('<field name="x"><keep next="contentArea" intact="contentArea"/><ui><textEdit/></ui></field>').children[0];
+    expect(f.keep).toEqual({ next: 'contentArea' });
+    const d = kid('<draw name="y"><keep previous="contentArea"/><value><text>y</text></value></draw>').children[0];
+    expect(d.keep).toEqual({ previous: 'contentArea' });
+    const g = kid('<draw name="z"><keep intact="contentArea"/><value><text>z</text></value></draw>').children[0];
+    expect(g.keep).toBeUndefined();
+  });
+
   it('reads breakBefore and breakAfter', () => {
     const k = kid('<breakBefore targetType="pageArea" target="P1" startNew="1"/><breakAfter targetType="contentArea"/>');
     expect(k.breakBefore).toEqual({ targetType: 'pageArea', target: 'P1', startNew: true });

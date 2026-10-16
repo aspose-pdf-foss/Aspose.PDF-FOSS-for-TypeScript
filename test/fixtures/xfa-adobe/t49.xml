@@ -1,0 +1,16 @@
+  <subform name="filler" layout="position" w="7.5in" h="400pt"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="flow" layout="lr-tb" w="7.5in">
+    <field name="f1" w="180pt" h="60pt"><ui><textEdit/></ui></field>
+    <field name="f2" w="180pt" h="60pt"><ui><textEdit/></ui></field>
+    <field name="f3" w="180pt" h="60pt"><ui><textEdit/></ui></field>
+    <field name="f" w="180pt" h="130pt"><font typeface="Courier New" size="10pt"/><ui><textEdit multiLine="1"/></ui><value><text>line 01
+line 02
+line 03
+line 04
+line 05
+line 06
+line 07
+line 08
+line 09
+line 10</text></value></field>
+  </subform>

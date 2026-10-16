@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
-  paginate, layoutPages,
+  paginate, layoutPages, layoutHooks,
   type XfaBody, type XfaPageAreaModel, type XfaContentArea, type XfaHeight,
 } from '../src/xfapage.js';
 import type { LayoutNode, XfaBreak, Placed } from '../src/xfaflow.js';
-import { SPLIT_LATER } from '../src/xfaflow.js';
+import { SPLIT_LATER, measureExtent } from '../src/xfaflow.js';
 import type { XfaRawGeom } from '../src/xfageom.js';
 import type { XfaChildBoxes } from '../src/xfasplitpos.js';
 import type { LeafText } from '../src/xfarich.js';
@@ -46,18 +46,44 @@ const AFTER = /^an earlier item in its flow could not be laid out \(/;
 const tb = (label: string, children: LayoutNode[], extra: Partial<LayoutNode> = {}): LayoutNode =>
   ({ kind: 'subform', label, layout: 'tb', geom: { w: '100pt' }, children, ...extra });
 const pt = (s: string | undefined): number => Number((s ?? '0pt').replace('pt', ''));
-/** A node's height: a stated h, else its margins plus its children's heights.
- *  A label ending in '!' draws past any limit. */
+/** A node's height: a stated h, else its margins plus its children's heights. */
 const hOf = (n: LayoutNode): number => (n.geom.h !== undefined ? pt(n.geom.h)
   : pt(n.margin?.topInset) + pt(n.margin?.bottomInset)
     + n.children.filter((k) => k.presence !== 'hidden').reduce((s, k) => s + hOf(k), 0));
-const flowHeight: XfaHeight = (n) => ({ h: hOf(n), past: n.label.endsWith('!') });
+/** A node with a label ending in '!' anywhere below it draws past any limit
+ *  (a fragment copies its container's label, so a leaf's '!' must show through). */
+const bang = (n: LayoutNode): boolean => n.label.endsWith('!') || n.children.some(bang);
+const flowHeight: XfaHeight = (n) => ({ h: hOf(n), past: bang(n) });
 /** A region's children as nested labels: a fragment shows what it holds. */
+const SPLITS = new Set(['tb', 'lr-tb', 'table']);
 const shape = (n: LayoutNode): string =>
-  (n.layout === 'tb' && n.geom.h === undefined ? `${n.label}(${n.children.map(shape).join(',')})` : n.label);
+  (SPLITS.has(n.layout ?? '') && n.geom.h === undefined ? `${n.label}(${n.children.map(shape).join(',')})` : n.label);
 const split = (b: XfaBody) => paginate(b, flowHeight).pages.map((p) =>
   p.contentAreas.map((c) => `${String(c.index)}:${c.children.map(shape).join(',')}`).join(' '));
 const splitRefusals = (b: XfaBody) => [...paginate(b, flowHeight).refused].map(([n, w]) => [n.label, w]);
+// 164g.12: lr-tb and table fragments are measured by the real engine.
+const real: XfaHeight = (n, limit) => measureExtent(n, limit, undefined, [], 'tb');
+const realRun = (b: XfaBody) => paginate(b, real, layoutHooks());
+const realSplit = (b: XfaBody) => realRun(b).pages.map((p) =>
+  p.contentAreas.map((c) => `${String(c.index)}:${c.children.map(shape).join(',')}`).join(' '));
+const realRefusals = (b: XfaBody) => [...realRun(b).refused].map(([n, w]) => [n.label, w]);
+const EMPTY_TEXT = {
+  kind: 'text', paras: [{ runs: [], base: { family: ['Courier'], size: 10, bold: false, italic: false },
+    marginLeft: 0, marginRight: 0, textIndent: 0, lineHeight: 0, spaceAbove: 0, spaceBelow: 0 }],
+  insets: { l: 0, r: 0, t: 0, b: 0 }, password: false, picture: false,
+} as unknown as LeafText;
+const fldN = (label: string, w: number, h: number, extra: Partial<LayoutNode> = {}): LayoutNode =>
+  ({ kind: 'field', label, field: label, ui: 'textEdit', geom: { w: `${String(w)}pt`, h: `${String(h)}pt` }, children: [], text: EMPTY_TEXT, ...extra });
+const drwN = (label: string, w: number, h: number, extra: Partial<LayoutNode> = {}): LayoutNode =>
+  ({ kind: 'draw', label, geom: { w: `${String(w)}pt`, h: `${String(h)}pt` }, children: [], ...extra });
+const lrtb = (label: string, children: LayoutNode[], extra: Partial<LayoutNode> = {}): LayoutNode =>
+  ({ kind: 'subform', label, layout: 'lr-tb', geom: { w: '300pt' }, children, ...extra });
+const rowN = (label: string, cells: LayoutNode[]): LayoutNode =>
+  ({ kind: 'subform', label, layout: 'row', geom: {}, children: cells });
+const tableN = (label: string, cols: string, rows: LayoutNode[], extra: Partial<LayoutNode> = {}): LayoutNode =>
+  ({ kind: 'subform', label, layout: 'table', columnWidths: cols, geom: {}, children: rows, ...extra });
+const draws = (n: number, w = 100, h = 30): LayoutNode[] =>
+  Array.from({ length: n }, (_, i) => drwN(`d${String(i + 1)}`, w, h));
 
 // 164g.8: a tb subform with no stated h splits BETWEEN its children (XFA 3.3
 // p. 290-292). DD 1494's TopForm > P1..P6 > front/back is the oracle.
@@ -80,14 +106,20 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
       .toEqual(['0:T(U(a,b))', '0:T(U(c),d)']);
   });
 
-  // p. 291: no split inside a margin. The bottom margin travels with c.
-  it('keeps the bottom margin with the last child', () => {
+  // 164g.12, rule 3 (Adobe t35, t36, t39): every fragment carries BOTH margins.
+  it('gives every fragment both margins', () => {
     const t = tb('T', [kid('a', 40), kid('b', 40), kid('c', 10)], { margin: { topInset: '10pt', bottomInset: '10pt' } });
     const r = paginate(body([area([ca(100)])], [t]), flowHeight);
     expect(split(body([area([ca(100)])], [t]))).toEqual(['0:T(a,b)', '0:T(c)']);
     const [f1, f2] = r.pages.map((p) => p.contentAreas[0].children[0]);
-    expect([f1.margin?.topInset, f1.margin?.bottomInset]).toEqual(['10pt', undefined]);
-    expect([f2.margin?.topInset, f2.margin?.bottomInset]).toEqual([undefined, '10pt']);
+    expect([f1.margin?.topInset, f1.margin?.bottomInset]).toEqual(['10pt', '10pt']);
+    expect([f2.margin?.topInset, f2.margin?.bottomInset]).toEqual(['10pt', '10pt']);
+  });
+
+  // 164g.8 checked page 1's room without the bottom margin, so b fitted there.
+  it('reserves the bottom margin on the first page (t39)', () => {
+    const t = tb('T', [kid('a', 40), kid('b', 45), kid('c', 10)], { margin: { topInset: '10pt', bottomInset: '10pt' } });
+    expect(split(body([area([ca(100)])], [t]))).toEqual(['0:T(a)', '0:T(b,c)']);
   });
 
   it('never leaves a fragment holding only a top margin', () => {
@@ -130,20 +162,24 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
   it('refuses what it cannot do in a split chain, naming the child issue', () => {
     const big = (k: LayoutNode, t: Partial<LayoutNode> = {}) => body([area([ca(100)])], [tb('T!', [kid('a', 60), k], t)]);
     expect(splitRefusals(big(kid('B', 60, { breakAfter: pb() })))[0][1]).toMatch(/breakAfter inside a split subform .*\(164g\.16\)/);
-    expect(splitRefusals(big(kid('K', 60, { keep: { intact: 'pageArea' } })))[0][1]).toMatch(/keep intact="pageArea" .*\(164g\.14\)/);
-    expect(splitRefusals(big(kid('N', 60, { keep: { next: 'contentArea' } })))[0][1]).toMatch(/adhesion.*\(164g\.14\)/);
     // An <overflow> container that continues into a second region needs its
     // leader or trailer inserted there.
     const r = splitRefusals(big(kid('O', 60), { overflow: true }));
     expect(r[0]).toEqual(['O', expect.stringMatching(/T!: its <overflow> leader or trailer .*\(164g\.15\)/) as unknown as string]);
   });
 
+  // 164g.14 R8: a flowed subform's keep intact="pageArea" splits like none (t66-t68).
+  it('splits a tb stating keep intact="pageArea", as none', () => {
+    const b = body([area([ca(100)])], [tb('T', [kid('a', 60), kid('b', 60)], { keep: { intact: 'pageArea' } })]);
+    expect(split(b)).toEqual(['0:T(a)', '0:T(b)']);
+  });
+
   // Final review, Important 1: before 164g.8 a child that did not fit the room
   // left moved whole to the next region. A chain 164g.8 cannot split (here a
-  // keep-with-next, which Designer writes routinely) must still do that, not be
+  // breakAfter, 164g.16) must still do that, not be
   // refused with every root child after it.
   it('places whole, as before, a child whose chain it cannot split but which fits an empty region', () => {
-    const b = body([area([ca(100)])], [kid('A', 50), tb('T', [kid('a', 30, { keep: { next: 'contentArea' } }), kid('b', 30)])]);
+    const b = body([area([ca(100)])], [kid('A', 50), tb('T', [kid('a', 30, { breakAfter: pb() }), kid('b', 30)])]);
     expect(split(b)).toEqual(['0:A', '0:T(a,b)']);
     expect(splitRefusals(b)).toEqual([]);
   });
@@ -168,6 +204,169 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
   it('places an <overflow> container that stays in one region', () => {
     expect(split(body([area([ca(100)])], [tb('T', [tb('O', [kid('a', 30)], { overflow: true }), kid('b', 90)])])))
       .toEqual(['0:T(O(a))', '0:T(b)']);
+  });
+});
+
+// 164g.12: an lr-tb splits between its items and a table between its rows,
+// from the room left, as Adobe Reader does (probes t27-t39).
+describe('paginate: splitting an lr-tb between items and a table between rows (164g.12)', () => {
+  // t37: b3 would fit beside b1, but the first item that does not fit ends the
+  // fragment; the rest re-packs from the left on the next page.
+  it('cuts at the first item that does not fit and re-packs the rest from x = 0', () => {
+    const L = lrtb('L', [drwN('a1', 100, 20), drwN('a2', 100, 40), drwN('a3', 100, 20),
+      drwN('b1', 100, 5), drwN('b2', 100, 30), drwN('b3', 100, 5), drwN('c1', 100, 10)]);
+    const b = body([area([ca(100)])], [kid('A', 50), L]);
+    expect(realSplit(b)).toEqual(['0:A,L(a1,a2,a3,b1)', '0:L(b2,b3,c1)']);
+    const p2 = layoutPages(b).pages[1].nodes;
+    const at = (label: string) => p2.find((x) => x.node.label === label && 'box' in x) as { box: { x: number; y: number } };
+    expect([at('b3').box.x, at('b3').box.y]).toEqual([100, 0]);
+    expect([at('c1').box.x, at('c1').box.y]).toEqual([200, 0]);
+  });
+
+  // t27, t28, t31 against t35: Adobe splits a straddling field once its piece
+  // above the cut reaches its font size (164g.13), and moves it otherwise.
+  it('splits a straddling field whose piece reaches its font size, and moves one whose piece does not', () => {
+    const fields = () => ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'].map((n) => fldN(n, 100, 30));
+    const b = body([area([ca(100)])], [kid('A', 50), lrtb('L', fields())]);
+    expect(realSplit(b)).toEqual(['0:A,L(f1,f2,f3,f4)', '0:L(f4,f5,f6)']);
+    const r = layoutPages(b);
+    expect(r.pages[0].placed.get('f4')).toMatchObject({ box: { h: 20 }, piece: { offset: 0 } });
+    expect(r.pages[1].placed.get('f4')).toMatchObject({ box: { h: 10, x: 0, y: 0 }, piece: { offset: 20 } });
+    // A 62: room 38, f4's piece 8 < 10 -> it moves.
+    expect(realSplit(body([area([ca(100)])], [kid('A', 62), lrtb('L', fields())])))
+      .toEqual(['0:A,L(f1,f2,f3)', '0:L(f4,f5,f6)']);
+  });
+  // t47: a field in a tb splits too; t48: a draw there still moves.
+  it('splits a field in a tb, and moves a draw', () => {
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), tb('T', [fldN('f', 100, 80)])])))
+      .toEqual(['0:A,T(f)', '0:T(f)']);
+    const r = layoutPages(body([area([ca(100)])], [kid('A', 50), tb('T', [fldN('f', 100, 80)])]));
+    expect([r.pages[0].placed.get('f'), r.pages[1].placed.get('f')])
+      .toMatchObject([{ box: { h: 50 } }, { box: { h: 30 } }]);
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), tb('T', [drwN('d', 100, 80)])])))
+      .toEqual(['0:A', '0:T(d)']);
+  });
+
+  // Rule 7: a field taller than two content areas splits again.
+  it('splits a field twice', () => {
+    const r = layoutPages(body([area([ca(100)])], [kid('A', 50), tb('T', [fldN('f', 100, 230)])]));
+    expect(r.pages.map((p) => (p.placed.get('f') as { box: { h: number } }).box.h)).toEqual([50, 100, 80]);
+  });
+
+  // Review Focus 2: in a tb a field the rules refuse moves whole, as under 164g.8.
+  it('moves, rather than refuses, a field in a tb that would split and may not', () => {
+    const box = fldN('c', 100, 80, { ui: 'checkButton' });
+    const b = body([area([ca(100)])], [kid('A', 50), tb('T', [box])]);
+    expect(realSplit(b)).toEqual(['0:A', '0:T(c)']);
+    expect(realRefusals(b)).toEqual([]);
+  });
+
+  it('refuses, in an lr-tb, a field that would split and may not, naming 164g.26', () => {
+    const f = fldN('f4', 100, 30, { ui: 'checkButton' });
+    const r = realRefusals(body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), f])]));
+    expect(r[0]).toEqual(['f4', expect.stringMatching(/^f4: a <checkButton> field would split .*\(164g\.26\)$/) as unknown as string]);
+  });
+
+  // t38: a draw never splits -- it moves however much of it would fit.
+  it('moves a straddling draw', () => {
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), lrtb('L', draws(6))])))
+      .toEqual(['0:A,L(d1,d2,d3)', '0:L(d4,d5,d6)']);
+  });
+
+  // t29: rows never straddle, even when a cell's field piece would reach its font size.
+  it('splits a table between rows, moving a row whole', () => {
+    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [fldN(`c${String(i)}`, 100, 30)])));
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), T]))).toEqual(['0:A,T(r1)', '0:T(r2,r3)']);
+    expect(realRefusals(body([area([ca(100)])], [kid('A', 50), T]))).toEqual([]);
+  });
+
+  // t30: a -1 column is sized from the WHOLE table, on every page.
+  it('keeps the whole table\'s -1 column width on every fragment', () => {
+    const T = tableN('T', '-1', [rowN('r1', [fldN('c1', 40, 30)]), rowN('r2', [fldN('c2', 80, 30)])]);
+    const r = layoutPages(body([area([ca(100)])], [kid('A', 60), T]));
+    expect(r.pages.length).toBe(2);
+    expect(r.pages[0].placed.get('c1')).toMatchObject({ box: { w: 80 } });
+    expect(r.pages[1].placed.get('c2')).toMatchObject({ box: { w: 80 } });
+  });
+
+  // t31, t32: an lr-tb or table reached in a split tb chain splits too.
+  it('splits an lr-tb nested in a split tb', () => {
+    const T = tb('T', [drwN('top', 100, 30), lrtb('L', draws(6))]);
+    expect(realSplit(body([area([ca(100)])], [kid('A', 40), T])))
+      .toEqual(['0:A,T(top,L(d1,d2,d3))', '0:T(L(d4,d5,d6))']);
+  });
+
+  // Rule 7: a straddling item that is itself a splittable subform is not split yet.
+  it('refuses a straddling lr-tb item that is a splittable subform, naming 164g.25', () => {
+    const S = tb('S', [drwN('s1', 100, 20), drwN('s2', 100, 20)]);
+    const r = realRefusals(body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), S])]));
+    expect(r[0]).toEqual(['S', 'S: an lr-tb item that is itself a splittable subform is not split across content areas (164g.25)']);
+  });
+
+  // p. 295 on a row: placed past the boundary when nothing it draws lies past,
+  // refused otherwise.
+  it('takes the p. 295 rule for a row taller than an empty region', () => {
+    const empty: LayoutNode = { kind: 'subform', label: 'E', layout: 'position', geom: { w: '100pt', h: '150pt' }, children: [] };
+    const T = tableN('T', '100pt', [rowN('r1', [drwN('a', 100, 50)]), rowN('r2', [empty])]);
+    expect(realSplit(body([area([ca(100)])], [T]))).toEqual(['0:T(r1)', '0:T(r2)']);
+    const U = tableN('U', '100pt', [rowN('r1', [drwN('a', 100, 50)]), rowN('r2', [drwN('b', 100, 150)])]);
+    expect(realRefusals(body([area([ca(100)])], [U]))[0])
+      .toEqual(['r2', `r2: does not fit an empty content area and would need ${SPLIT_LATER}`]);
+  });
+
+  it('refuses an <overflow> lr-tb or table that would continue (164g.15)', () => {
+    const L = lrtb('L', draws(6), { overflow: true });
+    const r = realRefusals(body([area([ca(100)])], [kid('A', 50), L]));
+    expect(r[0]).toEqual(['d4', expect.stringMatching(/^L: its <overflow> leader or trailer .*\(164g\.15\)$/) as unknown as string]);
+    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 30)])), { overflow: true });
+    expect(realRefusals(body([area([ca(100)])], [kid('A', 50), T]))[0][1]).toMatch(/^T: its <overflow> .*\(164g\.15\)$/);
+  });
+
+  it('places an lr-tb or table kept intact whole', () => {
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), lrtb('L', draws(6), { keep: { intact: 'contentArea' } })])))
+      .toEqual(['0:A', '0:L(d1,d2,d3,d4,d5,d6)']);
+    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 30)])),
+      { keep: { intact: 'contentArea' } });
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), T]))).toEqual(['0:A', '0:T(r1,r2,r3)']);
+  });
+
+  // Review Focus 2: neither a margin nor a hidden item makes a fragment alone.
+  it('never leaves a fragment holding only margins or a hidden item', () => {
+    const L = lrtb('L', [drwN('h', 100, 30, { presence: 'hidden' }), ...draws(3)], { margin: { topInset: '30pt' } });
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), L]))).toEqual(['0:A', '0:L(h,d1,d2,d3)']);
+    const M = lrtb('M', [...draws(3), drwN('h', 100, 30, { presence: 'hidden' }), ...draws(3).map((d) => ({ ...d, label: `e${d.label}` }))]);
+    // A hidden item AFTER visible ones joins their region, as in 164g.8.
+    expect(realSplit(body([area([ca(100)])], [kid('A', 50), M]))).toEqual(['0:A,M(d1,d2,d3,h)', '0:M(ed1,ed2,ed3)']);
+  });
+
+  // Final review, Important 1: a hidden leaf leading a NESTED container rides
+  // (since 164g.13 the 60pt v2 then splits, 40 + 20, where it overflowed before)
+  // with the next visible leaf, so the container never becomes a fragment
+  // holding only margins past the content-area bottom.
+  it('carries a hidden leaf leading a nested container into the region of its next visible leaf', () => {
+    const T = tb('T', [fldN('h', 50, 30, { presence: 'hidden' }), fldN('v2', 50, 60)], { margin: { topInset: '30pt', bottomInset: '30pt' } });
+    const R = tb('R', [fldN('v1', 50, 60), T]);
+    expect(realSplit(body([area([ca(100)])], [fldN('A', 50, 10), R]))).toEqual(['0:A,R(v1)', '0:R(T(h,v2))', '0:R(T(v2))']);
+  });
+
+  // Final review, Important 2: a hidden leaf pending when the split fails is
+  // reported with its own presence reason, not left on no page.
+  it('reports a pending hidden leaf with its presence reason when the split fails', () => {
+    const R = tb('R', [kid('h', 30, { presence: 'hidden' }),
+      kid('v', 30, { breakBefore: { targetType: 'pageArea', startNew: true, target: '#nope' } })]);
+    const r = paginate(body([area([ca(100)])], [kid('A', 90), R]), flowHeight);
+    const h = R.children[0];
+    expect(r.refused.get(h)).toBe('presence="hidden" takes no space in the layout');
+  });
+
+  // Review Focus 3: re-measuring per leaf stays linear in calls.
+  it('measures a long table a bounded number of times', () => {
+    let calls = 0;
+    const counted: XfaHeight = (n, limit) => { calls += 1; return real(n, limit); };
+    const rows = Array.from({ length: 400 }, (_, i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 10)]));
+    const r = paginate(body([area([ca(720)])], [kid('A', 50), tableN('T', '100pt', rows)]), counted, layoutHooks());
+    expect(r.pages.length).toBe(6);
+    expect(calls).toBeLessThan(400 * 2 + 20);
   });
 });
 
@@ -200,7 +399,7 @@ describe('paginate: the p. 295 override', () => {
   it('refuses one whose content lies past the boundary, and every child after it', () => {
     const b = body([area([ca(100)])], [kid('A!', 110), kid('B', 10)]);
     const r = refusals(b);
-    expect(r[0]).toEqual(['A!', 'A!: does not fit an empty content area and would need splitting beyond a tb subform between its children (164g.12, 164g.13, 164g.19)']);
+    expect(r[0]).toEqual(['A!', 'A!: does not fit an empty content area and would need splitting a field between its lines or a subform beyond its children (164g.13, 164g.19)']);
     expect(r[1][0]).toBe('B');
     expect(r[1][1]).toMatch(AFTER);
   });
@@ -425,7 +624,7 @@ describe('layoutPages', () => {
 
   it('gives every field under a refused child that child\'s reason', () => {
     const r = layoutPages(body([area([caAt(100)])], [kid('P', 150, { children: [fld('c', { y: '120pt', ...S })] })]));
-    expect(r.refused.get('c')).toMatch(/would need splitting beyond a tb subform/);
+    expect(r.refused.get('c')).toMatch(/would need splitting a field between its lines or a subform beyond its children/);
   });
 
   // bkdi: a root child is laid out in the content area's tb flow, so its
@@ -456,7 +655,7 @@ describe('layoutPages', () => {
     const r = layoutPages(body([area([caAt(100)])], [t]));
     expect(placedBox(r.pages[0].placed, 'a')).toEqual({ x: 10, y: 20, w: 10, h: 10 });
     expect(placedBox(r.pages[1].placed, 'b')).toEqual({ x: 10, y: 20, w: 10, h: 10 });
-    expect(r.refused.get('c')).toMatch(/would need splitting beyond a tb subform/);
+    expect(r.refused.get('c')).toMatch(/would need splitting a field between its lines or a subform beyond its children/);
     expect(r.refused.has('a') || r.refused.has('b')).toBe(false);
   });
 
@@ -490,7 +689,7 @@ describe('paginate: splitting a keep-none positioned root child (164g.11)', () =
   const posHeight: XfaHeight = (n) => (n.layout === 'position' && n.geom.h === undefined
     ? { h: Math.max(0, ...n.children.map((k) => pt(k.geom.y) + hOf(k))), past: false } : flowHeight(n, Infinity));
   const lead = [kid('O', 216), kid('F', 360)];
-  const run = (kids: LayoutNode[], b = body([area([ca(720)])], kids)) => paginate(b, posHeight, posBoxes);
+  const run = (kids: LayoutNode[], b = body([area([ca(720)])], kids)) => paginate(b, posHeight, { boxes: posBoxes });
   const regions = (kids: LayoutNode[], b?: XfaBody) => run(kids, b).pages.map((p) => p.contentAreas.map((c) => c.children
     .map((k) => (k.label === 'P' ? `P:${k.geom.h ?? ''}(${k.children.map((x) => `${x.label}@${x.geom.y ?? ''}`).join(',')})` : k.label))
     .join(' ')).join('|'));
@@ -517,12 +716,20 @@ describe('paginate: splitting a keep-none positioned root child (164g.11)', () =
     expect(regions([...lead, P(undefined, [fld('a', 36, 20), fld('c', 216, 20)])]))
       .toEqual(['O F P:144pt(a@36pt)', 'P:92pt(c@72pt)']);
   });
-  it('refuses a split it cannot make and places nothing of it (t6)', () => {
+  it('splits a field it can split, one piece per fragment (t6)', () => {
+    const p = P(288, [fld('a', 36, 21.6), fld('b', 108, 72)]);
+    const b = body([area([ca(720)])], [...lead, p, kid('Z', 10)]);
+    const r = paginate(b, posHeight, { boxes: posBoxes, fieldLines: () => 0 });
+    expect(r.refused.size).toBe(0);
+    expect(r.pages.map((pg) => pg.contentAreas[0].children
+      .map((k) => (k.label === 'P' ? `P:${k.geom.h ?? ''}(${k.children.map((x) => `${x.label}@${x.geom.y ?? ''}/${x.geom.h ?? ''}`).join(',')})` : k.label))
+      .join(' '))).toEqual(['O F P:144pt(a@36pt/21.6pt,b@108pt/36pt)', 'P:144pt(b@0pt/36pt) Z']);
+  });
+  it('refuses a field split it cannot count the lines of, placing nothing of the subform', () => {
     const p = P(288, [fld('a', 36, 21.6), fld('b', 108, 72)]);
     const r = run([...lead, p, kid('Z', 10)]);
-    expect(r.refused.get(p)).toBe('b: Adobe splits a field straddling a content-area break between its lines, which is not implemented (164g.13)');
+    expect(r.refused.get(p)).toMatch(/^b: its value's wrapped line count is not known/);
     expect(r.pages.map((pg) => pg.contentAreas[0].children.map((k) => k.label).join(' '))).toEqual(['O F']);
-    expect([...r.refused.keys()].map((n) => n.label)).toEqual(['P', 'Z']);
   });
   it('refuses a split whose rest has no page left, placing nothing (occur max)', () => {
     const p = P(1000, [fld('a', 36, 20)]);

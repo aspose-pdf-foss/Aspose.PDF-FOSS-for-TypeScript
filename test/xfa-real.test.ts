@@ -303,7 +303,10 @@ describe('unnamed containers are named by class, as LiveCycle writes them (fdq3)
 // on every page, which is refused for its kind but reported under every name
 // Adobe gives it.
 describe('master-page fields, against Adobe (d3mq)', () => {
-  for (const file of ['dod-dd1391.pdf', 'dod-dd1155.pdf']) {
+  // DD 2952 (164g.10) is three pages on THREE page areas, reached by
+  // breakBefore targetType="pageArea"; its Reset sits on Page2, the SECOND
+  // page. Adobe names it Page2[0], which a page-index count would make [1].
+  for (const file of ['dod-dd1391.pdf', 'dod-dd1155.pdf', 'dod-dd2952.pdf']) {
     it(`${file}: creates every master-page field Adobe wrote, on Adobe's page and rect`, () => {
       const bytes = load(file);
       const src = Document.Open(bytes);
@@ -316,7 +319,7 @@ describe('master-page fields, against Adobe (d3mq)', () => {
       let exact = 0;
       let worst = 0;
       for (const f of made) {
-        expect(f.page, f.name).toBe(1);
+        expect(f.page! - 1, f.name).toBe(adobePage(src, f.name));
         const got = rectOf(doc, f.name);
         const want = adobe.get(f.name)!;
         const d = Math.max(...[0, 1, 2, 3].map((i) => Math.abs(got[i] - want[i])));
@@ -334,9 +337,11 @@ describe('master-page fields, against Adobe (d3mq)', () => {
 
   // DD 1155 carries an (unsigned) signature field, and any document with one is
   // refused as published -- a rule that predates master fields -- so only DD
-  // 1391 can show the hybrid reconciling. Its stripped copy is converted above.
-  it('dod-dd1391.pdf: the hybrid as published reconciles its master fields and creates none', () => {
-    const doc = Document.Open(load('dod-dd1391.pdf'));
+  // 1391 and DD 2952 can show the hybrid reconciling. Their stripped copies are
+  // converted above.
+  for (const file of ['dod-dd1391.pdf', 'dod-dd2952.pdf']) {
+  it(`${file}: the hybrid as published reconciles its master fields and creates none`, () => {
+    const doc = Document.Open(load(file));
     const before = doc.Form.Fields.length;
     const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
     const master = report.fields.filter((f) => f.name.includes('#pageSet'));
@@ -344,6 +349,7 @@ describe('master-page fields, against Adobe (d3mq)', () => {
     expect(master.filter((f) => f.route !== 'reconciled')).toEqual([]);
     expect(doc.Form.Fields.length).toBe(before);
   });
+  }
 
   for (const [file, pages] of [['uscis-i130.pdf', 12], ['uscis-i765.pdf', 7]] as const) {
     it(`${file}: reports the barcode under every one of Adobe's ${String(pages)} instance names`, () => {
@@ -371,7 +377,7 @@ describe('master-page fields, against Adobe (d3mq)', () => {
 // `thirty`). Each rival reddens DD 1155: the last item 84/87, the first 85/87,
 // min* applied 80/84 with page 1 overflowing.
 describe('lr-tb bodies of mixed heights, against Adobe (bkdi)', () => {
-  for (const [file, count] of [['dod-dd1391.pdf', 62], ['dod-dd1155.pdf', 87]] as const) {
+  for (const [file, count] of [['dod-dd1391.pdf', 62], ['dod-dd1155.pdf', 87], ['dod-dd2952.pdf', 53]] as const) {
     it(`${file}: places all ${String(count)} fields on Adobe's page and rect`, () => {
       const bytes = load(file);
       const src = Document.Open(bytes);

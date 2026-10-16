@@ -29,7 +29,7 @@ import {
 } from './fieldflags.js';
 import { optArray, type NormalizedOption } from './choiceopt.js';
 import {
-  addRadioGroup, createField, ensureAcroForm, resolvePath,
+  addRadioGroup, createField, createSplitField, ensureAcroForm, resolvePath,
   type FieldSpec,
 } from './formcreate.js';
 import { buildButtonAP } from './appearance.js';
@@ -41,13 +41,13 @@ import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { decodeXfaPackets } from './xfapacket.js';
 import { parseXfaTemplate, type XfaField, type XfaTemplate } from './xfatemplate.js';
 import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals, bindFieldValue, type XfaValues, type XfaGlobals } from './xfadata.js';
-import { buttonBox, editRegion, mediumAgrees, mediumSizePt, rectFromBox, type XfaBox } from './xfageom.js';
+import { buttonBox, editRegion, measureToPt, mediumAgrees, mediumSizePt, rectFromBox, type XfaBox } from './xfageom.js';
 import { PageFormat } from './pageformat.js';
-import { layoutPage, type Placed, type PlacedNode, type XfaMeasure } from './xfaflow.js';
+import { layoutPage, type LayoutNode, type Placed, type PlacedNode, type XfaMeasure, type XfaPiece } from './xfaflow.js';
 import { chromeOps, type ChromeOp, type ChromeResult } from './xfachrome.js';
 import { paintChrome, type XfaChromePlan } from './xfapaint.js';
 import { layoutPages, type XfaLayoutResult, type XfaPageSet } from './xfapage.js';
-import { measureLeaf } from './xfatext.js';
+import { layoutLeaf, measureLeaf } from './xfatext.js';
 import { withValue } from './xfarich.js';
 import { faceLookup } from './xfafont.js';
 import { widgetStyleOf } from './xfaborder.js';
@@ -130,6 +130,9 @@ export interface PlanEntry {
   style?: WidgetStyle;
   /** A push button's face text, written to `/MK /CA` (164g.4). */
   caption?: string;
+  /** A field Adobe splits (164g.13): one widget per piece, page order, each
+   *  with the text its widget shows. Absent for a field placed whole. */
+  pieces?: Array<{ page: number; rect: [number, number, number, number]; shown: string }>;
 }
 
 /** One `<exclGroup>` planned as a radio group. Present only when EVERY member
@@ -240,7 +243,8 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   //    children are poured into content areas and page-area instances, and a
   //    field's page is wherever its page subform landed.
   const measure = xfaMeasurer(doc, tpl, values, globals);
-  const laid = tpl.body ? layoutPages(tpl.body, measure, report.warnings)
+  const fieldLines = xfaFieldLines(doc, tpl, values, globals);
+  const laid = tpl.body ? layoutPages(tpl.body, measure, report.warnings, fieldLines.count)
     : { pages: [], refused: new Map<string, string>() };
   const pageSet = tpl.body?.pageSet;
 
@@ -304,13 +308,13 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     }
   }
 
-  // 4b. Each field's page and box, keyed by SOM name.
-  const where = new Map<string, { page: number; p: Placed }>();
+  // 4b. Each field's placements, keyed by SOM name: one, or one per piece (164g.13).
+  const where = new Map<string, Array<{ page: number; p: Placed }>>();
   laid.pages.forEach((pg, i) => {
     for (const [k, v] of pg.placed) {
-      where.set(k, where.has(k)
-        ? { page: i, p: { reason: `two fields share the SOM name ${k}, so neither can be placed by it` } }
-        : { page: i, p: v });
+      const l = where.get(k) ?? [];
+      l.push({ page: i, p: v });
+      where.set(k, l);
     }
   });
 
@@ -330,7 +334,7 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     if (ws) entry.style = ws;
 
     // Geometry, or a named reason for having none.
-    const why = geometryFor(f, entry, noGeometry, badPages, where, laid.refused, crops);
+    const why = geometryFor(f, entry, noGeometry, badPages, where, laid.refused, crops, fieldLines.texts);
     // A page that failed has already reported ONCE, as a page; reporting again
     // per field would bury the one entry that names the cause.
     if (why !== undefined && why !== '')
@@ -656,21 +660,34 @@ function widgetBox(f: XfaField, box: XfaBox): XfaBox | { reason: string } {
  */
 function geometryFor(
   f: XfaField, entry: PlanEntry, noGeometry: boolean, badPages: ReadonlySet<number>,
-  where: ReadonlyMap<string, { page: number; p: Placed }>,
-  refused: ReadonlyMap<string, string>, crops: readonly number[][],
+  where: ReadonlyMap<string, Array<{ page: number; p: Placed }>>,
+  refused: ReadonlyMap<string, string>, crops: readonly number[][], texts: ReadonlyMap<string, string[]>,
 ): string | undefined {
   if (noGeometry) return '';
   const r = refused.get(f.name);
   if (r !== undefined) return `${r}, so the field carries no geometry`;
-  const w = where.get(f.name);
-  if (w === undefined) return 'the field is not on any laid-out page, so it carries no geometry';
-  if (badPages.has(w.page)) return '';
-  const p = w.p;
-  if ('reason' in p) return `${p.reason}, so the field carries no geometry`;
-  const wb = widgetBox(f, p.box);
-  if ('reason' in wb) return `${wb.reason}, so the field carries no geometry`;
-  entry.page = w.page + 1;
-  entry.rect = rectFromBox(wb, crops[w.page]);
+  const ws = where.get(f.name);
+  if (ws === undefined || ws.length === 0) return 'the field is not on any laid-out page, so it carries no geometry';
+  if (ws.some((w) => badPages.has(w.page))) return '';
+  if (ws.length > 1 && !ws.every((w) => 'box' in w.p && w.p.piece))
+    return `two fields share the SOM name ${f.name}, so neither can be placed by it, so the field carries no geometry`;
+  const out: Array<{ page: number; rect: [number, number, number, number]; piece?: XfaPiece }> = [];
+  for (const w of ws) {
+    const p = w.p;
+    if ('reason' in p) return `${p.reason}, so the field carries no geometry`;
+    const wb = widgetBox(f, p.box);
+    if ('reason' in wb) return `${wb.reason}, so the field carries no geometry`;
+    out.push({ page: w.page + 1, rect: rectFromBox(wb, crops[w.page]), ...(p.piece ? { piece: p.piece } : {}) });
+  }
+  out.sort((a, b) => (a.piece?.offset ?? 0) - (b.piece?.offset ?? 0));
+  entry.page = out[0].page;
+  entry.rect = out[0].rect;
+  if (out.length > 1) {
+    // A widget draws /V, as every created field does; a template default is
+    // /DV and draws nothing, split or not.
+    const lines = typeof entry.value === 'string' ? texts.get(f.name) ?? [] : [];
+    entry.pieces = out.map((o) => ({ page: o.page, rect: o.rect, shown: lines.slice(o.piece!.lines[0], o.piece!.lines[1]).join('\n') }));
+  }
   return undefined;
 }
 
@@ -796,14 +813,19 @@ function specFor(e: PlanEntry): FieldSpec {
  *  rewritten. False when it declined, which costs that field alone. */
 function applyPositioned(doc: Document, e: PlanEntry): boolean {
   try {
-    createField(doc, {
-      page: e.page!,
-      rect: e.rect!,
+    const init = {
       name: e.name,
       readOnly: (e.ff & FF_READONLY) !== 0,
       required: (e.ff & FF_REQUIRED) !== 0,
       ...(e.style ?? {}),
-    }, specFor(e));
+    };
+    if (e.pieces && e.pieces.length > 1) {
+      createSplitField(doc, init, e.pieces.map((p) => ({
+        page: p.page, rect: p.rect, shown: p.shown === '' ? null : pdfText(p.shown),
+      })), specFor(e));
+    } else {
+      createField(doc, { ...init, page: e.page!, rect: e.rect! }, specFor(e));
+    }
     return true;
   } catch (caught) { rethrowLimit(caught);
     return false;
@@ -976,6 +998,41 @@ export function convertXfaToAcroForm(
 
   doc.markModified();
   return plan.report;
+}
+
+/** @internal 164g.13: a field's value as the lines `xfatext.ts` wraps it into
+ *  at the field's stated width, with the faces `xfaMeasurer` measures with --
+ *  `count` is what pagination splits by (0 for an empty value), and `texts`
+ *  what each piece's widget shows. Undefined where the value cannot be laid
+ *  out, which refuses a split rather than guessing at one. */
+export function xfaFieldLines(
+  doc: Document, tpl: XfaTemplate, values: XfaValues, globals?: XfaGlobals,
+): { count: (n: LayoutNode) => number | undefined; texts: Map<string, string[]> } {
+  const faces = faceLookup(doc);
+  const byName = new Map(tpl.fields.map((f) => [f.name, f]));
+  const texts = new Map<string, string[]>();
+  const count = (n: LayoutNode): number | undefined => {
+    if (n.kind !== 'field' || !n.text || n.field === undefined) return undefined;
+    const known = texts.get(n.field);
+    if (known) return known.length;
+    let t = n.text;
+    const f = byName.get(n.field);
+    if (f) {
+      const v = bindFieldValue(f, values, globals);
+      if (Array.isArray(v)) return undefined;
+      if (v !== undefined) t = withValue(t, v);
+    }
+    if (t.refusal !== undefined) return undefined;
+    if (t.paras.every((p) => p.runs.every((r) => r.text === ''))) { texts.set(n.field, []); return 0; }
+    const w = n.geom.w === undefined ? undefined : measureToPt(n.geom.w);
+    if (w === undefined) return undefined;
+    const l = layoutLeaf(t, { width: w }, faces);
+    if ('reason' in l) return undefined;
+    const out = l.lines.map((x) => x.segments.map((s) => s.text).join(''));
+    texts.set(n.field, out);
+    return out.length;
+  };
+  return { count, texts };
 }
 
 /** @internal The measurer `ConvertXfaToAcroForm` lays pages out with (164g.7):

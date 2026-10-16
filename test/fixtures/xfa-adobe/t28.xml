@@ -1,0 +1,9 @@
+  <subform name="filler" layout="position" w="7.5in" h="400pt"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="flow" layout="lr-tb" w="7.5in">
+    <field name="a1" w="180pt" h="40pt"><ui><textEdit/></ui></field>
+    <field name="a2" w="180pt" h="90pt"><ui><textEdit/></ui></field>
+    <field name="a3" w="180pt" h="40pt"><ui><textEdit/></ui></field>
+    <field name="b1" w="180pt" h="10pt"><ui><textEdit/></ui></field>
+    <field name="b2" w="180pt" h="60pt"><ui><textEdit/></ui></field>
+    <field name="b3" w="180pt" h="10pt"><ui><textEdit/></ui></field>
+  </subform>

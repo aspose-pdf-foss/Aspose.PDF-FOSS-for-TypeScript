@@ -377,6 +377,69 @@ export function createField(doc: Document, init: FieldInit, spec: FieldSpec): Cr
   return { acro, dict, type, ff, partial: path.partial, fullName: init.name };
 }
 
+/** @internal One terminal field with a widget per piece (164g.13): an XFA
+ *  field Adobe splits across pages. The field dict holds the type, flags, `/DA`
+ *  and the WHOLE value; each `/Kids` widget is one piece on its own page, with
+ *  an appearance drawn from `shown` -- the lines in that piece. Same
+ *  validate-then-mutate order as `createField`, so a rejected call leaves the
+ *  document byte-identical. An editor that regenerates appearances draws the
+ *  whole value from the top of every widget; AcroForm cannot flow text between
+ *  widgets. */
+export function createSplitField(
+  doc: Document, init: Omit<FieldInit, 'page' | 'rect'>,
+  pieces: ReadonlyArray<{ page: number; rect: [number, number, number, number]; shown: PdfObject }>,
+  spec: FieldSpec,
+): CreatedField {
+  const placed = pieces.map((p) => ({
+    page: pageOf(doc, p.page), rect: checkNums('rect', p.rect, 4) as [number, number, number, number], shown: p.shown,
+  }));
+  const style = checkFieldStyle(init);
+  const std: StdFont = init.font ?? 'Helvetica';
+  const size = init.fontSize ?? 0;
+  const color = (checkColor('textColor', init.textColor ?? [0, 0, 0]) ?? [0, 0, 0]) as [number, number, number];
+  nameParts(init.name);
+  const aa = init.actions === undefined ? undefined : encodeFieldActions(doc, init.actions);
+
+  const acro = ensureAcroForm(doc);
+  resolvePath(doc, acro, init.name, false);
+
+  const key = ensureDRFont(doc, acro, std);
+  if (!acro.has('DA')) acro.set('DA', pdfLatin(fieldDA(key, 0, [0, 0, 0])));
+  const path = resolvePath(doc, acro, init.name, true);
+
+  let ff = spec.ff ?? 0;
+  if (init.readOnly) ff |= FF_READONLY;
+  if (init.required) ff |= FF_REQUIRED;
+
+  const dict: PdfDict = new Map<string, PdfObject>([['FT', name(spec.ft)], ['T', pdfText(path.partial)]]);
+  if (ff !== 0) dict.set('Ff', ff);
+  dict.set('DA', pdfLatin(fieldDA(key, size, color)));
+  if (path.parent) dict.set('Parent', path.parent);
+  for (const [k, v] of spec.entries ?? []) dict.set(k, v);
+  if (aa) dict.set('AA', aa);
+  const fieldRef = doc.allocObject(dict);
+  path.container.push(fieldRef);
+
+  const kids: PdfObject[] = [];
+  const widgets: PdfDict[] = [];
+  for (const p of placed) {
+    const w = buildWidgetDict(doc, p.page, p.rect);
+    w.set('Parent', fieldRef);
+    w.set('DA', pdfLatin(fieldDA(key, size, color)));
+    applyWidgetStyle(doc, w, style);
+    const ref = doc.allocObject(w);
+    kids.push(ref);
+    widgets.push(w);
+    attachWidget(doc, p.page, ref);
+  }
+  dict.set('Kids', kids);
+
+  const type = classify(spec.ft, ff);
+  widgets.forEach((w, i) => generateFieldAppearance(doc, acro, w, type, ff, placed[i].shown));
+  doc.markModified();
+  return { acro, dict, type, ff, partial: path.partial, fullName: init.name };
+}
+
 /** Create a single-line text field (`/FT /Tx`) and return its live handle. */
 export function addTextField(doc: Document, init: TextFieldInit): TextField {
   const value = init.value ?? '';

@@ -43,8 +43,8 @@ export interface XfaBreak {
  *  it. Only pagination reads it (164g.8). */
 export interface XfaKeep { intact?: string; next?: string; previous?: string }
 
-/** What a refusal names when content would need a split 164g.8 does not do. */
-export const SPLIT_LATER = 'splitting beyond a tb subform between its children (164g.12, 164g.13, 164g.19)';
+/** What a refusal names when content would need a split 164g.8/164g.12 do not do. */
+export const SPLIT_LATER = 'splitting a field between its lines or a subform beyond its children (164g.13, 164g.19)';
 
 /** One node of a page's layout tree, as the template states it. */
 export interface LayoutNode {
@@ -72,6 +72,13 @@ export interface LayoutNode {
   /** A field's or draw's text, insets and caption, measured when its size is
    *  not stated (164g.7). Absent on containers. */
   text?: LeafText;
+  /** A field's `<ui>` child name, its `<comb>` and whether its `<para>` states
+   *  orphans or widows (164g.13): read only to decide whether it may split. */
+  ui?: string;
+  comb?: true;
+  lineKeep?: true;
+  /** One piece of a field split across content areas (164g.13). */
+  piece?: XfaPiece;
   /** A subform's break conditions (164g.3). Only `xfapage.ts` reads them: on
    *  the root subform and its children, and since 164g.8 a `breakBefore` on a
    *  child inside a subform being split. */
@@ -87,7 +94,12 @@ export interface LayoutNode {
   children: LayoutNode[];
 }
 
-export type Placed = { box: XfaBox } | { reason: string };
+/** One piece of a field Adobe splits across content areas (164g.13): how far
+ *  down the whole field the piece starts, and which of the value's wrapped
+ *  lines [from, to) fall inside it on the `1.2 x size` grid. */
+export interface XfaPiece { offset: number; lines: [number, number] }
+
+export type Placed = { box: XfaBox; piece?: XfaPiece } | { reason: string };
 
 /** One node the layout placed, or why it has no box (164g.4): chrome is
  *  painted from these. Document order, a container before its children; a
@@ -265,6 +277,10 @@ class Engine {
   private readonly slots = new Map<LayoutNode, Slots>();
   /** A table's content size, set by `table()` when every row placed. */
   private readonly tables = new Map<LayoutNode, Size>();
+  /** A table's resolved column widths, set by `table()` (164g.12): a split
+   *  table's fragments keep the WHOLE table's widths, and this is their one owner. */
+  private readonly widths = new Map<LayoutNode, number[]>();
+  columnWidthsOf(n: LayoutNode): number[] | undefined { return this.widths.get(n); }
 
   /** A node's nominal extent. */
   extent(n: LayoutNode): Size | Fail {
@@ -654,6 +670,7 @@ class Engine {
       widths.push(widest);
     }
 
+    this.widths.set(n, widths);
     const tableW = sum(widths);
     const avail = this.available(n, m);
     let y = 0;
@@ -744,7 +761,7 @@ class Engine {
       }
       const box = { x, y, w: size.w, h: size.h };
       nodes?.push({ node: n, box, invisible: inv });
-      if (n.field !== undefined) this.put(out, n.field, { box });
+      if (n.field !== undefined) this.put(out, n.field, n.piece ? { box, piece: n.piece } : { box });
       return;
     }
     // A container whose OWN extent failed -- content past maxH, an unreadable
@@ -856,6 +873,19 @@ export function measureExtent(
   const e = engine.extent(n);
   if (isFail(e)) return { reason: e.reason };
   return { h: e.h, past: engine.inkBottom(n) > limit + EPS };
+}
+
+/** A table's column widths as `table()` resolves them -- `-1` columns from
+ *  every row (XFA 3.3 p. 327-329) -- or why they cannot be. Pagination pins a
+ *  split table's fragments to these (164g.12, Adobe probe t30). */
+export function tableColumnWidths(n: LayoutNode, measure?: XfaMeasure): number[] | { reason: string } {
+  const engine = new Engine(undefined, measure, []);
+  engine.index(n);
+  const slots = engine.arrange(n);
+  const w = engine.columnWidthsOf(n);
+  if (w !== undefined) return w;
+  const f = [...slots.values()].find(isFail);
+  return { reason: f?.reason ?? `${n.label}: its column widths could not be resolved` };
 }
 
 /** One child of a positioned container as pagination sees it (164g.11): its

@@ -48,11 +48,17 @@ describe('positionedCut (R2-R8)', () => {
     expect(positionedCut(pos('p', 288, [fld('f', 135, 48)]), 144, boxes)).toBe(135);
     expect(positionedCut(pos('p', 288, [fld('f', 129, 60, 20)]), 144, boxes)).toBe(129);
   });
-  it('refuses a field whose top piece reaches its font size (t20, t6), naming 164g.13', () => {
-    for (const k of [fld('f', 134, 48), fld('b', 108, 72)]) {
-      const r = positionedCut(pos('p', 288, [k]), 144, boxes);
-      expect(r).toEqual({ refusal: `${k.label}: Adobe splits a field straddling a content-area break between its lines, which is not implemented (164g.13)` });
-    }
+  const none = (): number => 0;
+  it('cuts through a field whose top piece reaches its font size (t20, t6)', () => {
+    expect(positionedCut(pos('p', 288, [fld('f', 134, 48)]), 144, boxes, none)).toBe(144);   // t20: 10/38
+    expect(positionedCut(pos('p', 288, [fld('b', 108, 72)]), 144, boxes, none)).toBe(144);   // t6: 36/36
+  });
+  it('moves the cut by the field\'s bottom floor (t21)', () => {
+    expect(positionedCut(pos('p', 288, [fld('f', 104, 46)]), 144, boxes, none)).toBe(134);
+  });
+  it('refuses a straddling field when its line count is unknown', () => {
+    expect(positionedCut(pos('p', 288, [fld('f', 134, 48)]), 144, boxes))
+      .toEqual({ refusal: expect.stringMatching(/^f: its value's wrapped line count is not known/) as unknown as string });
   });
   it('repeats until nothing straddles (t7)', () => {
     // f clears the first cut (135 < 144) and straddles only the one d makes
@@ -100,6 +106,20 @@ describe('positionedFragment (R6)', () => {
     const p = pos('p', 288, [fld('a', 36, 21.6), fld('b', 108, 21.6), fld('c', 216, 21.6)]);
     expect(show(frag(p, 0, 144))).toBe('p@-:144pt(a@36pt:21.6pt(),b@108pt:21.6pt())');
     expect(show(frag(p, 144, 288))).toBe('p@-:144pt(c@72pt:21.6pt())');
+  });
+  it('puts a piece of a field crossing the cut in each fragment (t20)', () => {
+    const p = pos('p', 288, [fld('f', 134, 48)]);
+    const head = positionedFragment(p, 0, 144, boxes) as LayoutNode;
+    const tail = positionedFragment(p, 144, 288, boxes) as LayoutNode;
+    expect([head.children[0].geom.y, head.children[0].geom.h, head.children[0].piece?.offset]).toEqual(['134pt', '10pt', 0]);
+    expect([tail.children[0].geom.y, tail.children[0].geom.h, tail.children[0].piece?.offset]).toEqual(['0pt', '38pt', 10]);
+  });
+  // t51: a field running past its subform's stated height keeps its whole
+  // remainder in the last fragment -- clipped at the cut, never at the end.
+  it('keeps the rest of a field running past the subform end in the last fragment (t51)', () => {
+    const p = pos('p', 288, [fld('f', 80, 260, 20)]);
+    const tail = positionedFragment(p, 128, 288, boxes) as LayoutNode;
+    expect([tail.children[0].geom.y, tail.children[0].geom.h, tail.children[0].piece?.offset]).toEqual(['0pt', '212pt', 48]);
   });
   it('puts a child whose top is on the cut in the later fragment', () => {
     const p = pos('p', 288, [fld('c', 144, 21.6)]);

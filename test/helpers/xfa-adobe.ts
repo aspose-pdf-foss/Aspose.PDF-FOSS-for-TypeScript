@@ -9,15 +9,33 @@ export interface AdobeProbe {
   expect: 'match' | 'refused';
   /** The issue id a refused probe's reason cites. */
   reason?: string;
+  /** The dotted path of the subform whose fields a refused probe refuses;
+   *  `form1.pos` (164g.11's probes) when absent. */
+  refusedUnder?: string;
   /** [left, top] content insets of a subform, by dotted path. */
   insets?: Record<string, [number, number]>;
   subforms: Record<string, AdobeFrag[]>;
   fields: Record<string, AdobeFrag[]>;
+  /** Draws, by dotted path (164g.12): t37-t39 hold only draws, which have no
+   *  widget, so they are compared through our layout rather than the PDF. */
+  draws?: Record<string, AdobeFrag[]>;
+  /** t66, t67 (164g.14): every frag's x/y is relative to the content-area
+   *  origin (0.5in, 0.5in) of an imaginary single content area, ancestors
+   *  included -- content area B starts 360pt down. Needed because Reader's
+   *  pageSpan reports one fragment per PAGE, so a subform split across two
+   *  content areas of one page reports only its first. */
+  absolute?: true;
+  /** When present, only these dotted paths are compared (t65: Adobe splits a
+   *  field directly under the content area, which we do not). */
+  only?: string[];
 }
 export interface AdobeGoldens { reader: string; probes: Record<string, AdobeProbe> }
 
 const DIR = new URL('../fixtures/xfa-adobe/', import.meta.url);
-export const ADOBE_PROBES: readonly string[] = Array.from({ length: 24 }, (_, i) => `t${String(i + 3)}`);
+/** t3-t26: a positioned subform split (164g.11); t27-t39: an lr-tb or table
+ *  split (164g.12); t40-t54: a field split between its lines (164g.13);
+ *  t55-t72: adhesion and keep intact="pageArea" (164g.14). */
+export const ADOBE_PROBES: readonly string[] = Array.from({ length: 70 }, (_, i) => `t${String(i + 3)}`);
 export const loadAdobeProbe = (name: string): Uint8Array => new Uint8Array(readFileSync(new URL(`${name}.pdf`, DIR)));
 export const adobeGoldens = (): AdobeGoldens =>
   JSON.parse(readFileSync(new URL('adobe.json', DIR), 'utf8')) as AdobeGoldens;
