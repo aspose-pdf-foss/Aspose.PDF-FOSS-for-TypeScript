@@ -168,7 +168,7 @@ transcription, the screen as the channel).
 
 ## Out of scope (refused by name)
 
-- Nested page sets and breaks between page sets (p. 309-311).
+- Nested page sets and breaks between page sets (p. 309-311). Done by 164g.22.
 - Sibling page sets chosen by `relevant="simplex"`/`"duplex"` (p. 308) — needs
   a printer-mode option.
 - `duplexImposition` (no effect on page selection, p. 296).

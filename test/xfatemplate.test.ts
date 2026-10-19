@@ -297,9 +297,16 @@ describe('parseXfaTemplate: the page set', () => {
     expect(ps('<pageSet><occur min="1"/><pageArea><occur min="0"/></pageArea></pageSet>')?.refusal).toBeUndefined();
   });
 
-  it('refuses a nested pageSet, a second one, and one not on the root subform', () => {
-    expect(ps('<pageSet><pageSet><pageArea/></pageSet></pageSet>')?.refusal).toMatch(/more than one pageSet, or a nested one.*164g\.22/);
-    expect(ps('<pageSet><pageArea/></pageSet><pageSet><pageArea/></pageSet>')?.refusal).toMatch(/more than one pageSet/);
+  // 164g.22: nested sets are read; of siblings the first alone is used, the
+  // rest named in a warning (Adobe probes n5, n6, n10).
+  it('reads a nested pageSet, warns of a sibling, and refuses one not on the root subform', () => {
+    expect(ps('<pageSet><pageSet><occur max="2"/><pageArea/></pageSet></pageSet>')?.refusal).toBeUndefined();
+    expect(ps('<pageSet><pageSet><occur min="1"/><pageArea/></pageSet></pageSet>')?.refusal)
+      .toBe('pageSet occur min="1" would demand blank pages, which are not laid out');
+    const sib = ps('<pageSet><pageArea name="A"/></pageSet><pageSet name="two"><pageArea name="B"/></pageSet>');
+    expect(sib?.refusal).toBeUndefined();
+    expect(sib?.pageAreas.map((a) => a.name)).toEqual(['A']);
+    expect(sib?.warnings).toEqual(['pageSet two is a later sibling of the first, which alone is paginated: Adobe Reader does not evaluate relevant on screen (probes n5, n6, n10)']);
     const t = tpl('<subform name="f" layout="tb"><subform name="S"><pageSet><pageArea/></pageSet></subform></subform>');
     expect(t.body?.pageSet?.refusal).toBe('a pageSet not on the root subform is not paginated');
   });
@@ -315,11 +322,13 @@ describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
   const kid = (inner: string) => tpl(`<subform name="f" layout="tb"><pageSet><pageArea/></pageSet>
     <subform name="P">${inner}</subform></subform>`).body!.root.children[0];
 
-  // 164g.8: pagination reads keep and overflow; nothing else does.
-  it("reads a subform's direct <keep> and flags an <overflow> that names anything", () => {
-    const p = kid('<keep intact="contentArea" next="contentArea"/><overflow leader="#L"/>');
+  // 164g.8: pagination reads keep and overflow; nothing else does. 164g.15: an
+  // overflow is a model now -- a stated list, its target -- and a target that
+  // names nothing is dropped from its list, which still blocks inheritance.
+  it("reads a subform's direct <keep> and its <overflow>", () => {
+    const p = kid('<keep intact="contentArea" next="contentArea"/><overflow leader="#L" target="CA"/>');
     expect(p.keep).toEqual({ intact: 'contentArea', next: 'contentArea' });
-    expect(p.overflow).toBe(true);
+    expect(p.overflow).toEqual({ leader: [], target: 'CA' });
     const q = kid('<overflow/>');
     expect(q.keep).toBeUndefined();
     expect(q.overflow).toBeUndefined();
@@ -355,13 +364,18 @@ describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
     expect(kid('').breakBefore).toBeUndefined();
   });
 
-  it('refuses a script, a leader, a trailer and an unknown targetType by name', () => {
+  // 164g.15: a break's leader and trailer are read, not refused; one on an
+  // auto break, which does not move, is.
+  it('refuses a script, an unknown targetType, and a leader on a break that does not move, by name', () => {
     expect(kid('<breakBefore targetType="pageArea"><script>true</script></breakBefore>').breakBefore?.refusal)
       .toBe('P[0]: <breakBefore> with a script is not implemented');
-    expect(kid('<breakBefore targetType="pageArea" leader="#L"/>').breakBefore?.refusal)
-      .toBe('P[0]: <breakBefore> with a leader or trailer is not implemented (164g.15)');
-    expect(kid('<breakAfter targetType="pageArea" trailer="#T"/>').breakAfter?.refusal)
-      .toBe('P[0]: <breakAfter> with a leader or trailer is not implemented (164g.15)');
+    // A bare name is searched from the BREAKING subform, though the copy is
+    // named under its parent: L is P's child, not f's.
+    const bb = kid('<breakBefore targetType="pageArea" leader="L"/><subform name="L"/>').breakBefore;
+    expect(bb?.refusal).toBeUndefined();
+    expect([bb?.leader?.name, bb?.leader?.refusal]).toEqual(['L', undefined]);
+    expect(kid('<breakAfter targetType="auto" trailer="T"/><subform name="T"/>').breakAfter?.refusal)
+      .toBe('P[0]: <breakAfter> with a leader or trailer on a break that does not move is not implemented (164g.31)');
     expect(kid('<breakBefore targetType="pageMiddle"/>').breakBefore?.refusal)
       .toBe('P[0]: <breakBefore> targetType="pageMiddle" is not one XFA defines');
     // 164g.9: pageEven and pageOdd are read, in both spellings.

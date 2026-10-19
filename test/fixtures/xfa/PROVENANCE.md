@@ -323,3 +323,61 @@ file is 2 pages of PScript5/Acrobat Distiller 8.2.2 with a plain AcroForm and no
 XFA hybrids with a master Reset; either the site served a later revision or the
 scan misattributed it. The design's "Reset buttons on two page areas" does not
 hold for DD 2952 either: it has one.
+
+**Since `164g.24`, the rest of DD 1610's history.** The issue checked only the
+`esd.whs.mil` captures. The older host,
+`www.dtic.mil/whs/directives/infomgt/forms/eforms/dd1610.pdf`, has four other
+revisions on Wayback. One of them, `20061217011615` (844,389 bytes), IS an XFA
+hybrid, produced by **Adobe Designer 7.0**. But it has no master-page field at all,
+so it shows nothing the vendored forms do not, and it is not vendored either.
+
+## DoD DD 350 (`164g.24`)
+
+US Department of Defense form, a US federal work. Producer and creator, from
+its own `/Info`: **`Designer 6.4`**. Fetched from the **Wayback Machine** capture
+of `https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd0350.pdf` at
+`20240927071845`, as raw bytes, on **2026-10-19**. Its SHA-1 matches the digest
+Wayback's CDX index records for that capture (`BYA2QLN5TRIYH6EH52UMDCYXRIAQXZPY`).
+It was found by scanning every DD form the CDX index lists under that prefix
+(1,219 captures) for an `/AcroForm` name of the shape
+`#pageSet[0].<area>[n > 0]`. Adobe writes such a name only for a master field
+on a SECOND or later instance of one page area.
+
+- `dod-dd350.pdf` — `f464175814d92d8fcd9fd0941d8944ce3d41b8f844b69418603eab186ffcc7ce` (90,378 bytes)
+
+```bash
+curl -o test/fixtures/xfa/dod-dd350.pdf 'https://web.archive.org/web/20240927071845id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd0350.pdf'
+```
+
+**What it shows that no other fixture does:** a master field CREATED on several
+pages of ONE page area, with Adobe's rect for each instance. Its four pages are
+all `Page1`, and Adobe writes its Reset button as `Page1[0]` through `Page1[3]`.
+Until now multi-instance numbering rested on a builder case and on the USCIS
+barcode, which is refused for its kind and so pins only the NAMES. Converted
+from the template alone, all 93 of its non-signature fields land on Adobe's page
+and rect, the four Reset instances included. Its signature field is refused, as
+every `<signature>` is.
+
+**Measured:** naming every instance `[0]` reddens DD 350 in both loops of
+`test/xfa-real.test.ts` (the master fields and the body), beside the builder
+cases and the USCIS barcode cases.
+
+**What it does NOT show:** the published hybrid reconciling. Like DD 1155 it
+carries a signature field, and a signed-capable document is refused as
+published. Its Save and Print buttons sit in a `presence="inactive"` subform, as
+on DD 1391.
+
+**The rest of that scan.** Of the 1,170 forms it reached, 399 could not be
+fetched or opened, so the tally is a lower bound. 278 are XFA, and 33 of those
+name a master field. 12 name one on a REPEATED page-area instance: DD 350, DD
+3019, 3183, 3201, 3202, 3207, 3216, 3217, 3218 and 3226, SD 823 and WHS 29-2.
+Every one is Designer 6.4 or 6.5, except DD 3019, which is LiveCycle Designer
+11.0. Converted from the template alone, eight more match Adobe on every
+non-signature field: DD 3201, 3202, 3216, 3217 and 3226, SD 823, WHS 29-2, and
+DD 350 itself. DD 350 was vendored as the smallest clear case. Three disagree,
+and each is filed with its form named:
+
+- DD 3183 and DD 3019 have occurrence indices in some names that differ from
+  Adobe's (`164g.33`).
+- DD 3207 has two radio buttons that land off Adobe's rects (`164g.34`).
+- DD 3218 has 55 fields 0.0103pt off, just past the 0.01 bound (`164g.35`).

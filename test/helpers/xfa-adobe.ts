@@ -28,14 +28,24 @@ export interface AdobeProbe {
   /** When present, only these dotted paths are compared (t65: Adobe splits a
    *  field directly under the content area, which we do not). */
   only?: string[];
+  /** A node Adobe places outside the subform it is named under (164g.15, t83:
+   *  a positioned split's leader sits in the content area's flow, above the
+   *  continuation, while its SOM name is `P.L`): its layout parent's path. */
+  layoutParent?: Record<string, string>;
 }
 export interface AdobeGoldens { reader: string; probes: Record<string, AdobeProbe> }
 
 const DIR = new URL('../fixtures/xfa-adobe/', import.meta.url);
 /** t3-t26: a positioned subform split (164g.11); t27-t39: an lr-tb or table
  *  split (164g.12); t40-t54: a field split between its lines (164g.13);
- *  t55-t72: adhesion and keep intact="pageArea" (164g.14). */
-export const ADOBE_PROBES: readonly string[] = Array.from({ length: 70 }, (_, i) => `t${String(i + 3)}`);
+ *  t55-t72: adhesion and keep intact="pageArea" (164g.14); t73-t90: overflow
+ *  and break leaders and trailers (164g.15); t92-t95: a breakAfter inside a
+ *  split chain (164g.16); t96-t100, t103, t104: a split positioned subform's
+ *  margins (164g.20); t105-t110: one inside a split tb chain (164g.21). t91 (164g.23) is not a geometry golden -- its line
+ *  heights are 164g.32's -- and `test/xfa-linesep.test.ts` reads it alone; nor
+ *  are t101 and t102, visual probes on small pages read from the capture. */
+export const ADOBE_PROBES: readonly string[] = Array.from({ length: 108 }, (_, i) => `t${String(i + 3)}`)
+  .filter((t) => !['t91', 't101', 't102'].includes(t));
 export const loadAdobeProbe = (name: string): Uint8Array => new Uint8Array(readFileSync(new URL(`${name}.pdf`, DIR)));
 export const adobeGoldens = (): AdobeGoldens =>
   JSON.parse(readFileSync(new URL('adobe.json', DIR), 'utf8')) as AdobeGoldens;
@@ -50,6 +60,8 @@ export interface QualifiedProbe {
   areas: string[];
   /** Our SOM field name to Adobe's 1-based page. */
   fields: Record<string, number>;
+  /** Fields Reader laid out nowhere -- content past every occur max (n1). */
+  discarded?: string[];
   /** What Adobe showed, in words, when it is not a plain sequence. */
   note?: string;
 }
@@ -70,6 +82,11 @@ export interface QualifiedGoldens {
   };
   probes: Record<string, QualifiedProbe>;
 }
-export const QUALIFIED_PROBES: readonly string[] = Array.from({ length: 15 }, (_, i) => `q${String(i + 1)}`);
+/** q1-q15: one qualified page set (164g.9); n1-n10: nested and sibling page
+ *  sets (164g.22). */
+export const QUALIFIED_PROBES: readonly string[] = [
+  ...Array.from({ length: 15 }, (_, i) => `q${String(i + 1)}`),
+  ...Array.from({ length: 10 }, (_, i) => `n${String(i + 1)}`),
+];
 export const qualifiedGoldens = (): QualifiedGoldens =>
   JSON.parse(readFileSync(new URL('adobe-qualified.json', DIR), 'utf8')) as QualifiedGoldens;

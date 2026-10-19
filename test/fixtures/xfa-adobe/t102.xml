@@ -1,0 +1,8 @@
+  <!-- oracle 1in -->
+  <pageSet><pageArea name="P1" id="P1"><medium short="3in" long="8.5in" orientation="landscape" stock="custom"/>
+    <contentArea x="0.5in" y="0.5in" w="7.5in" h="2in"/></pageArea></pageSet>
+  <subform name="pos" layout="position" w="7.5in" h="2in"><keep intact="none"/><margin topInset="18pt" bottomInset="12pt"/>
+    <draw name="a" x="0" y="0pt" w="1in" h="6pt"><value><rectangle><edge presence="hidden"/><fill><color value="0,0,0"/></fill></rectangle></value></draw>
+    <draw name="c" x="2in" y="66pt" w="1in" h="6pt"><value><rectangle><edge presence="hidden"/><fill><color value="0,0,0"/></fill></rectangle></value></draw>
+    <draw name="b" x="4in" y="72pt" w="1in" h="6pt"><value><rectangle><edge presence="hidden"/><fill><color value="0,0,0"/></fill></rectangle></value></draw>
+  </subform>

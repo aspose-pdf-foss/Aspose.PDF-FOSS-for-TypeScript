@@ -16,8 +16,10 @@ import type { XmlNode } from './xml.js';
 import { captionText, leafText } from './xfarich.js';
 import { parseBorder, parseGeometry, type NodeChrome, type XfaBorder } from './xfaborder.js';
 import type { XfaCaption, XfaMargin, XfaMedium, XfaRawGeom } from './xfageom.js';
-import type { LayoutKind, LayoutNode, XfaBreak, XfaKeep, XfaMinMax } from './xfaflow.js';
-import type { XfaBody, XfaContentArea, XfaPageAreaModel, XfaPageSet } from './xfapage.js';
+import type {
+  LayoutKind, LayoutNode, XfaBreak, XfaCopySpec, XfaKeep, XfaMinMax, XfaOverflow,
+} from './xfaflow.js';
+import type { XfaBody, XfaContentArea, XfaPageAreaModel, XfaPageSet, XfaPageSetNode } from './xfapage.js';
 import type { XfaDataGroups } from './xfadata.js';
 
 export type XfaUiKind =
@@ -143,6 +145,13 @@ export interface XfaTemplate {
    *  layout, measuring and data binding cannot see them. Adobe writes one
    *  instance PER PAGE (`Page1[0..n]`); placing those is d3mq part 2. */
   masterPageFields: XfaField[];
+  /** The fields of a leader or trailer COPY (164g.15), by the copy's root node
+   *  -- the node `XfaCopySpec.make` returned. Only a copy pagination PLACED
+   *  becomes fields; the map also holds copies made while probing a fit. */
+  copyFields: ReadonlyMap<LayoutNode, XfaField[]>;
+  /** What the template states and Adobe ignores (164g.15: a leader or trailer
+   *  target that names nothing, a template-level proto, or a non-subform). */
+  warnings: string[];
 }
 
 /** An `<exclGroup>` a radio member sits in, by both of its paths. */
@@ -440,7 +449,9 @@ function layoutMax(el: XmlNode): number | undefined {
 /** `<breakBefore>`/`<breakAfter>`, else the deprecated `<break>`'s half
  *  (p. 632-636), or `undefined` when it asks for nothing: `auto` continues in
  *  the current container (p. 635). `label` prefixes a refusal. */
-function breakOf(el: XmlNode, which: 'before' | 'after', label: string): XfaBreak | undefined {
+function breakOf(
+  el: XmlNode, which: 'before' | 'after', label: string, cc?: CopyCtx,
+): XfaBreak | undefined {
   const modern = child(el, which === 'before' ? 'breakBefore' : 'breakAfter');
   const legacy = modern ? undefined : child(el, 'break');
   if (!modern && !legacy) return undefined;
@@ -453,18 +464,148 @@ function breakOf(el: XmlNode, which: 'before' | 'after', label: string): XfaBrea
   const shown = modern ? `${tag} targetType="${targetType}"` : `${tag} ${which}="${targetType}"`;
   let refusal: string | undefined;
   const script = modern ? child(modern, 'script') : undefined;
+  // 164g.15: a break's own leader and trailer, one target each.
+  const lead = modern ? copyOf(modern.attrs.get('leader'), cc, 'break', `${label}: ${tag}'s leader`) : undefined;
+  const trail = modern ? copyOf(modern.attrs.get('trailer'), cc, 'break', `${label}: ${tag}'s trailer`) : undefined;
   if (script && script.text.trim() !== '') refusal = `${label}: ${tag} with a script is not implemented`;
-  else if (modern && ((modern.attrs.get('leader') ?? '').trim() !== '' || (modern.attrs.get('trailer') ?? '').trim() !== ''))
-    refusal = `${label}: ${tag} with a leader or trailer is not implemented (164g.15)`;
   else if (!['auto', 'pageArea', 'contentArea', 'pageEven', 'pageOdd'].includes(targetType))
     refusal = `${label}: ${shown} is not one XFA defines`;
+  else if (targetType === 'auto' && (lead || trail))
+    refusal = `${label}: ${tag} with a leader or trailer on a break that does not move is not implemented (164g.31)`;
   if (targetType === 'auto' && refusal === undefined) return undefined;
   return {
     targetType,
     ...(target !== undefined && target.trim() !== '' ? { target } : {}),
     startNew,
     ...(refusal !== undefined ? { refusal } : {}),
+    ...(lead ? { leader: lead } : {}),
+    ...(trail ? { trailer: trail } : {}),
   };
+}
+
+/** Where a leader or trailer's copies are named and how its SOM name is
+ *  searched for (164g.15): the asserting subform for an overflow copy, its
+ *  PARENT for a break copy (t85: `form1.T`). */
+interface CopyHome {
+  /** The element whose children the copies join -- the asserting subform or
+   *  its parent. A bare SOM name is searched from the ASSERTING one either way. */
+  el: XmlNode;
+  path: readonly string[];
+  dpath: readonly string[];
+  scope: IndexScope;
+  layouts: readonly string[];
+}
+/** What `nodeOf` needs to read a subform's leaders and trailers. */
+interface CopyCtx { own: CopyHome; parent: CopyHome; top: Top }
+
+/** A bare SOM name we resolve: one name, no dots, brackets or operators. */
+const BARE_NAME = /^[A-Za-z_][\w-]*$/;
+
+/** A leader or trailer target to the element it names, ignored (Adobe ignores
+ *  it: t74, t75, t90; XFA 3.3 p. 323), or a refusal (164g.15 R1). `#id` names an
+ *  element under the ROOT subform, `<proto>` included -- a template-level proto
+ *  is outside it, and Adobe ignores a target there. A bare name is searched as
+ *  a named subform child of `from`, then of each ancestor, nearest first. */
+function targetOf(ref: string, from: XmlNode, top: Top): XmlNode | { ignored: string } | { refusal: string } {
+  let el: XmlNode | undefined;
+  if (ref.startsWith('#')) {
+    el = top.ids?.get(ref.slice(1));
+    if (!el) return { ignored: `"${ref}" names nothing under the root subform` };
+  } else if (BARE_NAME.test(ref)) {
+    for (let at: XmlNode | undefined = from; at && !el; at = top.parents?.get(at))
+      el = at.children.find((c) => c.name === 'subform' && c.attrs.get('name') === ref);
+    if (!el) return { refusal: `"${ref}" is a SOM name we resolve to no subform` };
+  } else return { refusal: `"${ref}" is a SOM expression, which is not resolved` };
+  if (el.name === 'subformSet') return { refusal: `"${ref}" names a subformSet, which is not laid out` };
+  if (el.name !== 'subform') return { ignored: `"${ref}" names a <${el.name}>, not a subform` };
+  if ((el.attrs.get('name') ?? '') === '') return { refusal: `"${ref}" names an unnamed subform, whose copies no oracle names` };
+  return el;
+}
+
+/** One target to a copy spec, or undefined when there is none: no ref, or an
+ *  invalid one, which is warned about. A break names ONE target; an overflow's
+ *  list is split by the caller. */
+function copyOf(
+  ref: string | undefined, cc: CopyCtx | undefined, kind: 'break' | 'overflow', what: string,
+): XfaCopySpec | undefined {
+  const r = ref?.trim();
+  if (r === undefined || r === '' || !cc) return undefined;
+  const home = kind === 'break' ? cc.parent : cc.own;
+  if (/\s/.test(r)) return refusedSpec(r, `${what} "${r}" names several targets (164g.15)`, home);
+  return specOf(r, home, cc.top, what, cc.own.el);
+}
+
+/** A target that refuses where it would be inserted. Pagination never asks
+ *  its `make`; it answers a refused node rather than throwing. */
+function refusedSpec(r: string, refusal: string, home: CopyHome): XfaCopySpec {
+  return {
+    label: r, refusal, max: 1, scope: home.scope, name: '',
+    make: () => ({ kind: 'subform', label: r, geom: {}, children: [], refusal }),
+  };
+}
+
+function specOf(
+  r: string, home: CopyHome, top: Top, what: string, from: XmlNode = home.el,
+): XfaCopySpec | undefined {
+  const t = targetOf(r, from, top);
+  const refused = (why: string): XfaCopySpec => refusedSpec(r, `${what} ${why} (164g.15)`, home);
+  if ('ignored' in t) {
+    const w = `${what} ${t.ignored}, so it is ignored, as Adobe ignores it (XFA 3.3 p. 323)`;
+    if (top.warnings && !top.warnings.includes(w)) top.warnings.push(w);
+    return undefined;
+  }
+  if ('refusal' in t) return refused(t.refusal);
+  const target = t;
+  const max = copyMax(target);
+  if (max === undefined) return refused(`"${r}" states an unreadable <occur max>`);
+  const name = target.attrs.get('name')!;
+  return {
+    label: r, max, scope: home.scope, name,
+    make: (n) => {
+      // The copy is the instance after every one the walk counted (t73: H[1]).
+      const part = `${name}[${String((home.scope.byName.get(name) ?? 0) + n)}]`;
+      const sub = [...home.path, part];
+      const dsub = [...home.dpath, part];
+      const own = newScope();
+      const layouts = [...home.layouts, layoutOf(target)];
+      const node = nodeOf(target, 'subform', part, undefined, {
+        own: { el: target, path: sub, dpath: dsub, scope: own, layouts }, parent: home, top,
+      });
+      const fields: XfaField[] = [];
+      walk(target, sub, dsub, undefined, { layouts, inPage: true }, fields, node, own, [], top.groups, top);
+      top.copyFields?.set(node, fields);
+      return node;
+    },
+  };
+}
+
+/** A leader or trailer's `<occur max>`: 1 when absent (Adobe t73), -1 for none. */
+function copyMax(el: XmlNode): number | undefined {
+  const v = child(el, 'occur')?.attrs.get('max');
+  if (v === undefined) return 1;
+  const t = v.trim();
+  if (t === '-1') return -1;
+  return /^\d+$/.test(t) && Number(t) > 0 ? Number(t) : undefined;
+}
+
+/** A subform's `<overflow>`, else the deprecated `<break overflowLeader
+ *  overflowTrailer overflowTarget>` (XFA 3.3 p. 791, 634), 164g.15. A stated but
+ *  empty list blocks inheritance (t80); an absent one inherits. */
+function overflowOf(el: XmlNode, cc: CopyCtx | undefined, label: string): XfaOverflow | undefined {
+  const modern = child(el, 'overflow');
+  const legacy = modern ? undefined : child(el, 'break');
+  const read = (a: 'leader' | 'trailer' | 'target'): string | undefined => (modern
+    ? modern.attrs.get(a) : legacy?.attrs.get(`overflow${a[0].toUpperCase()}${a.slice(1)}`));
+  const out: XfaOverflow = {};
+  for (const kind of ['leader', 'trailer'] as const) {
+    const v = read(kind);
+    if (v === undefined || !cc) continue;
+    const what = `${label}: its overflow ${kind}`;
+    out[kind] = v.split(' ').filter((s) => s !== '').flatMap((r) => specOf(r, cc.own, cc.top, what) ?? []);
+  }
+  const target = read('target')?.trim();
+  if (target) out.target = target;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -509,7 +650,7 @@ function repetition(
 /** One template element to its layout node. A container carries its layout,
  *  its own margin and a table's column widths; a field or draw carries only
  *  what positions it in its parent. */
-function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string): LayoutNode {
+function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string, cc?: CopyCtx): LayoutNode {
   const n: LayoutNode = { kind, label, geom: geomOf(el), children: [] };
   if (kind !== 'field' && kind !== 'draw') {
     n.layout = layoutOf(el);
@@ -548,16 +689,16 @@ function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string): L
     if (k) n.keep = k;
   }
   if (kind === 'subform') {
-    const bb = breakOf(el, 'before', label);
+    const bb = breakOf(el, 'before', label, cc);
     if (bb) n.breakBefore = bb;
-    const ba = breakOf(el, 'after', label);
+    const ba = breakOf(el, 'after', label, cc);
     if (ba) n.breakAfter = ba;
     // 164g.8: pagination honours keep intact and refuses what it cannot do.
     const k = keepOf(el, ['intact', 'next', 'previous']);
     if (k) n.keep = k;
-    const of = child(el, 'overflow');
-    if (of && ['leader', 'trailer', 'target'].some((a) => (of.attrs.get(a) ?? '').trim() !== ''))
-      n.overflow = true;
+    // 164g.15: leaders and trailers are resolved here, copies made lazily.
+    const of = overflowOf(el, cc, label);
+    if (of) n.overflow = of;
   }
   const ch = chromeOf(el, kind);
   if (ch) n.chrome = ch;
@@ -586,6 +727,15 @@ interface Top {
    *  an unreadable page area while the walk drops an unnamed one, so the two
    *  orders can differ. */
   masters?: Map<XmlNode, { index: number; area: XfaPageAreaModel }>;
+  /** 164g.15, the body walk's only: every element under the ROOT subform by
+   *  its `id` (`<proto>` included, a template-level proto not), each element's
+   *  parent, the warnings, every copy's fields and the data groups a copy is
+   *  instantiated with. A master-page walk has none, and reads no leader. */
+  ids?: Map<string, XmlNode>;
+  parents?: Map<XmlNode, XmlNode>;
+  warnings?: string[];
+  copyFields?: Map<LayoutNode, XfaField[]>;
+  groups?: XfaDataGroups;
 }
 
 /**
@@ -648,46 +798,59 @@ function walk(
       // numbering of its own: USCIS I-765 names a body subform and a pageArea
       // both `Page1`, and Adobe writes the pageArea's first instance
       // `#pageSet[0].Page1[0]`, not `[1]`.
-      const ps = [...path, `#pageSet[${String(nth)}]`];
-      const psScope = newScope();
-      for (const pa of c.children) {
-        if (pa.name !== 'pageArea') continue;
-        const n = pa.attrs.get('name');
-        if (n === undefined || n === '') {
-          // An UNNAMED page area is still paginated onto pages, but no oracle
-          // says how Adobe names its instances, so its fields are walked for
-          // the REPORT only: no layout root, no `master`, refused by the
-          // converter rather than lost silently (d3mq final review).
-          const k = psScope.byClass.get('pageArea') ?? 0;
-          psScope.byClass.set('pageArea', k + 1);
-          walk(pa, [...ps, `#pageArea[${String(k)}]`], [], undefined, { layouts: [], inPage: false },
-            master, undefined, newScope(), master, undefined, { hasCa: false });
-          continue;
+      // 164g.22: a nested page set is walked too, named in its parent's scope
+      // (`#pageSet[k]`) with a scope of its own. Its page areas get their
+      // master roots, so their draws and chrome are laid out; their FIELDS are
+      // left unidentified (no `master`) -- how Reader names an instance in a
+      // nested set is unprobed -- and the converter reports them.
+      const walkSet = (set: XmlNode, ps: string[], depth: number): void => {
+        const psScope = newScope();
+        for (const pa of set.children) {
+          if (pa.name === 'pageSet') {
+            const k = psScope.byClass.get('pageSet') ?? 0;
+            psScope.byClass.set('pageSet', k + 1);
+            walkSet(pa, [...ps, `#pageSet[${String(k)}]`], depth + 1);
+            continue;
+          }
+          if (pa.name !== 'pageArea') continue;
+          const n = pa.attrs.get('name');
+          if (n === undefined || n === '') {
+            // An UNNAMED page area is still paginated onto pages, but no oracle
+            // says how Adobe names its instances, so its fields are walked for
+            // the REPORT only: no layout root, no `master`, refused by the
+            // converter rather than lost silently (d3mq final review).
+            const k = psScope.byClass.get('pageArea') ?? 0;
+            psScope.byClass.set('pageArea', k + 1);
+            walk(pa, [...ps, `#pageArea[${String(k)}]`], [], undefined, { layouts: [], inPage: false },
+              master, undefined, newScope(), master, undefined, { hasCa: false });
+            continue;
+          }
+          const idx = psScope.byName.get(n) ?? 0;
+          const at = [...ps, `${n}[${String(idx)}]`];
+          psScope.byName.set(n, idx + 1);
+          // d3mq: the page area's background is laid out from the PAGE ORIGIN,
+          // positioned (XFA 3.3 p. 271, 288), copied onto every page that
+          // instantiates it. Walked with a root of its own as the parent, so its
+          // fields, draws and subforms build a layout tree exactly as body
+          // content does; its fields land in `master` alone. A <contentArea> is
+          // not content and adds no node.
+          const root: LayoutNode = { kind: 'page', label: `<pageArea ${n}>`, layout: 'position', geom: {}, children: [] };
+          const before = master.length;
+          walk(pa, at, [], undefined, { layouts: ['position'], inPage: true }, master, root,
+            newScope(), master, undefined, { hasCa: false });
+          // Only the FIRST page area of a name is identified: the instance
+          // numbering of a repeated name is something no oracle settles.
+          const model = top.masters?.get(pa);
+          if (model === undefined || idx !== 0) continue;
+          model.area.master = root;
+          const prefix = `${somName(at)}.`;
+          for (const f of master.slice(before)) {
+            if (depth === 0 && f.name.startsWith(prefix))
+              f.master = { pageArea: model.index, base: somName([...ps, n]), rest: f.name.slice(prefix.length) };
+          }
         }
-        const idx = psScope.byName.get(n) ?? 0;
-        const at = [...ps, `${n}[${String(idx)}]`];
-        psScope.byName.set(n, idx + 1);
-        // d3mq: the page area's background is laid out from the PAGE ORIGIN,
-        // positioned (XFA 3.3 p. 271, 288), copied onto every page that
-        // instantiates it. Walked with a root of its own as the parent, so its
-        // fields, draws and subforms build a layout tree exactly as body
-        // content does; its fields land in `master` alone. A <contentArea> is
-        // not content and adds no node.
-        const root: LayoutNode = { kind: 'page', label: `<pageArea ${n}>`, layout: 'position', geom: {}, children: [] };
-        const before = master.length;
-        walk(pa, at, [], undefined, { layouts: ['position'], inPage: true }, master, root,
-          newScope(), master, undefined, { hasCa: false });
-        // Only the FIRST page area of a name is identified: the instance
-        // numbering of a repeated name is something no oracle settles.
-        const model = top.masters?.get(pa);
-        if (model === undefined || idx !== 0) continue;
-        model.area.master = root;
-        const prefix = `${somName(at)}.`;
-        for (const f of master.slice(before)) {
-          if (f.name.startsWith(prefix))
-            f.master = { pageArea: model.index, base: somName([...ps, n]), rest: f.name.slice(prefix.length) };
-        }
-      }
+      };
+      walkSet(c, [...path, `#pageSet[${String(nth)}]`], 0);
       continue;
     }
     if (c.name === 'draw') {
@@ -725,24 +888,25 @@ function walk(
       const cls = k === 0 ? nth : classIndex(c);
       const sub = [...path, anonymous ? `#${c.name}[${String(cls)}]` : indexed(partial)];
       const dsub = anonymous ? dpath : [...dpath, sub[sub.length - 1]];
-      const node = nodeOf(c, c.name as LayoutKind, anonymous ? `<${c.name}>` : sub[sub.length - 1]);
+      // The root subform: a tb flow that pagination (xfapage.ts) pours into
+      // content areas. Its node IS the body; the chain of everything below
+      // starts at the content area, which places its first child at its
+      // origin. Above any page origin, accumulate nothing.
+      const next: ChainCtx = c === top.rootEl ? { layouts: top.hasCa ? ['position'] : [], inPage: true }
+        : !ctx.inPage ? { layouts: [], inPage: false }
+          : { layouts: [...ctx.layouts, layoutOf(c)], inPage: true };
+      const own = anonymous ? scope : newScope();
+      // 164g.15: an overflow copy is named in this subform's scope, a break copy
+      // in its parent's. Only the body walk resolves them.
+      const cc: CopyCtx | undefined = top.copyFields ? {
+        own: { el: c, path: sub, dpath: dsub, scope: own, layouts: next.layouts },
+        parent: { el, path, dpath, scope, layouts: ctx.layouts },
+        top,
+      } : undefined;
+      const node = nodeOf(c, c.name as LayoutKind, anonymous ? `<${c.name}>` : sub[sub.length - 1], undefined, cc);
       if (rep.refusal !== undefined) node.refusal = `${node.label}: ${rep.refusal}`;
-
-      let next: ChainCtx;
-      if (c === top.rootEl) {
-        // The root subform: a tb flow that pagination (xfapage.ts) pours into
-        // content areas. Its node IS the body; the chain of everything below
-        // starts at the content area, which places its first child at its
-        // origin.
-        top.root = node;
-        next = { layouts: top.hasCa ? ['position'] : [], inPage: true };
-      } else if (!ctx.inPage) {
-        // Still above any page origin: accumulate nothing.
-        next = { layouts: [], inPage: false };
-      } else {
-        parent?.children.push(node);
-        next = { layouts: [...ctx.layouts, layoutOf(c)], inPage: true };
-      }
+      if (c === top.rootEl) top.root = node;
+      else if (ctx.inPage) parent?.children.push(node);
       walk(
         c, sub, dsub,
         c.name === 'exclGroup'
@@ -750,7 +914,7 @@ function walk(
             ...(child(c, 'bind')?.attrs.get('match') === 'global' ? { global: true as const } : {}) }
           : group,
         next, out, next.inPage ? node : undefined,
-        anonymous ? scope : newScope(), master, groups, top,
+        own, master, groups, top,
       );
     }
   }
@@ -828,7 +992,13 @@ function pageAreaOf(el: XmlNode, qualified?: string, warnings: string[] = []): X
   return { ...named(el), ...(medium ? { medium } : {}), max, ...quals, contentAreas };
 }
 
-/** The root subform's `<pageSet>` model, or why it cannot be paginated. */
+/** The root subform's `<pageSet>` model, or why it cannot be paginated.
+ *
+ *  164g.22: a page set may hold page sets, read into `XfaPageSet.sets` with
+ *  every page area kept in ONE flat document-order list. Of several sibling
+ *  page sets on the root subform the FIRST is used and the rest are ignored
+ *  with a warning: Adobe Reader does not evaluate `relevant` on screen and
+ *  never traverses to a later sibling (probes n5, n6, n10; p. 300). */
 function pageSetOf(
   template: XmlNode, rootEl: XmlNode,
   masters: Map<XmlNode, { index: number; area: XfaPageAreaModel }>,
@@ -837,39 +1007,87 @@ function pageSetOf(
   pageSets(template, found);
   if (found.length === 0) return undefined;
   const { ps, parent } = found[0];
-  const relation = ps.attrs.get('relation') ?? 'orderedOccurrence';
-  const qualified = relation === 'simplexPaginated' || relation === 'duplexPaginated' ? relation : undefined;
   const warnings: string[] = [];
   const areas: XfaPageAreaModel[] = [];
+  const sets: XfaPageSetNode[] = [];
   let refusal: string | undefined;
-  for (const c of ps.children) {
-    if (c.name !== 'pageArea') continue;
-    const a = pageAreaOf(c, qualified, warnings);
-    if (typeof a === 'string') { refusal ??= a; continue; }
-    masters.set(c, { index: areas.length, area: a });
-    areas.push(a);
+  const nested = new Set<XmlNode>();
+  const read = (el: XmlNode, up?: number): number => {
+    const relation = el.attrs.get('relation') ?? 'orderedOccurrence';
+    const qualified = relation === 'simplexPaginated' || relation === 'duplexPaginated' ? relation : undefined;
+    const idx = sets.length;
+    const node: XfaPageSetNode = { relation, max: -1, ...(up !== undefined ? { parent: up } : {}), children: [] };
+    sets.push(node);
+    if (!qualified && relation !== 'orderedOccurrence')
+      refusal ??= `pageSet relation="${relation}" is not one XFA defines (XFA 3.3 p. 798)`;
+    for (const c of el.children) {
+      if (c.name === 'pageArea') {
+        const a = pageAreaOf(c, qualified, warnings);
+        if (typeof a === 'string') { refusal ??= a; continue; }
+        const model = idx === 0 ? a : { ...a, set: idx };
+        masters.set(c, { index: areas.length, area: model });
+        node.children.push({ area: areas.length });
+        areas.push(model);
+      } else if (c.name === 'pageSet') {
+        nested.add(c);
+        const cr = c.attrs.get('relation') ?? 'orderedOccurrence';
+        const cq = cr === 'simplexPaginated' || cr === 'duplexPaginated';
+        // p. 310: the two kinds of page set never nest in each other.
+        if (cq !== (qualified !== undefined))
+          refusal ??= `${cq ? 'a qualified' : 'an ordered'} pageSet nested in ${qualified ? 'a qualified' : 'an ordered'} one is forbidden (XFA 3.3 p. 310)`;
+        node.children.push({ set: read(c, idx) });
+      }
+    }
+    if (qualified) {
+      // p. 296, 310: occurrence limits do not apply to a qualified page set.
+      if (child(el, 'occur')) warnings.push(`pageSet states <occur>, which ${qualified} ignores (XFA 3.3 p. 296)`);
+    } else {
+      const max = layoutMax(el);
+      if (max === undefined)
+        refusal ??= `pageSet occur max="${child(el, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
+      node.max = max ?? -1;
+      // The root set is entered anyway, so min 1 asks for nothing; a nested
+      // set's min would force instances no content reaches.
+      const short = minRefusal(el, up === undefined ? 1 : 0);
+      if (short !== undefined) refusal ??= short;
+    }
+    // p. 298: a page set of pure-boilerplate page areas with no max would emit
+    // pages forever; read its max as 1, with a warning.
+    if (!qualified && node.max === -1 && up !== undefined && !holdsContent(el)) {
+      warnings.push(`pageSet ${el.attrs.get('name') ?? String(idx)} holds no contentArea and states no occur max, so its max is read as 1 (XFA 3.3 p. 298)`);
+      node.max = 1;
+    }
+    return idx;
+  };
+  read(ps);
+  const siblings = found.slice(1).filter((f) => f.parent === parent).map((f) => f.ps);
+  for (const f of found.slice(1)) {
+    if (nested.has(f.ps) || isInside(f.ps, siblings)) continue;
+    if (f.parent === parent)
+      warnings.push(`pageSet ${f.ps.attrs.get('name') ?? '(unnamed)'} is a later sibling of the first, which alone is paginated: Adobe Reader does not evaluate relevant on screen (probes n5, n6, n10)`);
+    else refusal ??= 'a pageSet not on the root subform is not paginated';
   }
-  let max: number | undefined = -1;
-  if (qualified) {
-    // p. 296, 310: occurrence limits do not apply to a qualified page set.
-    if (child(ps, 'occur')) warnings.push(`pageSet states <occur>, which ${qualified} ignores (XFA 3.3 p. 296)`);
-  } else {
-    max = layoutMax(ps);
-    if (max === undefined)
-      refusal = `pageSet occur max="${child(ps, 'occur')?.attrs.get('max') ?? ''}" could not be read (XFA 3.3 p. 300: -1 or positive)`;
-    refusal = minRefusal(ps, 1) ?? refusal;
-  }
-  if (!qualified && relation !== 'orderedOccurrence')
-    refusal = `pageSet relation="${relation}" is not one XFA defines (XFA 3.3 p. 798)`;
-  if (found.length > 1) refusal = 'more than one pageSet, or a nested one, is not paginated (164g.22)';
   if (parent !== rootEl) refusal = 'a pageSet not on the root subform is not paginated';
   return {
-    relation,
-    max: max ?? -1,
+    relation: sets[0].relation,
+    max: sets[0].max,
     pageAreas: areas,
+    ...(sets.length > 1 ? { sets } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
     ...(refusal !== undefined ? { refusal } : {}),
   };
+}
+
+/** Whether a page set holds a content area anywhere below it. */
+function holdsContent(el: XmlNode): boolean {
+  return el.children.some((c) => (c.name === 'pageArea' && c.children.some((x) => x.name === 'contentArea'))
+    || (c.name === 'pageSet' && holdsContent(c)));
+}
+
+/** Whether `el` lies strictly inside one of `outer` (a set in an ignored sibling). */
+function isInside(el: XmlNode, outer: readonly XmlNode[]): boolean {
+  const has = (x: XmlNode): boolean => x.children.some((c) => c === el || has(c));
+  return outer.some(has);
 }
 
 /** The `template` packet's root element to the field model. `groups` is the
@@ -879,15 +1097,28 @@ export function parseXfaTemplate(root: XmlNode, groups?: XfaDataGroups): XfaTemp
   const rootEl = root.children.find((c) => c.name === 'subform');
   const masters = new Map<XmlNode, { index: number; area: XfaPageAreaModel }>();
   const pageSet = rootEl ? pageSetOf(root, rootEl, masters) : undefined;
+  // 164g.15: a leader's #id is looked up under the ROOT subform only -- Adobe
+  // ignores a target in a template-level <proto> (t74, t75) -- and a bare name
+  // searched up through every element's parent.
+  const ids = new Map<string, XmlNode>();
+  const parents = new Map<XmlNode, XmlNode>();
+  const index = (el: XmlNode, under: boolean): void => {
+    const id = el.attrs.get('id');
+    if (under && id !== undefined && !ids.has(id)) ids.set(id, el);
+    for (const c of el.children) { parents.set(c, el); index(c, under || c === rootEl); }
+  };
+  index(root, false);
+  const warnings: string[] = [];
+  const copyFields = new Map<LayoutNode, XfaField[]>();
   const top: Top = {
     ...(rootEl ? { rootEl } : {}),
     hasCa: pageSet?.pageAreas.some((p) => p.contentAreas.length > 0) ?? false,
-    masters,
+    masters, ids, parents, warnings, copyFields, ...(groups ? { groups } : {}),
   };
   const fields: XfaField[] = [];
   const masterPageFields: XfaField[] = [];
   walk(root, [], [], undefined, { layouts: [], inPage: false }, fields, undefined, newScope(),
     masterPageFields, groups, top);
   const body: XfaBody | undefined = top.root ? { root: top.root, ...(pageSet ? { pageSet } : {}) } : undefined;
-  return { fields, ...(body ? { body } : {}), masterPageFields };
+  return { fields, ...(body ? { body } : {}), masterPageFields, copyFields, warnings };
 }

@@ -1,0 +1,6 @@
+<subform name="S" layout="tb" w="7.5in"><subform name="A" layout="tb" w="7.5in"><breakAfter targetType="pageArea"/>
+<draw name="a1" w="2in" h="50pt"><value><text>a1</text></value></draw>
+<draw name="a2" w="2in" h="50pt"><value><text>a2</text></value></draw>
+</subform>
+<draw name="d3" w="2in" h="50pt"><value><text>d3</text></value></draw>
+</subform>

@@ -1,0 +1,6 @@
+  <subform name="filler" layout="position" w="7.5in" h="5in"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="pos" layout="position" w="7.5in"><keep intact="none"/><margin topInset="18pt" bottomInset="12pt"/>
+    <field name="f" x="0" y="80pt" w="2in" h="20pt"><ui><textEdit/></ui></field>
+    <field name="g" x="0" y="300pt" w="2in" h="20pt"><ui><textEdit/></ui></field>
+  </subform>
+  <subform name="nxt" layout="position" w="7.5in" h="20pt"><field name="n" x="0" y="0" w="2in" h="20pt"><ui><textEdit/></ui></field></subform>

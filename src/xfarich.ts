@@ -136,10 +136,16 @@ function captionOf(el: XmlNode): LeafText['caption'] | { refusal: string } | und
 }
 
 /** Plain text: one paragraph per record (p. 56: a newline or U+2029 delimits a
- *  record). An empty string is ONE empty paragraph, which measures one line. */
+ *  record). An empty string is ONE empty paragraph, which measures one line.
+ *
+ *  U+2028 is a LINE break inside its record (164g.23): p. 56 names only the
+ *  newline and U+2029, but Adobe Reader breaks the line there (probe t91, as
+ *  tall as `A\nB`), and so does pdf.js. It becomes the `'\n'` a `<br/>` writes,
+ *  which `layoutRuns` breaks on. Left in a run it reached face coverage and
+ *  refused the whole leaf, since no face draws it. */
 export function plainParas(text: string, base: RunStyle, para: ParaBox, paint: RunPaint = {}): ParaSpec[] {
   return text.split(/\r\n|\r|\n|\u2029/).map((rec) => ({
-    ...para, base, runs: rec === '' ? [] : [{ ...base, ...paint, text: rec }],
+    ...para, base, runs: rec === '' ? [] : [{ ...base, ...paint, text: rec.replace(/\u2028/g, '\n') }],
   }));
 }
 
@@ -342,11 +348,15 @@ class RichBuilder {
    *  another with the same box -- the enclosing `<p>`'s margins, indent and
    *  spacing -- in the style in force (164g.18). Left in a run it reached face
    *  coverage and cost the whole leaf, since no face draws it. pdf.js breaks
-   *  the LINE there instead; the two differ only for a `<p>` stating spacing. */
+   *  the LINE there instead; the two differ only for a `<p>` stating spacing.
+   *  U+2028 is a LINE break, as `<br/>` is (164g.23, Adobe probe t91). */
   text(raw: string, ctx: Ctx): void {
-    raw.split(' ').forEach((seg, i) => {
+    raw.split('\u2029').forEach((para, i) => {
       if (i > 0) this.paraBreak(ctx);
-      this.segment(seg, ctx);
+      para.split('\u2028').forEach((seg, k) => {
+        if (k > 0) this.br(ctx);
+        this.segment(seg, ctx);
+      });
     });
   }
   private paraBreak(ctx: Ctx): void {

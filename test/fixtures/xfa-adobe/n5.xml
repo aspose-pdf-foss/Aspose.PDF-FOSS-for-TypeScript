@@ -1,0 +1,8 @@
+<pageSet relevant="simplex -duplex" relation="simplexPaginated">
+  <pageArea name="A" id="A" pagePosition="any"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markA" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-A</text></value></draw></pageArea>
+</pageSet>
+<pageSet relevant="duplex -simplex" relation="duplexPaginated">
+  <pageArea name="B" id="B" oddOrEven="odd"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markB" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-B</text></value></draw></pageArea>
+  <pageArea name="C" id="C" oddOrEven="even"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markC" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-C</text></value></draw></pageArea>
+</pageSet>
+<subform name="item" layout="position" w="7.5in" h="9in"><occur min="3" initial="3" max="3"/><field name="f" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>

@@ -77,11 +77,13 @@ describe('positionedCut (R2-R8)', () => {
   it('returns 0 when a child covers the top (t25)', () => {
     expect(positionedCut(pos('p', 288, [drw('dr', 0, 200)]), 144, boxes)).toBe(0);
   });
-  it('refuses a top or bottom margin, naming 164g.20, and allows left/right ones (t14)', () => {
-    const want = { refusal: 'p: a positioned subform with a top or bottom margin is not split across content areas (164g.20)' };
-    expect(positionedCut(pos('p', 288, [], { margin: { topInset: '18pt' } }), 144, boxes)).toEqual(want);
-    expect(positionedCut(pos('p', 288, [], { margin: { bottomInset: '12pt' } }), 144, boxes)).toEqual(want);
-    expect(positionedCut(pos('p', 288, [], { margin: { leftInset: '6pt', rightInset: '6pt' } }), 144, boxes)).toBe(144);
+  it('cuts at the room in content coordinates whatever the insets (R7; t96-t99, t104)', () => {
+    const m = { margin: { topInset: '18pt', bottomInset: '12pt' } };
+    // t96: a draw at 120..130 stays above a 144 cut, though only 114 is left
+    // inside the insets; t104: one at 140..150 straddles and moves the cut.
+    expect(positionedCut(pos('p', 288, [drw('d', 120, 10)], m), 144, boxes)).toBe(144);
+    expect(positionedCut(pos('p', 288, [drw('d', 140, 10)], m), 144, boxes)).toBe(140);
+    expect(positionedCut(pos('p', 288, [drw('d', 134, 8)], { margin: { bottomInset: '12pt' } }), 144, boxes)).toBe(144);
   });
   it('refuses a child anchored other than topLeft (R8)', () => {
     const k: LayoutNode = { ...fld('a', 36, 20), geom: { x: '0pt', y: '36pt', w: '100pt', h: '20pt', anchorType: 'bottomLeft' } };
@@ -170,9 +172,9 @@ describe('final review fixes', () => {
     expect(positionedCut(pos('p', 288, [inner]), 144, boxes))
       .toEqual({ refusal: 'inner: a child outside its positioned parent\'s height is not split with it' });
   });
-  it('refuses a nested keep-none child with an <overflow> that the cut would continue (164g.15)', () => {
-    const inner = pos('inner', 120, [fld('g', 0, 20), fld('k', 80, 20)], { ...at(100, 120), overflow: true });
+  it('refuses a nested keep-none child with an <overflow> that the cut would continue (164g.31)', () => {
+    const inner = pos('inner', 120, [fld('g', 0, 20), fld('k', 80, 20)], { ...at(100, 120), overflow: { target: 'X' } });
     expect(positionedCut(pos('p', 288, [inner]), 144, boxes))
-      .toEqual({ refusal: 'inner: its <overflow> leader or trailer would be inserted as it continues into the next region, which is not implemented (164g.15)' });
+      .toEqual({ refusal: 'inner: an <overflow> on a positioned child that continues inside a split positioned subform is not implemented (164g.31)' });
   });
 });

@@ -161,11 +161,10 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
   // region either -- 'T!' draws past it -- and then the chain reason is named.
   it('refuses what it cannot do in a split chain, naming the child issue', () => {
     const big = (k: LayoutNode, t: Partial<LayoutNode> = {}) => body([area([ca(100)])], [tb('T!', [kid('a', 60), k], t)]);
-    expect(splitRefusals(big(kid('B', 60, { breakAfter: pb() })))[0][1]).toMatch(/breakAfter inside a split subform .*\(164g\.16\)/);
-    // An <overflow> container that continues into a second region needs its
-    // leader or trailer inserted there.
-    const r = splitRefusals(big(kid('O', 60), { overflow: true }));
-    expect(r[0]).toEqual(['O', expect.stringMatching(/T!: its <overflow> leader or trailer .*\(164g\.15\)/) as unknown as string]);
+    // An <overflow target> container that continues into a second region
+    // would choose where (164g.30); its leaders and trailers are laid down.
+    const r = splitRefusals(big(kid('O', 60), { overflow: { target: 'X' } }));
+    expect(r[0]).toEqual(['O', expect.stringMatching(/T!: its <overflow target> .*\(164g\.30\)/) as unknown as string]);
   });
 
   // 164g.14 R8: a flowed subform's keep intact="pageArea" splits like none (t66-t68).
@@ -174,14 +173,28 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
     expect(split(b)).toEqual(['0:T(a)', '0:T(b)']);
   });
 
-  // Final review, Important 1: before 164g.8 a child that did not fit the room
-  // left moved whole to the next region. A chain 164g.8 cannot split (here a
-  // breakAfter, 164g.16) must still do that, not be
-  // refused with every root child after it.
-  it('places whole, as before, a child whose chain it cannot split but which fits an empty region', () => {
+  // 164g.16 (Adobe t92): a breakAfter inside the chain takes effect before the
+  // next leaf. It made the chain unsplittable until then, which placed the
+  // child whole; that fallback is still covered by xfapage-keep.test.ts.
+  it('applies a breakAfter inside the chain before the next leaf', () => {
     const b = body([area([ca(100)])], [kid('A', 50), tb('T', [kid('a', 30, { breakAfter: pb() }), kid('b', 30)])]);
-    expect(split(b)).toEqual(['0:A', '0:T(a,b)']);
+    expect(split(b)).toEqual(['0:A,T(a)', '0:T(b)']);
     expect(splitRefusals(b)).toEqual([]);
+  });
+
+  // t93: a nested subform's breakAfter carries out of it to the next leaf; t94,
+  // t95: one with no leaf after it takes effect after the chain -- before the
+  // next root child, or as a page of its own -- and splits a chain that fits.
+  it('carries a breakAfter out of a nested subform, and past the end of the chain', () => {
+    const nested = body([area([ca(100)])], [tb('T', [tb('N', [kid('a', 20), kid('b', 20)], { breakAfter: pb() }), kid('c', 20)])]);
+    expect(split(nested)).toEqual(['0:T(N(a,b))', '0:T(c)']);
+    // ... and out of a nested subform whose LAST child carries it.
+    const deep = body([area([ca(100)])], [tb('T', [tb('N', [kid('a', 20), kid('b', 20, { breakAfter: pb() })]), kid('c', 20)])]);
+    expect(split(deep)).toEqual(['0:T(N(a,b))', '0:T(c)']);
+    const last = body([area([ca(100)])], [tb('T', [kid('a', 20), kid('b', 20, { breakAfter: pb() })]), kid('E', 20)]);
+    expect(split(last)).toEqual(['0:T(a,b)', '0:E']);
+    const alone = body([area([ca(100)])], [tb('T', [kid('a', 20), kid('b', 20, { breakAfter: pb() })])]);
+    expect(paginate(alone, flowHeight).pages).toHaveLength(2);
   });
 
   // Final review, Important 2: a hidden child takes no part in layout (p. 67),
@@ -202,7 +215,7 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
   });
 
   it('places an <overflow> container that stays in one region', () => {
-    expect(split(body([area([ca(100)])], [tb('T', [tb('O', [kid('a', 30)], { overflow: true }), kid('b', 90)])])))
+    expect(split(body([area([ca(100)])], [tb('T', [tb('O', [kid('a', 30)], { overflow: { target: 'X' } }), kid('b', 90)])])))
       .toEqual(['0:T(O(a))', '0:T(b)']);
   });
 });
@@ -261,6 +274,26 @@ describe('paginate: splitting an lr-tb between items and a table between rows (1
     expect(realRefusals(b)).toEqual([]);
   });
 
+  // 164g.21 (t105, t107-t110): a keep-none positioned subform in a tb splits by
+  // 164g.11's consensus, again on each page; one the rules refuse moves whole.
+  it('splits a keep-none positioned subform in a tb, and moves one the rules refuse', () => {
+    const at = (label: string, y: number, extra: Partial<LayoutNode['geom']> = {}): LayoutNode =>
+      fldN(label, 50, 20, { geom: { x: '0pt', y: `${String(y)}pt`, w: '50pt', h: '20pt', ...extra } });
+    const P = (h: number, kids: LayoutNode[]): LayoutNode => ({
+      kind: 'subform', label: 'P', layout: 'position', keep: { intact: 'none' },
+      geom: { w: '100pt', h: `${String(h)}pt` }, children: kids,
+    });
+    const b = body([area([ca(100)])], [kid('A', 50), tb('T', [P(200, [at('a', 10), at('b', 120)])])]);
+    expect(realSplit(b)).toEqual(['0:A,T(P)', '0:T(P)', '0:T(P)']);
+    const r = layoutPages(b);
+    expect(r.pages[0].placed.get('a')).toMatchObject({ box: { y: 60 } });
+    expect(r.pages[1].placed.get('b')).toMatchObject({ box: { y: 70 } });
+    // A child anchored bottomLeft refuses the split (R8): P moves whole.
+    const refused = body([area([ca(100)])], [kid('A', 50), tb('T', [P(90, [at('a', 10, { anchorType: 'bottomLeft' })])])]);
+    expect(realSplit(refused)).toEqual(['0:A', '0:T(P)']);
+    expect(realRefusals(refused)).toEqual([]);
+  });
+
   it('refuses, in an lr-tb, a field that would split and may not, naming 164g.26', () => {
     const f = fldN('f4', 100, 30, { ui: 'checkButton' });
     const r = realRefusals(body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), f])]));
@@ -314,12 +347,12 @@ describe('paginate: splitting an lr-tb between items and a table between rows (1
       .toEqual(['r2', `r2: does not fit an empty content area and would need ${SPLIT_LATER}`]);
   });
 
-  it('refuses an <overflow> lr-tb or table that would continue (164g.15)', () => {
-    const L = lrtb('L', draws(6), { overflow: true });
+  it('refuses an <overflow target> lr-tb or table that would continue (164g.30)', () => {
+    const L = lrtb('L', draws(6), { overflow: { target: 'X' } });
     const r = realRefusals(body([area([ca(100)])], [kid('A', 50), L]));
-    expect(r[0]).toEqual(['d4', expect.stringMatching(/^L: its <overflow> leader or trailer .*\(164g\.15\)$/) as unknown as string]);
-    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 30)])), { overflow: true });
-    expect(realRefusals(body([area([ca(100)])], [kid('A', 50), T]))[0][1]).toMatch(/^T: its <overflow> .*\(164g\.15\)$/);
+    expect(r[0]).toEqual(['d4', expect.stringMatching(/^L: its <overflow target> .*\(164g\.30\)$/) as unknown as string]);
+    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 30)])), { overflow: { target: 'X' } });
+    expect(realRefusals(body([area([ca(100)])], [kid('A', 50), T]))[0][1]).toMatch(/^T: its <overflow target> .*\(164g\.30\)$/);
   });
 
   it('places an lr-tb or table kept intact whole', () => {
@@ -396,12 +429,31 @@ describe('paginate: the p. 295 override', () => {
     expect(pages(body([area([ca(100)])], [kid('A', 110), kid('B', 10)]))).toEqual([[0, '0:A'], [0, '0:B']]);
   });
 
+  // A tb that states h does not split; a positioned subform is 164g.19's below.
   it('refuses one whose content lies past the boundary, and every child after it', () => {
-    const b = body([area([ca(100)])], [kid('A!', 110), kid('B', 10)]);
+    const b = body([area([ca(100)])], [tb('A!', [], { geom: { w: '100pt', h: '110pt' } }), kid('B', 10)]);
     const r = refusals(b);
-    expect(r[0]).toEqual(['A!', 'A!: does not fit an empty content area and would need splitting a field between its lines or a subform beyond its children (164g.13, 164g.19)']);
+    expect(r[0]).toEqual(['A!', 'A!: does not fit an empty content area and would need splitting a field between its lines or a subform beyond its children (164g.13)']);
     expect(r[1][0]).toBe('B');
     expect(r[1][1]).toMatch(AFTER);
+  });
+
+  // 164g.19 (Adobe t4): a positioned subform that does not split and that no
+  // empty content area holds is placed whole where it stands, ink past and all.
+  it('places a positioned subform no empty content area holds on the CURRENT page, ink past', () => {
+    expect(pages(body([area([ca(100)])], [kid('A', 50), kid('B!', 150), kid('C', 10)])))
+      .toEqual([[0, '0:A,B!'], [0, '0:C']]);
+    expect(refusals(body([area([ca(100)])], [kid('B!', 150)]))).toEqual([]);
+  });
+
+  it('still advances it when the next content area can hold it', () => {
+    const b = body([area([ca(100)], { max: 1 }), area([ca(200)])], [kid('A', 50), kid('B!', 150)]);
+    expect(pages(b)).toEqual([[0, '0:A'], [1, '0:B!']]);
+  });
+
+  it('leaves a keep-none positioned subform to the split rules', () => {
+    const r = refusals(body([area([ca(100)])], [kid('B!', 150, { keep: { intact: 'none' } })]));
+    expect(r[0]?.[1]).toContain(SPLIT_LATER);
   });
 
   // Review Focus 5: p. 295 overrides only when the NEXT region cannot hold it either.
@@ -623,7 +675,8 @@ describe('layoutPages', () => {
   });
 
   it('gives every field under a refused child that child\'s reason', () => {
-    const r = layoutPages(body([area([caAt(100)])], [kid('P', 150, { children: [fld('c', { y: '120pt', ...S })] })]));
+    const inner = kid('Q', 150, { children: [fld('c', { y: '120pt', ...S })] });
+    const r = layoutPages(body([area([caAt(100)])], [tb('P', [inner], { geom: { w: '100pt', h: '150pt' } })]));
     expect(r.refused.get('c')).toMatch(/would need splitting a field between its lines or a subform beyond its children/);
   });
 
@@ -738,12 +791,14 @@ describe('paginate: splitting a keep-none positioned root child (164g.11)', () =
     expect(r.refused.get(p)).toMatch(/discarded/);
     expect(r.pages[0].contentAreas[0].children.map((k) => k.label)).toEqual(['O', 'F']);
   });
-  it('refuses a keep-none subform with an <overflow> that would continue (164g.15)', () => {
-    const p = P(288, [fld('a', 36, 21.6)], { overflow: true });
-    expect(run([...lead, p]).refused.get(p)).toMatch(/164g\.15/);
+  it('refuses a keep-none subform with an <overflow target> that would continue (164g.30)', () => {
+    const p = P(288, [fld('a', 36, 21.6)], { overflow: { target: 'X' } });
+    expect(run([...lead, p]).refused.get(p)).toMatch(/164g\.30/);
   });
-  it('names 164g.19 when a default positioned subform is taller than an empty page', () => {
-    expect(SPLIT_LATER).toMatch(/164g\.19/);
+  // 164g.19 places a default positioned subform taller than an empty page, so
+  // the split-later refusal no longer names it.
+  it('names neither 164g.19 nor 164g.11 in the split-later refusal', () => {
+    expect(SPLIT_LATER).not.toMatch(/164g\.19/);
     expect(SPLIT_LATER).not.toMatch(/164g\.11/);
   });
 });

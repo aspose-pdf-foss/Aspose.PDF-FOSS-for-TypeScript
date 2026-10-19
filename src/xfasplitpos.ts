@@ -31,18 +31,20 @@ export function positionedSplittable(n: LayoutNode): boolean {
     && n.refusal === undefined && n.keep?.intact === 'none';
 }
 
-const inset = (s: string | undefined): number => (s === undefined ? 0 : measureToPt(s) ?? NaN);
 /**
  * Where `n` splits when `room` is left (R2-R8): the room, moved up to the top of
  * every straddling child that will not split, until none straddles. A cut of 0
  * means `n` cannot split here (R5).
+ *
+ * R7 (164g.20; t14, t96-t104), and it reads wrong: the cut is the room taken in
+ * the subform's CONTENT coordinates, its top and bottom insets ignored, while
+ * every fragment still draws its top inset. So a child up to the room below the
+ * content top stays in the first fragment and Adobe draws it past the content
+ * area, into the bottom margin and beyond (t102 draws one 12pt past it).
  */
 export function positionedCut(
   n: LayoutNode, room: number, boxes: XfaChildBoxes, lines?: (n: LayoutNode) => number | undefined,
 ): number | { refusal: string } {
-  // R7 (t14): Adobe's margins across a split are unresolved.
-  if (inset(n.margin?.topInset) !== 0 || inset(n.margin?.bottomInset) !== 0)
-    return { refusal: `${n.label}: a positioned subform with a top or bottom margin is not split across content areas (164g.20)` };
   const kids = boxes(n);
   if ('reason' in kids) return { refusal: kids.reason };
   // R8: fragments rewrite each child's y, which an anchor would reinterpret.
@@ -70,9 +72,11 @@ export function positionedCut(
       let next = k.top;
       if (positionedSplittable(k.node)) {
         // R3 (t24): a keep-none positioned child splits at the same cut -- unless
-        // it states an <overflow>, whose leader XFA would insert there (164g.15).
-        if (k.node.overflow)
-          return { refusal: `${k.node.label}: its <overflow> leader or trailer would be inserted as it continues into the next region, which is not implemented (164g.15)` };
+        // it states an <overflow>: no probe says where a leader or trailer of a
+        // child continuing INSIDE a split positioned subform goes (164g.31).
+        const of = k.node.overflow;
+        if (of && ((of.leader?.length ?? 0) > 0 || (of.trailer?.length ?? 0) > 0 || of.target !== undefined))
+          return { refusal: `${k.node.label}: an <overflow> on a positioned child that continues inside a split positioned subform is not implemented (164g.31)` };
         const inner = positionedCut(k.node, cut - k.top, boxes, lines);
         if (typeof inner === 'object') return inner;
         next = k.top + inner;

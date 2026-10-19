@@ -189,3 +189,23 @@ describe('leafText: U+2029 in rich text (164g.18)', () => {
     expect(t.paras[1].runs[0]).toMatchObject({ text: 'b', bold: true });
   });
 });
+
+// 164g.23: U+2028 is a LINE break, as <br/> is -- Adobe Reader breaks the line
+// there (probe t91). The paragraph stays one, so its spacing applies once.
+describe('leafText: U+2028 (164g.23)', () => {
+  const rich = (body: string) => leafText(el(
+    `<draw><font typeface="Arial"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml">${body}</body></exData></value></draw>`));
+  const plain = (text: string) => leafText(el(`<draw><font typeface="Arial"/><value><text>${text}</text></value></draw>`));
+
+  it('breaks the line inside one paragraph in rich text, keeping the run style', () => {
+    const t = rich('<p style="margin-top:2pt"><span style="font-weight:bold">a\u2028b</span></p>');
+    expect(t.refusal).toBeUndefined();
+    expect(t.paras).toHaveLength(1);
+    expect(t.paras[0].runs.map((r) => r.text).join('')).toBe('a\nb');
+    expect(t.paras[0].runs.every((r) => r.bold)).toBe(true);
+  });
+  it('breaks the line inside one record in plain text', () => {
+    const t = plain('a\u2028b\nc');
+    expect(t.paras.map((p) => p.runs.map((r) => r.text).join(''))).toEqual(['a\nb', 'c']);
+  });
+});

@@ -14,11 +14,18 @@ const name = process.argv[2];
 if (!name) throw new Error('usage: gen-xfa-adobe-probes.ts <probe name, e.g. t5>');
 const dir = new URL('../test/fixtures/xfa-adobe/', import.meta.url);
 const body = readFileSync(new URL(`${name}.xml`, dir), 'utf8');
-/** A probe may state its own <pageSet> (164g.9); otherwise the one-page-area default. */
-const own = /<pageSet\b[\s\S]*?<\/pageSet>/.exec(body);
+/** A probe may state its own <pageSet> (164g.9); otherwise the one-page-area default.
+ *  Greedy since 164g.22, so nested and sibling page sets are taken whole. */
+const own = /<pageSet\b[\s\S]*<\/pageSet>/.exec(body);
 const pageSet = own?.[0] ?? `<pageSet><pageArea name="P1" id="P1"><medium short="8.5in" long="11in" stock="letter"/>
     <contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/></pageArea></pageSet>`;
-const content = own ? body.replace(own[0], '') : body;
+/** A probe may state a <proto> (164g.15): leaders and trailers by #id. It goes
+ *  beside the root subform, as XFA 3.3's examples place it. */
+const proto = body.includes('<!-- proto in root -->') ? null : /<proto\b[\s\S]*?<\/proto>/.exec(body);
+/** A probe may shrink the oracle field (164g.20): `<!-- oracle 1in -->` makes room
+ *  on a small page for a probe read from the capture rather than the report. */
+const oracleH = /<!-- oracle (\S+) -->/.exec(body)?.[1] ?? '3in';
+const content = [own?.[0], proto?.[0]].reduce((s, x) => (x ? s.replace(x, '') : s), body);
 
 /** Walk xfa.form and write each node's fragments -- page, then x, y, w, h in
  *  points relative to its parent's content box -- into form1.oracle.out. */
@@ -49,7 +56,25 @@ if (typeof probeDone == "undefined") {
       for (var j = 0; j < ds.length; j++) nm.push(ds.item(j).name);
       areas.push((p + 1) + ":" + nm.join("/"));
     }
-    msg = "pages=" + xfa.layout.pageCount() + "\\nareas=" + areas.join(" ") + "\\n" + rows.join("\\n");
+    // 164g.15: what the Layout DOM holds per page, leader and trailer
+    // instances included -- they need not be nodes xfa.form's walk reaches.
+    var content = [];
+    for (var p2 = 0; p2 < xfa.layout.pageCount(); p2++) {
+      var cs = xfa.layout.pageContent(p2, "subform", false);
+      var cn = [];
+      for (var j2 = 0; j2 < cs.length; j2++) cn.push(cs.item(j2).name);
+      content.push((p2 + 1) + ":" + cn.join("/"));
+    }
+    // 164g.15: SOM names without "xfa[0].form[0].form1[0]." and "[0]", packed
+    // two to a line, so a probe's report fits the field's visible lines.
+    var packed = [], line = "";
+    for (var r = 0; r < rows.length; r++) {
+      var s = rows[r].replace("xfa[0].form[0].form1[0].", "").split("[0]").join("");
+      if (line != "" && line.length + s.length > 100) { packed.push(line); line = ""; }
+      line = line == "" ? s : line + "  " + s;
+    }
+    if (line != "") packed.push(line);
+    msg = "pages=" + xfa.layout.pageCount() + "\\nareas=" + areas.join(" ") + "\\ncontent=" + content.join(" ") + "\\n" + packed.join("\\n");
   }
   catch (e) { msg = "ERR " + e; }
   xfa.form.form1.oracle.out.rawValue = msg;
@@ -61,9 +86,9 @@ const CONFIG = `<config xmlns="http://www.xfa.org/schema/xci/2.8/"><agent name="
 const template = `<template xmlns="http://www.xfa.org/schema/xfa-template/2.8/"><subform name="form1" layout="tb" locale="en_US">
   ${pageSet}
   <event activity="docReady" ref="$host"><script contentType="application/x-javascript">${script.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</script></event>
-  <subform name="oracle" layout="tb" w="7.5in"><field name="out" w="7.5in" h="3in"><font typeface="Courier New" size="8pt"/><ui><textEdit multiLine="1"/></ui></field></subform>
+  <subform name="oracle" layout="tb" w="7.5in"><field name="out" w="7.5in" h="${oracleH}"><font typeface="Courier New" size="8pt"/><ui><textEdit multiLine="1"/></ui></field></subform>
   ${content}
-</subform></template>`;
+</subform>${proto?.[0] ?? ''}</template>`;
 
 const out = new URL(`${name}.out.pdf`, dir);
 writeFileSync(out, buildXfaPdf({

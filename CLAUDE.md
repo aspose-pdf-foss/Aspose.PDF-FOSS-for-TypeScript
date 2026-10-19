@@ -11076,8 +11076,16 @@ Source (`src/`):
   (the enclosing `<p>`'s margins, indent, spacing) in the style in force. Left
   in a run it reached face coverage, which no face passes, and the whole leaf
   was refused. pdf.js breaks only the LINE there; the two differ only for a
-  `<p>` stating spacing, which no vendored form has. U+2028 is NOT handled:
-  p. 56 names only the newline and U+2029.
+  `<p>` stating spacing, which no vendored form has.
+  **Invariant (`164g.23`):** U+2028 is a LINE break inside its paragraph, in
+  plain text (`plainParas`) and rich (`RichBuilder.text`, through `br`) alike:
+  it becomes the `'\n'` a `<br/>` writes, which `layoutRuns` breaks on. p. 56
+  names only the newline and U+2029, but Adobe Reader breaks the line there
+  (probe t91: as tall as `A\nB`), and so does pdf.js. Left in a run it was
+  refused for face coverage. **Note, measured:** making it a PARAGRAPH break
+  in rich text renders identically unless the `<p>` states spacing, so only a
+  unit case counting paragraphs holds it; t91 compares the relative rule
+  alone, Reader's absolute line heights being 164g.32's.
   **Invariant (`164g.17`):** an `xfa-spacerun:yes` span keeps every space
   but the LAST of each run as U+00A0, `preformat.ts`'s substitution, a run
   begun by a trailing space in the run before included — `layoutRuns`
@@ -11239,6 +11247,15 @@ Source (`src/`):
   bottom). Otherwise it needs splitting and is refused (`164g.11`-`164g.13`). fw9's odd
   page subforms are 0.003pt taller than their content area, and Adobe puts each
   on its own page -- this rule.
+  **Invariant (`164g.19`, Adobe t4):** a POSITIONED root child that does not
+  split (no `keep intact="none"`) and that the next, empty, region cannot hold
+  is placed whole in the CURRENT region, below what is already there, ink past
+  the content area and the page included -- moving it gains nothing. One that
+  the next region holds still advances, and a keep-none one is left to
+  `placePositioned`. The p. 295 refusal now reaches only an unsplittable FLOWED
+  child (a `tb` stating `h`). **Measured:** dropping the rule reddens t4, and
+  dropping the keep-none exclusion reddens its unit case. NOTE: the old p. 295
+  unit fixtures were positioned `kid`s, so they were rewritten as stated-h `tb`s.
   **Invariant (`164g.8`, `164g.12`):** a root child that does not fit the room
   left and is SPLITTABLE -- a `tb`, `lr-tb` or `table` subform with no stated
   `h`, no `refusal`, `keep intact` absent or `none` -- splits BETWEEN its
@@ -11301,13 +11318,23 @@ Source (`src/`):
   memo, is the cost rule above.
   **Invariant (`164g.8`, spec decision #3):** a `breakBefore` inside a split
   chain is applied with `Paginator.apply`, the root children's rules, before its
-  leaf is placed. An `<overflow>` is refused only when its container is about to
-  continue into a second region, where XFA would insert the leader or trailer
-  (164g.15). A `breakAfter` in a chain stays refused (164g.16); `keep
+  leaf is placed. Leaders and trailers are laid down since 164g.15; `keep
   intact="pageArea"` and adhesion are honoured since 164g.14 (`xfakeep.ts`).
-  **Invariant (`164g.8`, final review):** a chain 164g.8 CANNOT split -- a
-  `breakAfter` in it, or (since 164g.14) adhesion between lr-tb items or into a
-  sibling with a `breakBefore` -- falls back to
+  **Invariant (`164g.16`):** a `breakAfter` in a chain takes effect before the
+  NEXT leaf, joining its `brks` as a breakBefore would (Adobe t92, t93 -- a
+  nested subform's too). One with no leaf after it is `flatten`'s `trailing`,
+  applied once the chain is placed and before the root child's own breakAfter:
+  the next root child opens the next page (t94), and with nothing after it the
+  break still makes a page of its own (t95). `innerBreak` counts it, so a chain
+  that FITS is still split (t95's 100pt subform). Reader also reports the split
+  subform with an EMPTY 0pt fragment on the new page, which changes no position
+  and is not modelled. **Measured:** all four mutations redden; carrying a
+  nested subform's trailing break only after a case put the break on that
+  subform's LAST CHILD -- on the subform itself it is appended by the parent's
+  loop either way.
+  **Invariant (`164g.8`, final review):** a chain 164g.8 CANNOT split --
+  adhesion between lr-tb items or into a sibling with a break (164g.14), and
+  until 164g.16 a `breakAfter` in it -- falls back to
   164g.3's whole placement (`placeSplit` returns `unsplittable`, having placed
   nothing), and is refused, naming the chain reason, only when it does not fit
   an empty region either. Refusing at once lost a child that converted before,
@@ -11377,9 +11404,12 @@ Source (`src/`):
   **Invariant:** termination RERUNS pagination with the final page forced
   (`paginate`'s `force`), never rewinds one, so 164g.8 and 164g.11 splitting
   need nothing of their own. A rerun is accepted only with the same page count
-  AND no new refusal AND the forced area actually on page k: the force reaches
-  only a page `qualifiedNext` chooses, so a final page opened by a break or by
-  the start is never replaced, and `last` is appended instead (final review).
+  AND no new refusal AND the forced area actually on page k, NOT BLANK (a
+  rerun runs its own later exits, and an appended blank `last` there once
+  passed for the forced page). **Reversed by `164g.22`:** the force reaches
+  ANY content page however it was opened -- `open()` applies it -- because
+  Adobe probe n8 redoes a break-opened final page as `last`. 164g.9's final
+  review had reasoned the opposite with no probe behind it.
   A parity break on the root or first child goes through `toParity` at the
   start too, so it is refused or filled exactly as mid-document. No blank
   back page ends a duplex document -- Adobe adds
@@ -11389,8 +11419,40 @@ Source (`src/`):
   where a forced `last` page's overflow cannot advance -- under duplex, no rest
   area matching the next page's parity -- so the rerun keeps its page count and
   refuses a child; the plan had expected it to stay held by reasoning alone.
+  **Invariant (`164g.22`), nested and sibling page sets:** `pageAreas` stays
+  ONE flat document-order list across every set -- so a page's `pageArea`,
+  the masters, break targets and the converter are unchanged -- and
+  `XfaPageSet.sets` carries the tree (root first), each area naming its `set`.
+  A body without `sets` is one set holding every area: every pre-164g.22
+  caller is byte-identical BY CONSTRUCTION. Of sibling page sets the FIRST
+  alone is used and the rest warned of: Reader evaluates no `relevant` on
+  screen (n5, n10) and never traverses to a sibling (n6), so there is no
+  printer-mode option to add.
+  **Invariant:** ordered nesting is p. 298-300's ascent verbatim (n1-n3): the
+  current area again, else its next sibling in its set -- a nested set
+  entered as a FRESH instance and descended into -- else a new instance of the
+  set (its subtree's counts reset), else up. A forward break enters every set
+  below the common ancestor fresh; a backward one renews the lowest common set
+  with an instance left (n7). `PaginatedPage.pageSet` is 0 only while every
+  set on the page's path is in its first instance (d3mq's master numbering).
+  **Invariant:** qualified nesting -- a natural page is chosen among the
+  CURRENT set's own areas only (p. 310), `pagePosition` counts the set's
+  VISIT, and a break into another set first TERMINATES the one it leaves
+  (n4, n8; p. 310-311). Every exit, the document's end included, is decided by
+  `terminate`'s rerun loop one at a time in document order; a `last` whose
+  preconditions fail appends a blank `last` page at once (n8's page 6).
+  **Invariant:** parity is PHYSICAL across sets (n4, n9) -- a simplex page
+  takes a sheet, a duplex page a surface -- and a parity filler comes from the
+  ENTERED set's areas (n9's G, not the outer H).
+  **Note, measured:** 9 of 10 mutations redden; a fresh entry on a FORWARD
+  ordered break reddened nothing until `test/xfapage-nested.test.ts` grew a
+  case -- no probe re-checks an inner set's max after breaking into it. The
+  10th, the renew guard in `nextPage`, is UNREACHABLE (a renewed set always
+  has a usable area, every area's max being >= 1 or -1); held by reasoning.
+  **Note:** a FIELD on a nested set's page area is reported, not created --
+  Reader's naming there is unprobed -- while its draws and chrome are laid out.
   **Note on the oracle:** `test/xfa-adobe-qualified-oracle.test.ts` converts
-  15 Reader probes and reads each created page's area back from the
+  25 Reader probes (q1-q15, n1-n10) and reads each created page's area back from the
   `AREA-X` text its master chrome paints, so it checks pagination END TO END
   through the converter, not `paginate` alone.
 - **xfasplitpos.ts** — splitting a positioned XFA subform across content
@@ -11411,10 +11473,16 @@ Source (`src/`):
   subform, or a field whose piece above the cut is below its font size, and
   repeats until nothing straddles (t7, t8, t12, t13, t17-t19, t22); a field
   whose piece reaches its font size is SPLIT through `xfafieldsplit.ts`
-  (164g.13), and top/bottom margins (164g.20) and anchored children are
-  refused. A
-  fragment may hold nothing (t26). Only ROOT children split; in a 164g.8 chain
-  a positioned subform is still whole (164g.21).
+  (164g.13), and anchored children are refused. A
+  fragment may hold nothing (t26).
+  **Invariant (`164g.21`, t105-t110):** a keep-none positioned subform that is
+  a leaf of a 164g.8 `tb` chain splits too, through `xfapage.ts`'s `straddle`:
+  the room is what is left inside the chain (the `tb`'s bottom insets excluded,
+  t110), the head closes the region and the tail is retried, as for a field.
+  A split the rules refuse, or cut at its top, MOVES whole -- never refused --
+  so no form that converted before loses it; that fallback is held by
+  `test/xfapage.test.ts` alone, no probe reaching it. Only a `tb` parent: in an
+  `lr-tb` the subform is still an item placed whole (unprobed).
   **Invariant (final review):** a child above the top or at or below a STATED
   height, or a keep-none child running past it, refuses the split by name --
   it belongs to no fragment and no probe says where Adobe puts it; dropped, it
@@ -11424,6 +11492,19 @@ Source (`src/`):
   through `ptStr`: snapped to 0 within EPS, never in exponent notation. mm
   templates leave residues like -2.8e-14 where a child sits on the cut, which
   `measureToPt` cannot read, and the field lost its geometry.
+  **Invariant (`164g.20`), and it reads wrong:** a top or bottom inset does NOT
+  shrink the cut. The cut is the room taken in the subform's CONTENT
+  coordinates (`ChildBox.top` is already content-relative), and every fragment
+  keeps its margins, so a child up to the room below the content top stays in
+  the first fragment and is drawn past the content area -- Adobe does exactly
+  that (t102's capture: a bar 12pt past it). Honouring the insets reddens 14
+  cases (t14, t96-t100, t103, t104). Fragment heights are the cut and the rest
+  of the BOX, which is why `left` stays the box height. A nested keep-none
+  child applies the same rule in its own content coordinates (t103).
+  **Note:** t101 and t102 are VISUAL probes on non-Letter pages, outside
+  `ADOBE_PROBES`; where Reader DRAWS a fragment's children is read off their
+  captures, since `xfa.layout.y` reports a child without its parent's inset
+  and so cannot tell an applied inset from a missing one.
   **Note, measured:** all 8 planned mutations redden. The REPEAT of the
   consensus search is held by `test/xfasplitpos.test.ts` alone -- no Adobe
   probe has a straddler that only a moved cut exposes, so a single-pass build
@@ -11536,6 +11617,69 @@ Source (`src/`):
   refusal, `partAt`'s level, the split chain's `tail` and the unforced pair
   inside a split. Adhesion between differently sized content areas is
   UNPROBED.
+- **Leaders and trailers** (`xfatemplate.ts`, `xfapage.ts`, `164g.15`) —
+  `<overflow leader trailer>` (and the deprecated `<break overflowLeader
+  overflowTrailer>`, which Designer writes for "repeat header row") and a
+  `breakBefore`/`breakAfter`'s own leader and trailer, laid down as Adobe Reader
+  lays them (probes t73-t90). The model is `XfaCopySpec`/`XfaOverflow` in
+  `xfaflow.ts`; the template resolves targets and pagination spends them.
+  **Invariant: every copy is a new FORM instance** (t73 `S.H[1].Hf`, t76
+  `S.L[1].Lf`). `XfaCopySpec.make(n)` walks the target as ONE instance, named
+  in its home scope after every instance the walk counted (`H[1]` after the
+  in-flow `H[0]`, `L[0]` for a proto), and registers its fields in
+  `tpl.copyFields`; the converter converts the fields of the copies pagination
+  PLACED (`XfaLayoutResult.copies`), and the measurer finds them through
+  `fieldLookup`. An overflow copy's home is the ASSERTING subform even where it
+  is laid out elsewhere (t79, t83); a break copy's is the breaking subform's
+  PARENT (t85). A bare SOM name is searched from the asserting subform either way.
+  **Invariant: `make` is PURE.** Counters live in the `Paginator` -- spent per
+  spec ENTRY, copy numbers per (scope, name) -- inside `snapshot`/`restore`, so
+  probing a fit and a termination rerun cost nothing; `COPIES` memoizes
+  `make` by (spec, number). `restore` cannot take back a PLACED node, which is
+  why `applyBreak` dry-runs the break before it places a trailer.
+  **Invariant (R1), and Adobe settled it:** `#id` resolves only under the ROOT
+  subform. A target in a template-level `<proto>` (t74, t75), missing, or not a
+  subform (t90) is IGNORED with a warning, as Adobe ignores it -- but a SOM
+  expression we do not resolve REFUSES where it would be inserted, since Adobe
+  may well resolve it. An ignored target still leaves its list stated, which
+  blocks inheritance.
+  **Invariant (R2), overruling p. 322:** an absent `<occur>` allows ONE copy
+  (t73), and a list is counted per ENTRY (t81: `#X #Y #X` lays X twice).
+  **Invariant (R3):** a container's own list, else the nearest asserting
+  ancestor's, the root subform last (`effectiveCopy`); an EMPTY list blocks
+  (t80); past a spent list the next asserting ancestor's is spent (p. 325,
+  UNPROBED).
+  **Invariant (R4, R5):** in `placeSplit` the containers that CONTINUE across a
+  region boundary are those common to the leaves either side (`common`); the
+  innermost one's trailer closes the region (`continueTo`) and its leader opens
+  the next. The trailer is RESERVED in every fit, the chain's last leaf
+  included (t89, Example 8.40) -- in the leaf fit, in `straddle`'s room (t82)
+  and in the root fit of a splittable child. In an EMPTY region the reservation
+  alone does not keep a leaf out; the trailer is then laid down only if it
+  still fits, with a warning (decision, unprobed).
+  **Invariant (R6, t83):** a split POSITIONED subform's leader goes into the
+  content area's flow above the continuation; its trailer refuses (164g.31).
+  **Invariant (R7), REVERSING Example 8.36-8.37:** a break's TRAILER closes the
+  region the break leaves and its LEADER opens the one it enters (t85, t86).
+  Refused by name (164g.31): one inside a split chain, on the start break, on a
+  break that does not move, a trailer that does not fit -- and a break inside a
+  split chain whose CONTINUING container lays down copies. That last check
+  reads the common path, not the leaf's: DD 1494's `P2.front` states a leader
+  and breaks, but what continues across its break is `TopForm`, and reading the
+  leaf's path refused 344 of its fields.
+  **Note:** `<overflow target>` still refuses where its container continues
+  (164g.30); `<bookend>` is not read at all (164g.29).
+  **Note, measured:** 19 of 22 mutations redden; three needed cases first.
+  The empty-region fallback is a REDUNDANT PAIR with p. 295's `emptyRegion`
+  under equal content areas -- that rule places the leaf anyway -- so only a
+  LARGER next region separates them. Restoring the copy state is invisible to
+  every probe, which commits each copy once; only a positioned split, whose plan
+  commits and then restores, lists a copy twice without it. And searching a
+  break leader's bare name from the parent was hidden by a test that checked
+  the break, not its spec. Not covered, each held by reasoning: the leader's
+  place before hidden pending leaves (equivalent -- they take no space), the
+  `COPIES` memo (cost only) and `fieldLookup` seeing copies (no probe binds data
+  to a copy's field).
 - **xfaborder.ts**, **xfachrome.ts**, **xfapaint.ts** — XFA chrome as page
   content (`164g.4`): a dynamic form's draws, borders, fills and captions on
   the pages `ConvertXfaToAcroForm` creates. `xfaborder.ts` (pure) reads
@@ -12943,8 +13087,8 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
 | `fixtures/xfa-dynamic/` | `PROVENANCE.md` | OPM Form 1644, the one genuinely **dynamic** XFA form found among ~110 OPM and other federal forms (Designer 8.0, `/NeedsRendering`, no AcroForm; US federal work), plus **pdf.js 6.3.289**'s XFA layout of it rendered in headless Chrome (`npm run gen:xfa`, not run by `npm test`). Three variants: as published, data-driven `<occur>` rows, and a page subform repeated across page breaks. Pins pdf.js's SOM naming equal to ours; our engine places none of it yet, so its agreement check waits on `164g.2`/`.3`/`.7`. Since `d3mq`, DoD DD 2875 and DD 1494 too, whose master-page layouts are checked against pdf.js on 3 and 14 pages (`master-goldens.json`; since `bkdi` DD 2875's body converts on pdf.js's 3 pages, unchecked, and since `164g.8` DD 1494's body is compared too, 14 pages field by field). pdf.js is a reimplementation: evidence, not Adobe conformance (`test/xfa-dynamic-oracle.test.ts`, `test/xfa-master-oracle.test.ts`) |
-| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). Since `164g.3` fw9 and the USCIS I-130/I-765 paginate onto all of Adobe's pages and rects (one `<pageArea>` reused for 6, 12 and 7 pages), which also found the 10pt check-button default. A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. Since `d3mq`, DoD DD 1391 and DD 1155 (also Designer 6.5): the only FILLABLE master-page fields found in 92 federal forms, every one landing on Adobe's name and rect. Since `164g.10`, DoD DD 2952, three pages on three page areas reached by `breakBefore targetType="pageArea"`, fetched through the Wayback Machine because the DoD site refuses scripts: all 53 fields on Adobe's page and rect, and the master Reset named per PAGE AREA (`Page2[0]` on page 2). One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
-| `fixtures/xfa-adobe/` | `PROVENANCE.md` | 70 dynamic XFA probes laid out by **Adobe Acrobat Reader 26.1** itself, each reporting Adobe's `xfa.layout` page and box for every node into a field on page 1, transcribed by hand from window captures into `adobe.json` (Reader will not save them). The oracle for splitting a positioned subform (164g.11): it showed Adobe splits one only under `keep intact="none"`, contrary to XFA 3.3's default, and pinned the split-consensus rules; 16 probes land every field on Adobe's page and box and 8 are refused by name. pdf.js cannot serve here -- it never splits a positioned subform. Since `164g.13`, 15 more (t40-t54) settled where Reader cuts a field between its lines -- a 1.2 x font size grid, a free cut below the text, a one-font-size floor moved by, not to -- and turned nine refused probes into matches. Since `164g.12`, 13 more (t27-t39) settled how an `lr-tb` splits between items and a table between rows -- per item, never per line, rows whole, whole-table column widths -- and that every fragment carries both margins, overruling 164g.8; 10 land every field and draw on Reader's page and box and 3 are refused naming 164g.13. Since `164g.14`, 18 more (t55-t72) settled adhesion and keep intact="pageArea" -- a chain moves together, a splittable next needs only its first piece, a pair that cannot fit an empty area runs past rather than moving, and a flowed pageArea splits like none, overruling p. 291 and p. 312. Since `164g.9`, 15 qualified-pagination probes (q1-q15) report each page's page area too; they settled four rules XFA 3.3 contradicts or leaves open, and pdf.js cannot serve there either, starting every form on its first page area (`test/xfa-adobe-qualified-oracle.test.ts`). One producer, one version (`test/xfa-adobe-oracle.test.ts`) |
+| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). Since `164g.3` fw9 and the USCIS I-130/I-765 paginate onto all of Adobe's pages and rects (one `<pageArea>` reused for 6, 12 and 7 pages), which also found the 10pt check-button default. A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. Since `d3mq`, DoD DD 1391 and DD 1155 (also Designer 6.5): the only FILLABLE master-page fields found in 92 federal forms, every one landing on Adobe's name and rect. Since `164g.10`, DoD DD 2952, three pages on three page areas reached by `breakBefore targetType="pageArea"`, fetched through the Wayback Machine because the DoD site refuses scripts: all 53 fields on Adobe's page and rect, and the master Reset named per PAGE AREA (`Page2[0]` on page 2). Since `164g.24`, DoD DD 350 (Designer 6.4), found by scanning 1,219 archived DD forms: four pages of ONE page area, its master Reset CREATED as `Page1[0]`..`Page1[3]` on Adobe's rect each time -- the only real bytes with a repeated master instance that is created rather than refused. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
+| `fixtures/xfa-adobe/` | `PROVENANCE.md` | 93 dynamic XFA probes laid out by **Adobe Acrobat Reader 26.1** itself, each reporting Adobe's `xfa.layout` page and box for every node into a field on page 1, transcribed by hand from window captures into `adobe.json` (Reader will not save them). The oracle for splitting a positioned subform (164g.11): it showed Adobe splits one only under `keep intact="none"`, contrary to XFA 3.3's default, and pinned the split-consensus rules; 16 probes land every field on Adobe's page and box and 8 are refused by name. pdf.js cannot serve here -- it never splits a positioned subform. Since `164g.13`, 15 more (t40-t54) settled where Reader cuts a field between its lines -- a 1.2 x font size grid, a free cut below the text, a one-font-size floor moved by, not to -- and turned nine refused probes into matches. Since `164g.12`, 13 more (t27-t39) settled how an `lr-tb` splits between items and a table between rows -- per item, never per line, rows whole, whole-table column widths -- and that every fragment carries both margins, overruling 164g.8; 10 land every field and draw on Reader's page and box and 3 are refused naming 164g.13. Since `164g.14`, 18 more (t55-t72) settled adhesion and keep intact="pageArea" -- a chain moves together, a splittable next needs only its first piece, a pair that cannot fit an empty area runs past rather than moving, and a flowed pageArea splits like none, overruling p. 291 and p. 312. Since `164g.15`, 18 more (t73-t90) settled leaders and trailers -- every copy a new form instance, an absent occur one copy, a list counted per entry, the trailer reserved in every fit, a break trailer before the break and its leader after, and a template-level `<proto>` ignored -- overruling p. 315-316 and p. 322-323; all 18 land every field and draw on Reader's page and box. Since `164g.16`, t92-t95 settled a `breakAfter` inside a split subform -- it takes effect before what follows, and a trailing one still makes a page -- and t91 (`164g.23`) that U+2028 breaks the line, compared by its relative rule alone. Since `164g.9`, 15 qualified-pagination probes (q1-q15) report each page's page area too; they settled four rules XFA 3.3 contradicts or leaves open, and pdf.js cannot serve there either, starting every form on its first page area (`test/xfa-adobe-qualified-oracle.test.ts`). One producer, one version (`test/xfa-adobe-oracle.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |

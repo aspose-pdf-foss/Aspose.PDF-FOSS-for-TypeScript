@@ -1,0 +1,39 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="400pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="S" layout="tb" w="7.5in">
+<overflow trailer="#T_ID"/>
+<field name="f" w="2in" h="130pt">
+<font typeface="Courier New" size="10pt"/>
+<ui>
+<textEdit multiLine="1"/>
+</ui>
+<value>
+<text>line 01
+line 02
+line 03
+line 04
+line 05
+line 06
+line 07
+line 08
+line 09
+line 10</text>
+</value>
+</field>
+</subform>
+<proto>
+<subform name="T" id="T_ID" layout="position" w="7.5in" h="20pt">
+<occur max="-1"/>
+<draw name="Td" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Td</text>
+</value>
+</draw>
+</subform>
+</proto>

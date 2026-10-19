@@ -1,0 +1,58 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="400pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="A" layout="tb" w="7.5in">
+<overflow leader="#L_ID"/>
+<draw name="a0" w="2in" h="20pt">
+<value>
+<text>a0</text>
+</value>
+</draw>
+<subform name="B" layout="tb" w="7.5in">
+<draw name="D1" w="2in" h="50pt">
+<value>
+<text>D1</text>
+</value>
+</draw>
+<draw name="D2" w="2in" h="50pt">
+<value>
+<text>D2</text>
+</value>
+</draw>
+<draw name="D3" w="2in" h="50pt">
+<value>
+<text>D3</text>
+</value>
+</draw>
+<draw name="D4" w="2in" h="50pt">
+<value>
+<text>D4</text>
+</value>
+</draw>
+<draw name="D5" w="2in" h="50pt">
+<value>
+<text>D5</text>
+</value>
+</draw>
+<draw name="D6" w="2in" h="50pt">
+<value>
+<text>D6</text>
+</value>
+</draw>
+</subform>
+</subform>
+<proto>
+<subform name="L" id="L_ID" layout="position" w="7.5in" h="20pt">
+<occur max="-1"/>
+<draw name="Ld" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Ld</text>
+</value>
+</draw>
+</subform>
+</proto>

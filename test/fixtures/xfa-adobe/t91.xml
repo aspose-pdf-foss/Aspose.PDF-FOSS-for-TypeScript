@@ -1,0 +1,8 @@
+<subform name="S" layout="tb" w="7.5in">
+<draw name="ls" w="2in" minH="1pt"><font typeface="Courier New" size="10pt"/><value><text>A&#x2028;B</text></value></draw>
+<draw name="nl" w="2in" minH="1pt"><font typeface="Courier New" size="10pt"/><value><text>A
+B</text></value></draw>
+<draw name="one" w="2in" minH="1pt"><font typeface="Courier New" size="10pt"/><value><text>AB</text></value></draw>
+<draw name="rich" w="2in" minH="1pt"><font typeface="Courier New" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p>A&#x2028;B</p></body></exData></value></draw>
+<field name="f" w="2in" minH="1pt"><font typeface="Courier New" size="10pt"/><ui><textEdit multiLine="1"/></ui><value><text>A&#x2028;B</text></value></field>
+</subform>

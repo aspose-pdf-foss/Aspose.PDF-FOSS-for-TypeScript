@@ -192,14 +192,18 @@ describe('paginate: termination (XFA 3.3 p. 306-308)', () => {
 });
 
 describe('paginate: final review fixes (164g.9)', () => {
-  it('appends last when the final page was opened by a page-area break, which no forced rerun can replace', () => {
+  // 164g.22 REVERSED these two: they once appended a blank last page, on the
+  // reasoning that a break-opened page is the break's to name. Adobe probe n8
+  // redoes a break-opened final page as `last` (its page 7: U breaks to B,
+  // Reader shows C), so a page is redone however it was opened.
+  it('redoes as last a final page opened by a page-area break (n8)', () => {
     const b = body(S, [area('A'), area('X'), area('L', { pagePosition: 'last' })],
       [kid('a', 100), kid('b', 20, { breakBefore: brk('pageArea', { target: 'X', startNew: true }) })]);
-    expect(seq(b)).toEqual(['A', 'X', 'L*']);
+    expect(seq(b)).toEqual(['A', 'L']);
   });
-  it('appends last when the only page was chosen by the start break', () => {
+  it('redoes as last an only page chosen by the start break', () => {
     const b = body(S, [area('A'), area('L', { pagePosition: 'last' })], [kid('a', 50)], brk('pageArea', { target: 'A' }));
-    expect(seq(b)).toEqual(['A', 'L*']);
+    expect(seq(b)).toEqual(['L']);
   });
   it('starts on an even page under duplex for a first child pageEven break, through a filler', () => {
     const b = body(D, [area('A')], [kid('a', 20, { breakBefore: brk('pageEven') })]);

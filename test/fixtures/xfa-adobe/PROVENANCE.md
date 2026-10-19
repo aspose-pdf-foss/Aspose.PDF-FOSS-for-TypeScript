@@ -30,9 +30,12 @@ Letter, 7.5in x 10in.
 the vendored one in its script text only (the spike's save attempt is gone).
 
 **Ceiling:** one producer, one version, hand transcription. Evidence for how
-Adobe splits a positioned subform, not conformance. Not covered: a positioned
-subform inside a split tb chain (164g.21), margins across a split (t14,
-164g.20), the bottom-piece rule for a field split (t21, 164g.13).
+Adobe splits a positioned subform, not conformance. Not covered: the bottom-piece rule for a field split (t21, 164g.13).
+
+**t4 (164g.19):** a default positioned subform taller than an empty content
+area stays on the CURRENT page, below the content already there, and runs past
+the content area and the page -- `d` sits at page y 1044 on a 792pt page.
+One probe, one shape: a non-empty current page, uniform content areas.
 
 | File | SHA-256 |
 |---|---|
@@ -82,7 +85,7 @@ area matching page 1 (q10), Reader draws one blank page and runs no layout.
 **Ceiling:** one producer, one version, hand transcription, the screen as the
 channel -- and Reader lays out on SCREEN, so these are Adobe's answers for the
 display view, not for a duplex printer. Not covered: nested and sibling page
-sets (164g.22), page-number initialization and scripting.
+sets (done by 164g.22, below), page-number initialization and scripting.
 
 | File | SHA-256 |
 |---|---|
@@ -234,3 +237,235 @@ across the break; a field directly under the content area does not split here
 | `t70.pdf` | `27532f576db4d2ef6863c7de0afdc99b7017e9d9483491ddf66d653f4be68644` |
 | `t71.pdf` | `46ed6e3cc5e7af6b47c102e23e6ab1ecab5a4f6f55cb27a6545d3e9e0d5f3415` |
 | `t72.pdf` | `5ea1bde51d6c8f59b38b0c413b864bb5293551275b0304c10b0a260ed080b1ea` |
+
+## Leader and trailer probes (164g.15)
+
+**Producer:** as above, 2026-10-19. `t73.xml`-`t90.xml` as committed;
+`captures/tN.png` are cropped to the oracle field. The probe script changed for
+these (`scripts/gen-xfa-adobe-probes.ts`): a `<proto>` is lifted to template
+level unless the probe opens with `<!-- proto in root -->`, the report adds a
+`content=` line -- per page, `xfa.layout.pageContent(p, "subform", false)` --
+and rows are packed two to a line without the `xfa[0].form[0].form1[0].` prefix
+and `[0]`s. Where a row runs past the window's right edge (t74's `D1`, t79's
+`a0`, t81's `S.Y`, t83's `p0`), the cut value is the template's own stated w
+or h.
+
+**What Adobe settled, against the spec text:**
+
+- A target in a `<proto>` at TEMPLATE level is ignored -- no leader, no trailer,
+  no reservation (t74, t75) -- while the same proto inside the root subform
+  works (t88). A target that is not a subform is ignored too (t90).
+- Every copy is a new FORM instance: `S.H[1]` after the in-flow `H` (t73),
+  `S.L`, `S.L[1]` from a proto (t76), each with its own fields. An overflow copy
+  is named under the ASSERTING subform even where it is laid out elsewhere (t79:
+  `A.L` at the top of B's fragment; t83: `P.L` in the content area's flow,
+  above P's continuation -- its golden carries `layoutParent`).
+- An absent `<occur>` allows ONE copy (t73, t88). A list is counted per ENTRY:
+  `#X #Y #X` with X and Y `max="1"` lays X, Y, then X again as `X[1]` (t81),
+  where XFA 3.3 p. 322-323 passes over the spent X.
+- The trailer's height is reserved in every fit, the chain's last leaf included:
+  t89's 100pt subform splits in 104pt of room (Example 8.40). The last fragment
+  gets no trailer (t76, t88).
+- A break leader and trailer SWAP the roles of Example 8.36-8.37: the TRAILER
+  goes into the region the break leaves, the LEADER into the one it enters, for
+  `breakBefore` (t85) and `breakAfter` (t86) alike; both are named under the
+  breaking subform's parent (`form1.T`).
+- The deprecated `<break overflowLeader>` lays out exactly as `<overflow leader>`
+  (t78 = t77).
+
+**Ceiling:** one producer, one version, hand transcription. Every probe uses
+draws, plus one field in a leader (t73, t76, t87). Not probed, and refused by
+name (164g.31): a break leader inside a split chain, on the start break, on a
+break that does not move, a break trailer that does not fit, an overflow
+trailer on a split positioned subform. Not probed and implemented from XFA 3.3:
+inheritance past a spent ancestor (p. 325).
+
+| File | SHA-256 |
+|---|---|
+| `t73.pdf` | `2f5c199646197d1c0d37f553e523e2a58955c3899d344a5c8d1db1f5769eca1c` |
+| `t74.pdf` | `10b99b350c68bb87438765bed09d7e36d5a21cdee86c02067bb42c851e374359` |
+| `t75.pdf` | `c5175421b6f3808e0edbb25f49a9bd0d082278060f481ae9fe82815da3c140e9` |
+| `t76.pdf` | `88ad02aed070d9aed5c34515706f9662dd0182865dc3191d4f958e77e2e51e2f` |
+| `t77.pdf` | `3e4630c735dffe2dcaca0747eec94c34c5d7f0b839fed86bc8e91833949dd4b8` |
+| `t78.pdf` | `c9e1b4a9c1be602ab0b99e8b4d7c4e9187c64e1fd5ad499b3352742f2c200605` |
+| `t79.pdf` | `2674f097c4a6835d7c7b869c84d2b80672b8d0c123ac9987db849eda8fa9a550` |
+| `t80.pdf` | `6914878306d68a3dd27ef8d6960476f31d0659159ae96ecc39a0bfc98b597280` |
+| `t81.pdf` | `28cc2365f13911ac48de5de75e611b25ec0c2696305c9ad19f69b806f8117af7` |
+| `t82.pdf` | `f7f873f1976365b391413d51f0d160b71db10c524404b0a56470773fa64bea09` |
+| `t83.pdf` | `4fc6b3bd2f81f1098e3f34d807f9a619a876fd0acaeb8767e1b7bf229b00dff1` |
+| `t84.pdf` | `46f085e2e6173f5ace9edabdccac132b416eb3710dbce8389c8ec70e190047d7` |
+| `t85.pdf` | `c4bb0e08fc1b1abe55c495e246d3739038d53f66b7dde95d9f1e017b64daf3eb` |
+| `t86.pdf` | `739ecfb2f1cbb248811bf62a882f79f1ba3f51abce78e886420992ece4e36a54` |
+| `t87.pdf` | `62c7138fcccfa1a8770dfd074468c6f560b15b9ac9d1f7b189edddb921725b79` |
+| `t88.pdf` | `810eeaa293641d8ffdf82b7629ce54f7ad233c5fdbb123dff4648537b10a8df2` |
+| `t89.pdf` | `0077fc26cf77968c75fb3b56af8f618231e078d447a90abea2e5b151e7561bd9` |
+| `t90.pdf` | `4413fc8b05bddedf28b791006d3409339d55c63b6a2c2ef35078f423c0b7e4f4` |
+
+## U+2028 probe (164g.23)
+
+**Producer:** as above, 2026-10-19. `t91.xml` as committed; `captures/t91.png`
+is cropped to the oracle field and the drawn leaves below it. Growable (`minH`
+1pt) 10pt Courier New leaves in a `tb` subform: `A<U+2028>B` as a plain draw
+(`ls`), a rich draw (`rich`, inside `<p>`) and a field (`f`), beside the
+controls `A\nB` (`nl`) and `AB` (`one`).
+
+**What Adobe settled:** U+2028 breaks the LINE in all three -- each is 22pt,
+exactly `nl`, against 10pt for `one`, and the capture shows A and B on two
+lines -- though XFA 3.3 p. 56 names only the newline and U+2029.
+
+**Not a geometry golden:** t91 is outside `ADOBE_PROBES`. Reader's absolute
+heights (10pt for one line, 22pt for two) are not the hhea heights we measure
+(11.33pt, 22.66pt), a separate gap (164g.32), so
+`test/xfa-linesep.test.ts` compares the RELATIVE rule only.
+
+| File | SHA-256 |
+|---|---|
+| `t91.pdf` | `88139c0d07790caf72d8df5d7fbbef67cdb92b299df78d4796c148b9403a541d` |
+
+## breakAfter probes (164g.16)
+
+**Producer:** as above, 2026-10-19. `t92.xml`-`t95.xml` as committed;
+`captures/tN.png` are full Reader windows. A `tb` subform S, no filler: draws
+d1, d3, a1, a2 of 50pt, positioned C and E of 50pt; the break is
+`<breakAfter targetType="pageArea"/>`.
+
+| Probe | Template | Adobe |
+|---|---|---|
+| t92 | S: d1, C (breakAfter), d3 | d1, C p1; d3 p2 at 0 |
+| t93 | S: A tb (a1, a2; breakAfter), d3 | a1, a2 p1; d3 p2 at 0 |
+| t94 | S: d1, C (breakAfter); then root E | d1, C p1; E p2 at 0 |
+| t95 | S: d1, C (breakAfter); nothing after | TWO pages; S has an empty 0pt fragment on p2 |
+
+**What Adobe settled:** a breakAfter takes effect before whatever follows,
+inside the chain or after it, and a trailing one still makes a page. S is split
+although it fits (100pt of 504pt), and Reader reports a 0pt fragment of it on
+the new page, which moves nothing and is not modelled.
+
+| File | SHA-256 |
+|---|---|
+| `t92.pdf` | `2a681005865f6a45f12c278b4032b4c2f192e1806d3189bc7601627137452349` |
+| `t93.pdf` | `cd80df6b02554b65b16bfa4c92b2084e795fdf71dc07ff251a4a12f44a69afb5` |
+| `t94.pdf` | `7cc41c3a09c99dfaa8546e8f656ea633798408f14be632f30f7f00a3d88a5243` |
+| `t95.pdf` | `6a63361b9c6bb73046d1b5f97442195f9f620c87a1d17db75edf0da2e4ef0219` |
+
+## Margin probes (164g.20)
+
+**Producer:** as above, 2026-10-19. `t96.xml`-`t104.xml` as committed;
+`captures/tN.png` are full Reader windows. t96-t100, t103 and t104 hold the
+216pt oracle, a 360pt filler and a keep-none positioned `pos` stating
+`topInset="18pt" bottomInset="12pt"` (t98 top only, t99 bottom only), so 144pt
+of room is left; `nxt` follows to show the second fragment's height. t101 and
+t102 are VISUAL probes on landscape pages 4.5in and 3in tall (t102 with a 1in
+oracle, through the generator's new `<!-- oracle 1in -->`): filled 6pt bars
+whose drawn position is read off the capture at about 2.29 px/pt.
+`captures/t101p2.png` is t101 opened with `xfa.host.currentPage = 1` added to
+show page 2; that variant is not vendored.
+
+| Probe | Template (content y) | Adobe |
+|---|---|---|
+| t96 | draw d 120..130 | d stays on p1 at 120; h p2 at 56; fragments 144;144 |
+| t97 | draw d 108..118 | d p1 at 108; h p2 at 56 |
+| t98 | top inset only; d 120..130 | as t96 |
+| t99 | bottom inset only; d 134..142 | d p1 at 134; h p2 at 56 |
+| t100 | growable; f 80, g 300 | fragments 144;206; g p2 at 156 |
+| t101 | bars a 0, c 28, b 36; cut 36 | a drawn at 270pt (fragment top 252 + 18); b on p2 at 54pt (36 + 18) |
+| t102 | bars a 0, c 66, b 72; cut 72 | a at 126pt (108 + 18); c at 192pt, past the content area's 180pt bottom |
+| t103 | nested keep-none `in` (insets 10/6) at 20, k at 150 | `in` 124;76; k p2 at 26 |
+| t104 | draw d 140..150 straddles | cut 140: fragments 140;148; d p2 at 0; h p2 at 60 |
+
+**What Adobe settled:** the cut is the room in the subform's CONTENT coordinates,
+the insets ignored, and every fragment draws its top inset -- so the first
+fragment's content runs past the content area by the insets (t102). A straddler
+still moves the cut (t104), and a nested subform applies the same rule in its
+own content coordinates (t103). This is what t14 showed and could not explain:
+`xfa.layout.y` reports a child without its parent's inset, so only the captures
+of t101 and t102 tell where Reader DRAWS it.
+
+| File | SHA-256 |
+|---|---|
+| `t96.pdf` | `69355e527b937be01d74b54212cab386a78619cb34dc58d6baa9e9c0e6fd2ea6` |
+| `t97.pdf` | `d5958cbbd2affeba2d83ce769f87666c6af2a4a0ded7ee73395c379eb038d7c7` |
+| `t98.pdf` | `efa166bc50dd167da89bbf3161eb0eae918dc3e5036dee8484678d21b77b6da9` |
+| `t99.pdf` | `10601bcf6542a36e3d1e260ba73ecf0e3bceb2de7c94a02239dfd57086a661ec` |
+| `t100.pdf` | `0152abd653625755ad5705ec4c3e0838da4821157f2e98e5c0633652b7288449` |
+| `t101.pdf` | `0dff2d4e6634141487e653f4b677be95370f730c96f1e6f46440a7f8c688cb0d` |
+| `t102.pdf` | `4c06a05828de914dce93e4dfad7fd47ac0a013e24608c2b77d6eae9f4f9caac4` |
+| `t103.pdf` | `b253332d701e8594222c52e4606c29d05cf6c439438ef9675e557305687c0105` |
+| `t104.pdf` | `0bbe4f58196adf732f46278dd1482a610c03a1c012578c7dc29af433e6f4eab5` |
+
+## Positioned subform in a split tb (164g.21)
+
+**Producer:** as above, 2026-10-19. `t105.xml`-`t110.xml` as committed;
+`captures/tN.png` are full Reader windows. After the oracle and a 360pt
+filler, a growable `tb` subform S holds a 50pt draw `d1` and then a 288pt
+positioned `pos` stating `keep intact="none"` (t106: not), with fields f at 40
+and h at 200, so 94pt of room is left for `pos`.
+
+| Probe | Template | Adobe |
+|---|---|---|
+| t105 | S: d1, pos | pos 94;194; f p1 at 40; h p2 at 106 |
+| t106 | as t105, pos without keep none | pos whole on p2; S 50;288 |
+| t107 | as t105, then draw d2 in S | d2 p2 at 194, after pos's tail |
+| t108 | S: d1, tb T holding pos | T and pos 94;194; h p2 at 106 |
+| t109 | pos holds a draw at 80..100 | cut 80: pos 80;208, S 130;208; dd p2 at 0; h p2 at 120 |
+| t110 | S has insets top 10 bottom 20 | room 64: pos 64;224; S 144;254; h p2 at 136 |
+
+**What Adobe settled:** a keep-none positioned subform inside a split `tb`
+splits by 164g.11's consensus against the room left inside the chain, the
+enclosing bottom inset kept clear (t110), and the `tb` fragment holds only
+what landed in it (t109). Not probed: the same in an `lr-tb`, and an in-chain
+split the rules refuse (we move it whole).
+
+| File | SHA-256 |
+|---|---|
+| `t105.pdf` | `0d37201c6850b6729f99a4d7e4d7429d37f6d057293b5d5c88f2d80cf3c76bc9` |
+| `t106.pdf` | `1a5990c1fb667cab0955c4024375f709bcfefcf3a9dc57300124f013832c3afd` |
+| `t107.pdf` | `2b9811e5127453e428620eec19ba6de7107e0529f6fbe195863479e340562479` |
+| `t108.pdf` | `6d14e757140f3a52a38dcfc09c0d65ba1615e2f99fabe94184830db36d9f6ad0` |
+| `t109.pdf` | `28892e64ec4fb1e8e31179693b4162147a1d8329c6401be820fd5d9ff7528ac2` |
+| `t110.pdf` | `cea8d6ec3c17196b5367638a1890e0c61fca82610108da08e1ee3b6e26052930` |
+
+## Nested and sibling page set probes (164g.22)
+
+**Producer:** as above, 2026-10-19. `n1.xml`-`n10.xml` as committed, each page
+area carrying an `AREA-X` draw as the q-probes do; `captures/nN.png` are full
+Reader windows. The generator now takes every page set of a probe whole (a
+greedy match; identical bytes for the single-set probes before it).
+
+| Probe | Shape | Reader |
+|---|---|---|
+| n1 | XFA 3.3 Example 8.31, 9 pages of content | A,B,C,C,B,C,C; items 6-8 laid out nowhere |
+| n2 | outer {inner max 1 {B max 2}, A max 1} | B,B,A,B,B,A,B |
+| n3 | outer {A max 1, inner unlimited {B max 1}, C max 1} | A,B,B,B,B |
+| n4 | Example 8.32: simplex {A,B,C first/rest/last, duplex {D odd first, E, F last}} | A,B,C,D,F |
+| n5 | siblings, `relevant="simplex -duplex"` first | A,A,A,A |
+| n6 | two ordered siblings, the first {A max 1} | A,A,A,A |
+| n7 | ordered {A, inner {B}}; breaks to #B then #A | A,B,A |
+| n8 | simplex {A,B,C, simplex {D,E,F}}; T x3 to #D, U to #B | A,C,D,E,D,F (blank),C |
+| n9 | n4 with both duplex, blank-only G inner and H outer | A,B,C,G (filler),D,F |
+| n10 | n5 with the siblings swapped | B,C,B,C |
+
+**What Adobe settled:** XFA 3.3's occurrence ascent through nested sets holds
+as written (n1-n3). A break into another set terminates the one it leaves
+(n4, n8), and -- overruling 164g.9's final review -- a page opened by a break
+is redone as `last` like any other (n8's page 7). Parity counts physical
+surfaces across sets and a filler comes from the entered set (n9). Of sibling
+page sets the first is used whatever `relevant` says (n5, n6, n10).
+
+**Ceiling:** one producer, one version, hand transcription, on-screen layout --
+so the siblings' `relevant` is Reader's DISPLAY answer, not a print path's. Not
+covered: fields on a nested set's page area (reported, not created), and
+termination of a one-page visit by an `only` page area inside a nested set.
+
+| File | SHA-256 |
+|---|---|
+| `n1.pdf` | `3118b6741f5306e4f4807168480442e9261e7b53b4e0339331ca89abb82bd7f9` |
+| `n2.pdf` | `67dfc016c5eea99c385955bcba2f845c89225442d6a0d4e5347ac8b96a9ab835` |
+| `n3.pdf` | `5c1dca3fb46b584efa6b0d190f89217cd30b699f3d2354e5f2743824e725f204` |
+| `n4.pdf` | `7eb66bc2fd2acda4a2fb949e4fc6de43e34b232dcc9e50daef681556e30aa162` |
+| `n5.pdf` | `501a53e4792b60bd84cfddbe9add8e7aac0f287fb6c6bcb8c6aba39112defd88` |
+| `n6.pdf` | `4c530c17592ae10df0935c2dd5a11e97460ab0f08b4f56469e15d27d3c7a644d` |
+| `n7.pdf` | `1de5f7f02025ebe195f287fc630bc76f3015e2b418581b9a923eb864ba94c3f9` |
+| `n8.pdf` | `80d6c524b68d0758453a441cb5090f0d200ef0fc607a5395e6614e76ed9ddeb8` |
+| `n9.pdf` | `2658950df148b81c025e8f97fe344d8e3272d6fe4075437503255bf0a25fef88` |
+| `n10.pdf` | `faa9d30c0eeb665c654fa01de5c1cbaacd4bd3b14b939bbeac185bb6b436561d` |

@@ -7,7 +7,7 @@ import { decodeStream } from '../src/filters.js';
 import { parseXfaTemplate } from '../src/xfatemplate.js';
 import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
 import { layoutPages, type XfaLayoutResult } from '../src/xfapage.js';
-import { xfaMeasurer } from '../src/xfaconvert.js';
+import { xfaFieldLines, xfaMeasurer } from '../src/xfaconvert.js';
 import { ADOBE_PROBES, adobeGoldens, loadAdobeProbe, type AdobeFrag, type AdobeProbe } from './helpers/xfa-adobe.js';
 
 /**
@@ -15,7 +15,8 @@ import { ADOBE_PROBES, adobeGoldens, loadAdobeProbe, type AdobeFrag, type AdobeP
  * and an lr-tb or table (164g.12, t27-t39). Field splitting is t40-t54
  * (164g.13); adhesion and keep intact="pageArea" are t55-t72 (164g.14) -- t65
  * is compared in part, its field D splitting directly under the content area,
- * which 164g.27 will do. Each probe in
+ * which 164g.27 will do. Overflow and break leaders and trailers are t73-t90
+ * (164g.15). Each probe in
  * test/fixtures/xfa-adobe/ is converted from its template and compared, field
  * by field, with the layout Adobe Reader 26.1 reported for it; a probe's draws
  * have no widget, so they are compared through our layout of the template.
@@ -27,9 +28,21 @@ const g = adobeGoldens();
 const PAGE_H = 792;
 const ORIGIN = 36;
 const TOL = 0.05;
-const som = (path: string): string => path.split('.').map((s) => `${s}[0]`).join('.');
+/** A dotted path to our SOM name: `[0]` on every segment that states no index
+ *  of its own (164g.15: a leader copy is `H[1]`). */
+const som = (path: string): string => path.split('.').map((s) => (s.endsWith(']') ? s : `${s}[0]`)).join('.');
 
 interface TopBox { page: number; x: number; y: number; w: number; h: number }
+
+/** The subforms whose fragments position `path`, outermost first and `form1`
+ *  excluded: its dotted ancestors, except where `layoutParent` says Adobe laid
+ *  a node out somewhere else (164g.15, t83). */
+function ancestorsOf(probe: AdobeProbe, path: string): string[] {
+  const at = path.lastIndexOf('.');
+  if (at < 0) return [];
+  const parent = probe.layoutParent?.[path] ?? path.slice(0, at);
+  return parent.includes('.') ? [...ancestorsOf(probe, parent), parent] : [];
+}
 /** A node's box, top-down from the page's top-left: its own fragment plus, on
  *  the same page, every ancestor subform's fragment and content inset. */
 function boxOf(probe: AdobeProbe, path: string, f: AdobeFrag): TopBox | string {
@@ -37,9 +50,7 @@ function boxOf(probe: AdobeProbe, path: string, f: AdobeFrag): TopBox | string {
   if (probe.absolute) return { page, x: ORIGIN + fx, y: ORIGIN + fy, w, h };
   let x = ORIGIN + fx;
   let y = ORIGIN + fy;
-  const parts = path.split('.');
-  for (let i = 2; i < parts.length; i++) {
-    const anc = parts.slice(0, i).join('.');
+  for (const anc of ancestorsOf(probe, path)) {
     const frag = probe.subforms[anc]?.find((a) => a[0] === page);
     if (!frag) return `${anc} has no fragment on page ${String(page)}`;
     const [l, t] = probe.insets?.[anc] ?? [0, 0];
@@ -58,7 +69,9 @@ function laidOut(name: string): XfaLayoutResult {
   const datasets = set.packets.get('datasets');
   const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(datasets));
   const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
-  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), []);
+  // As the converter lays it out, field-line counter included: without it no
+  // field splits, and t82's trailer, which a split lays down, is not placed.
+  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).count);
 }
 
 for (const name of ADOBE_PROBES) {

@@ -37,6 +37,48 @@ export interface XfaBreak {
   target?: string;
   startNew: boolean;
   refusal?: string;
+  /** A break leader and trailer (164g.15). Adobe lays the TRAILER in the
+   *  region the break leaves and the LEADER in the one it enters (t85, t86),
+   *  the reverse of XFA 3.3 Example 8.36. */
+  leader?: XfaCopySpec;
+  trailer?: XfaCopySpec;
+}
+
+/**
+ * One leader or trailer target (164g.15): a subform laid down as a COPY, which
+ * is a new FORM instance (Adobe t73's `S.H[1].Hf`, t76's `S.L[1].Lf`), named
+ * `name[n]` in `scope` -- the asserting subform's own scope for an overflow
+ * copy, its parent's for a break copy -- with `n` continuing that name's count
+ * there. Its fields are converted like any instance's.
+ */
+export interface XfaCopySpec {
+  /** The target as the template wrote it, for reasons. */
+  label: string;
+  /** A target we do not resolve (a SOM expression): a split that would insert
+   *  it refuses by this reason. Unlike an INVALID target, which Adobe ignores
+   *  (t74, t75, t90) and the template drops with a warning, Adobe may well
+   *  resolve this one. */
+  refusal?: string;
+  /** The target's `<occur max>`: 1 when absent (t73), -1 for no limit. */
+  max: number;
+  /** The scope copies are numbered in, by identity, and the name they take. */
+  scope: object;
+  name: string;
+  /** The copy whose occurrence index is `scope`'s count of `name` plus `n`.
+   *  PURE: it changes no counter, so pagination may rerun and probe freely. */
+  make: (n: number) => LayoutNode;
+}
+
+/** A subform's `<overflow>` (or the deprecated `<break overflowLeader
+ *  overflowTrailer overflowTarget>`), 164g.15. A list that is ABSENT inherits
+ *  the nearest asserting ancestor's; an EMPTY one -- `leader=""` (t80) -- blocks
+ *  it. Entries are counted one by one (t81: `#X #Y #X` lays X twice). */
+export interface XfaOverflow {
+  leader?: XfaCopySpec[];
+  trailer?: XfaCopySpec[];
+  /** `target`, which is not implemented: a split that continues the container
+   *  refuses by name (164g.30). */
+  target?: string;
 }
 
 /** A subform's `<keep>` (XFA 3.3 p. 291-292, 311), as `xfatemplate.ts` reads
@@ -44,7 +86,7 @@ export interface XfaBreak {
 export interface XfaKeep { intact?: string; next?: string; previous?: string }
 
 /** What a refusal names when content would need a split 164g.8/164g.12 do not do. */
-export const SPLIT_LATER = 'splitting a field between its lines or a subform beyond its children (164g.13, 164g.19)';
+export const SPLIT_LATER = 'splitting a field between its lines or a subform beyond its children (164g.13)';
 
 /** One node of a page's layout tree, as the template states it. */
 export interface LayoutNode {
@@ -84,10 +126,10 @@ export interface LayoutNode {
    *  child inside a subform being split. */
   breakBefore?: XfaBreak;
   breakAfter?: XfaBreak;
-  /** A subform's `<keep>` and whether it states an `<overflow>` leader, trailer
-   *  or target. Only `xfapage.ts` reads them, on a split chain (164g.8). */
+  /** A subform's `<keep>` and its `<overflow>` leaders, trailers and target.
+   *  Only `xfapage.ts` reads them, on a split chain (164g.8, 164g.15). */
   keep?: XfaKeep;
-  overflow?: boolean;
+  overflow?: XfaOverflow;
   /** What this node paints beside its box (164g.4): its border, a draw's
    *  geometry, a field's caption. Absent when it paints nothing of its own. */
   chrome?: NodeChrome;

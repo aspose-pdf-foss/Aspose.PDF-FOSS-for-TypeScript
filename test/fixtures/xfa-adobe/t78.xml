@@ -1,0 +1,60 @@
+<subform name="filler" layout="position" w="7.5in" h="400pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="T" layout="table" columnWidths="2in" w="7.5in">
+<break overflowLeader="#Hdr_ID"/>
+<subform name="Hdr" id="Hdr_ID" layout="row">
+<occur max="-1"/>
+<draw name="Hc" w="2in" h="30pt">
+<value>
+<text>Hc</text>
+</value>
+</draw>
+</subform>
+<subform name="r1" layout="row">
+<draw name="r1c" w="2in" h="40pt">
+<value>
+<text>r1c</text>
+</value>
+</draw>
+</subform>
+<subform name="r2" layout="row">
+<draw name="r2c" w="2in" h="40pt">
+<value>
+<text>r2c</text>
+</value>
+</draw>
+</subform>
+<subform name="r3" layout="row">
+<draw name="r3c" w="2in" h="40pt">
+<value>
+<text>r3c</text>
+</value>
+</draw>
+</subform>
+<subform name="r4" layout="row">
+<draw name="r4c" w="2in" h="40pt">
+<value>
+<text>r4c</text>
+</value>
+</draw>
+</subform>
+<subform name="r5" layout="row">
+<draw name="r5c" w="2in" h="40pt">
+<value>
+<text>r5c</text>
+</value>
+</draw>
+</subform>
+<subform name="r6" layout="row">
+<draw name="r6c" w="2in" h="40pt">
+<value>
+<text>r6c</text>
+</value>
+</draw>
+</subform>
+</subform>

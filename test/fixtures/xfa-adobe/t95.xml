@@ -1,0 +1,4 @@
+<subform name="S" layout="tb" w="7.5in">
+<draw name="d1" w="2in" h="50pt"><value><text>d1</text></value></draw>
+<subform name="C" layout="position" w="7.5in" h="50pt"><breakAfter targetType="pageArea"/><draw name="Cd" x="0" y="0" w="1in" h="10pt"><value><text>C</text></value></draw></subform>
+</subform>

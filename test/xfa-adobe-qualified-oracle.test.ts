@@ -33,6 +33,14 @@ for (const name of QUALIFIED_PROBES) {
         const got = Object.fromEntries(Object.keys(probe.fields).map((f) => [f, pageOf.get(f)]));
         expect(got).toEqual(probe.fields);
       });
+      if (probe.discarded) {
+        it('discards what Reader laid out nowhere, naming p. 300', () => {
+          for (const f of probe.discarded!) {
+            const hit = report.skipped.find((s) => s.what === 'field' && s.name === f);
+            expect(hit?.reason, f).toContain('discarded (XFA 3.3 p. 300)');
+          }
+        });
+      }
     } else {
       it(`refuses what Reader could not lay out, citing "${String(probe.reason)}"`, () => {
         for (const f of Object.keys(probe.fields)) {

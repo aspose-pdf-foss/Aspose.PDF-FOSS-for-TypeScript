@@ -1,0 +1,102 @@
+%PDF-1.7
+%âãÏÓ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R /NeedsRendering true >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [3 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 612 792] /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 0 >>
+stream
+
+endstream
+endobj
+5 0 obj
+<< /Fields [] /XFA 6 0 R >>
+endobj
+6 0 obj
+<< /Length 4368 >>
+stream
+<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/"><template xmlns="http://www.xfa.org/schema/xfa-template/2.8/"><subform name="form1" layout="tb" locale="en_US">
+  <pageSet name="outer" relation="orderedOccurrence"><occur max="1"/>
+  <pageArea name="A" id="A" ><occur max="1"/><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markA" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-A</text></value></draw></pageArea>
+  <pageSet name="inner" relation="orderedOccurrence"><occur max="2"/>
+    <pageArea name="B" id="B" ><occur max="1"/><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markB" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-B</text></value></draw></pageArea>
+    <pageArea name="C" id="C" ><occur max="2"/><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markC" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-C</text></value></draw></pageArea>
+  </pageSet>
+</pageSet>
+  <event activity="docReady" ref="$host"><script contentType="application/x-javascript">
+if (typeof probeDone == "undefined") {
+  probeDone = true;
+  var rows = [];
+  function walk(n) {
+    for (var i = 0; i &lt; n.nodes.length; i++) {
+      var c = n.nodes.item(i);
+      if (c.className == "field" || c.className == "subform" || c.className == "draw") {
+        var span = xfa.layout.pageSpan(c);
+        var frags = [];
+        for (var k = 0; k &lt; span; k++)
+          frags.push([xfa.layout.page(c) + k, xfa.layout.x(c, "pt", k), xfa.layout.y(c, "pt", k), xfa.layout.w(c, "pt", k), xfa.layout.h(c, "pt", k)].join(","));
+        rows.push(c.somExpression + "=" + frags.join(";"));
+        walk(c);
+      }
+    }
+  }
+  var msg = "";
+  try {
+    walk(xfa.form);
+    var areas = [];
+    for (var p = 0; p &lt; xfa.layout.pageCount(); p++) {
+      var ds = xfa.layout.pageContent(p, "draw", true);
+      var nm = [];
+      for (var j = 0; j &lt; ds.length; j++) nm.push(ds.item(j).name);
+      areas.push((p + 1) + ":" + nm.join("/"));
+    }
+    // 164g.15: what the Layout DOM holds per page, leader and trailer
+    // instances included -- they need not be nodes xfa.form's walk reaches.
+    var content = [];
+    for (var p2 = 0; p2 &lt; xfa.layout.pageCount(); p2++) {
+      var cs = xfa.layout.pageContent(p2, "subform", false);
+      var cn = [];
+      for (var j2 = 0; j2 &lt; cs.length; j2++) cn.push(cs.item(j2).name);
+      content.push((p2 + 1) + ":" + cn.join("/"));
+    }
+    // 164g.15: SOM names without "xfa[0].form[0].form1[0]." and "[0]", packed
+    // two to a line, so a probe's report fits the field's visible lines.
+    var packed = [], line = "";
+    for (var r = 0; r &lt; rows.length; r++) {
+      var s = rows[r].replace("xfa[0].form[0].form1[0].", "").split("[0]").join("");
+      if (line != "" &amp;&amp; line.length + s.length > 100) { packed.push(line); line = ""; }
+      line = line == "" ? s : line + "  " + s;
+    }
+    if (line != "") packed.push(line);
+    msg = "pages=" + xfa.layout.pageCount() + "\nareas=" + areas.join(" ") + "\ncontent=" + content.join(" ") + "\n" + packed.join("\n");
+  }
+  catch (e) { msg = "ERR " + e; }
+  xfa.form.form1.oracle.out.rawValue = msg;
+}</script></event>
+  <subform name="oracle" layout="tb" w="7.5in"><field name="out" w="7.5in" h="3in"><font typeface="Courier New" size="8pt"/><ui><textEdit multiLine="1"/></ui></field></subform>
+  
+<subform name="item" layout="position" w="7.5in" h="9in"><occur min="9" initial="9" max="9"/><field name="f" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>
+
+</subform></template><xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data/></xfa:datasets><config xmlns="http://www.xfa.org/schema/xci/2.8/"><agent name="designer"><destination>pdf</destination></agent><present><pdf><version>1.7</version><scriptModel>XFA</scriptModel><interactive>1</interactive></pdf><common><data><adjustData>1</adjustData></data></common><script><runScripts>both</runScripts></script></present><acrobat><acrobat7><dynamicRender>required</dynamicRender></acrobat7><common><validate>preSubmit</validate></common></acrobat></config></xdp:xdp>
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000019 00000 n 
+0000000105 00000 n 
+0000000162 00000 n 
+0000000266 00000 n 
+0000000315 00000 n 
+0000000358 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+4778
+%%EOF

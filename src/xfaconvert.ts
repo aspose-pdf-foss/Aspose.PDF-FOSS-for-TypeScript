@@ -232,6 +232,8 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   // 164g.2: a repeating subform is instantiated once per same-named data group,
   // so the template is read WITH the data's groups.
   const tpl = parseXfaTemplate(templateNode, parseXfaDataGroups(datasetsNode));
+  // 164g.15: leader and trailer targets Adobe ignores (a template-level proto).
+  report.warnings.push(...tpl.warnings);
   const values: XfaValues = datasetsNode
     ? parseXfaDatasets(datasetsNode) : new Map<string, string | string[]>();
   // yy09: the index `bind match="global"` falls back to (xfadata.ts).
@@ -245,7 +247,7 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   const measure = xfaMeasurer(doc, tpl, values, globals);
   const fieldLines = xfaFieldLines(doc, tpl, values, globals);
   const laid = tpl.body ? layoutPages(tpl.body, measure, report.warnings, fieldLines.count)
-    : { pages: [], refused: new Map<string, string>() };
+    : { pages: [], refused: new Map<string, string>(), copies: [] };
   const pageSet = tpl.body?.pageSet;
 
   // 4. Page identity. A layout whose page count disagrees with the document's
@@ -318,9 +320,10 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     }
   });
 
-  // 5. Per field.
+  // 5. Per field -- a placed leader or trailer copy's fields too (164g.15):
+  //    each copy is a form instance of its own (Adobe t73, t76).
   const groupMembers = new Map<string, Array<{ f: XfaField; entry: PlanEntry }>>();
-  for (const f of tpl.fields) {
+  for (const f of [...tpl.fields, ...laid.copies.flatMap((n) => tpl.copyFields.get(n) ?? [])]) {
     const t = typeOf(f);
     if (!t) {
       report.skipped.push({
@@ -510,7 +513,7 @@ function planMasterFields(
     const m = f.master;
     // Document-level reasons first; a field refused for its own sake says so.
     if (m === undefined || pageSet === undefined) {
-      skip(f.name, t ? 'its <pageArea> is not one pagination can identify -- a second <pageSet>, '
+      skip(f.name, t ? 'its <pageArea> is not one pagination can identify -- a second or nested <pageSet>, '
         + "an unreadable or unnamed <pageArea>, or one whose name repeats an earlier one's" : kind);
       continue;
     }
@@ -1009,14 +1012,14 @@ export function xfaFieldLines(
   doc: Document, tpl: XfaTemplate, values: XfaValues, globals?: XfaGlobals,
 ): { count: (n: LayoutNode) => number | undefined; texts: Map<string, string[]> } {
   const faces = faceLookup(doc);
-  const byName = new Map(tpl.fields.map((f) => [f.name, f]));
+  const byName = fieldLookup(tpl);
   const texts = new Map<string, string[]>();
   const count = (n: LayoutNode): number | undefined => {
     if (n.kind !== 'field' || !n.text || n.field === undefined) return undefined;
     const known = texts.get(n.field);
     if (known) return known.length;
     let t = n.text;
-    const f = byName.get(n.field);
+    const f = byName(n.field);
     if (f) {
       const v = bindFieldValue(f, values, globals);
       if (Array.isArray(v)) return undefined;
@@ -1035,19 +1038,34 @@ export function xfaFieldLines(
   return { count, texts };
 }
 
+/** A field by its SOM name, a leader or trailer COPY's included (164g.15): a
+ *  copy is made while pagination runs, after this lookup was built, so its
+ *  fields are taken from `tpl.copyFields` as they appear. */
+function fieldLookup(tpl: XfaTemplate): (name: string) => XfaField | undefined {
+  const byName = new Map(tpl.fields.map((f) => [f.name, f]));
+  let seen = 0;
+  return (name) => {
+    const hit = byName.get(name);
+    if (hit || tpl.copyFields.size === seen) return hit;
+    for (const fs of tpl.copyFields.values()) for (const f of fs) if (!byName.has(f.name)) byName.set(f.name, f);
+    seen = tpl.copyFields.size;
+    return byName.get(name);
+  };
+}
+
 /** @internal The measurer `ConvertXfaToAcroForm` lays pages out with (164g.7):
  *  a leaf's text from the template, with a field's bound value in place of its
  *  default, measured with `faceLookup`'s faces. Exported so the pdf.js oracle
  *  can lay out a subtree in isolation. */
 export function xfaMeasurer(doc: Document, tpl: XfaTemplate, values: XfaValues, globals?: XfaGlobals): XfaMeasure {
   const faces = faceLookup(doc);
-  const byName = new Map(tpl.fields.map((f) => [f.name, f]));
+  const byName = fieldLookup(tpl);
   // A leaf's text from the template, with a field's bound value in place of
   // its default (164g.7). A multi-valued datum is not text.
   return (n, box) => {
     if (!n.text) return { reason: `${n.label}: has no measurable content` };
     let t = n.text;
-    const f = n.field !== undefined ? byName.get(n.field) : undefined;
+    const f = n.field !== undefined ? byName(n.field) : undefined;
     if (f) {
       const v = bindFieldValue(f, values, globals);
       if (Array.isArray(v)) return { reason: `${n.label}: is bound to several values, which are not measured as text` };

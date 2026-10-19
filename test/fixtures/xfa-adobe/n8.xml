@@ -1,0 +1,13 @@
+<pageSet relation="simplexPaginated">
+  <pageArea name="A" id="A" pagePosition="first"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markA" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-A</text></value></draw></pageArea>
+  <pageArea name="B" id="B" pagePosition="rest"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markB" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-B</text></value></draw></pageArea>
+  <pageArea name="C" id="C" pagePosition="last"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markC" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-C</text></value></draw></pageArea>
+  <pageSet relation="simplexPaginated">
+    <pageArea name="D" id="D" pagePosition="first"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markD" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-D</text></value></draw></pageArea>
+    <pageArea name="E" id="E" pagePosition="rest"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markE" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-E</text></value></draw></pageArea>
+    <pageArea name="F" id="F" pagePosition="last"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markF" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-F</text></value></draw></pageArea>
+  </pageSet>
+</pageSet>
+<subform name="S" layout="position" w="7.5in" h="9in"><field name="f" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>
+<subform name="T" layout="position" w="7.5in" h="9in"><occur min="3" initial="3" max="3"/><breakBefore targetType="pageArea" target="#D" startNew="0"/><field name="g" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>
+<subform name="U" layout="position" w="7.5in" h="1in"><breakBefore targetType="pageArea" target="#B"/><field name="h" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>
