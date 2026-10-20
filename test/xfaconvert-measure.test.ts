@@ -46,7 +46,9 @@ describe('ConvertXfaToAcroForm measures growable fields', () => {
     const doc = buildGrowForm('');
     doc.ConvertXfaToAcroForm();
     const g = rect(doc, 'form1[0].S[0].grow[0]');
-    expect(g[3] - g[1]).toBeCloseTo((1854 + 434) / 2048 * 10, 2);
+    // One line of 10pt text is 10pt, the font size, whatever the face's hhea
+    // metrics say (Arial's would be 11.17): Adobe probes t111-t118 (164g.32).
+    expect(g[3] - g[1]).toBeCloseTo(10, 2);
   });
 
   // Review Focus 1: a multi-valued datum never reaches the measurer as a string.

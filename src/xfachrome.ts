@@ -17,7 +17,7 @@
 import type { PlacedNode } from './xfaflow.js';
 import { fieldRegions, type XfaBox } from './xfageom.js';
 import type { LeafText, RunSpec, RunStyle } from './xfarich.js';
-import { layoutLeaf, type FaceLookup, type LeafLine } from './xfatext.js';
+import { layoutLeaf, resolveCaption, type FaceLookup, type LeafLine } from './xfatext.js';
 import type { Rgb, XfaBorder, XfaCorner, XfaGeometry, XfaHand, XfaStroke } from './xfaborder.js';
 
 export type PathCmd =
@@ -303,7 +303,10 @@ export function chromeOps(nodes: readonly PlacedNode[], faces?: FaceLookup): Chr
       textOps(p.box, n.text, faces, ops, skip);
     }
     if (n.kind === 'field' && c?.caption && c.captionPresence !== 'invisible') {
-      const reg = fieldRegions(p.box, c.fieldCaption, c.fieldMargin);
+      // 164g.36: a reserve-less caption is painted in its MEASURED height, the
+      // same resolution the widget box uses.
+      const cap = resolveCaption(c.fieldCaption, c.caption, p.box.w, c.fieldMargin, faces);
+      const reg = cap && 'reason' in cap ? cap : fieldRegions(p.box, cap, c.fieldMargin);
       if (!('reason' in reg) && reg.caption) {
         for (const note of c.caption.notes ?? []) warnings.push(`${name}: ${note}`);
         textOps(reg.caption, c.caption, faces, ops, skip);

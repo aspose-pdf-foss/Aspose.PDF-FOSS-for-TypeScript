@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Document } from '../src/document.js';
-import { isDict } from '../src/types.js';
+import { isDict, type PdfDict } from '../src/types.js';
 
 const load = (n: string) =>
   new Uint8Array(readFileSync(new URL(`./fixtures/xfa/${n}`, import.meta.url)));
@@ -403,4 +403,181 @@ describe('lr-tb bodies of mixed heights, against Adobe (bkdi)', () => {
       expect(exact, 'exact').toBe(count);
     });
   }
+});
+
+// 164g.33: two shapes fdq3's numbering did not cover, each found by 164g.24's
+// scan of archived DD forms, which read these older revisions. A named DRAW
+// takes an occurrence index (DD 3183's <draw name="title"> makes the field
+// title[1]; DD 3019's <draw name="Pulses"> makes the subform Pulses[1]), and an
+// <exclGroup> whose members are UNNAMED is still a radio group (DD 3183's
+// RadioButtonList, dropped whole with nothing reported before).
+describe('occurrence numbering against Adobe (164g.33)', () => {
+  const kidsOf = (doc: Document, name: string): Array<PdfDict> => {
+    const f = doc.Form.Get(name)!;
+    const kids = doc.resolve(f.Dict.get('Kids'));
+    return (Array.isArray(kids) ? kids.map((k) => doc.resolve(k)) : [f.Dict]) as Array<PdfDict>;
+  };
+  const onState = (doc: Document, w: PdfDict): string => {
+    const n = doc.resolve((doc.resolve(w.get('AP')) as PdfDict).get('N')) as PdfDict;
+    return [...n.keys()].filter((k) => k !== 'Off')[0];
+  };
+  const near = (a: number[], b: number[]) => [0, 1, 2, 3].every((i) => Math.abs(a[i] - b[i]) <= 0.01);
+
+  // DD 3019 places 952 fields, every one on Adobe's rect. Until 164g.36 it
+  // placed 959: one LFT row of 7 sat 8pt too high, because a caption stating no
+  // reserve took nothing. It is sized from its text now, and in Myriad Pro,
+  // which nothing here resolves, so those 7 are REFUSED by name rather than
+  // placed wrongly. Its DPL check box was an eighth miss until 164g.34.
+  for (const [file, names, placed] of [['dod-dd3183.pdf', 69, 69], ['dod-dd3019.pdf', 1065, 952]] as const) {
+    it(`${file}: the template alone reproduces all ${String(names)} names Adobe wrote`, () => {
+      const src = Document.Open(load(file));
+      const adobe = src.Form.Fields.filter((f) => f.Type !== 'signature').map((f) => f.FullName).sort();
+      expect(adobe).toHaveLength(names);
+      const report = stripAcroFields(load(file)).ConvertXfaToAcroForm({ removeXfa: false });
+      expect(report.fields.map((f) => f.name).sort()).toEqual(adobe);
+    });
+
+    it(`${file}: places ${String(placed)} fields on Adobe's page and rects`, () => {
+      const bytes = load(file);
+      const src = Document.Open(bytes);
+      const doc = stripAcroFields(bytes);
+      const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+      let exact = 0;
+      let positioned = 0;
+      for (const f of report.fields) {
+        if (f.route !== 'positioned') continue;
+        positioned += 1;
+        expect(f.page! - 1, `${f.name} page`).toBe(adobePage(src, f.name));
+        // Every widget, matched to Adobe's by rect: a radio group's kids are
+        // not written in one order by both.
+        const want = kidsOf(src, f.name).map((w) => src.resolve(w.get('Rect')) as number[]);
+        const got = kidsOf(doc, f.name).map((w) => doc.resolve(w.get('Rect')) as number[]);
+        if (got.length === want.length && got.every((g) => want.some((w) => near(g, w)))) exact += 1;
+      }
+      expect(exact).toBe(placed);
+      expect(positioned).toBe(placed);
+    });
+  }
+
+  it('dod-dd3019.pdf: refuses the LFT row whose reserve-less captions it cannot measure (164g.36)', () => {
+    const report = stripAcroFields(load('dod-dd3019.pdf')).ConvertXfaToAcroForm({ removeXfa: false });
+    const lft = ['fio2[0]', 'pH[0]', 'pCo2[0]', 'p02[0]', 'BE[0]', 'BE[4]', 'hc03[0]']
+      .map((n) => `form1[0].#subform[21].LFT[0].${n}`);
+    for (const name of lft) {
+      expect(report.fields.find((f) => f.name === name)?.route, name).toBe('bare');
+      expect(report.skipped.find((s) => s.name === name)?.reason, name)
+        .toMatch(/caption states no reserve and no face named "Myriad Pro"/);
+    }
+  });
+
+  // Adobe writes these groups with an /Opt array, so its state names are the
+  // INDICES and the export values are /Opt's (32000-1 12.7.4.2.4). We name each
+  // state by its export value; the two say the same thing, widget by widget.
+  it("dod-dd3183.pdf: every radio widget exports the value Adobe's /Opt names", () => {
+    const bytes = load('dod-dd3183.pdf');
+    const src = Document.Open(bytes);
+    const doc = stripAcroFields(bytes);
+    doc.ConvertXfaToAcroForm({ removeXfa: false });
+    const radios = src.Form.Fields.filter((f) => f.Type === 'radio');
+    expect(radios).toHaveLength(15);
+    for (const g of radios) {
+      const opt = (src.resolve(g.Dict.get('Opt')) as Array<{ bytes: Uint8Array }>)
+        .map((o) => new TextDecoder('latin1').decode(o.bytes));
+      const mine = kidsOf(doc, g.FullName);
+      for (const w of kidsOf(src, g.FullName)) {
+        const twin = mine.find((m) => near(doc.resolve(m.get('Rect')) as number[], src.resolve(w.get('Rect')) as number[]))!;
+        expect(onState(doc, twin), g.FullName).toBe(opt[Number(onState(src, w))]);
+      }
+    }
+  });
+});
+
+// 164g.35: Adobe lays out in whole MILLIPOINTS, each measurement rounded on
+// the way in (xfageom.ts's measureToPt). In floating point the per-measurement
+// loss accumulated down a flow: DD 3218's stated mm heights left 55 fields
+// 0.0101-0.0145pt below Adobe's by the foot of a page.
+describe('millipoint layout, against Adobe (164g.35)', () => {
+  const residuals = (file: string): { placed: number; exact: number; worst: number; over: string[] } => {
+    const bytes = load(file);
+    const src = Document.Open(bytes);
+    const adobe = new Map(src.Form.Fields.map((f) =>
+      [f.FullName, src.resolve(f.Dict.get('Rect')) as number[] | null]));
+    const doc = stripAcroFields(bytes);
+    const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+    let placed = 0;
+    let exact = 0;
+    let worst = 0;
+    const over: string[] = [];
+    for (const f of report.fields) {
+      const want = adobe.get(f.name);
+      if (f.route !== 'positioned' || !want || want.length !== 4) continue;
+      placed += 1;
+      const got = rectOf(doc, f.name);
+      const d = Math.max(...[0, 1, 2, 3].map((i) => Math.abs(got[i] - want[i])));
+      if (d > 0.01) continue; // a defect of its own (164g.36), not a residual
+      exact += 1;
+      worst = Math.max(worst, d);
+      if (d > 0.0005 + 1e-9) over.push(f.name);
+    }
+    return { placed, exact, worst, over };
+  };
+
+  it('dod-dd3218.pdf: places all 331 fields on Adobe\'s rects', () => {
+    const { placed, exact, worst } = residuals('dod-dd3218.pdf');
+    expect([placed, exact]).toEqual([331, 331]);
+    expect(worst).toBeLessThanOrEqual(0.0005 + 1e-9);
+  });
+
+  // The sharper fence: what is left is Adobe writing its rects to three
+  // decimals, at most 0.0005, on every vendored form. In floating point
+  // DD 2952 reached 0.0024 and fw9 0.0007 while still inside the 0.01 bound.
+  // DD 3019's six left-captioned Myriad Pro fields sit exactly one millipoint
+  // right of Adobe's (164g.38): no rule over the measurements explains them.
+  const OVER: Record<string, string[]> = {
+    'dod-dd3019.pdf': [
+      'form1[0].#subform[0].Arrival[0].TransitTime[0]',
+      'form1[0].#subform[21].CT[0].time[1]',
+      'form1[0].#subform[34].#subform[49].plus-minus[0]',
+      'form1[0].#subform[34].#subform[49].plus-minus[1]',
+      'form1[0].#subform[34].#subform[50].plus-minus[2]',
+      'form1[0].#subform[34].#subform[50].plus-minus[3]',
+    ],
+  };
+  for (const file of ['irs-f1040.pdf', 'irs-fw9.pdf', 'uscis-i130.pdf', 'uscis-i765.pdf', 'dod-dd1155.pdf',
+    'dod-dd1391.pdf', 'dod-dd2952.pdf', 'dod-dd350.pdf', 'dod-dd3183.pdf', 'dod-dd3019.pdf', 'dod-dd3207.pdf']) {
+    it(`${file}: every matched rect is within Adobe's own 0.0005 rounding`, () => {
+      const { exact, worst, over } = residuals(file);
+      expect(exact).toBeGreaterThan(0);
+      expect(over.sort()).toEqual((OVER[file] ?? []).sort());
+      expect(worst).toBeLessThanOrEqual(0.001 + 1e-9);
+    });
+  }
+});
+
+// 164g.34: a check button beside a LEFT caption that reserves space sits flush
+// LEFT, next to it. f1040 and fw9 held no such button, so the default read
+// "caption on the left" from caption-less ones and put it flush right. DD 3207's
+// yes/no are two of the corpus's three such buttons (DD 3019's DPL is the third).
+describe('check buttons beside a left caption, against Adobe (164g.34)', () => {
+  it("dod-dd3207.pdf: places all 605 non-signature fields on Adobe's page and rects", () => {
+    const bytes = load('dod-dd3207.pdf');
+    const src = Document.Open(bytes);
+    const adobe = new Map(src.Form.Fields.map((f) =>
+      [f.FullName, src.resolve(f.Dict.get('Rect')) as number[] | null]));
+    const doc = stripAcroFields(bytes);
+    const report = doc.ConvertXfaToAcroForm({ removeXfa: false });
+    let exact = 0;
+    for (const f of report.fields) {
+      const want = adobe.get(f.name);
+      if (f.route !== 'positioned' || !want || want.length !== 4) continue;
+      expect(f.page! - 1, `${f.name} page`).toBe(adobePage(src, f.name));
+      const got = rectOf(doc, f.name);
+      if (Math.max(...[0, 1, 2, 3].map((i) => Math.abs(got[i] - want[i]))) <= 0.01) exact += 1;
+    }
+    expect(exact).toBe(605);
+    // Flush left of each edit region, which is 13.943pt and 49.402pt wide: flush
+    // right put them 3.943 and 39.402pt too far right.
+    for (const [n, x] of [['yes', 57.827], ['no', 97.132]] as const)
+      expect(rectOf(doc, `form1[0].#subform[117].yn[0].${n}[0]`)[0]).toBeCloseTo(x, 2);
+  });
 });

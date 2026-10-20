@@ -44,7 +44,8 @@ describe('chromeOps: a draw\'s text (164g.4)', () => {
     const o = texts(chromeOps([at(draw(text([para('aa bb cc dd', { hAlign: 'justify' })])), { x: 0, y: 0, w: 32, h: 40 })], faces).ops);
     // Line 1 "aa bb " -> words at 0 and 32-10=22; line 2 "cc dd" is last: left.
     expect(o.filter((t) => t.y === 8).map((t) => [t.text.trim(), t.x])).toEqual([['aa', 0], ['bb', 22]]);
-    expect(o.filter((t) => t.y === 18).map((t) => t.x)).toEqual([0]);
+    // Line 2's top is 1.2 x 10 down (164g.32), its baseline one ascent below.
+    expect(o.filter((t) => t.y === 20).map((t) => t.x)).toEqual([0]);
   });
 
   it('carries run colour and decoration', () => {

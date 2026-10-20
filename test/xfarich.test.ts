@@ -21,7 +21,10 @@ describe('leafText: plain text', () => {
       + '<value><text>a\nb</text></value></draw>'));
     expect(t.paras.map((p) => p.runs.map((r) => r.text).join(''))).toEqual(['a', 'b']);
     expect(t.paras[0].runs[0]).toMatchObject({ family: ['Arial'], size: 9, bold: true, italic: true });
-    expect(t.paras[0]).toMatchObject({ marginLeft: 2, marginRight: 3, textIndent: 4, lineHeight: 12, spaceAbove: 1, spaceBelow: 5 });
+    // 164g.32: a record is a LINE, so the <para> spacing wraps the text once --
+    // spaceAbove on the first record, spaceBelow on the last (Adobe t116).
+    expect(t.paras[0]).toMatchObject({ marginLeft: 2, marginRight: 3, textIndent: 4, lineHeight: 12, spaceAbove: 1, spaceBelow: 0 });
+    expect(t.paras[1]).toMatchObject({ spaceAbove: 0, spaceBelow: 5 });
     expect(t.insets).toEqual({ l: 1, r: 2, t: 3, b: 4 });
   });
 
@@ -54,7 +57,7 @@ describe('leafText: plain text', () => {
 describe('leafText: captions', () => {
   it('reads placement (default left) and reserve', () => {
     expect(leafText(el('<field><ui><textEdit/></ui><caption reserve="20mm"/></field>')).caption)
-      .toEqual({ placement: 'left', reserve: 20 * 72 / 25.4 });
+      .toEqual({ placement: 'left', reserve: 56.693 }); // 20mm, to the millipoint (164g.35)
     expect(leafText(el('<field><ui><textEdit/></ui><caption placement="top"/></field>')).caption)
       .toEqual({ placement: 'top' });
   });

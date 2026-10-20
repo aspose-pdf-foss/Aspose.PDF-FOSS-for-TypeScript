@@ -18,9 +18,8 @@ import { loadAdobeProbe } from './helpers/xfa-adobe.js';
  * leaves, `A<LS>B` in a plain draw, a rich draw and a field each 22pt tall --
  * exactly the `A\nB` control -- against 10pt for `AB`.
  *
- * Only the RELATIVE rule is compared: Reader's absolute line heights (10 and
- * 22) are not the hhea heights we measure (11.33 and 22.66), a separate gap
- * 164g.7's pdf.js oracle does not see (164g.32).
+ * Since 164g.32 the ABSOLUTE heights are compared too: a line is measured off
+ * its font size, as Reader does (10 and 22), not off hhea (11.33 and 22.66).
  */
 describe('U+2028 in XFA text (164g.23, Adobe t91)', () => {
   const doc = Document.Open(loadAdobeProbe('t91'));
@@ -41,6 +40,11 @@ describe('U+2028 in XFA text (164g.23, Adobe t91)', () => {
     expect(r.refused.size).toBe(0);
     expect(h('nl')).toBeGreaterThan(1.5 * h('one'));
     for (const l of ['ls', 'rich', 'f[0]']) expect(h(l)).toBeCloseTo(h('nl'), 6);
+  });
+
+  it("is exactly as tall as Reader reports: 10pt for one line, 22pt for two", () => {
+    expect(h('one')).toBeCloseTo(10, 6);
+    for (const l of ['nl', 'ls', 'rich', 'f[0]']) expect(h(l)).toBeCloseTo(22, 6);
   });
 
   it('is a line break inside its paragraph, not a paragraph break', () => {

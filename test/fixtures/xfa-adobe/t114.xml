@@ -1,0 +1,10 @@
+<subform name="S" layout="tb" w="7.5in">
+<field name="ccap" w="2in" minH="1pt"><font typeface="Courier New" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Courier New" size="8pt"/><value><text>Cap</text></value></caption><value><text>Ab</text></value></field>
+<field name="acap" w="2in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="8pt"/><value><text>Cap</text></value></caption><value><text>Ab</text></value></field>
+<field name="tcap" w="2in" minH="1pt"><font typeface="Times New Roman" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Times New Roman" size="8pt"/><value><text>Cap</text></value></caption><value><text>Ab</text></value></field>
+<field name="mcap" w="2in" minH="1pt"><font typeface="Myriad Pro" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Myriad Pro" size="8pt"/><value><text>Cap</text></value></caption><value><text>Ab</text></value></field>
+<field name="cnone" w="2in" minH="1pt"><font typeface="Courier New" size="8pt"/><ui><textEdit/></ui><value><text>Ab</text></value></field>
+<field name="anone" w="2in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><value><text>Ab</text></value></field>
+<field name="tnone" w="2in" minH="1pt"><font typeface="Times New Roman" size="8pt"/><ui><textEdit/></ui><value><text>Ab</text></value></field>
+<field name="mnone" w="2in" minH="1pt"><font typeface="Myriad Pro" size="8pt"/><ui><textEdit/></ui><value><text>Ab</text></value></field>
+</subform>

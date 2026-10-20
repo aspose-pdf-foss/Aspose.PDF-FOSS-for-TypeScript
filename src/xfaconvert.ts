@@ -41,13 +41,13 @@ import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { decodeXfaPackets } from './xfapacket.js';
 import { parseXfaTemplate, type XfaField, type XfaTemplate } from './xfatemplate.js';
 import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals, bindFieldValue, type XfaValues, type XfaGlobals } from './xfadata.js';
-import { buttonBox, editRegion, measureToPt, mediumAgrees, mediumSizePt, rectFromBox, type XfaBox } from './xfageom.js';
+import { buttonBox, captionReservesSpace, editRegion, measureToPt, mediumAgrees, mediumSizePt, rectFromBox, type XfaBox } from './xfageom.js';
 import { PageFormat } from './pageformat.js';
 import { layoutPage, type LayoutNode, type Placed, type PlacedNode, type XfaMeasure, type XfaPiece } from './xfaflow.js';
 import { chromeOps, type ChromeOp, type ChromeResult } from './xfachrome.js';
 import { paintChrome, type XfaChromePlan } from './xfapaint.js';
 import { layoutPages, type XfaLayoutResult, type XfaPageSet } from './xfapage.js';
-import { layoutLeaf, measureLeaf } from './xfatext.js';
+import { layoutLeaf, measureLeaf, resolveCaption, type FaceLookup } from './xfatext.js';
 import { withValue } from './xfarich.js';
 import { faceLookup } from './xfafont.js';
 import { widgetStyleOf } from './xfaborder.js';
@@ -323,6 +323,8 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   // 5. Per field -- a placed leader or trailer copy's fields too (164g.15):
   //    each copy is a form instance of its own (Adobe t73, t76).
   const groupMembers = new Map<string, Array<{ f: XfaField; entry: PlanEntry }>>();
+  // 164g.36: a reserve-less caption is measured from its text in the widget box.
+  const capFaces = faceLookup(doc);
   for (const f of [...tpl.fields, ...laid.copies.flatMap((n) => tpl.copyFields.get(n) ?? [])]) {
     const t = typeOf(f);
     if (!t) {
@@ -337,7 +339,7 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
     if (ws) entry.style = ws;
 
     // Geometry, or a named reason for having none.
-    const why = geometryFor(f, entry, noGeometry, badPages, where, laid.refused, crops, fieldLines.texts);
+    const why = geometryFor(f, entry, noGeometry, badPages, where, laid.refused, crops, fieldLines.texts, capFaces);
     // A page that failed has already reported ONCE, as a page; reporting again
     // per field would bury the one entry that names the cause.
     if (why !== undefined && why !== '')
@@ -355,7 +357,7 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   // 5b. Fields on a MASTER page (d3mq): one instance per page. Each page area
   //     is laid out once, shared with the chrome below.
   const masters = layoutMasters(pageSet, measure, report.warnings);
-  planMasterFields(tpl, laid, pageSet, noGeometry, badPages, crops, values, globals, report, entries, masters);
+  planMasterFields(tpl, laid, pageSet, noGeometry, badPages, crops, values, globals, report, entries, masters, capFaces);
 
   // 5c. Chrome (164g.4): only for the pages a DYNAMIC document will get. A
   //     hybrid's pages already carry Designer's rendering of it, and painting
@@ -500,7 +502,7 @@ function planMasterFields(
   tpl: XfaTemplate, laid: XfaLayoutResult, pageSet: XfaPageSet | undefined,
   noGeometry: boolean, badPages: ReadonlySet<number>, crops: readonly number[][],
   values: XfaValues, globals: XfaGlobals, report: XfaConvertReport, entries: PlanEntry[],
-  masters: (k: number) => { placed: Map<string, Placed>; nodes: PlacedNode[] },
+  masters: (k: number) => { placed: Map<string, Placed>; nodes: PlacedNode[] }, faces: FaceLookup,
 ): void {
   const placedIn = (k: number): Map<string, Placed> => masters(k).placed;
   const secondSet = laid.pages.some((p) => p.pageSet > 0);
@@ -535,7 +537,7 @@ function planMasterFields(
       skip(f.name, t ? `${p?.reason ?? "the field is not in its page area's layout"}, so no instance is created` : kind);
       continue;
     }
-    const wb = t ? widgetBox(f, p.box) : undefined;
+    const wb = t ? widgetBox(f, p.box, faces) : undefined;
     if (wb !== undefined && 'reason' in wb) {
       skip(f.name, `${wb.reason}, so no instance is created`);
       continue;
@@ -640,8 +642,11 @@ function baseEntry(f: XfaField, t: { ft: string; ff: number }, value: string | s
 /** A field's WIDGET box inside its laid-out box: the caption reserve and the
  *  field's own margin come off, and a check button is sized and aligned inside
  *  what is left. Shared by body and master-page fields -- one rule (d3mq). */
-function widgetBox(f: XfaField, box: XfaBox): XfaBox | { reason: string } {
-  const edit = editRegion(box, f.caption, f.margin);
+function widgetBox(f: XfaField, box: XfaBox, faces: FaceLookup): XfaBox | { reason: string } {
+  // 164g.36: a caption that states no reserve takes its measured text.
+  const cap = resolveCaption(f.caption, f.captionLeaf, box.w, f.margin, faces);
+  if (cap && 'reason' in cap) return cap;
+  const edit = editRegion(box, cap, f.margin);
   if ('reason' in edit) return edit;
   // A check button's widget is the BUTTON, not the edit region it sits in. Only
   // this UI kind states a size of its own, so every other field takes the box
@@ -651,7 +656,8 @@ function widgetBox(f: XfaField, box: XfaBox): XfaBox | { reason: string } {
     ...(f.buttonSize !== undefined ? { size: f.buttonSize } : {}),
     ...(f.para?.hAlign !== undefined ? { hAlign: f.para.hAlign } : {}),
     ...(f.para?.vAlign !== undefined ? { vAlign: f.para.vAlign } : {}),
-    ...(f.caption?.placement !== undefined ? { captionPlacement: f.caption.placement } : {}),
+    ...(cap?.placement !== undefined ? { captionPlacement: cap.placement } : {}),
+    ...(captionReservesSpace(cap) ? { captionReserves: true } : {}),
   });
 }
 
@@ -665,6 +671,7 @@ function geometryFor(
   f: XfaField, entry: PlanEntry, noGeometry: boolean, badPages: ReadonlySet<number>,
   where: ReadonlyMap<string, Array<{ page: number; p: Placed }>>,
   refused: ReadonlyMap<string, string>, crops: readonly number[][], texts: ReadonlyMap<string, string[]>,
+  faces: FaceLookup,
 ): string | undefined {
   if (noGeometry) return '';
   const r = refused.get(f.name);
@@ -678,7 +685,7 @@ function geometryFor(
   for (const w of ws) {
     const p = w.p;
     if ('reason' in p) return `${p.reason}, so the field carries no geometry`;
-    const wb = widgetBox(f, p.box);
+    const wb = widgetBox(f, p.box, faces);
     if ('reason' in wb) return `${wb.reason}, so the field carries no geometry`;
     out.push({ page: w.page + 1, rect: rectFromBox(wb, crops[w.page]), ...(p.piece ? { piece: p.piece } : {}) });
   }

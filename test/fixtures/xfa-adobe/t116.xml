@@ -1,0 +1,19 @@
+<subform name="S" layout="tb" w="7.5in">
+<draw name="L30s10" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para lineHeight="30pt"/><value><text>a
+b</text></value></draw>
+<draw name="L20s20" w="3in" minH="1pt"><font typeface="Arial" size="20pt"/><para lineHeight="20pt"/><value><text>a
+b</text></value></draw>
+<draw name="L30s20" w="3in" minH="1pt"><font typeface="Arial" size="20pt"/><para lineHeight="30pt"/><value><text>a
+b</text></value></draw>
+<draw name="L5s10" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para lineHeight="5pt"/><value><text>a
+b</text></value></draw>
+<draw name="L20n3" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para lineHeight="20pt"/><value><text>a
+b
+c</text></value></draw>
+<draw name="L20wr" w="0.6in" minH="1pt"><font typeface="Arial" size="10pt"/><para lineHeight="20pt"/><value><text>aa bb cc dd ee</text></value></draw>
+<draw name="pAb" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para spaceAbove="5pt" spaceBelow="7pt"/><value><text>a
+b</text></value></draw>
+<draw name="pA1" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para spaceAbove="5pt" spaceBelow="7pt"/><value><text>a</text></value></draw>
+<draw name="rsa" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p style="space-after:6pt">a</p><p>b</p></body></exData></value></draw>
+<draw name="rmt" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p>a</p><p style="margin-top:5pt">b</p></body></exData></value></draw>
+</subform>

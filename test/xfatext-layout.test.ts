@@ -22,10 +22,11 @@ describe('layoutLeaf (164g.4): the lines measureLeaf breaks', () => {
     expect({ w: l.w, h: l.h }).toEqual(m);
   });
 
+  // A line's top advances 1.2s (164g.32); its baseline sits one ascent below.
   it('puts the baseline the ascent below each line band', () => {
     const l = layoutLeaf(leaf([para('aaaa bbbb')]), { width: 25 }, faces);
     if ('reason' in l) throw new Error(l.reason);
-    expect(l.lines.map((x) => x.baseline)).toEqual([8, 18]);
+    expect(l.lines.map((x) => x.baseline)).toEqual([8, 20]);
   });
 
   it('marks the last line of each paragraph', () => {
@@ -34,10 +35,11 @@ describe('layoutLeaf (164g.4): the lines measureLeaf breaks', () => {
     expect(l.lines.map((x) => `${String(x.para)}:${String(x.last)}`)).toEqual(['0:false', '0:true', '1:true']);
   });
 
-  it('adds max(spaceBelow, spaceAbove) between paragraphs', () => {
+  // 164g.32, Adobe t120: margin-bottom then margin-top are SUMMED (3 + 5).
+  it('adds spaceBelow and spaceAbove between paragraphs, summed', () => {
     const l = layoutLeaf(leaf([para('a', { spaceBelow: 3 }), para('b', { spaceAbove: 5 })]), { width: 100 }, faces);
     if ('reason' in l) throw new Error(l.reason);
-    expect(l.lines[1].baseline).toBe(10 + 5 + 8);
+    expect(l.lines[1].baseline).toBe(12 + 3 + 5 + 8);
   });
 
   it('starts a first line at marginLeft + textIndent and gives it the room left', () => {

@@ -43,9 +43,21 @@ const DIR = new URL('../fixtures/xfa-adobe/', import.meta.url);
  *  split chain (164g.16); t96-t100, t103, t104: a split positioned subform's
  *  margins (164g.20); t105-t110: one inside a split tb chain (164g.21). t91 (164g.23) is not a geometry golden -- its line
  *  heights are 164g.32's -- and `test/xfa-linesep.test.ts` reads it alone; nor
- *  are t101 and t102, visual probes on small pages read from the capture. */
-export const ADOBE_PROBES: readonly string[] = Array.from({ length: 108 }, (_, i) => `t${String(i + 3)}`)
-  .filter((t) => !['t91', 't101', 't102'].includes(t));
+ *  are t101 and t102, visual probes on small pages read from the capture.
+ *  t111-t117 (164g.32): how tall a line of text is -- faces, sizes, line
+ *  counts, mixed sizes, lineHeight and paragraph spacing. t111 and t113 hold
+ *  Myriad Pro rows -- not available here, so a draw in it refuses its flow --
+ *  and are recorded as evidence that the face does not matter; t118 and t119
+ *  are the same probes without them, and are what is compared. t114,
+ *  reserve-less top captions, is recorded for 164g.36. t120: rich paragraph
+ *  margins, summed. t121 (164g.36): reserve-less captions and over-wide words;
+ *  its captioned fields are compared by test/xfa-caption.test.ts, since the
+ *  harness compares a field's widget, which excludes the caption. */
+export const ADOBE_PROBES: readonly string[] = Array.from({ length: 119 }, (_, i) => `t${String(i + 3)}`)
+  .filter((t) => !['t91', 't101', 't102', 't111', 't113', 't114'].includes(t));
+/** Probes with a golden that is recorded but not compared (164g.32): t111 and
+ *  t113 for their Myriad Pro rows, t114 for 164g.36's captions. */
+export const ADOBE_RECORDED: readonly string[] = ['t111', 't113', 't114'];
 export const loadAdobeProbe = (name: string): Uint8Array => new Uint8Array(readFileSync(new URL(`${name}.pdf`, DIR)));
 export const adobeGoldens = (): AdobeGoldens =>
   JSON.parse(readFileSync(new URL('adobe.json', DIR), 'utf8')) as AdobeGoldens;

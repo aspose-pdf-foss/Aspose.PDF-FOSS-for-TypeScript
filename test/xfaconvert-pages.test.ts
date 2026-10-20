@@ -15,7 +15,8 @@ const TWO_PAGES = `<template><subform name="form1" layout="tb">
   </subform></template>`;
 
 const dynamic = (template: string) => Document.Open(buildXfaPdf({ template, pages: 1, needsRendering: true }));
-const A4: [number, number] = [595.2755905511812, 841.8897637795276];
+// 210 x 297mm to the millipoint (164g.35), the A4 MediaBox Adobe writes.
+const A4: [number, number] = [595.276, 841.89];
 
 describe('ConvertXfaToAcroForm: a dynamic document gets the pages its layout produces', () => {
   it('replaces the placeholder with one page per laid-out page, sized from the medium', () => {

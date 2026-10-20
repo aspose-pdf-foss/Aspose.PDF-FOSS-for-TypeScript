@@ -1,0 +1,10 @@
+<subform name="S" layout="tb" w="7.5in">
+<field name="capWide" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="8pt"/><value><text>WWWWWWWWWWWWWWWW</text></value></caption><value><text>Ab</text></value></field>
+<field name="capFit" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="8pt"/><value><text>FiO2</text></value></caption><value><text>Ab</text></value></field>
+<field name="capTwo" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="8pt"/><value><text>WWWW WWWW WWWW</text></value></caption><value><text>Ab</text></value></field>
+<field name="capMar" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="8pt"/><margin topInset="2pt" bottomInset="3pt"/><value><text>FiO2</text></value></caption><value><text>Ab</text></value></field>
+<field name="capBig" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="12pt"/><value><text>FiO2</text></value></caption><value><text>Ab</text></value></field>
+<draw name="dWide" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><value><text>WWWWWWWWWWWWWWWW</text></value></draw>
+<field name="fWide" w="0.5in" minH="1pt"><font typeface="Arial" size="8pt"/><ui><textEdit multiLine="1"/></ui><value><text>WWWWWWWWWWWWWWWW</text></value></field>
+<field name="fixFit" w="0.5in" h="0.5in"><font typeface="Arial" size="8pt"/><ui><textEdit/></ui><caption placement="top"><font typeface="Arial" size="8pt"/><value><text>FiO2</text></value></caption><value><text>Ab</text></value></field>
+</subform>

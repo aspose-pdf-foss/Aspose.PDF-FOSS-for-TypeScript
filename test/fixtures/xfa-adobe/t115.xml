@@ -1,0 +1,11 @@
+<subform name="S" layout="tb" w="7.5in">
+<draw name="wrap" w="0.6in" minH="1pt"><font typeface="Arial" size="10pt"/><value><text>aa bb cc dd ee</text></value></draw>
+<draw name="mixA" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p style="font-size:10pt">a<span style="font-size:20pt">B</span></p></body></exData></value></draw>
+<draw name="mixB" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p style="font-size:10pt">a<span style="font-size:20pt">B</span></p><p style="font-size:10pt">c</p></body></exData></value></draw>
+<draw name="mixC" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p style="font-size:10pt">a</p><p style="font-size:20pt">B</p></body></exData></value></draw>
+<draw name="lh" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para lineHeight="20pt"/><value><text>a
+b</text></value></draw>
+<draw name="lh1" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><para lineHeight="20pt"/><value><text>a</text></value></draw>
+<draw name="sp" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p>a</p><p style="space-before:5pt">b</p></body></exData></value></draw>
+<draw name="empty" w="3in" minH="1pt"><font typeface="Arial" size="10pt"/><value><text></text></value></draw>
+</subform>

@@ -13,6 +13,10 @@ Hybrid XFA forms from a third-party producer, here to validate the
 | `dod-dd1391.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd1391.pdf> | 1 | 62 | yes | **hybrid**, fillable master-page field |
 | `dod-dd1155.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd1155.pdf> | 1 | 90 | yes | **hybrid**, master-page Reset button |
 | `dod-dd2952.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd2952.pdf>, via the Wayback Machine | 3 | 53 | yes | **hybrid**, three page areas, master Reset on the second |
+| `dod-dd3183.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3183.pdf>, via the Wayback Machine | 2 | 84 | yes | **hybrid**, a draw sharing a field's name; radio groups with unnamed members |
+| `dod-dd3019.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3019.pdf>, via the Wayback Machine | 5 | 1,065 | yes | **hybrid**, draws sharing a subform's and a field's name |
+| `dod-dd3218.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3218.pdf>, via the Wayback Machine | 5 | 331 | yes | **hybrid**, long flows of stated mm heights |
+| `dod-dd3207.pdf` | <https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3207.pdf>, via the Wayback Machine | 10 | 609 | yes | **hybrid**, check buttons beside a left caption |
 
 - Producer, from each file's own `/Info`: **`Designer 6.5`** — Adobe LiveCycle
   Designer, which is the authoring tool this feature was designed around.
@@ -378,6 +382,137 @@ DD 350 itself. DD 350 was vendored as the smallest clear case. Three disagree,
 and each is filed with its form named:
 
 - DD 3183 and DD 3019 have occurrence indices in some names that differ from
-  Adobe's (`164g.33`).
-- DD 3207 has two radio buttons that land off Adobe's rects (`164g.34`).
-- DD 3218 has 55 fields 0.0103pt off, just past the 0.01 bound (`164g.35`).
+  Adobe's (`164g.33`). Fixed, and both vendored: see below.
+- DD 3207 has two check buttons that land off Adobe's rects (`164g.34`), which
+  the scan read as radio buttons. Fixed, and vendored: see below.
+- DD 3218 has 55 fields 0.0103pt off, just past the 0.01 bound (`164g.35`). Fixed, and vendored: see below.
+
+## DoD DD 3183 and DD 3019 (`164g.33`)
+
+US Department of Defense forms, US federal works, fetched from the **Wayback
+Machine** as raw bytes on **2026-10-20**. Each SHA-1 matches the digest
+Wayback's CDX index records for its capture.
+
+| Fixture | Capture | Producer (`/Info`) | CDX digest |
+|---|---|---|---|
+| `dod-dd3183.pdf` | `20231203165143` | **`Designer 6.4`** | `E5MDHMAJYESZHMYTTSKQ6KW3WPYTBC6G` |
+| `dod-dd3019.pdf` | `20201016195012` | **`Adobe LiveCycle Designer 11.0`** | `QKOCR7BTSZKYGAOA7YC2FQWSGGHG3B4P` |
+
+- `dod-dd3183.pdf` — `dd0e6dd4d6722c47ad1b806b4e9167ef8c59f84afaf5098cb72b89d0892a6312` (107,798 bytes)
+- `dod-dd3019.pdf` — `097bbb81c91da269414fe31a9ec1c6bdb68a57ac7b62c9270bd120a607085ac0` (656,451 bytes)
+
+```bash
+curl -o test/fixtures/xfa/dod-dd3183.pdf 'https://web.archive.org/web/20231203165143id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3183.pdf'
+curl -o test/fixtures/xfa/dod-dd3019.pdf 'https://web.archive.org/web/20201016195012id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3019.pdf'
+```
+
+**These are OLDER revisions, on purpose.** The scan that filed `164g.33` read
+these captures. Every later revision of both forms already matched Adobe before
+the fix: DD 3183 from 2024-03 on (its radio groups became check boxes, and only
+its `title` still differs before 2026-02), DD 3019 from 2023-11 on. Vendoring the
+current file would have pinned nothing.
+
+**What they show that no other fixture does:**
+
+- **A named `<draw>` takes an occurrence index.** DD 3183 has
+  `<draw name="title">` before `<field name="title">`, and Adobe writes the field
+  `title[1]`. DD 3019 has `<draw name="Pulses">` before `<subform name="Pulses">`,
+  which Adobe writes `Pulses[1]`, and `<draw name="notified">` before two fields
+  `notified`, which it writes `[1]` and `[2]`.
+- **An `<exclGroup>` whose members are UNNAMED is still a radio group.** DD 3183
+  writes 14 of its 15 radio lists that way. We dropped each one whole, with
+  nothing reported. Adobe writes the group with unnamed widget kids.
+- **Adobe writes those groups with an `/Opt` array**, naming the widget states
+  `0`, `1`, `2` (32000-1 12.7.4.2.4). We name each state by its export value. The
+  test compares them widget by widget, through `/Opt`. Filed as a representation
+  choice, not a defect.
+
+Converted from the template alone, all 69 non-signature names of DD 3183 and
+all 1,065 of DD 3019 are Adobe's. All 69 of DD 3183's fields land on Adobe's
+page and rects. 951 of DD 3019's 959 placed fields do. The other 8 are a
+geometry defect that predates this fix (`164g.36`). Its remaining 106 fields
+are refused by name: growable check buttons, and an unregistered Myriad Pro.
+
+**Measured:** dropping the draw's index reddens 4 cases here and 3 builder
+cases. Dropping the unnamed member reddens 2 here and 1 builder case. The name
+check alone does NOT see the member rule, because a member left on its group's
+path spells the group's name. The rect and `/Opt` cases are what hold it.
+
+**Another capture of DD 3019 is NOT vendored and does not open.** The
+`20210318094803` capture (CDX digest `4FHKJKEEZIOY2QV5FGN24AR7VC4XEDC7`, matched)
+is refused with "object 5706 could not be parsed at its xref offset", where
+qpdf 12 finds no errors. That is filed separately.
+
+## DoD DD 3218 (`164g.35`)
+
+US Department of Defense form, a US federal work. Producer and creator, from
+its own `/Info`: **`Designer 6.5`**. Fetched from the **Wayback Machine** capture
+of `https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3218.pdf` at
+`20251217064107`, as raw bytes, on **2026-10-20**. Its SHA-1 matches the digest
+Wayback's CDX index records for that capture (`BNX7E57DVSKFUBFWLCG2FQE6EHM3QHQG`).
+It is the newer of the form's two distinct captures. The older one
+(`20250309235419`) showed the same 55 misses and is not vendored.
+
+- `dod-dd3218.pdf` — `586b284548050fe8b78ca98a8e820020307664aad353c9a6ddc573fa2162040b` (323,489 bytes)
+
+```bash
+curl -o test/fixtures/xfa/dod-dd3218.pdf 'https://web.archive.org/web/20251217064107id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3218.pdf'
+```
+
+**What it shows that no other fixture does:** that Adobe lays out in whole
+**millipoints**, rounding each measurement on the way in. Its pages are long
+`lr-tb` flows of rows with STATED mm heights (`5.398mm` titles, `7.557mm` check
+boxes). Each converts to a fraction of a millipoint that Adobe drops and floating
+point kept, so the gap grew down every page: 0.0101pt at the first miss, 0.0145pt
+at the foot. That put 55 fields past the 0.01 bound.
+
+**The evidence is in the template itself.** Designer's `renderCache.bounds`
+processing instructions are integer millipoints. A `190.5mm` draw with
+`1.0008mm` side insets is `534326`, that is 540000 − 2 × 2837. And 1.0008mm is
+2.83691pt, which ROUNDS to 2837 (truncation gives 2836).
+
+**Measured:** with `measureToPt` rounding to the millipoint, all 331 of DD 3218's
+fields land on Adobe's rects. Every other vendored form's worst residual falls to
+Adobe's own three-decimal output rounding (0.0005). Before, DD 2952 reached
+0.0024 and fw9 0.0007, both inside the old bound. Converting exactly instead
+reddens 10 cases. Truncating instead of rounding reddens 12, every real form
+among them.
+
+**One residue, unexplained:** six left-captioned Myriad Pro fields of DD 3019
+sit exactly 0.001pt right of Adobe. No rule over the measurements fits them, and
+the face is not available here (`164g.38`).
+
+## DoD DD 3207 (`164g.34`)
+
+US Department of Defense form, a US federal work. Producer and creator, from
+its own `/Info`: **`Designer 6.4`**. Fetched from the **Wayback Machine** capture
+of `https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3207.pdf` at
+`20240625224858`, as raw bytes, on **2026-10-20**. Its SHA-1 matches the digest
+Wayback's CDX index records for that capture (`RS4MNMODTQVKDV7UR72OR2H3GU72Y3PA`).
+It is the form's only distinct capture.
+
+- `dod-dd3207.pdf` — `d5b5dcbf50d31c143a773cdc7ac3a893c08dac1a7f680cfa6b5d047683da986a` (471,272 bytes)
+
+```bash
+curl -o test/fixtures/xfa/dod-dd3207.pdf 'https://web.archive.org/web/20240625224858id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3207.pdf'
+```
+
+**What it shows that no other fixture does:** a check button beside a LEFT
+caption that reserves space. `form1[0].#subform[117].yn[0]` holds `yes` and `no`,
+two separate check box fields (the issue's "radio buttons" was a misreading).
+Each states `<caption reserve>` with the default left placement, no `hAlign`
+and no button size. Adobe draws each 10pt button flush LEFT of its edit region,
+beside the caption. 17vo's measured default had put them flush right, because
+f1040 and fw9 had no such field and the left-side cases it saw had no caption.
+The edit regions are 13.943pt and 49.402pt wide, and the misses were exactly
+3.943pt and 39.402pt.
+
+**Measured:** the corpus has three such buttons, DD 3207's two and DD 3019's
+`DPL`, and Adobe places all three flush left. 301 caption-less buttons are
+flush right and 984 right-captioned ones flush left, across every vendored form.
+All 605 of DD 3207's non-signature fields land on Adobe's page and rects. Its 4
+signature fields are refused, as every `<signature>` is. Restoring the old
+default reddens 3 cases, and dropping the caller's flag reddens 2.
+
+**What it does NOT show:** a left caption that reserves NOTHING, and captions
+placed top or bottom. Those stay on the caption-less default, unmeasured.

@@ -40,7 +40,9 @@ export interface LeafText {
   kind: 'text' | 'geometry';
   paras: ParaSpec[];
   insets: { l: number; r: number; t: number; b: number };
-  caption?: { placement: CaptionSide; reserve?: number };
+  /** `text` is the caption's own leaf when it states no reserve, which is then
+   *  measured from it (164g.36). */
+  caption?: { placement: CaptionSide; reserve?: number; text?: LeafText };
   password: boolean;
   /** The field states a display `<format><picture>`, which is not formatted. */
   picture: boolean;
@@ -144,8 +146,16 @@ function captionOf(el: XmlNode): LeafText['caption'] | { refusal: string } | und
  *  which `layoutRuns` breaks on. Left in a run it reached face coverage and
  *  refused the whole leaf, since no face draws it. */
 export function plainParas(text: string, base: RunStyle, para: ParaBox, paint: RunPaint = {}): ParaSpec[] {
-  return text.split(/\r\n|\r|\n|\u2029/).map((rec) => ({
-    ...para, base, runs: rec === '' ? [] : [{ ...base, ...paint, text: rec.replace(/\u2028/g, '\n') }],
+  const recs = text.split(/\r\n|\r|\n|\u2029/);
+  // 164g.32: the leaf's <para> spacing wraps its text ONCE -- spaceAbove before
+  // the first record, spaceBelow after the last (t116: 5 + 7 = 12 for one line
+  // and for two). A record is a line here, not a paragraph Adobe spaces apart.
+  // That U+2029 behaves the same is unprobed.
+  return recs.map((rec, i) => ({
+    ...para,
+    spaceAbove: i === 0 ? para.spaceAbove : 0,
+    spaceBelow: i === recs.length - 1 ? para.spaceBelow : 0,
+    base, runs: rec === '' ? [] : [{ ...base, ...paint, text: rec.replace(/\u2028/g, '\n') }],
   }));
 }
 
@@ -269,6 +279,11 @@ function applyCss(css: string, ctx: Ctx, para: ParaBox | undefined, notes: strin
           'margin-right': 'marginRight', 'text-indent': 'textIndent', 'line-height': 'lineHeight' } as const)[name];
         para[key] = p; break;
       }
+      // 164g.32: Adobe Reader ignores these -- t115's space-before:5pt and
+      // t116's space-after:6pt each leave a two-paragraph draw 22pt, as with
+      // neither. Its paragraph spacing is margin-top / margin-bottom.
+      case 'space-before': case 'space-after':
+        break;
       case 'letter-spacing':
         if (!(v.length === 1 && cssPt(v[0]) === 0) && kw !== 'normal') return { refusal: 'letter-spacing in rich text is not measured' };
         break;
@@ -437,7 +452,12 @@ export function leafText(el: XmlNode): LeafText {
   const insets = insetsOf(el);
   const font = fontOf(el);
   const para = paraOf(el);
-  const caption = el.name === 'field' ? captionOf(el) : undefined;
+  const caption0 = el.name === 'field' ? captionOf(el) : undefined;
+  // 164g.36: a reserve-less caption is sized from its own text.
+  // A push button's caption is its face, inside the widget: it takes nothing.
+  const isButton = child(el, 'ui')?.children[0]?.name === 'button';
+  const capText = caption0 && !('refusal' in caption0) && caption0.reserve === undefined && !isButton ? captionText(el) : undefined;
+  const caption = capText && caption0 && !('refusal' in caption0) ? { ...caption0, text: capText } : caption0;
   const uiEl = child(el, 'ui')?.children[0];
   const fmt = child(el, 'format');
   const vAlign = vAlignOf(el);

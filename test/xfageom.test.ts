@@ -23,6 +23,19 @@ describe('measureToPt', () => {
     expect(measureToPt('18')).toBeCloseTo(18, 9);
   });
 
+  // 164g.35: Adobe lays out in whole MILLIPOINTS, each measurement rounded on
+  // the way in -- Designer's own renderCache.bounds show it (DD 3218: 1.0008mm,
+  // 2.83691pt, is 2837, which rounding gives and truncation does not). In
+  // floating point the loss accumulated down a flow to 0.0145pt by page foot.
+  it('rounds every measurement to a whole millipoint, as Adobe does', () => {
+    expect(measureToPt('7.557mm')).toBe(21.421); // 21.42142 rounds down
+    expect(measureToPt('1.0008mm')).toBe(2.837); // 2.83691 rounds UP
+    expect(measureToPt('0.5mm')).toBe(1.417);
+    expect(measureToPt('0.3333pt')).toBe(0.333);
+    expect(measureToPt('190.5mm')).toBe(540);
+    expect(measureToPt('-0.5002mm')).toBe(-1.418);
+  });
+
   // px/pc/em are refused, never guessed. A wrong px reading moves an A4 edge by
   // tens of points and still renders a plausible page, so the honest answer is
   // to decline the field entirely.
@@ -284,6 +297,23 @@ describe('buttonBox: a checkButton is its own size, placed in the edit region', 
     expect(buttonBox(edit, { size: '8pt', captionPlacement: 'left' }))
       .toMatchObject({ x: 12 });
     expect(buttonBox(edit, { size: '8pt' })).toMatchObject({ x: 12 });
+  });
+
+  // 164g.34: a LEFT caption that RESERVES space puts the button flush LEFT,
+  // next to it. f1040 and fw9 had no such field; DD 3207's yes/no and DD 3019's
+  // DPL are the corpus's three, and Adobe places all three flush left. A left
+  // caption reserving nothing stays on the caption-less default, unmeasured.
+  it('places it flush left beside a left caption that reserves space', () => {
+    const edit = { x: 0, y: 0, w: 20, h: 12 };
+    expect(buttonBox(edit, { size: '8pt', captionPlacement: 'left', captionReserves: true }))
+      .toMatchObject({ x: 0 });
+    // left is the default placement
+    expect(buttonBox(edit, { size: '8pt', captionReserves: true })).toMatchObject({ x: 0 });
+    expect(buttonBox(edit, { size: '8pt', captionPlacement: 'right', captionReserves: true }))
+      .toMatchObject({ x: 0 });
+    // a stated hAlign still wins
+    expect(buttonBox(edit, { size: '8pt', hAlign: 'right', captionReserves: true }))
+      .toMatchObject({ x: 12 });
   });
 
   it('honours a stated hAlign over that default', () => {

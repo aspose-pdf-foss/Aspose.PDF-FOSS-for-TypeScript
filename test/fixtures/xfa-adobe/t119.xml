@@ -1,0 +1,10 @@
+<subform name="S" layout="tb" w="7.5in">
+<field name="af1" w="2in" minH="1pt"><font typeface="Arial" size="10pt"/><ui><textEdit multiLine="1"/></ui><value><text>Ab1</text></value></field>
+<field name="af3" w="2in" minH="1pt"><font typeface="Arial" size="10pt"/><ui><textEdit multiLine="1"/></ui><value><text>Ab1
+Ab2
+Ab3</text></value></field>
+<draw name="adi" w="2in" minH="1pt"><font typeface="Arial" size="10pt"/><margin topInset="2mm" bottomInset="1mm"/><value><text>Ab1
+Ab2</text></value></draw>
+<field name="afi" w="2in" minH="1pt"><font typeface="Arial" size="10pt"/><margin topInset="2mm" bottomInset="1mm"/><ui><textEdit multiLine="1"/></ui><value><text>Ab1
+Ab2</text></value></field>
+</subform>

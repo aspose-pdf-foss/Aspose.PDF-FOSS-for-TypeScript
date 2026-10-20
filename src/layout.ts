@@ -239,6 +239,7 @@ interface WrappedLine {
  *  length across every page it spans. */
 function* breakOverwideWord(
   word: string, measure: (fromUnit: number, toUnit: number) => number, boxWidth: number,
+  anywhere = false,
 ): Generator<string> {
   // `codes[k]` is the k-th code point and `off[k]` is where it begins in `word`,
   // so `off` is one longer and `off[codes.length]` is how far the pair reaches.
@@ -284,7 +285,24 @@ function* breakOverwideWord(
 
   let start = 0;      // index into codes
   let lastOpp = -1;   // last break-opportunity index seen since `start`
+  // (164g.36) With `anywhere`, a piece that has NO opportunity left breaks
+  // before the code point that overflows, keeping at least one: Adobe Reader
+  // splits a word wider than its XFA box between any two characters (probe
+  // t121). Its width is summed per code point, so the test stays linear in the
+  // piece, and it is asked only on this path -- off, nothing here runs.
+  let acc = 0;
   for (let i = start + 1; atLeast(i); i++) {
+    if (anywhere) {
+      acc += measure(off[i - 1], off[i]);
+      if (acc > boxWidth && i - 1 > start) {
+        const cut = lastOpp > start ? lastOpp : i - 1;
+        yield word.slice(off[start], off[cut]);
+        start = cut; lastOpp = -1; i = start; acc = 0;
+        continue;
+      }
+      if (atLeast(i + 1) && brkAt(i) !== LBRK.PROHIBITED) lastOpp = i;
+      continue;
+    }
     // The measure is asked ONLY where there is somewhere to break (`lqs1`).
     // It used to run for every character and the answer was then used only as
     // `overflow && lastOpp > start` — so a word with NO break opportunity
@@ -316,7 +334,7 @@ function* breakOverwideWord(
 export function layoutRuns(
   runs: readonly LayoutRun[], boxWidth: number, boxHeight: number,
   leading: number, blockFontSize: number, firstLineIndent = 0,
-  hyphenation?: Hyphenator, tabs?: TabLayout,
+  hyphenation?: Hyphenator, tabs?: TabLayout, breakAnywhere = false,
 ): RunLayoutResult {
   // An atomic wider than the box scales BOTH dimensions down — the rule
   // flow.ts's image() already applies to a block image, so it is one rule
@@ -629,7 +647,7 @@ export function layoutRuns(
     let at = i;
     let firstPiece = true;
     for (const pc of breakOverwideWord(word,
-      (a, b) => spanWidth(i + a, i + b), boxWidth)) {
+      (a, b) => spanWidth(i + a, i + b), boxWidth, breakAnywhere)) {
       yield { start: at, end: at + pc.length, spaceBefore: firstPiece ? spaceBefore : false };
       at += pc.length;
       firstPiece = false;

@@ -20,13 +20,13 @@ const draw = (text: string, extra = '') => el(`<draw><font typeface="Mono" size=
 
 describe('measureLeaf', () => {
   it('wraps at a fixed width and grows in height', () => {
-    // 'aaaa bbbb' = 45pt; a 30pt box holds one word per line.
-    expect(measureLeaf(draw('aaaa bbbb'), { width: 30 }, faces)).toEqual({ w: 30, h: 20 });
+    // 'aaaa bbbb' = 45pt; a 30pt box holds one word per line: 1.2 x 10 + 10.
+    expect(measureLeaf(draw('aaaa bbbb'), { width: 30 }, faces)).toEqual({ w: 30, h: 22 });
     expect(measureLeaf(draw('aaaa bbbb'), { width: 100 }, faces)).toEqual({ w: 100, h: 10 });
   });
 
   it('grows in width to the longest line, breaking only at newlines', () => {
-    expect(measureLeaf(draw('aa\naaaa'), {}, faces)).toEqual({ w: 20, h: 20 });
+    expect(measureLeaf(draw('aa\naaaa'), {}, faces)).toEqual({ w: 20, h: 22 });
   });
 
   // 164g.17: a spacerun's spaces are each measured, and the break stays after them.
@@ -36,11 +36,11 @@ describe('measureLeaf', () => {
     w === undefined ? {} : { width: w }, faces);
     expect(sr(undefined)).toEqual({ w: 35, h: 10 });
     // 'aa' plus two protected spaces is 20pt; 'bb' wraps to the next line.
-    expect(sr(25)).toEqual({ w: 25, h: 20 });
+    expect(sr(25)).toEqual({ w: 25, h: 22 });
   });
 
   it('wraps a width-growable leaf at maxWidth', () => {
-    expect(measureLeaf(draw('aaaa bbbb'), { maxWidth: 30 }, faces)).toEqual({ w: 20, h: 20 });
+    expect(measureLeaf(draw('aaaa bbbb'), { maxWidth: 30 }, faces)).toEqual({ w: 20, h: 22 });
   });
 
   it('adds insets, paragraph margins, first-line indent and a caption reserve', () => {
@@ -53,21 +53,71 @@ describe('measureLeaf', () => {
     expect(measureLeaf(top, {}, faces)).toEqual({ w: 10, h: 16 });
   });
 
-  it('refuses a measured caption that states no reserve', () => {
-    const f = el('<field><ui><textEdit/></ui><font typeface="Mono"/><caption/><value><text>a</text></value></field>');
-    expect(measureLeaf(f, { width: 50 }, faces)).toMatchObject({ reason: expect.stringMatching(/caption.*reserve/) });
+  // 164g.36: a caption that states no reserve takes its MEASURED text -- one
+  // 10pt line above is 10pt (Adobe t114, t121), its own margins add, and its own
+  // font size counts. With no text it takes nothing (DD 3183).
+  it('sizes a reserve-less top caption from its text', () => {
+    const f = (cap: string) => el(`<field><ui><textEdit/></ui><font typeface="Mono" size="10pt"/>${cap}<value><text>a</text></value></field>`);
+    expect(measureLeaf(f('<caption/>'), { width: 50 }, faces)).toEqual({ w: 50, h: 10 });
+    expect(measureLeaf(f('<caption placement="top"><value><text>c</text></value></caption>'), { width: 50 }, faces))
+      .toEqual({ w: 50, h: 10 + 10 });
+    expect(measureLeaf(f('<caption placement="top"><margin topInset="2pt" bottomInset="3pt"/><value><text>c</text></value></caption>'), { width: 50 }, faces))
+      .toEqual({ w: 50, h: 2 + 10 + 3 + 10 });
+    expect(measureLeaf(f('<caption placement="top"><font typeface="Mono" size="12pt"/><value><text>c</text></value></caption>'), { width: 50 }, faces))
+      .toEqual({ w: 50, h: 12 + 10 });
+    // 'aaaa bbbb' is 45pt at 10pt Mono, so it wraps in a 30pt field: 12 + 10.
+    expect(measureLeaf(f('<caption placement="bottom"><value><text>aaaa bbbb</text></value></caption>'), { width: 30 }, faces))
+      .toEqual({ w: 30, h: 22 + 10 });
   });
 
-  it('takes the line height from the tallest face on the line, and lineHeight when greater', () => {
+  it('refuses a reserve-less caption it cannot measure', () => {
+    const f = (cap: string, box = { width: 50 }) => measureLeaf(el(`<field><ui><textEdit/></ui><font typeface="Mono"/>${cap}<value><text>a</text></value></field>`), box, faces);
+    // Beside the field it would size the WIDTH, which no probe has settled.
+    expect(f('<caption><value><text>c</text></value></caption>')).toMatchObject({ reason: expect.stringMatching(/left caption states no reserve/) });
+    // No face to wrap with: a word too wide WRAPS (t121), so no line count is known.
+    expect(f('<caption placement="top"><font typeface="Nope"/><value><text>c</text></value></caption>'))
+      .toMatchObject({ reason: expect.stringMatching(/caption states no reserve and/) });
+    // A width-growable field whose width would depend on the caption.
+    expect(f('<caption placement="top"><value><text>c</text></value></caption>', {} as never))
+      .toMatchObject({ reason: expect.stringMatching(/width depends on the caption/) });
+  });
+
+  // 164g.32, Adobe probes t111-t117: a line is measured off its font SIZE, never
+  // its face -- 'Tall' has twice Mono's ascent and changes nothing. Every line
+  // but the last steps 1.2s; the last is s.
+  it('takes the line height from the font size, not the face', () => {
     const rich = el('<draw><font typeface="Mono"/><value><exData contentType="text/html"><body>'
       + '<p>a<span style="font-family:Tall">b</span></p><p>c</p></body></exData></value></draw>');
-    expect(measureLeaf(rich, { width: 100 }, faces)).toEqual({ w: 100, h: 18 + 10 });
-    expect(measureLeaf(draw('a', '<para lineHeight="14pt"/>'), { width: 100 }, faces)).toEqual({ w: 100, h: 14 });
+    expect(measureLeaf(rich, { width: 100 }, faces)).toEqual({ w: 100, h: 12 + 10 });
+    expect(measureLeaf(draw('a\nb\nc'), { width: 100 }, faces)).toEqual({ w: 100, h: 12 + 12 + 10 });
   });
 
-  it('adds the larger of spaceBelow and spaceAbove between paragraphs only', () => {
-    const t = draw('a\nb', '<para spaceAbove="2pt" spaceBelow="5pt"/>');
-    expect(measureLeaf(t, { width: 100 }, faces)).toEqual({ w: 100, h: 10 + 5 + 10 });
+  // t115 mixA/mixB/mixC: the line's LARGEST size, and the last-line trim is the
+  // leaf's, across paragraphs.
+  it('measures a line by its largest size, trimming only the leaf\'s last line', () => {
+    const rich = (body: string) => el('<draw><font typeface="Mono" size="10pt"/><value><exData contentType="text/html">'
+      + `<body>${body}</body></exData></value></draw>`);
+    expect(measureLeaf(rich('<p>a<span style="font-size:20pt">B</span></p>'), { width: 100 }, faces)).toMatchObject({ h: 20 });
+    expect(measureLeaf(rich('<p>a<span style="font-size:20pt">B</span></p><p>c</p>'), { width: 100 }, faces)).toMatchObject({ h: 24 + 10 });
+    expect(measureLeaf(rich('<p>a</p><p style="font-size:20pt">B</p>'), { width: 100 }, faces)).toMatchObject({ h: 12 + 20 });
+  });
+
+  // t116, t117: a stated lineHeight L below 1.2s is every line's height; at or
+  // above it, a lone line is s and a longer leaf ends on 1.2s.
+  it('applies a stated lineHeight as Adobe does, on both sides of 1.2s', () => {
+    const lh = (L: number, text: string) => measureLeaf(draw(text, `<para lineHeight="${String(L)}pt"/>`), { width: 100 }, faces);
+    expect([lh(5, 'a'), lh(5, 'a\nb'), lh(5, 'a\nb\nc')].map((x) => 'h' in x && x.h)).toEqual([5, 10, 15]);
+    expect([lh(11, 'a'), lh(11, 'a\nb')].map((x) => 'h' in x && x.h)).toEqual([11, 22]);
+    expect([lh(12, 'a'), lh(12, 'a\nb'), lh(12, 'a\nb\nc')].map((x) => 'h' in x && x.h)).toEqual([10, 24, 36]);
+    expect([lh(20, 'a'), lh(20, 'a\nb'), lh(20, 'a\nb\nc')].map((x) => 'h' in x && x.h)).toEqual([10, 32, 52]);
+  });
+
+  // t116 pAb, pA1: spaceAbove and spaceBelow are SUMMED, once around the leaf --
+  // a plain newline is a line break, not a paragraph Adobe spaces apart.
+  it('adds spaceAbove before the text and spaceBelow after it, once', () => {
+    const sp = '<para spaceAbove="5pt" spaceBelow="7pt"/>';
+    expect(measureLeaf(draw('a\nb', sp), { width: 100 }, faces)).toEqual({ w: 100, h: 5 + 12 + 10 + 7 });
+    expect(measureLeaf(draw('a', sp), { width: 100 }, faces)).toEqual({ w: 100, h: 5 + 10 + 7 });
   });
 
   it('measures an empty field as one empty line in its own font', () => {

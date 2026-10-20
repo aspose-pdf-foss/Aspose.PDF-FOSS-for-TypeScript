@@ -235,10 +235,15 @@ describe('164g.7: measured layout against pdf.js, table by table', () => {
     const out = alone('SectionII[0]');
     const q1 = page1.children.find((c) => c.label === 'SectionII[0]')!.children
       .find((c) => c.label === 'Row1[0]')!.children[0];
-    const natural = measure(q1, { width: golden('OF1644[0].Page1[0].SectionII[0].Row1[0].Q1[0]').w });
+    const q1g = golden('OF1644[0].Page1[0].SectionII[0].Row1[0].Q1[0]');
+    const natural = measure(q1, { width: q1g.w });
     if ('reason' in natural) throw new Error(natural.reason);
-    expect(natural.h).toBeCloseTo(golden('OF1644[0].Page1[0].SectionII[0].Row1[0].Q1[0]').h, 1);
-    const shift = PT(5.842) - natural.h;
+    // 164g.32: pdf.js measures a line of 10pt Arial by its hhea metrics, 11.17pt;
+    // Adobe Reader, and so we, by its font size, 10pt (probes t111-t118). Our
+    // natural Q1 is shorter than pdf.js's by exactly that, asserted, not
+    // tolerated. Q1's ROW is its minH either way, so no position below moves.
+    expect(q1g.h - natural.h).toBeCloseTo((1854 + 434) / 2048 * 10 - 10, 1);
+    const shift = PT(5.842) - q1g.h;
     // The oracle's own precision: Chrome holds lengths in 1/64-px layout
     // units, so each 5.842mm row (16.5603pt) comes back 16.547pt and the loss
     // ACCUMULATES down the table -- measured at 0.013pt a row, 0.066pt five

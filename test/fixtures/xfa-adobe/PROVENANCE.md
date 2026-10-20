@@ -313,10 +313,10 @@ controls `A\nB` (`nl`) and `AB` (`one`).
 exactly `nl`, against 10pt for `one`, and the capture shows A and B on two
 lines -- though XFA 3.3 p. 56 names only the newline and U+2029.
 
-**Not a geometry golden:** t91 is outside `ADOBE_PROBES`. Reader's absolute
-heights (10pt for one line, 22pt for two) are not the hhea heights we measure
-(11.33pt, 22.66pt), a separate gap (164g.32), so
-`test/xfa-linesep.test.ts` compares the RELATIVE rule only.
+**Not a geometry golden:** t91 is outside `ADOBE_PROBES` and
+`test/xfa-linesep.test.ts` reads it alone. Since 164g.32 that test compares
+Reader's ABSOLUTE heights too (10pt for one line, 22pt for two), which the hhea
+measurement we used before (11.33pt, 22.66pt) did not match.
 
 | File | SHA-256 |
 |---|---|
@@ -469,3 +469,87 @@ termination of a one-page visit by an `only` page area inside a nested set.
 | `n8.pdf` | `80d6c524b68d0758453a441cb5090f0d200ef0fc607a5395e6614e76ed9ddeb8` |
 | `n9.pdf` | `2658950df148b81c025e8f97fe344d8e3272d6fe4075437503255bf0a25fef88` |
 | `n10.pdf` | `faa9d30c0eeb665c654fa01de5c1cbaacd4bd3b14b939bbeac185bb6b436561d` |
+
+## Line height probes (164g.32)
+
+**Producer:** as above, built with `scripts/gen-xfa-adobe-probes.ts` and run with
+`scripts/run-xfa-adobe-probe.ps1` on **2026-10-20**. Each `tN.xml` is committed,
+`tN.pdf` is the bytes Reader rendered, and `captures/tN.png` is the window Reader
+showed, its report read off by hand into `adobe.json`. Every leaf is growable
+(`minH="1pt"`) in a `tb` subform, so its height is Reader's measurement of its text.
+
+| Probe | What it varies |
+|---|---|
+| t111 | Courier New, Arial, Times New Roman and Myriad Pro, 10pt, 1-3 lines |
+| t112 | Arial and Courier New at 8, 13 and 20pt, 1-2 lines |
+| t113 | fields beside draws, and top/bottom insets, Arial and Myriad Pro |
+| t114 | growable fields with a reserve-less top caption (for 164g.36) |
+| t115 | a soft wrap, mixed sizes on one line and across paragraphs, `lineHeight`, rich `space-before`, an empty value |
+| t116 | `lineHeight` against size, `<para spaceAbove/spaceBelow>`, rich `space-after` and `margin-top` |
+| t117 | `lineHeight` 5-20pt at 10pt Arial, 1-3 lines |
+| t118, t119 | t111 and t113 without their Myriad Pro rows |
+| t120 | rich `margin-bottom` and `margin-top` together |
+
+**What Reader settled, and XFA 3.3 does not say:** a line is measured off its
+font SIZE, never its face. One line of text at size s is s tall in all four
+faces, and the leaf grows 1.2s per further line, so a box is 1.2s(n-1) + s:
+10, 22 and 34 at 10pt, 8 and 17.6 at 8pt, 20 and 44 at 20pt. A line's size is
+its LARGEST run's (t115 mixA: 10 + 20pt is 20), and only the LEAF's last line is
+trimmed to s, across paragraphs (mixB: 20pt over 10pt is 24 + 10; mixC: 12 +
+20). A stated `lineHeight` L below 1.2s is every line's height (n x L). At or
+above 1.2s a lone line is s and a longer leaf ends on 1.2s ((n-1)L + 1.2s), a
+break at exactly 1.2s that t117 sweeps on both sides. `<para>` spacing is
+SUMMED, once around the leaf, since a plain newline breaks a line and not a
+paragraph (t116: 5 + 7 = 12, for one line or two). Rich `margin-top` and
+`margin-bottom` are summed too (t120: 3 + 5), and rich `space-before` and
+`space-after` are ignored (t115, t116).
+
+**The fixture this needed:** t111 and t113 are recorded but not compared
+(`ADOBE_RECORDED`). Myriad Pro is not available here, a draw in it is refused
+for want of a face to wrap with, and a refused draw refuses its whole flow, so
+no row of those probes would place. t118 and t119 are the same content without
+those rows. Reader reported the same numbers for every row they share. t114 is
+164g.36's.
+
+**Measured:** eight mutations, each to one rule above, and each reddens at least
+one Adobe case here as well as the unit tests.
+
+| File | SHA-256 |
+|---|---|
+| `t111.pdf` | `8c53a9c5a8f6b892566bced791ab8f5270a3da2f5e4c38a7fbefc35d5973acad` |
+| `t112.pdf` | `b89ed9e4ec4ae504a38f8bf1f28a91afe9f046fa0aa8b20a983424f3bf4232ab` |
+| `t113.pdf` | `fbc2c1834dd9c8a655a458dfddd75a116dbea6d9d175f5afe07b1cf68ae85030` |
+| `t114.pdf` | `9776cb05041e530e7ea639548147726d7ed177fa9505e861515ea511c14826d8` |
+| `t115.pdf` | `6639a1870681a1744f187d93abfae02d4e9fd0794c88841d2d308564bf28b2a3` |
+| `t116.pdf` | `f404c4f9516929db2c8a21c325a6f5f73da4ff6abdfffc49a2a512e9608e2c4b` |
+| `t117.pdf` | `dd1af0620070c968788f9f9d3e17b378ee1b994a44ad5f06944aaa26b15c7b04` |
+| `t118.pdf` | `2e0d9d7d7ca691aad26ea10999657344c8c18b42f4223d91351a7ee1c6a822ad` |
+| `t119.pdf` | `e0f09eaeaf1527b587be198ae0f21a58deb4edabf233b94f11dd579d33c94c1a` |
+| `t120.pdf` | `edcbb86c1dbd152baa0a2f197e984fefbe44b4b31876bd48a15a4ebec4c7e3bf` |
+
+## Reserve-less caption probe (164g.36)
+
+**Producer:** as above, on **2026-10-20**. `t121.xml` is committed, `t121.pdf`
+is the bytes Reader rendered and `captures/t121.png` its window.
+
+| Probe | What it varies |
+|---|---|
+| t121 | top captions stating no reserve, 0.5in wide: one fitting word, three words, one 16-W word, caption margins, a 12pt caption, a fixed-height field; and the 16-W word as a draw and a field value |
+
+**What Reader settled:** a caption that states no reserve takes its text,
+measured by the 164g.32 line rule at the field's width less its insets, with its
+own margins and its own font size (capFit 8, capTwo 27.2, capMar 2 + 8 + 3,
+capBig 12). And a word too wide for its box is SPLIT between characters, not
+left to overflow: sixteen 8pt Arial W in 36pt are four lines of four, 36.8pt,
+whether caption, draw or field value. Neither is in XFA 3.3. One rule was refuted
+by this probe: the work in progress had assumed "one word, one line".
+
+**Compared:** the harness compares `dWide`, `fWide` and the oracle field
+(`only`); a captioned field's widget excludes its caption, so the six
+captioned fields are compared by `test/xfa-caption.test.ts`, widget top and
+bottom alike. t114 stays recorded: its Myriad Pro row has no face here.
+
+| File | SHA-256 |
+|---|---|
+| `t121.pdf` | `b4df0fa5483f34e545fd81f3414181bdf9e5594bc588585348f8cc43063b25ae` |
+| `t121.xml` | `1557ab609d928a971b1ae968c88b487ac4d8a752a6bd532096dfb9a824ef9d69` |

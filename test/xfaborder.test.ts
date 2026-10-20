@@ -4,7 +4,6 @@ import { parseXml } from '../src/xml.js';
 import { parseBorder, parseGeometry, widgetStyleOf } from '../src/xfaborder.js';
 
 const xml = (s: string) => parseXml(new TextEncoder().encode(s));
-const MM = 72 / 25.4;
 
 describe('parseBorder (XFA 3.3 p. 38, 629-630, 663-665, 687-689)', () => {
   it('repeats the LAST edge for the missing ones, in the order top, right, bottom, left', () => {
@@ -31,7 +30,8 @@ describe('parseBorder (XFA 3.3 p. 38, 629-630, 663-665, 687-689)', () => {
 
   it('repeats the last corner, and reads radius, join and inverted', () => {
     const b = parseBorder(xml('<border><edge/><corner radius="2mm" join="round" inverted="1"/></border>'));
-    expect(b.corners.map((c) => c.radius)).toEqual([2 * MM, 2 * MM, 2 * MM, 2 * MM]);
+    // 2mm, to the millipoint (164g.35)
+    expect(b.corners.map((c) => c.radius)).toEqual([5.669, 5.669, 5.669, 5.669]);
     expect(b.corners[3]).toMatchObject({ join: 'round', inverted: true });
   });
 

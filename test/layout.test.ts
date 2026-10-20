@@ -157,3 +157,23 @@ describe('first-line indent (m2fp.5)', () => {
     expect(got.lines.every((l) => !('indent' in l))).toBe(true);
   });
 });
+
+// 164g.36: XFA's `breakAnywhere` splits a word with NO break opportunity between
+// characters, as Adobe Reader does (probe t121: 16 W in 0.5in is four lines).
+// Off, such a word is one over-wide line, as it always was.
+describe('layoutRuns breakAnywhere', () => {
+  const run = [{ text: 'W'.repeat(10), driver: CR, fontSize: 10 }]; // Courier: 6pt a W
+  const texts = (anywhere: boolean) =>
+    layoutRuns(run, 25, 1000, 12, 10, 0, undefined, undefined, anywhere).lines.map((l) => l.text);
+  it('keeps an unbreakable word on one line by default', () => {
+    expect(texts(false)).toEqual(['WWWWWWWWWW']);
+  });
+  it('splits it before the character that overflows', () => {
+    expect(texts(true)).toEqual(['WWWW', 'WWWW', 'WW']);
+  });
+  it('still prefers a break opportunity to a character split', () => {
+    const r = [{ text: 'WW-WWWWWW', driver: CR, fontSize: 10 }];
+    expect(layoutRuns(r, 25, 1000, 12, 10, 0, undefined, undefined, true).lines.map((l) => l.text))
+      .toEqual(['WW-', 'WWWW', 'WW']);
+  });
+});

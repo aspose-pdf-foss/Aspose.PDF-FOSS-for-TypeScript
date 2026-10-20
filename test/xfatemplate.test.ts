@@ -91,6 +91,35 @@ describe('parseXfaTemplate: naming', () => {
     const t = tpl(`<subform name="form1"><field><ui><textEdit/></ui></field></subform>`);
     expect(t.fields).toEqual([]);
   });
+
+  // 164g.33: a named DRAW takes an occurrence index like any other same-named
+  // sibling. DD 3183 (2024) has <draw name="title"> before <field name="title">
+  // and Adobe writes the field title[1]; DD 3019 (2020) has <draw name="Pulses">
+  // before <subform name="Pulses"> and Adobe writes Pulses[1].
+  it('counts a same-named draw before a field', () => {
+    const t = tpl(`<subform name="form1"><draw name="title"/>
+      <field name="title"><ui><textEdit/></ui></field></subform>`);
+    expect(t.fields.map((f) => f.name)).toEqual(['form1[0].title[1]']);
+  });
+
+  it('counts a same-named draw before a subform', () => {
+    const t = tpl(`<subform name="form1"><draw name="P"/><subform name="P">
+      <field name="f"><ui><textEdit/></ui></field></subform></subform>`);
+    expect(t.fields.map((f) => [f.name, f.dataPath]))
+      .toEqual([['form1[0].P[1].f[0]', 'form1[0].P[1].f[0]']]);
+  });
+
+  it('counts a draw in the shared numbering of an unnamed container', () => {
+    const t = tpl(`<subform name="form1"><subform><draw name="t"/></subform>
+      <subform><field name="t"><ui><textEdit/></ui></field></subform></subform>`);
+    expect(t.fields[0].name).toBe('form1[0].#subform[1].t[1]');
+  });
+
+  it('gives an unnamed draw no index', () => {
+    const t = tpl(`<subform name="form1"><draw/>
+      <field name="t"><ui><textEdit/></ui></field></subform>`);
+    expect(t.fields[0].name).toBe('form1[0].t[0]');
+  });
 });
 
 describe('parseXfaTemplate: UI kinds', () => {
@@ -238,6 +267,23 @@ describe('parseXfaTemplate: exclGroup', () => {
       .toEqual(['f[0].colour[0].red[0]', 'f[0].colour[0].green[0]']);
     expect(t.fields.every((f) => f.group === 'f[0].colour[0]')).toBe(true);
     expect(t.fields.map((f) => f.onState)).toEqual(['R', 'G']);
+  });
+
+  // 164g.33: DD 3183 (2023) writes its radio lists with UNNAMED members. Adobe
+  // writes the group and gives its widgets no name; dropping the members lost
+  // the whole group with nothing reported. A member is addressed by its SOM
+  // class reference, which no AcroForm name ever carries.
+  it('keeps an unnamed member, addressed by #field[k]', () => {
+    const t = tpl(`<subform name="f"><exclGroup name="g">
+      <field><ui><checkButton/></ui><items><text>A</text></items></field>
+      <field name="b"><ui><checkButton/></ui><items><text>B</text></items></field>
+      <field><ui><checkButton/></ui><items><text>C</text></items></field>
+      </exclGroup></subform>`);
+    expect(t.fields.map((f) => [f.name, f.group, f.onState])).toEqual([
+      ['f[0].g[0].#field[0]', 'f[0].g[0]', 'A'],
+      ['f[0].g[0].b[0]', 'f[0].g[0]', 'B'],
+      ['f[0].g[0].#field[2]', 'f[0].g[0]', 'C'],
+    ]);
   });
 });
 

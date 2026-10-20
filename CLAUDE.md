@@ -10685,6 +10685,20 @@ Source (`src/`):
   that is exactly why it must not ship on recall. A refused unit degrades the
   field and is reported. **Do not "fix" this from memory**; only a transcription
   with the clause cited beside the constant may add one.
+  **Invariant (`164g.35`): every measurement is rounded to a whole MILLIPOINT**
+  in `measureToPt`, because Adobe lays out in them. Designer's own
+  `renderCache.bounds` are integer millipoints, each measurement rounded before
+  the arithmetic: DD 3218's `534326` = 540000 − 2 × 2837, and 1.0008mm =
+  2.83691pt → 2837 is ROUNDING, not truncation. Left in floating point, the
+  loss of each stated height accumulated down a flow (DD 3218: 0.0145pt by the
+  page foot, 55 fields past the 0.01 bound). With it, every vendored form agrees
+  with Adobe to Adobe's own 0.0005 output rounding.
+  **Note, measured:** exact conversion reddens 10 cases and truncation 12, every
+  real form among them, through `xfa-real.test.ts`'s 0.0005 sweep. The 0.01
+  bound the older oracle blocks use CANNOT see either: DD 2952 sat at 0.0024
+  inside it. Font metrics are NOT quantized, since no oracle says Adobe does.
+  **Note:** six left-captioned DD 3019 fields stay 0.001pt off, and no rule over
+  the measurements fits them (`164g.38`).
   **Invariant: the medium must agree with the page.** Before any field on a page
   is given a rect, the `<pageArea>`'s declared `<medium>` is compared against
   that page's CropBox — `orientation="landscape"` swapping short and long — and
@@ -10732,6 +10746,23 @@ Source (`src/`):
   Adobe numbers I-130's unnamed areas 4..8 across the document, and I-765's
   `#area[1]` follows a NAMED area. f1040 and fw9 name every container, which
   is why they agreed with the old rule. All five rules are mutation-checked.
+  **Invariant (`164g.33`):** a NAMED `<draw>` takes an occurrence index like
+  any same-named sibling, so a field or subform after it is `name[1]` (DD
+  3183's `title`, DD 3019's `Pulses`). It counts in the same shared scope an
+  unnamed container uses, and an UNNAMED draw takes none.
+  **Invariant (`164g.33`):** an unnamed MEMBER of an `<exclGroup>` is kept,
+  addressed internally by its SOM class reference `#field[k]`. Adobe writes the
+  group and leaves its widget kids unnamed, so that address reaches no
+  AcroForm name. An unnamed field OUTSIDE a group is still dropped. Dropped,
+  the member took the whole group with it, with nothing reported.
+  **Note, measured, and the name check CANNOT see the member rule:** a member
+  left on its group's own path spells the group's name, so every name still
+  matches. Only `xfa-real.test.ts`'s rect and `/Opt` cases redden.
+  **Note:** the scan that found these read OLDER revisions. Every current
+  revision of both forms already matched, which is why the older ones are the
+  vendored ones. Adobe writes those radio groups with `/Opt` and index state
+  names, where we name a state by its export value. The values agree widget by
+  widget, so that difference is representation and is filed rather than fixed.
   **Invariant (`d3mq`, part 1):** a field on a MASTER page is read into
   `XfaTemplate.masterPageFields`, NEVER `fields`, and is REPORTED in `skipped`
   without being created. Its own refusal reason is used first, so a
@@ -10978,8 +11009,10 @@ Source (`src/`):
   **Invariant (`17vo`), and the HORIZONTAL half is MEASURED rather than
   derived — it is not one default but TWO:** no field in either form states
   `hAlign`, so every observed case is the default, and a caption on the RIGHT
-  puts the button flush LEFT while a caption on the left — or none at all —
-  puts it flush RIGHT. What settles it is fw9, a form we do not even PLACE
+  puts the button flush LEFT while NO caption puts it flush RIGHT. (This read
+  "a caption on the left — or none at all" until `164g.34`: fw9 had no left
+  caption, and a LEFT caption that reserves space is flush LEFT, beside it.)
+  What settles it is fw9, a form we do not even PLACE
   (its `pageArea` count cannot be matched) but whose Adobe rects are still in
   its `/AcroForm`: three of its buttons share `x="14.4"` and all three rects
   begin at exactly 73.0, and of the four pairings only this one makes a
@@ -10992,10 +11025,18 @@ Source (`src/`):
   `<caption>` — `c1_1` carries both and they are free to disagree. Same
   direct-child rule the margin follows; measured, reading the caption's
   reddens 2.
+  **Invariant (`164g.34`):** a LEFT caption that reserves space puts the button
+  flush LEFT, beside it. DoD DD 3207's `yes`/`no` and DD 3019's `DPL` are the
+  corpus's only three such buttons, and Adobe places all three flush left, 3.9,
+  39.4 and 7.9pt left of where the old default put them; across every vendored
+  form 301 caption-less buttons are flush right and 984 right-captioned ones
+  flush left. "Reserves space" is `captionReservesSpace`, which `applyCaption`
+  asks too, so the edit region and the alignment cannot disagree about whether
+  a caption is there.
   **Note what the corpus does NOT contain, so these are unmeasured:** a stated
   `hAlign` (honoured, and it outranks the default), a caption placed `top` or
-  `bottom`, and a LEFT caption with a non-zero reserve. The last two fall under
-  the `right` default by the same rule.
+  `bottom`, and a LEFT caption that reserves NOTHING (zero, or hidden). Those
+  keep the caption-less `right` default.
   **Note, measured, and it was a redundant defence until the test was fixed:**
   `buttonSize` is read only for a `checkButton` ui, AND `xfaconvert.ts` calls
   `buttonBox` only for that kind — so breaking either alone proves nothing.
@@ -11060,10 +11101,24 @@ Source (`src/`):
   bold and is overruled by the normative syntax). Rich text follows ch. 27, where
   an UNRECOGNISED element is dropped with its content (p. 1187), unlike
   `richtext.ts`'s transparent rule for `/RC`. `xfatext.ts` (pure) measures one
-  at a box: lines broken by `layoutRuns`, the ONE wrapping engine; line height
-  the tallest hhea box on the line (p. 61), read as hhea ascender minus
-  descender, which pdf.js corroborates (10pt Arial = 11.17pt; the `head` bbox
-  would give 13.3). `xfafont.ts` holds the `Document` and resolves a run's face
+  at a box: lines broken by `layoutRuns`, the ONE wrapping engine. Line height
+  was the tallest hhea box on the line (p. 61) until `164g.32`, which is what
+  pdf.js measures (10pt Arial = 11.17pt) and NOT what Adobe Reader does.
+  **Invariant (`164g.32`):** a line is measured off its font SIZE, never its
+  face (Adobe probes t111-t120, four faces, 8-20pt). Every line but the LEAF's
+  last steps 1.2s, s being the line's largest run size, and the last is s, so a
+  box is 1.2s(n-1) + s. A stated `lineHeight` L below 1.2s is every line's
+  height; at or above it a lone line is s and a longer leaf ends on 1.2s --
+  measured on both sides of the break, not derived. `<para>` spacing is SUMMED,
+  once around the leaf: a plain newline breaks a line, not a paragraph, so
+  `plainParas` puts spaceAbove on its first record and spaceBelow on its last.
+  Rich `margin-top`/`margin-bottom` are summed between `<p>`s; rich
+  `space-before`/`space-after` are IGNORED, as Reader ignores them. The face
+  still decides where a line breaks, and a baseline still sits one hhea ascent
+  below its line's top, which `xfa.layout` cannot observe.
+  **Note, measured:** eight mutations, one per rule, each redden an Adobe case.
+  OPM 1644's pdf.js oracle pins the divergence instead: our natural Q1 is
+  pdf.js's less exactly 11.17 - 10. `xfafont.ts` holds the `Document` and resolves a run's face
   in three tiers: embedded programs by their OWN `name` table, registered
   folders (`Document.registeredFontFaces`, parsed without `AddFont`, so a
   lookup changes nothing -- pinned through the sign path), then a CLOSED table
@@ -11084,8 +11139,8 @@ Source (`src/`):
   (probe t91: as tall as `A\nB`), and so does pdf.js. Left in a run it was
   refused for face coverage. **Note, measured:** making it a PARAGRAPH break
   in rich text renders identically unless the `<p>` states spacing, so only a
-  unit case counting paragraphs holds it; t91 compares the relative rule
-  alone, Reader's absolute line heights being 164g.32's.
+  unit case counting paragraphs holds it; t91 compared the relative rule
+  alone until `164g.32` made our absolute heights Reader's (10 and 22).
   **Invariant (`164g.17`):** an `xfa-spacerun:yes` span keeps every space
   but the LAST of each run as U+00A0, `preformat.ts`'s substitution, a run
   begun by a trailing space in the run before included — `layoutRuns`
@@ -11098,6 +11153,19 @@ Source (`src/`):
   space's width, so the oracle cannot see the `metricsOf` mapping; a minimal
   TTF with no U+00A0 in `test/xfafont.test.ts` is what holds it. All four
   halves redden alone.
+  **Invariant (`164g.36`):** a `<caption>` stating NO reserve takes its
+  TEXT, measured at the field's width less its insets with its own margins and
+  size (`xfatext.ts`'s `resolveCaption`, the ONE owner the widget box,
+  `measureLeaf` and the painted caption all ask). No text takes nothing (DD
+  3183). Beside the field it would set the WIDTH, which no probe settled, and an
+  unresolved face cannot count lines, so both REFUSE by name -- DD 3019's
+  Myriad Pro LFT row, 8pt too high before, is now refused. A push button is
+  exempt: its caption is its face. Adobe t121 (`test/xfa-caption.test.ts`).
+  **Invariant (`164g.36`):** XFA text passes `layoutRuns`' `breakAnywhere`,
+  so a word with NO break opportunity wider than its box splits before the
+  character that overflows, opportunities first (t121: 16 W in 0.5in is four
+  lines). Its width is summed per code point, linear in the piece; off, nothing
+  in `breakOverwideWord`'s new branch runs, so every other caller is unchanged.
   **Invariant:** `xfaflow.ts` takes the measurer as a CALLBACK
   (`layoutPage(root, measure?, warnings?)`) and stays a pure leaf; without one,
   every leaf that needs it refuses exactly as `164g.1` did. `min*`/`max*` are
@@ -11117,8 +11185,9 @@ Source (`src/`):
   0.003pt wider than its cell by mm rounding alone. Tables now resolve widths
   BEFORE measuring cell heights, since a height-growable cell's height depends on
   its column.
-  **Note, measured:** three mutations each redden the oracle -- typo metrics
-  for hhea, the `minH` floor dropped, and the old p. 329 refusal restored.
+  **Note, measured:** three mutations each reddened the oracle -- typo metrics
+  for hhea (moot since `164g.32` measures by size), the `minH` floor dropped,
+  and the old p. 329 refusal restored.
   **Invariant (`164g.1`):** `xfaflow.ts` is the ONE layout engine, and
   `position` is a case of it -- a positioned field and a flowed one cannot be
   placed by two rules. It is a pure leaf over `xfageom.js` and never throws;
@@ -11524,8 +11593,8 @@ Source (`src/`):
   `xfageom.js` that never throws.
   **Invariant:** lines sit on a `1.2 x font size` grid from the field's top,
   WHATEVER THE FACE (t45 Courier New and t50 Arial at 12pt for 10pt, t51 24pt
-  at 20pt). Our own measured line height, hhea's, is not that grid, and using
-  it moves every cut inside text by a line in a few.
+  at 20pt). Since `164g.32` our measured line height IS that grid -- the same
+  1.2s step, which leaf growth and field splitting now share.
   **Invariant:** inside the text the cut snaps down to a whole line, at least
   one; below the text, or in an empty field, it is free (t54). There is NO
   orphan or widow control (t52 keeps one line, t53 carries one).
@@ -13087,8 +13156,8 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
 | `fixtures/xfa-dynamic/` | `PROVENANCE.md` | OPM Form 1644, the one genuinely **dynamic** XFA form found among ~110 OPM and other federal forms (Designer 8.0, `/NeedsRendering`, no AcroForm; US federal work), plus **pdf.js 6.3.289**'s XFA layout of it rendered in headless Chrome (`npm run gen:xfa`, not run by `npm test`). Three variants: as published, data-driven `<occur>` rows, and a page subform repeated across page breaks. Pins pdf.js's SOM naming equal to ours; our engine places none of it yet, so its agreement check waits on `164g.2`/`.3`/`.7`. Since `d3mq`, DoD DD 2875 and DD 1494 too, whose master-page layouts are checked against pdf.js on 3 and 14 pages (`master-goldens.json`; since `bkdi` DD 2875's body converts on pdf.js's 3 pages, unchecked, and since `164g.8` DD 1494's body is compared too, 14 pages field by field). pdf.js is a reimplementation: evidence, not Adobe conformance (`test/xfa-dynamic-oracle.test.ts`, `test/xfa-master-oracle.test.ts`) |
-| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). Since `164g.3` fw9 and the USCIS I-130/I-765 paginate onto all of Adobe's pages and rects (one `<pageArea>` reused for 6, 12 and 7 pages), which also found the 10pt check-button default. A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. Since `d3mq`, DoD DD 1391 and DD 1155 (also Designer 6.5): the only FILLABLE master-page fields found in 92 federal forms, every one landing on Adobe's name and rect. Since `164g.10`, DoD DD 2952, three pages on three page areas reached by `breakBefore targetType="pageArea"`, fetched through the Wayback Machine because the DoD site refuses scripts: all 53 fields on Adobe's page and rect, and the master Reset named per PAGE AREA (`Page2[0]` on page 2). Since `164g.24`, DoD DD 350 (Designer 6.4), found by scanning 1,219 archived DD forms: four pages of ONE page area, its master Reset CREATED as `Page1[0]`..`Page1[3]` on Adobe's rect each time -- the only real bytes with a repeated master instance that is created rather than refused. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
-| `fixtures/xfa-adobe/` | `PROVENANCE.md` | 93 dynamic XFA probes laid out by **Adobe Acrobat Reader 26.1** itself, each reporting Adobe's `xfa.layout` page and box for every node into a field on page 1, transcribed by hand from window captures into `adobe.json` (Reader will not save them). The oracle for splitting a positioned subform (164g.11): it showed Adobe splits one only under `keep intact="none"`, contrary to XFA 3.3's default, and pinned the split-consensus rules; 16 probes land every field on Adobe's page and box and 8 are refused by name. pdf.js cannot serve here -- it never splits a positioned subform. Since `164g.13`, 15 more (t40-t54) settled where Reader cuts a field between its lines -- a 1.2 x font size grid, a free cut below the text, a one-font-size floor moved by, not to -- and turned nine refused probes into matches. Since `164g.12`, 13 more (t27-t39) settled how an `lr-tb` splits between items and a table between rows -- per item, never per line, rows whole, whole-table column widths -- and that every fragment carries both margins, overruling 164g.8; 10 land every field and draw on Reader's page and box and 3 are refused naming 164g.13. Since `164g.14`, 18 more (t55-t72) settled adhesion and keep intact="pageArea" -- a chain moves together, a splittable next needs only its first piece, a pair that cannot fit an empty area runs past rather than moving, and a flowed pageArea splits like none, overruling p. 291 and p. 312. Since `164g.15`, 18 more (t73-t90) settled leaders and trailers -- every copy a new form instance, an absent occur one copy, a list counted per entry, the trailer reserved in every fit, a break trailer before the break and its leader after, and a template-level `<proto>` ignored -- overruling p. 315-316 and p. 322-323; all 18 land every field and draw on Reader's page and box. Since `164g.16`, t92-t95 settled a `breakAfter` inside a split subform -- it takes effect before what follows, and a trailing one still makes a page -- and t91 (`164g.23`) that U+2028 breaks the line, compared by its relative rule alone. Since `164g.9`, 15 qualified-pagination probes (q1-q15) report each page's page area too; they settled four rules XFA 3.3 contradicts or leaves open, and pdf.js cannot serve there either, starting every form on its first page area (`test/xfa-adobe-qualified-oracle.test.ts`). One producer, one version (`test/xfa-adobe-oracle.test.ts`) |
+| `fixtures/xfa/` | `PROVENANCE.md` | Hybrid XFA forms from **Adobe LiveCycle Designer 6.5** (IRS f1040 and fw9, US federal works). Since `164g.3` fw9 and the USCIS I-130/I-765 paginate onto all of Adobe's pages and rects (one `<pageArea>` reused for 6, 12 and 7 pages), which also found the 10pt check-button default. A static XFA form carries TWO independent descriptions of one field set — the template, and the `/AcroForm` LiveCycle generated from it — so `test/xfa-real.test.ts` strips `/AcroForm /Fields` in a copy, converts from the template ALONE, and compares names and RECTS against what Adobe wrote. It found the `<caption>` reserve rule the design had missed (worst rect error 229pt → 12pt) and confirmed where the layout chain begins, which no hand-built fixture could. Beside them, two USCIS hybrids (I-130, I-765), kept because they made conversion THROW (`cb07`): a repeated and an empty option, and an empty datum on a choice list. Since `d3mq`, DoD DD 1391 and DD 1155 (also Designer 6.5): the only FILLABLE master-page fields found in 92 federal forms, every one landing on Adobe's name and rect. Since `164g.10`, DoD DD 2952, three pages on three page areas reached by `breakBefore targetType="pageArea"`, fetched through the Wayback Machine because the DoD site refuses scripts: all 53 fields on Adobe's page and rect, and the master Reset named per PAGE AREA (`Page2[0]` on page 2). Since `164g.24`, DoD DD 350 (Designer 6.4), found by scanning 1,219 archived DD forms: four pages of ONE page area, its master Reset CREATED as `Page1[0]`..`Page1[3]` on Adobe's rect each time -- the only real bytes with a repeated master instance that is created rather than refused. Since `164g.33`, older revisions of DD 3183 (Designer 6.4) and DD 3019 (LiveCycle Designer 11.0), the only real bytes where a `<draw>` shares a field's or subform's name, so Adobe numbers the field after it `[1]`, and where an `<exclGroup>` has unnamed members; every name and radio export is Adobe's, and 8 DD 3019 rects are pinned as `164g.36`. Since `164g.35`, DoD DD 3218 (Designer 6.5), whose long flows of stated mm heights drifted 0.0145pt from Adobe until measurements were rounded to the millipoint, as Adobe's own `renderCache.bounds` show; it pins every vendored form to Adobe's 0.0005 output rounding. Since `164g.34`, DoD DD 3207 (Designer 6.4), holding two of the corpus's three check buttons beside a left caption that reserves space -- flush LEFT, which corrected 17vo's reading of the caption-less default. One producer, so evidence rather than conformance (`test/xfa-real.test.ts`) |
+| `fixtures/xfa-adobe/` | `PROVENANCE.md` | 93 dynamic XFA probes laid out by **Adobe Acrobat Reader 26.1** itself, each reporting Adobe's `xfa.layout` page and box for every node into a field on page 1, transcribed by hand from window captures into `adobe.json` (Reader will not save them). The oracle for splitting a positioned subform (164g.11): it showed Adobe splits one only under `keep intact="none"`, contrary to XFA 3.3's default, and pinned the split-consensus rules; 16 probes land every field on Adobe's page and box and 8 are refused by name. pdf.js cannot serve here -- it never splits a positioned subform. Since `164g.13`, 15 more (t40-t54) settled where Reader cuts a field between its lines -- a 1.2 x font size grid, a free cut below the text, a one-font-size floor moved by, not to -- and turned nine refused probes into matches. Since `164g.12`, 13 more (t27-t39) settled how an `lr-tb` splits between items and a table between rows -- per item, never per line, rows whole, whole-table column widths -- and that every fragment carries both margins, overruling 164g.8; 10 land every field and draw on Reader's page and box and 3 are refused naming 164g.13. Since `164g.14`, 18 more (t55-t72) settled adhesion and keep intact="pageArea" -- a chain moves together, a splittable next needs only its first piece, a pair that cannot fit an empty area runs past rather than moving, and a flowed pageArea splits like none, overruling p. 291 and p. 312. Since `164g.15`, 18 more (t73-t90) settled leaders and trailers -- every copy a new form instance, an absent occur one copy, a list counted per entry, the trailer reserved in every fit, a break trailer before the break and its leader after, and a template-level `<proto>` ignored -- overruling p. 315-316 and p. 322-323; all 18 land every field and draw on Reader's page and box. Since `164g.16`, t92-t95 settled a `breakAfter` inside a split subform -- it takes effect before what follows, and a trailing one still makes a page -- and t91 (`164g.23`) that U+2028 breaks the line, compared by its relative rule alone. Since `164g.9`, 15 qualified-pagination probes (q1-q15) report each page's page area too; they settled four rules XFA 3.3 contradicts or leaves open, and pdf.js cannot serve there either, starting every form on its first page area (`test/xfa-adobe-qualified-oracle.test.ts`). Since `164g.32`, t111-t120 (10 more) settle how tall a line of text is -- by font SIZE, never the face, 1.2s(n-1) + s, with a measured two-branch rule for a stated `lineHeight` -- which 164g.7 had read as hhea, pdf.js's answer; t111, t113 and t114 are recorded but not compared (Myriad Pro rows, and 164g.36's captions). One producer, one version (`test/xfa-adobe-oracle.test.ts`) |
 | `fixtures/xfdf/` | `README.md` | Acrobat's own XFDF appearance encoding |
 | `fixtures/xmp/` | `PROVENANCE.md` | An XMP packet written by **Adobe XMP Core 9.1**, vendored byte for byte from the `TutorialSample.pdf` that Acrobat Reader installs: an `xmpMM:History` Seq of three `parseType="Resource"` structs, a `DerivedFrom` struct, a `dc:title` language alternative and an empty `rdf:Bag`. It is the only Seq-of-structs packet we did not write. There is one producer, and it has no nested-Description or attribute-form struct. Beside it, `calibre-identifiers.xmp` is **calibre 7.26**'s `xmp:Identifier` Bag qualified by `xmpidq:Scheme`, written qualifier-first (`test/xmprdf-real.test.ts`) |
 | `fixtures/unicode/` | — | UAX #9 / #14 conformance data from Unicode |

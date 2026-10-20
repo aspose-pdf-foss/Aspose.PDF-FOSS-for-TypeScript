@@ -13,7 +13,7 @@
  * elements.
  */
 import type { XmlNode } from './xml.js';
-import { captionText, leafText } from './xfarich.js';
+import { captionText, leafText, type LeafText } from './xfarich.js';
 import { parseBorder, parseGeometry, type NodeChrome, type XfaBorder } from './xfaborder.js';
 import type { XfaCaption, XfaMargin, XfaMedium, XfaRawGeom } from './xfageom.js';
 import type {
@@ -90,6 +90,9 @@ export interface XfaField {
    *  exactly 88pt. Ignore it and every captioned field is drawn far too wide,
    *  overlapping its own label. */
   caption?: { reserve?: string; placement?: string; presence?: string };
+  /** A caption that states NO reserve, as text: the widget is placed below its
+   *  MEASURED height (164g.36, `resolveCaption`). Absent when it states one. */
+  captionLeaf?: LeafText;
   /** The field's OWN `<margin>` insets, verbatim.
    *
    *  The widget is inset by these on top of the caption reserve. Measured over
@@ -227,7 +230,9 @@ function positiveInt(s: string | undefined): number | undefined {
 
 /** One `<field>` to the model, or `undefined` when it has no name -- an
  *  unnamed field has no SOM path, so there is nothing to call it in an
- *  AcroForm and inventing one would break the hybrid name equality. */
+ *  AcroForm and inventing one would break the hybrid name equality. The one
+ *  exception is a radio MEMBER (164g.33), whose AcroForm name is its group's:
+ *  the walk hands it a `#field[k]` path, which is internal only. */
 /** An element's OWN `<margin>` insets, absent ones omitted. `child` searches
  *  DIRECT children only, which is what keeps the `<ui><textEdit><margin>` a
  *  real LiveCycle field also carries out of it -- reading that one instead
@@ -286,7 +291,7 @@ function fieldOf(
   el: XmlNode, path: readonly string[], dpath: readonly string[], group: GroupPaths | undefined,
 ): XfaField | undefined {
   const partial = el.attrs.get('name');
-  if (partial === undefined || partial === '') return undefined;
+  if ((partial === undefined || partial === '') && group === undefined) return undefined;
 
   const uiEl = child(el, 'ui');
   const uiChild = uiEl?.children[0];
@@ -343,6 +348,9 @@ function fieldOf(
     dataName: partial,
     ...(group?.global ? { groupGlobal: true as const } : {}),
     ...(caption ? { caption } : {}),
+    // A push button's caption is its FACE, drawn inside the widget (/MK /CA),
+    // never a region beside it, so it takes nothing from the box.
+    ...(caption && caption.reserve === undefined && ui !== 'button' && captionText(el) ? { captionLeaf: captionText(el)! } : {}),
     ...(margin ? { margin } : {}),
     ...(buttonSize !== undefined ? { buttonSize } : {}),
     ...(buttonCaption !== undefined ? { buttonCaption } : {}),
@@ -854,6 +862,10 @@ function walk(
       continue;
     }
     if (c.name === 'draw') {
+      // 164g.33: a named draw takes an occurrence index like any same-named
+      // sibling, so a field or subform after it is `name[1]` (DD 3183's
+      // `title`, DD 3019's `Pulses`). It has no SOM name of its own to keep.
+      if (partial !== undefined && partial !== '') indexed(partial);
       if (parent) {
         parent.children.push(
           nodeOf(c, 'draw', partial === undefined || partial === '' ? '<draw>' : partial),
@@ -862,9 +874,15 @@ function walk(
       continue;
     }
     if (c.name === 'field') {
-      const sub = partial === undefined || partial === ''
-        ? path : [...path, indexed(partial)];
-      const dsub = sub === path ? dpath : [...dpath, sub[sub.length - 1]];
+      const unnamed = partial === undefined || partial === '';
+      // 164g.33: an unnamed MEMBER of an <exclGroup> is kept, addressed by its
+      // SOM class reference. Adobe writes the group and leaves its widgets
+      // unnamed, so this address reaches no AcroForm name; dropped, it took the
+      // whole group with it (DD 3183, 2023). Outside a group an unnamed field
+      // still has nothing to be called.
+      const sub = !unnamed ? [...path, indexed(partial)]
+        : group !== undefined ? [...path, `#field[${String(nth)}]`] : path;
+      const dsub = unnamed ? dpath : [...dpath, sub[sub.length - 1]];
       const f = fieldOf(c, sub, dsub, group);
       if (f) {
         f.layouts = [...ctx.layouts];

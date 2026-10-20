@@ -32,7 +32,18 @@ const MEASURE = /^\s*([+-]?(?:\d+\.?\d*|\.\d+))\s*([A-Za-z]*)\s*$/;
 
 /** An XFA measurement in points, or `undefined` when it cannot be read for
  *  certain -- junk, or a unit we decline to guess at. A bare number is points,
- *  which is XFA's own default unit. */
+ *  which is XFA's own default unit.
+ *
+ *  **Rounded to a whole MILLIPOINT, because Adobe lays out in them (164g.35).**
+ *  Designer's own `renderCache.bounds` processing instructions are integer
+ *  millipoints, each measurement rounded BEFORE the arithmetic: on DD 3218 a
+ *  190.5mm draw with 1.0008mm side insets is `534326` = 540000 - 2 x 2837,
+ *  and 2.83691pt -> 2837 is ROUNDING (truncation gives 2836). Left in floating
+ *  point, the loss of each stated height accumulated down a flow -- 0.0145pt
+ *  by the foot of a DD 3218 page, past the 0.01 bound on 55 fields -- and with
+ *  it every vendored form's worst residual falls to Adobe's own 0.0005 output
+ *  rounding. Half-way values round toward +infinity (`Math.round`); no oracle
+ *  separates that from Adobe's tie rule. */
 export function measureToPt(s: string | undefined): number | undefined {
   if (typeof s !== 'string') return undefined;
   const m = MEASURE.exec(s);
@@ -41,7 +52,7 @@ export function measureToPt(s: string | undefined): number | undefined {
   if (!Number.isFinite(v)) return undefined;
   const unit = m[2] === '' ? 'pt' : m[2].toLowerCase();
   const scale = UNIT_PT[unit];
-  return scale === undefined ? undefined : v * scale;
+  return scale === undefined ? undefined : Math.round(v * scale * 1000) / 1000;
 }
 
 export type XfaAnchor =
@@ -186,6 +197,17 @@ const CAPTION_EDGE: Record<string, 'left' | 'right' | 'top' | 'bottom'> = {
  * `presence="hidden"` means the caption occupies no space, so it eats nothing;
  * `invisible` is undrawn but still reserved, so it does.
  */
+/** Does this caption take space from its field? A hidden one, one stating no
+ *  reserve and one reserving nothing do not. ONE owner, read by `applyCaption`
+ *  and by a check button's alignment (164g.34), so the two cannot disagree
+ *  about whether a caption is there. An unreadable reserve answers false; the
+ *  edit region refuses it on its own. */
+export function captionReservesSpace(cap: XfaCaption | undefined): boolean {
+  if (!cap || cap.presence === 'hidden' || cap.reserve === undefined) return false;
+  const r = measureToPt(cap.reserve);
+  return r !== undefined && r > 0;
+}
+
 function applyCaption(box: XfaBox, cap: XfaCaption | undefined): XfaBox | { reason: string } {
   if (!cap) return box;
   if (cap.presence === 'hidden') return box;
@@ -193,7 +215,7 @@ function applyCaption(box: XfaBox, cap: XfaCaption | undefined): XfaBox | { reas
   const r = measureToPt(cap.reserve);
   if (r === undefined)
     return { reason: `caption reserve="${cap.reserve}" could not be read as a measurement` };
-  if (r <= 0) return box;
+  if (!captionReservesSpace(cap)) return box;
 
   const edge = CAPTION_EDGE[cap.placement ?? 'left'];
   if (edge === undefined)
@@ -271,6 +293,8 @@ export interface XfaButtonSpec {
   hAlign?: string;
   vAlign?: string;
   captionPlacement?: string;
+  /** The caption takes space from the field (`captionReservesSpace`). */
+  captionReserves?: boolean;
 }
 
 /**
@@ -292,9 +316,15 @@ export interface XfaButtonSpec {
  * reproduces all 8 of that form's buttons on both axes from one page origin.
  * A stated `hAlign` outranks it, which no vendored field exercises.
  *
+ * **A LEFT caption that reserves space puts it flush LEFT (164g.34)**, beside
+ * the caption -- which the rule above, read for "a caption on the left", got
+ * backwards: fw9's left-side cases had no caption at all. DoD DD 3207's yes/no
+ * and DD 3019's DPL are the corpus's only three such buttons, and Adobe places
+ * all three flush left, 3.9, 39.4 and 7.9pt left of where `right` put them.
+ *
  * **Note what the corpus does NOT contain:** a caption placed `top` or
- * `bottom`, and a LEFT caption with a non-zero reserve. Both fall under the
- * `right` default here by the same rule, unmeasured.
+ * `bottom`, and a left caption that reserves nothing (zero, or hidden). They
+ * keep the caption-less `right` default, unmeasured.
  *
  * Vertical placement is the field `<para vAlign>`, and both non-default values
  * are in the corpus -- f1040's `c1_1` is `bottom`, everything else `middle`.
@@ -316,7 +346,12 @@ export function buttonBox(
   const w = Math.min(s, edit.w);
   const h = Math.min(s, edit.h);
 
-  const hAlign = b.hAlign ?? (b.captionPlacement === 'right' ? 'left' : 'right');
+  // A right caption, or a LEFT one that reserves space (164g.34), puts the
+  // button flush left; no caption puts it flush right. Top, bottom and a left
+  // caption reserving nothing are unmeasured and keep the caption-less answer.
+  const placement = b.captionPlacement ?? 'left';
+  const flushLeft = placement === 'right' || (placement === 'left' && b.captionReserves === true);
+  const hAlign = b.hAlign ?? (flushLeft ? 'left' : 'right');
   const vAlign = b.vAlign ?? 'top';
   const dx = hAlign === 'center' ? (edit.w - w) / 2
     : hAlign === 'right' ? edit.w - w : 0;
