@@ -1,0 +1,10 @@
+<pageSet>
+  <pageArea name="P1" id="P1"><medium short="8.5in" long="11in" stock="letter"/><contentArea name="C1" id="C1" x="0.5in" y="0.5in" w="7.5in" h="5in"/><contentArea name="C2" id="C2" x="0.5in" y="6in" w="7.5in" h="3in"/><draw name="markP1" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-P1</text></value></draw></pageArea>
+  <pageArea name="P2" id="P2"><medium short="8.5in" long="11in" stock="letter"/><contentArea name="F" id="F" x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markP2" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-P2</text></value></draw></pageArea>
+</pageSet>
+<overflow target="#C1"/> <!-- root -->
+<draw name="a" w="2in" h="100pt"><value><text>a</text></value></draw>
+<field name="D" w="2in" h="200pt"><ui><textEdit multiLine="1"/></ui></field>
+<draw name="e1" w="2in" h="72pt"><value><text>e1</text></value></draw>
+<draw name="e2" w="2in" h="72pt"><value><text>e2</text></value></draw>
+<draw name="e3" w="2in" h="72pt"><value><text>e3</text></value></draw>

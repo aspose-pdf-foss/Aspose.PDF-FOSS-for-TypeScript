@@ -6,7 +6,7 @@ import { LoadLimits } from './loadlimits.js';
 import { Metadata, MetadataUpdate } from './metadata.js';
 import { ImageOptions } from './raster.js';
 import { imageExtension, imageKey, type SaveImageOptions } from './imagehref.js';
-import type { ExportFormDataOptions, ImportOptions, ImportReport } from './formdata.js';
+import type { ExportFormDataOptions, ExportJsonOptions, ImportOptions, ImportReport } from './formdata.js';
 import type { MarkdownExportOptions } from './mdexport.js';
 import type { DocxOptions } from './docxexport.js';
 import { parseHtmlBytes } from './htmltree.js';
@@ -219,6 +219,30 @@ export async function exportXfdfFile(
 ): Promise<void> {
   const doc = Document.Open(await readPdfFile(pdfPath));
   await writeFile(xfdfPath, doc.ExportXfdf(options));
+}
+
+/** Read a PDF from disk and write its form-field values to `jsonPath` as JSON
+ *  (UTF-8). See `Document.ExportJson`. */
+export async function exportJsonFile(
+  pdfPath: string,
+  jsonPath: string,
+  options?: ExportJsonOptions,
+): Promise<void> {
+  const doc = Document.Open(await readPdfFile(pdfPath));
+  await writeFile(jsonPath, doc.ExportJson(options), 'utf8');
+}
+
+/** Import JSON field values into a PDF on disk. Writes to `outPath`, which
+ *  defaults to `pdfPath` (in-place rewrite). See `Document.ImportJson`. */
+export async function importJsonFile(
+  pdfPath: string,
+  jsonPath: string,
+  outPath = pdfPath,
+): Promise<ImportReport> {
+  const doc = Document.Open(await readPdfFile(pdfPath));
+  const report = doc.ImportJson(new Uint8Array(await readFile(jsonPath)));
+  await writeFile(outPath, doc.Save());
+  return report;
 }
 
 /** Import FDF field values into a PDF on disk. Writes to `outPath`, which

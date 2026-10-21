@@ -410,9 +410,9 @@ describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
     expect(kid('').breakBefore).toBeUndefined();
   });
 
-  // 164g.15: a break's leader and trailer are read, not refused; one on an
-  // auto break, which does not move, is.
-  it('refuses a script, an unknown targetType, and a leader on a break that does not move, by name', () => {
+  // 164g.15: a break's leader and trailer are read, not refused; since 164g.31
+  // one on an auto break, which does not move, is laid in place.
+  it('refuses a script and an unknown targetType by name, and lays an auto break\'s copies in place', () => {
     expect(kid('<breakBefore targetType="pageArea"><script>true</script></breakBefore>').breakBefore?.refusal)
       .toBe('P[0]: <breakBefore> with a script is not implemented');
     // A bare name is searched from the BREAKING subform, though the copy is
@@ -420,8 +420,12 @@ describe('parseXfaTemplate: break conditions (p. 632-636)', () => {
     const bb = kid('<breakBefore targetType="pageArea" leader="L"/><subform name="L"/>').breakBefore;
     expect(bb?.refusal).toBeUndefined();
     expect([bb?.leader?.name, bb?.leader?.refusal]).toEqual(['L', undefined]);
-    expect(kid('<breakAfter targetType="auto" trailer="T"/><subform name="T"/>').breakAfter?.refusal)
-      .toBe('P[0]: <breakAfter> with a leader or trailer on a break that does not move is not implemented (164g.31)');
+    // 164g.31 S2 (t179): an auto break's copies become the breaking subform's
+    // siblings, named in the parent's scope, and the break itself is dropped.
+    const auto = tpl(`<subform name="f" layout="tb"><pageSet><pageArea/></pageSet>
+      <subform name="P"><breakAfter targetType="auto" leader="L" trailer="T"/><subform name="T"/><subform name="L"/></subform></subform>`).body!.root;
+    expect(auto.children.map((c) => c.label)).toEqual(['P[0]', 'T[0]', 'L[0]']);
+    expect(auto.children[0].breakAfter).toBeUndefined();
     expect(kid('<breakBefore targetType="pageMiddle"/>').breakBefore?.refusal)
       .toBe('P[0]: <breakBefore> targetType="pageMiddle" is not one XFA defines');
     // 164g.9: pageEven and pageOdd are read, in both spellings.

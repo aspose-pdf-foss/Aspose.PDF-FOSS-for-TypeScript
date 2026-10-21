@@ -80,9 +80,10 @@ describe('adhesion between root children (164g.14)', () => {
       .toEqual(['0:F,C,D(d1)', '0:D(d2)']);
   });
   it('needs only a piece of a field it can split (R2, t65)', () => {
-    // 60 left: C 40, then 20 >= the 10pt font size of an empty field.
+    // 60 left: C 40, then 20 >= the 10pt font size of an empty field. Since
+    // 164g.27 D's head takes those 20, as t65's D splits 44/16.
     expect(split(body([area([ca(100)])], [kid('F', 40), kid('C', 40, NEXT), fld('D', 60)]), { fieldLines: () => 0 }))
-      .toEqual(['0:F,C', '0:D']);
+      .toEqual(['0:F,C,D', '0:D']);
   });
   it('moves a splittable child that fits whole but not with its next WHOLE (R3, t61)', () => {
     expect(split(body([area([ca(100)])], [kid('F', 40), tb('S', [kid('s1', 20), kid('s2', 20)], NEXT), kid('N', 40)])))
@@ -180,4 +181,64 @@ describe('adhesion: unprobed shapes later in a run-away chain (final review)', (
     expect(split(b)).toEqual(['0:F,C', '0:D']);
     expect(run(b).warnings).toContainEqual(expect.stringMatching(/C: adhesion from a subform with a breakAfter .*\(164g\.14\)/));
   });
+});
+
+describe('adhesion: 164g.14 review minors (164g.28)', () => {
+  const copySpec = { label: '#L', max: -1, scope: {}, name: 'L', make: () => kid('L', 10) };
+  // A root that lays overflow copies moves a root field WHOLE (164g.27), so a
+  // piece that would fit puts nothing here: the pair moves together.
+  it('does not count on a root field piece when the root lays overflow copies', () => {
+    const kids = [kid('F', 40), kid('C', 40, NEXT), fld('D', 60)];
+    const withCopies = body([area([ca(100)])], kids);
+    withCopies.root.overflow = { trailer: [copySpec] };
+    expect(split(withCopies, { fieldLines: () => 0 })).toEqual(['0:F', '0:C,D']);
+    // Without them the field splits and C stays, as before (t65).
+    expect(split(body([area([ca(100)])], kids), { fieldLines: () => 0 })).toEqual(['0:F,C,D', '0:D']);
+  });
+
+  it('says so when the adhered-to sibling\'s first piece breaks', () => {
+    const b = body([area([ca(100)])], [kid('F', 40), kid('C', 30, NEXT), tb('D', [kid('d1', 20, { breakBefore: pb() }), kid('d2', 40)])]);
+    expect(split(b)).toEqual(['0:F,C', '0:D(d1,d2)']);
+    expect(run(b).warnings).toEqual(['D: adhesion into a sibling whose first piece breaks is not implemented (164g.14)']);
+  });
+
+  // Section 4: adhesion between lr-tb items makes the chain unsplittable, so it
+  // is placed whole -- and refused, naming why, when it cannot fit at all.
+  it('places an lr-tb chain whose items adhere whole, and names the adhesion when it cannot fit', () => {
+    const lr = (n: number, last = ''): LayoutNode => ({ kind: 'subform', label: 'S', layout: 'lr-tb', geom: { w: '100pt' },
+      children: Array.from({ length: n }, (_, i) => kid(`i${String(i)}${i === n - 1 ? last : ''}`, 30, NEXT)) });
+    expect(split(body([area([ca(100)])], [kid('F', 40), lr(3)]))).toEqual(['0:F', '0:S(i0,i1,i2)']);
+    const too = body([area([ca(100)])], [kid('F', 40), lr(5, '!')]);
+    expect(refusals(too)).toEqual([
+      ['S', expect.stringMatching(/i0: adhesion between the items of an lr-tb line is not implemented \(164g\.14\)/)],
+    ]);
+  });
+
+  // Section 2: the chain walk is a loop, and a region's walk is remembered,
+  // so a split table whose every row keeps next costs measures linear in the
+  // rows a region holds where it cost quadratic -- 20,201 and 50,501 calls
+  // before. What is left is `fitsNextEmpty`'s sliding window on a page where
+  // the chain cannot fit, which no shortcut answers without assuming fragment
+  // heights are monotone. A FENCE, recorded when it was written.
+  it('measures a keep-next table in a recorded number of calls', () => {
+    for (const [n, want] of [[200, 10400], [400, 30800]]) {
+      let calls = 0;
+      const counting: XfaHeight = (x, limit) => { calls++; return flowHeight(x, limit); };
+      paginate(body([area([ca(1000)])], [tb('T', Array.from({ length: n }, (_, i) => kid(`r${String(i)}`, 10, NEXT)))]), counting);
+      expect(calls).toBe(want);
+    }
+  });
+
+  // The recursive walk overflowed the stack between 5,000 and 6,000 rows,
+  // measured; 8,000 leaves room for a machine with a deeper stack. Its time is
+  // the region fit test's, which re-measures the region per leaf (164g.12).
+  it('walks a chain far deeper than the call stack', () => {
+    const n = 8000;
+    // Zero-height rows all keep next, so the walk from the first runs the
+    // whole chain before the last row, too tall for the region, ends it.
+    const rows = [...Array.from({ length: n }, (_, i) => kid(`r${String(i)}`, 0, NEXT)), kid('end', 60)];
+    const r = run(body([area([ca(100)])], [kid('F', 50), tb('T', rows)]));
+    expect(r.refused.size).toBe(0);
+    expect(r.pages.length).toBe(2);
+  }, 60_000);
 });

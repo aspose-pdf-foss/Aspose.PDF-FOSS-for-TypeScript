@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Document } from '../src/document.js';
-import { exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile } from '../src/node.js';
+import { exportFdfFile, exportJsonFile, exportXfdfFile, importFdfFile, importJsonFile, importXfdfFile } from '../src/node.js';
 import { buildFormPdf } from './helpers/build-form-pdf.js';
 
 async function fixture(): Promise<{ dir: string; pdf: string }> {
@@ -25,6 +25,19 @@ describe('node form-data wrappers', () => {
     const target = join(dir, 'blank.pdf');
     await writeFile(target, buildFormPdf());
     const report = await importXfdfFile(target, data);
+    expect(report.imported).toContain('name');
+    expect(Document.Open(new Uint8Array(await readFile(target))).Form.Get('name')!.Value).toBe('Ada');
+  });
+
+  it('exports and re-imports JSON through the filesystem', async () => {
+    const { dir, pdf } = await fixture();
+    const data = join(dir, 'out.json');
+    await exportJsonFile(pdf, data, { indent: 2 });
+    expect(JSON.parse(await readFile(data, 'utf8')).fields).toContainEqual({ name: 'name', type: 'text', value: 'Ada' });
+
+    const target = join(dir, 'blank.pdf');
+    await writeFile(target, buildFormPdf());
+    const report = await importJsonFile(target, data);
     expect(report.imported).toContain('name');
     expect(Document.Open(new Uint8Array(await readFile(target))).Form.Get('name')!.Value).toBe('Ada');
   });

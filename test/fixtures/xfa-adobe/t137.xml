@@ -1,0 +1,5 @@
+  <subform name="filler" layout="position" w="7.5in" h="5in"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="pos" layout="position" w="7.5in" h="4in"><keep intact="none"/>
+    <field name="f" x="0" y="80pt" w="2in" h="160pt"><font typeface="Courier New" size="10pt"/><ui><textEdit multiLine="1" allowRichText="1"/></ui><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p style="font-size:10pt">line 01</p><p style="font-size:10pt">line 02</p><p style="font-size:20pt">big 03</p><p style="font-size:10pt">line 04</p><p style="font-size:10pt">line 05</p><p style="font-size:10pt">line 06</p><p style="font-size:10pt">line 07</p><p style="font-size:10pt">line 08</p></body></exData></value></field>
+    <field name="z" x="5in" y="0.2in" w="1in" h="0.3in"><ui><textEdit/></ui></field>
+  </subform>

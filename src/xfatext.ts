@@ -65,7 +65,7 @@ function mask(t: LeafText, faces: FaceLookup): LeafText {
 
 /** A laid line before its vertical place is known: its largest run size and
  *  its ascent, which `layoutLeaf` turns into a band and a baseline. */
-interface PendingLine { line: Omit<LeafLine, 'baseline'>; size: number; asc: number }
+interface PendingLine { line: Omit<LeafLine, 'baseline' | 'size'>; size: number; asc: number }
 interface ParaSize { w: number; lines: PendingLine[] }
 
 /** One run's piece of a laid-out line. */
@@ -84,11 +84,15 @@ export interface LeafLine {
   para: number;
   /** Last line of its paragraph (justify leaves it ragged). */
   last: boolean;
+  /** Its largest run size, which sets its height (164g.32, 164g.26). */
+  size: number;
   segments: LeafSegment[];
 }
 /** The lines `measureLeaf` measures, with the extent it reports and the leaf
- *  they were laid from (masked, for a password). */
-export interface LeafLayout { lines: LeafLine[]; w: number; h: number; text: LeafText }
+ *  they were laid from (masked, for a password). `textTop` is where the text
+ *  block starts below the leaf's top -- its top inset and a top caption -- and
+ *  `textH` the block's own height, insets and caption excluded (164g.26). */
+export interface LeafLayout { lines: LeafLine[]; w: number; h: number; text: LeafText; textTop: number; textH: number }
 
 function layoutPara(
   p: ParaSpec, width: number, grow: boolean, faces: FaceLookup, para: number,
@@ -212,7 +216,7 @@ export function layoutLeaf(
   t0: LeafText, box: MeasureBox, faces: FaceLookup,
 ): LeafLayout | { reason: string } {
   if (t0.refusal !== undefined) return { reason: t0.refusal };
-  if (t0.kind === 'geometry') return { lines: [], w: 0, h: 0, text: t0 };
+  if (t0.kind === 'geometry') return { lines: [], w: 0, h: 0, text: t0, textTop: 0, textH: 0 };
   const t = t0.password ? mask(t0, faces) : t0;
   const cap = t.caption;
   const { l, r, t: top, b } = t.insets;
@@ -248,11 +252,49 @@ export function layoutLeaf(
   const lines: LeafLine[] = [];
   pending.forEach((x, k) => {
     if (k === 0 || pending[k - 1].p !== x.p) h += x.p.spaceAbove;
-    lines.push({ ...x.line, baseline: h + x.asc });
+    lines.push({ ...x.line, size: x.size, baseline: h + x.asc });
     h += k === pending.length - 1 ? lastLine(x.size, x.p.lineHeight, pending.length) : lineStep(x.size, x.p.lineHeight);
     if (k === pending.length - 1 || pending[k + 1].p !== x.p) h += x.p.spaceBelow;
   });
-  return { lines, w: fixed ?? w + l + r + capW, h: h + top + b + capH, text: t };
+  return {
+    lines, w: fixed ?? w + l + r + capW, h: h + top + b + capH, text: t,
+    textTop: top + (cap?.placement === 'top' ? capH : 0), textH: h,
+  };
+}
+
+/**
+ * Where a laid-out field's value lines END, from the field's top, as Adobe
+ * Reader cuts a field across a break (164g.26) -- `fieldH` is the field's
+ * height, undefined when it grows to its text.
+ *
+ * The text block starts at `textTop` (a top inset, t129; a top caption, t128)
+ * and `vAlign` moves it down by the room left beside it: all of it for
+ * `bottom` (t130), half for `middle` (t140), measured with `lastLine`'s
+ * height for the block, so 10 lines of 10pt text take 118 and not 120.
+ *
+ * Each line then ADDS 1.2 x its largest size (t137: 10, 10, 20 and 10pt lines
+ * end at 12, 24, 48, 60), or a stated `lineHeight` L: under 1.2s every line is
+ * L (t139: 7 lines of L9 end at 63); at or over it the LEAF's first line is
+ * 1.2s and every later one L (t131: 12 + 3 x 15 = 57; t138: 12 + 2 x 20 = 52).
+ * That is `lineStep`/`lastLine`'s total read the other way round -- the
+ * short line first, not last -- which only a split can tell apart. Paragraph
+ * spacing is added as `layoutLeaf` adds it (unprobed).
+ */
+export function splitGrid(l: LeafLayout, fieldH: number | undefined): { bottoms: number[] } {
+  const avail = fieldH === undefined ? l.textH : fieldH - (l.h - l.textH);
+  const k = l.text.vAlign === 'bottom' ? 1 : l.text.vAlign === 'middle' ? 0.5 : 0;
+  let y = l.textTop + Math.max(0, avail - l.textH) * k;
+  const bottoms: number[] = [];
+  l.lines.forEach((line, i) => {
+    const p = l.text.paras[line.para];
+    if (i === 0 || l.lines[i - 1].para !== line.para) y += p.spaceAbove;
+    const L = p.lineHeight;
+    const s = line.size;
+    y += L <= 0 ? 1.2 * s : L < 1.2 * s || i > 0 ? L : 1.2 * s;
+    bottoms.push(y);
+    if (line.last) y += p.spaceBelow;
+  });
+  return { bottoms };
 }
 
 /** The leaf's nominal extent at `box`, insets and caption included. */

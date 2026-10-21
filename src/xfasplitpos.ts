@@ -16,7 +16,7 @@
  */
 import { measureToPt } from './xfageom.js';
 import type { ChildBox, LayoutNode } from './xfaflow.js';
-import { fieldCut, pieceOf, ptStr } from './xfafieldsplit.js';
+import { fieldCut, pieceOf, ptStr, type FieldLines } from './xfafieldsplit.js';
 
 /** Tolerance for comparing summed measurements (`xfapage.ts`'s). */
 const EPS = 1e-6;
@@ -43,7 +43,7 @@ export function positionedSplittable(n: LayoutNode): boolean {
  * area, into the bottom margin and beyond (t102 draws one 12pt past it).
  */
 export function positionedCut(
-  n: LayoutNode, room: number, boxes: XfaChildBoxes, lines?: (n: LayoutNode) => number | undefined,
+  n: LayoutNode, room: number, boxes: XfaChildBoxes, lines?: (n: LayoutNode) => FieldLines,
 ): number | { refusal: string } {
   const kids = boxes(n);
   if ('reason' in kids) return { refusal: kids.reason };
@@ -71,12 +71,8 @@ export function positionedCut(
       if (!(k.top < cut - EPS && k.top + k.h > cut + EPS)) continue;
       let next = k.top;
       if (positionedSplittable(k.node)) {
-        // R3 (t24): a keep-none positioned child splits at the same cut -- unless
-        // it states an <overflow>: no probe says where a leader or trailer of a
-        // child continuing INSIDE a split positioned subform goes (164g.31).
-        const of = k.node.overflow;
-        if (of && ((of.leader?.length ?? 0) > 0 || (of.trailer?.length ?? 0) > 0 || of.target !== undefined))
-          return { refusal: `${k.node.label}: an <overflow> on a positioned child that continues inside a split positioned subform is not implemented (164g.31)` };
+        // R3 (t24): a keep-none positioned child splits at the same cut. Its own
+        // <overflow> is IGNORED -- no copy, no reservation (164g.31 S7, t186).
         const inner = positionedCut(k.node, cut - k.top, boxes, lines);
         if (typeof inner === 'object') return inner;
         next = k.top + inner;
@@ -107,7 +103,7 @@ const concealed = (c: LayoutNode): boolean => c.presence === 'hidden' || c.prese
  * no space (p. 67) and ride in the first fragment so their fields stay known.
  */
 export function positionedFragment(
-  n: LayoutNode, from: number, to: number, boxes: XfaChildBoxes,
+  n: LayoutNode, from: number, to: number, boxes: XfaChildBoxes, lines?: (n: LayoutNode) => FieldLines,
 ): LayoutNode | { refusal: string } {
   const kids = boxes(n);
   if ('reason' in kids) return { refusal: kids.reason };
@@ -123,7 +119,7 @@ export function positionedFragment(
     const bottom = k.top + k.h;
     const crosses = k.top < from - EPS || bottom > to + EPS;
     if (positionedSplittable(c) && crosses && k.top < to - EPS && bottom > from + EPS) {
-      const f = positionedFragment(c, Math.max(0, from - k.top), Math.min(k.h, to - k.top), boxes);
+      const f = positionedFragment(c, Math.max(0, from - k.top), Math.min(k.h, to - k.top), boxes, lines);
       if ('refusal' in f) return f;
       children.push({ ...f, geom: { ...f.geom, y: ptStr(Math.max(k.top, from) - from) } });
     } else if (c.kind === 'field' && k.top < to - EPS && bottom > from + EPS
@@ -133,7 +129,7 @@ export function positionedFragment(
       // past its parent's stated height keeps its whole remainder (t51).
       const a = Math.max(k.top, from);
       const b = atEnd ? bottom : Math.min(bottom, to);
-      const piece = pieceOf(c, a - k.top, b - a);
+      const piece = pieceOf(c, a - k.top, b - a, lines?.(c));
       children.push({ ...piece, geom: { ...piece.geom, y: ptStr(a - from) } });
     } else if (k.top >= from - EPS && k.top < to - EPS) {
       children.push({ ...c, geom: { ...c.geom, y: ptStr(k.top - from) } });

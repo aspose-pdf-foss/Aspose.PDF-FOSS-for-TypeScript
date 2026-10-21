@@ -13,6 +13,7 @@
  * elements.
  */
 import type { XmlNode } from './xml.js';
+import { FLOWED } from './xfakeep.js';
 import { captionText, leafText, type LeafText } from './xfarich.js';
 import { parseBorder, parseGeometry, type NodeChrome, type XfaBorder } from './xfaborder.js';
 import type { XfaCaption, XfaMargin, XfaMedium, XfaRawGeom } from './xfageom.js';
@@ -478,9 +479,9 @@ function breakOf(
   if (script && script.text.trim() !== '') refusal = `${label}: ${tag} with a script is not implemented`;
   else if (!['auto', 'pageArea', 'contentArea', 'pageEven', 'pageOdd'].includes(targetType))
     refusal = `${label}: ${shown} is not one XFA defines`;
-  else if (targetType === 'auto' && (lead || trail))
-    refusal = `${label}: ${tag} with a leader or trailer on a break that does not move is not implemented (164g.31)`;
-  if (targetType === 'auto' && refusal === undefined) return undefined;
+  // 164g.31 S2: an `auto` break with a leader or trailer is kept, for `walk`
+  // to lay its copies in place (`addAutoBreakCopies`); without, it asks for nothing.
+  if (targetType === 'auto' && refusal === undefined && !lead && !trail) return undefined;
   return {
     targetType,
     ...(target !== undefined && target.trim() !== '' ? { target } : {}),
@@ -611,9 +612,98 @@ function overflowOf(el: XmlNode, cc: CopyCtx | undefined, label: string): XfaOve
     const what = `${label}: its overflow ${kind}`;
     out[kind] = v.split(' ').filter((s) => s !== '').flatMap((r) => specOf(r, cc.own, cc.top, what) ?? []);
   }
+  // 164g.30 R5 (t158): a STATED blank target blocks a container's inherited
+  // one, so it is kept as ''; an absent one inherits.
   const target = read('target')?.trim();
-  if (target) out.target = target;
+  if (target !== undefined) out.target = target;
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+
+/**
+ * A subform's `<bookend>`, else the deprecated `<break bookendLeader
+ * bookendTrailer>` (XFA 3.3 p. 317-318, 625, 634), 164g.29: the leader made the
+ * subform's FIRST child and the trailer its LAST, once, here. Every Adobe probe
+ * (t160-t176) agrees with that model, so a split carries the leader in the
+ * first fragment and the trailer in the last with no help from pagination.
+ *
+ * Called AFTER the subform's children are walked: a copy is the instance after
+ * every one the walk counted (t172: the leader `S.H[1]` beside the in-flow
+ * `S.H[0]`), and it CONSUMES that index, so a later copy of the name follows
+ * it. Its fields are ordinary fields -- a bookend is always laid down -- so they
+ * join `out` rather than `copyFields`. A target resolves, is ignored or refuses
+ * exactly as an overflow target does (164g.15 R1); one names ONE target
+ * (p. 625). A positioned subform ignores its bookend (t168), with a warning.
+ */
+function addBookends(el: XmlNode, node: LayoutNode, cc: CopyCtx, out: XfaField[]): void {
+  const modern = child(el, 'bookend');
+  const legacy = modern ? undefined : child(el, 'break');
+  const read = (kind: 'leader' | 'trailer'): string | undefined => (modern
+    ? modern.attrs.get(kind) : legacy?.attrs.get(kind === 'leader' ? 'bookendLeader' : 'bookendTrailer'))?.trim();
+  const refs = { leader: read('leader'), trailer: read('trailer') };
+  if (!refs.leader && !refs.trailer) return;
+  if (!FLOWED.has(layoutOf(el))) {
+    const w = `${node.label}: a bookend on a ${layoutOf(el)} subform is ignored, as Adobe ignores it (164g.29, t168)`;
+    if (cc.top.warnings && !cc.top.warnings.includes(w)) cc.top.warnings.push(w);
+    return;
+  }
+  for (const kind of ['leader', 'trailer'] as const) {
+    const r = refs[kind];
+    if (!r) continue;
+    const what = `${node.label}: its bookend ${kind}`;
+    const spec = /\s/.test(r)
+      ? refusedSpec(r, `${what} "${r}" names several targets (164g.29)`, cc.own)
+      : specOf(r, cc.own, cc.top, what);
+    if (!spec) continue;
+    const copy = makeCopy(spec, out, cc.top);
+    if (kind === 'leader') node.children.unshift(copy);
+    else node.children.push(copy);
+  }
+}
+
+/** A copy laid down at TEMPLATE time -- a bookend (164g.29) or an `auto`
+ *  break's (164g.31): made at index 0 after the walk's instances, its index
+ *  consumed in its scope, its fields ordinary fields. A refused spec answers
+ *  its refused node, which refuses in the flow. */
+function makeCopy(spec: XfaCopySpec, out: XfaField[], top: Top): LayoutNode {
+  const copy = spec.make(0);
+  if (spec.refusal === undefined) {
+    const scope = (spec.scope as IndexScope).byName;
+    scope.set(spec.name, (scope.get(spec.name) ?? 0) + 1);
+    const fields = top.copyFields?.get(copy);
+    if (fields) { out.push(...fields); top.copyFields!.delete(copy); }
+  }
+  return copy;
+}
+
+/**
+ * An `auto` break's leader and trailer (164g.31 S2): such a break never moves,
+ * and Adobe lays its TRAILER and then its LEADER in the flow where the break
+ * stands (t179) -- the order 164g.15 R7 measured for a break that does move,
+ * with no region between them. So the copies become SIBLINGS of the breaking
+ * subform `node` in `parent`: before it for a `breakBefore`, after it for a
+ * `breakAfter` (unprobed, the mirror). They are named in the parent's scope,
+ * where `breakOf` already resolved them, and the break itself is dropped --
+ * pagination never sees an `auto` break. A parent that is not flowing places
+ * nothing in sequence, so it ignores them, with a warning. Called once the
+ * parent's children are all walked, so the index follows the walk's count.
+ */
+function addAutoBreakCopies(
+  node: LayoutNode, parent: LayoutNode, parentLayout: string, out: XfaField[], top: Top,
+): void {
+  for (const which of ['breakBefore', 'breakAfter'] as const) {
+    const b = node[which];
+    if (b?.targetType !== 'auto' || b.refusal !== undefined) continue;
+    delete node[which];
+    if (!FLOWED.has(parentLayout)) {
+      const w = `${node.label}: a leader or trailer on a ${which} that does not move, in a ${parentLayout} subform, is ignored (164g.31)`;
+      if (top.warnings && !top.warnings.includes(w)) top.warnings.push(w);
+      continue;
+    }
+    const copies = [b.trailer, b.leader].flatMap((s) => (s ? [makeCopy(s, out, top)] : []));
+    const at = parent.children.indexOf(node);
+    parent.children.splice(which === 'breakBefore' ? at : at + 1, 0, ...copies);
+  }
 }
 
 /**
@@ -683,12 +773,15 @@ function nodeOf(el: XmlNode, kind: LayoutKind, label: string, field?: string, cc
   if (kind === 'field' || kind === 'draw') n.text = leafText(el);
   if (kind === 'field') {
     const ui = child(el, 'ui')?.children[0];
-    if (ui) {
-      n.ui = ui.name;
-      if (child(ui, 'comb')) n.comb = true;
-    }
+    if (ui) n.ui = ui.name;
     const para = child(el, 'para');
-    if (para && ['orphans', 'widows'].some((a) => Number(para.attrs.get(a) ?? '0') !== 0)) n.lineKeep = true;
+    // 164g.26: a count that is not a non-negative integer holds nothing.
+    const count = (a: string): number => {
+      const v = Number(para?.attrs.get(a) ?? '0');
+      return Number.isInteger(v) && v > 0 ? v : 0;
+    };
+    const lk = { orphans: count('orphans'), widows: count('widows') };
+    if (lk.orphans > 0 || lk.widows > 0) n.lineKeep = lk;
   }
   if (kind === 'field' || kind === 'draw') {
     // 164g.14: a leaf adheres to its siblings (t60, t65). Its intact is not
@@ -798,6 +891,8 @@ function walk(
     scope.byClass.set(c.name, i + 1);
     return i;
   };
+  /** Children whose `auto` break lays copies beside them (164g.31 S2). */
+  const autos: LayoutNode[] = [];
   for (const c of el.children) {
     const partial = c.attrs.get('name');
     const nth = classIndex(c);
@@ -934,8 +1029,13 @@ function walk(
         next, out, next.inPage ? node : undefined,
         own, master, groups, top,
       );
+      if (cc && c.name === 'subform') {
+        addBookends(c, node, cc, out);
+        if (node.breakBefore?.targetType === 'auto' || node.breakAfter?.targetType === 'auto') autos.push(node);
+      }
     }
   }
+  if (parent) for (const n of autos) addAutoBreakCopies(n, parent, layoutOf(el), out, top);
 }
 
 /** Every `<pageSet>` in the template, with the element holding it. */

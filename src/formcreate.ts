@@ -542,13 +542,22 @@ export interface RadioGroupInit extends WidgetStyle {
   actions?: FieldActions;
 }
 
+/** How `addRadioGroup` names its widgets' states (164g.37). Internal: the
+ *  public `Form.AddRadioGroup` passes none. */
+export interface RadioGroupShape {
+  /** Write the exports into `/Opt` and name widget i's on-state `i`
+   *  (32000-1 12.7.4.2.4), as Adobe writes every radio group of DD 3183.
+   *  Absent, each on-state IS its export, as before. */
+  indexStates?: boolean;
+}
+
 /** Create a radio group: a parent field carrying one kid widget per option,
  *  each on its own page. Returns the parent's live handle.
  *
  *  Every option is validated before the first object is allocated. Rejecting
  *  option 3 after wiring the parent and two kids would strand all three, so the
  *  up-front pass is what makes a failed call leave the document unchanged. */
-export function addRadioGroup(doc: Document, init: RadioGroupInit): RadioField {
+export function addRadioGroup(doc: Document, init: RadioGroupInit, shape: RadioGroupShape = {}): RadioField {
   nameParts(init.name);
   const options = init.options;
   if (!Array.isArray(options) || options.length === 0)
@@ -583,6 +592,11 @@ export function addRadioGroup(doc: Document, init: RadioGroupInit): RadioField {
   resolvePath(doc, acro, init.name, false);
   const path = resolvePath(doc, acro, init.name, true);
 
+  // 164g.37: widget i's on-state, and the state the selection names.
+  const stateOf = (i: number): string => (shape.indexStates ? String(i) : options[i].export);
+  const at = init.selected === undefined ? -1 : options.findIndex((o) => o.export === init.selected);
+  const selState = at < 0 ? 'Off' : stateOf(at);
+
   let ff = FF_RADIO;
   if (init.readOnly) ff |= FF_READONLY;
   if (init.required) ff |= FF_REQUIRED;
@@ -595,22 +609,23 @@ export function addRadioGroup(doc: Document, init: RadioGroupInit): RadioField {
     ['FT', name('Btn')],
     ['Ff', ff],
     ['T', pdfText(path.partial)],
-    ['V', name(init.selected ?? 'Off')],
+    ['V', name(selState)],
     // A group draws no text, but its dot takes the /DA colour — so the colour
     // has to live here, or a later regeneration would lose it.
     ['DA', pdfLatin(fieldDA(daKey, 0, markColor))],
     ['Kids', kids],
   ]);
+  if (shape.indexStates) parent.set('Opt', options.map((o) => pdfText(o.export)));
   if (path.parent) parent.set('Parent', path.parent);
   if (aa) parent.set('AA', aa);
   const parentRef = doc.allocObject(parent);
   path.container.push(parentRef);
 
   for (let i = 0; i < options.length; i++) {
-    const on = options[i].export;
+    const on = stateOf(i);
     const widget = buildWidgetDict(doc, pages[i], rects[i]);
     widget.set('Parent', parentRef);
-    widget.set('AS', name(init.selected === on ? on : 'Off'));
+    widget.set('AS', name(selState === on ? on : 'Off'));
     const widgetRef = doc.allocObject(widget);
     kids.push(widgetRef);
     attachWidget(doc, pages[i], widgetRef);

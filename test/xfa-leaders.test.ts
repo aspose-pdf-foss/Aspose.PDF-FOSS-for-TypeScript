@@ -162,34 +162,78 @@ describe('pagination (164g.15)', () => {
     expect(why(r)).toMatch(/"a\.b" is a SOM expression/);
   });
 
-  it('refuses a break leader inside a split chain, and a break inside a container with a leader (164g.31)', () => {
-    const own = run(`<subform name="S" layout="tb">${blk('d1', 30)}<subform name="C" layout="tb"><breakBefore targetType="pageArea" leader="#L_ID"/>${blk('d2', 30)}</subform></subform>`,
-      100, copy('L', 10));
-    expect(why(own.r)).toMatch(/a break leader or trailer inside a split subform .*\(164g\.31\)/);
+  /** Per page, each placed copy's label and top. */
+  const tops = (r: ReturnType<typeof run>['r']): string[][] =>
+    r.pages.map((p) => p.nodes.flatMap((n) => ('box' in n && /^[LT]\[/.test(n.node.label) ? [`${n.node.label}@${String(n.box.y)}`] : [])));
+
+  // 164g.31 S4 (t182): the trailer closes the region inside the BREAKING
+  // subform's parent, the leader opens the next one there; S5 (t183): a break
+  // lays no overflow leader or trailer.
+  it('lays a break leader and trailer inside a split chain, and no overflow copy at a break (164g.31)', () => {
+    const own = run(`<subform name="S" layout="tb">${blk('d1', 30)}<subform name="C" layout="tb"><breakBefore targetType="pageArea" leader="#L_ID" trailer="#T_ID"/>${blk('d2', 30)}</subform></subform>`,
+      100, copy('L', 10) + copy('T', 10));
+    expect(own.r.refused.size).toBe(0);
+    expect(tops(own.r)).toEqual([['T[0]@30'], ['L[0]@0']]);
     const across = run(`<subform name="S" layout="tb"><overflow leader="#L_ID"/>${blk('d1', 30)}<subform name="C" layout="tb"><breakBefore targetType="pageArea"/>${blk('d2', 30)}</subform></subform>`,
       100, copy('L', 10));
-    expect(why(across.r)).toMatch(/a break inside a split subform with an overflow leader or trailer .*\(164g\.31\)/);
+    expect(across.r.refused.size).toBe(0);
+    expect(tops(across.r)).toEqual([[], []]);
   });
 
-  it('refuses a break leader on the start, on a break that does not move, and a trailer that does not fit (164g.31)', () => {
+  // S4's home is the breaking subform's PARENT, which only a nested container
+  // separates from the root child -- and only its margin makes it observable:
+  // inside M the trailer sits below M's top inset, beside M it sits below M's
+  // whole fragment. A trailer that does not fit opens the next region (S3).
+  it('lays a nested break\'s copies in its parent, and moves a chain trailer that does not fit (164g.31)', () => {
+    const brk = '<subform name="C" w="100pt" h="10pt"><breakBefore targetType="pageArea" leader="#L_ID" trailer="#T_ID"/></subform>';
+    const nested = run(`<subform name="S" layout="tb">${blk('d1', 30)}<subform name="M" layout="tb"><margin topInset="5pt" bottomInset="5pt"/>`
+      + `${blk('d2', 10)}${brk}</subform></subform>`, 100, copy('L', 10) + copy('T', 10));
+    expect(nested.r.refused.size).toBe(0);
+    expect(tops(nested.r)).toEqual([['T[0]@45'], ['L[0]@5']]);
+    const full = run(`<subform name="S" layout="tb">${blk('d1', 95)}${brk}</subform>`, 100, copy('L', 10) + copy('T', 10));
+    expect(full.r.refused.size).toBe(0);
+    expect(tops(full.r)).toEqual([[], ['T[0]@0'], ['L[0]@0']]);
+  });
+
+  // 164g.31 S1 (t177), S2 (t180), S3 (t181).
+  it("ignores a start break's copies, lays a still break's in place, and moves an unfitting trailer (164g.31)", () => {
     const brk = (attrs: string): string => `<subform name="S" w="100pt" h="10pt"><breakBefore targetType="pageArea" ${attrs}/>`
       + '<field name="x" w="10pt" h="5pt"><ui><textEdit/></ui></field></subform>';
     const start = run(brk('leader="#L_ID"'), 100, copy('L', 10));
-    expect(why(start.r)).toMatch(/the break that chooses where layout starts .*\(164g\.31\)/);
+    expect(start.r.refused.size).toBe(0);
+    expect(tops(start.r)).toEqual([[]]);
+    expect(start.warnings).toEqual([expect.stringMatching(/chooses where layout starts is ignored.*\(164g\.31\)/) as unknown as string]);
     // A pageArea break naming the current page area does not move.
-    const still = run(blk('A', 10) + brk('target="P1" leader="#L_ID"'), 100, copy('L', 10));
-    expect(still.r.refused.get('f[0].S[0].x[0]')).toMatch(/a break that does not move .*\(164g\.31\)/);
+    const still = run(blk('A', 10) + brk('target="P1" leader="#L_ID" trailer="#T_ID"'), 100, copy('L', 10) + copy('T', 10));
+    expect(still.r.refused.size).toBe(0);
+    expect(tops(still.r)).toEqual([['T[0]@10', 'L[0]@20']]);
     const full = run(blk('A', 95) + brk('trailer="#T_ID"'), 100, copy('T', 10));
-    expect(full.r.refused.get('f[0].S[0].x[0]')).toMatch(/its break trailer does not fit the region the break leaves.*\(164g\.31\)/);
+    expect(full.r.refused.size).toBe(0);
+    expect(tops(full.r)).toEqual([[], ['T[0]@0'], []]);
     // Laid down when it fits: the trailer closes page 1, the leader opens page 2 (t85).
     const fits = run(blk('A', 50) + brk('leader="#L_ID" trailer="#T_ID"'), 100, copy('L', 10) + copy('T', 10));
     expect(labels(fits.r)).toEqual([['T[0]'], ['L[0]']]);
   });
 
-  it('refuses an overflow trailer on a split positioned subform (164g.31)', () => {
+  // 164g.31 S2 (t179): an auto break's copies are siblings -- trailer, then
+  // leader, before a breakBefore -- and a positioned parent ignores them.
+  it('lays an auto break\'s trailer and leader in place, and ignores them in a positioned parent (164g.31)', () => {
+    const auto = '<breakBefore targetType="auto" leader="#L_ID" trailer="#T_ID"/>';
+    const flow = run(`${blk('A', 10)}<subform name="S" w="100pt" h="10pt">${auto}</subform>`, 100, copy('L', 10) + copy('T', 10));
+    expect(flow.t.body!.root.children.map((c) => c.label)).toEqual(['A[0]', 'T[0]', 'L[0]', 'S[0]']);
+    expect(tops(flow.r)).toEqual([['T[0]@10', 'L[0]@20']]);
+    const pos = run(`<subform name="Q" w="500pt" h="50pt"><subform name="S" w="100pt" h="10pt">${auto}</subform></subform>`,
+      100, copy('L', 10) + copy('T', 10));
+    expect(pos.t.body!.root.children[0].children.map((c) => c.label)).toEqual(['S[0]']);
+    expect(pos.t.warnings).toEqual(['S[0]: a leader or trailer on a breakBefore that does not move, in a position subform, is ignored (164g.31)']);
+  });
+
+  // 164g.31 S6 (t185): reserved in the cut, laid below the fragment it closes.
+  it('reserves an overflow trailer on a split positioned subform and lays it below the fragment (164g.31)', () => {
     const { r } = run(`<subform name="P" w="500pt" h="150pt"><keep intact="none"/><overflow trailer="#T_ID"/>`
       + `<field name="a" x="0" y="0" w="50pt" h="20pt"><ui><textEdit/></ui></field><field name="b" x="0" y="120pt" w="50pt" h="20pt"><ui><textEdit/></ui></field></subform>`,
       100, copy('T', 10));
-    expect(r.refused.get('f[0].P[0].a[0]')).toMatch(/an overflow trailer on a split positioned subform .*\(164g\.31\)/);
+    expect(r.refused.size).toBe(0);
+    expect(tops(r)).toEqual([['T[0]@90'], []]);
   });
 });

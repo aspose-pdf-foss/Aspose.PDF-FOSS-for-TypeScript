@@ -13,10 +13,11 @@ import { ADOBE_PROBES, adobeGoldens, loadAdobeProbe, type AdobeFrag, type AdobeP
 /**
  * The Adobe Reader oracle for splitting: a positioned subform (164g.11, t3-t26)
  * and an lr-tb or table (164g.12, t27-t39). Field splitting is t40-t54
- * (164g.13); adhesion and keep intact="pageArea" are t55-t72 (164g.14) -- t65
- * is compared in part, its field D splitting directly under the content area,
- * which 164g.27 will do. Overflow and break leaders and trailers are t73-t90
- * (164g.15). Each probe in
+ * (164g.13); adhesion and keep intact="pageArea" are t55-t72 (164g.14) -- t65's
+ * field D splits directly under the content area (164g.27). Overflow and break leaders and trailers are t73-t90
+ * (164g.15); an lr-tb item that is itself a splittable subform is t122-t126
+ * (164g.25); `<bookend>` leaders and trailers are t160-t176 (164g.29); the leader and trailer
+ * shapes 164g.15 refused are t177-t186 (164g.31). Each probe in
  * test/fixtures/xfa-adobe/ is converted from its template and compared, field
  * by field, with the layout Adobe Reader 26.1 reported for it; a probe's draws
  * have no widget, so they are compared through our layout of the template.
@@ -71,7 +72,7 @@ function laidOut(name: string): XfaLayoutResult {
   const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
   // As the converter lays it out, field-line counter included: without it no
   // field splits, and t82's trailer, which a split lays down, is not placed.
-  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).count);
+  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).grid);
 }
 
 for (const name of ADOBE_PROBES) {
@@ -105,12 +106,32 @@ for (const name of ADOBE_PROBES) {
             if (typeof b === 'string') { wrong.push(`${path}: ${b}`); return; }
             const want = { page: b.page, rect: [b.x, PAGE_H - b.y - b.h, b.x + b.w, PAGE_H - b.y] };
             const g2 = got[i];
-            if (g2.page !== want.page || g2.rect.some((v, k) => Math.abs(v - want.rect[k]) > TOL))
+            if (probe.fieldBoxes ? g2.page !== want.page
+              : g2.page !== want.page || g2.rect.some((v, k) => Math.abs(v - want.rect[k]) > TOL))
               wrong.push(`${path}#${String(i)}: want p${String(want.page)} [${want.rect.join(' ')}], got p${String(g2.page)} [${g2.rect.join(' ')}]`);
           });
         }
         expect(wrong).toEqual([]);
       });
+      if (probe.fieldBoxes) {
+        it("puts every field's box on Adobe's page and box", () => {
+          const laid = laidOut(name);
+          const wrong: string[] = [];
+          for (const [path, frags] of Object.entries(probe.fields)) {
+            frags.forEach((frag, i) => {
+              const want = boxOf(probe, path, frag);
+              if (typeof want === 'string') { wrong.push(`${path}: ${want}`); return; }
+              const hits = (laid.pages[want.page - 1]?.nodes ?? [])
+                .filter((n) => n.node.kind === 'field' && n.node.field === som(path) && 'box' in n);
+              if (hits.length !== 1) { wrong.push(`${path}#${String(i)}: ${String(hits.length)} placed on page ${String(want.page)}`); return; }
+              const got = (hits[0] as { box: { x: number; y: number; w: number; h: number } }).box;
+              if ([got.x - want.x, got.y - want.y, got.w - want.w, got.h - want.h].some((d) => Math.abs(d) > TOL))
+                wrong.push(`${path}#${String(i)}: want ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+            });
+          }
+          expect(wrong).toEqual([]);
+        });
+      }
       if (probe.draws) {
         it("puts every draw on Adobe's page and box", () => {
           const laid = laidOut(name);

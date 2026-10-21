@@ -172,9 +172,11 @@ describe('final review fixes', () => {
     expect(positionedCut(pos('p', 288, [inner]), 144, boxes))
       .toEqual({ refusal: 'inner: a child outside its positioned parent\'s height is not split with it' });
   });
-  it('refuses a nested keep-none child with an <overflow> that the cut would continue (164g.31)', () => {
-    const inner = pos('inner', 120, [fld('g', 0, 20), fld('k', 80, 20)], { ...at(100, 120), overflow: { target: 'X' } });
-    expect(positionedCut(pos('p', 288, [inner]), 144, boxes))
-      .toEqual({ refusal: 'inner: an <overflow> on a positioned child that continues inside a split positioned subform is not implemented (164g.31)' });
+  // 164g.31 S7 (t186): Adobe ignores it -- the child splits at the same cut.
+  it('ignores a nested keep-none child\'s <overflow>, splitting it as one without', () => {
+    const plain = pos('inner', 120, [fld('g', 0, 20), fld('k', 80, 20)], at(100, 120));
+    const stated = { ...plain, overflow: { target: 'X' } };
+    expect(positionedCut(pos('p', 288, [stated]), 144, boxes)).toEqual(positionedCut(pos('p', 288, [plain]), 144, boxes));
+    expect(typeof positionedCut(pos('p', 288, [stated]), 144, boxes)).toBe('number');
   });
 });

@@ -1,0 +1,43 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="100pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="S" layout="tb" w="7.5in">
+<occur min="1" max="3" initial="3"/>
+<bookend leader="#L_ID" trailer="#T_ID"/>
+<draw name="D1" w="2in" h="30pt">
+<value>
+<text>D1</text>
+</value>
+</draw>
+</subform>
+<proto>
+<subform name="L" id="L_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Ld" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Ld</text>
+</value>
+</draw>
+<field name="Lf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+<subform name="T" id="T_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Td" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Td</text>
+</value>
+</draw>
+<field name="Tf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+</proto>

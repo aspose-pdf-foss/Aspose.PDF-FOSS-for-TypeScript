@@ -69,36 +69,56 @@ describe('fieldCut: a field with text (spec rules 1, 2)', () => {
   });
 });
 
-describe('fieldCut: rule 6, refused by name (164g.26)', () => {
-  const refused = (n: LayoutNode): string => {
-    const r = fieldCut(n, 30, 0, 48);
-    return typeof r === 'object' && 'refusal' in r ? r.refusal : '';
-  };
-  it.each([
-    ['a checkButton', fld(48, 10, { ui: 'checkButton' }), /a <checkButton> field/],
-    ['a comb', fld(48, 10, { comb: true }), /a comb field/],
-    ['a caption', fld(48, 10, {}, { caption: { placement: 'left', reserve: 20 } }), /a captioned field/],
-    ['a top inset', fld(48, 10, {}, { insets: { l: 0, r: 0, t: 2, b: 0 } }), /a top or bottom inset/],
-    ['a bottom inset', fld(48, 10, {}, { insets: { l: 0, r: 0, t: 0, b: 2 } }), /a top or bottom inset/],
-    ['vAlign', fld(48, 10, {}, { vAlign: 'middle' }), /vAlign="middle"/],
-    ['orphans/widows', fld(48, 10, { lineKeep: true }), /orphans or widows/],
-  ])('refuses %s', (_w, n, re) => {
-    expect(refused(n)).toMatch(re);
-    expect(refused(n)).toMatch(/\(164g\.26\)$/);
-  });
-  it('refuses a stated lineHeight and mixed sizes', () => {
-    const lh = fld(48);
-    lh.text!.paras[0].lineHeight = 14;
-    expect(refused(lh)).toMatch(/a stated lineHeight/);
-    const mixed = fld(48);
-    mixed.text!.paras[0].runs = [{ text: 'a', family: ['Courier New'], size: 14, bold: false, italic: false }];
-    expect(refused(mixed)).toMatch(/mixed font sizes/);
-  });
-  it('lets a field that would move anyway move, whatever it states', () => {
+/** The Adobe line bottoms of `n` lines at `pitch` from `top`. */
+const grid = (top: number, n: number, pitch = 12) => ({ bottoms: Array.from({ length: n }, (_, i) => top + (i + 1) * pitch) });
+
+describe("fieldCut: a field's own line grid (164g.26)", () => {
+  it('moves a field that is not a text entry, whatever room is left (t134, t135)', () => {
+    expect(fieldCut(fld(130, 10, { ui: 'checkButton' }), 64, 0, 130)).toBe('move');
+    expect(fieldCut(fld(130, 10, { ui: 'choiceList' }), 64, 0, 130)).toBe('move');
     expect(fieldCut(fld(48, 10, { ui: 'checkButton' }), 5, 0, 48)).toBe('move');
   });
-  it('accepts left and right insets', () => {
-    expect(fieldCut(fld(48, 10, {}, { insets: { l: 3, r: 3, t: 0, b: 0 } }), 30, 0, 48)).toEqual({ cut: 30 });
+  it('snaps to the grid below a top caption or inset (t128: 20 + 3 x 12; t129: 10 + 4 x 12)', () => {
+    expect(fieldCut(fld(150), 64, grid(20, 10), 150)).toEqual({ cut: 56 });
+    expect(fieldCut(fld(150), 64, grid(10, 10), 150)).toEqual({ cut: 58 });
+  });
+  it('snaps to the grid vAlign moved down (t130: 42 + 12; t140: 21 + 3 x 12)', () => {
+    expect(fieldCut(fld(160), 64, grid(42, 10), 160)).toEqual({ cut: 54 });
+    expect(fieldCut(fld(160), 64, grid(21, 10), 160)).toEqual({ cut: 57 });
+  });
+  it('moves where no line ends above the room, in a caption or above vAligned text (t141, t142)', () => {
+    expect(fieldCut(fld(150), 25, grid(20, 10), 150)).toBe('move');
+    expect(fieldCut(fld(160), 30, grid(42, 10), 160)).toBe('move');
+  });
+  it('snaps to uneven lines (t137: 12, 24, 48, 60)', () => {
+    expect(fieldCut(fld(160), 64, { bottoms: [12, 24, 48, 60, 72, 84, 96, 108] }, 160)).toEqual({ cut: 60 });
+    expect(fieldCut(fld(160), 47, { bottoms: [12, 24, 48, 60, 72, 84, 96, 108] }, 160)).toEqual({ cut: 24 });
+  });
+  it("cuts freely below the text, a comb's one line included (t136)", () => {
+    expect(fieldCut(fld(130), 64, 1, 130)).toEqual({ cut: 64 });
+  });
+});
+
+describe('fieldCut: orphans and widows (164g.26)', () => {
+  const keep = (orphans: number, widows: number) => fld(130, 10, { lineKeep: { orphans, widows } });
+  it('moves a field that would keep fewer lines than its orphans (t132)', () => {
+    expect(fieldCut(keep(2, 0), 14, 10, 130)).toBe('move');
+    expect(fieldCut(keep(2, 0), 26, 10, 130)).toEqual({ cut: 24 });
+  });
+  it('backs off until its widows are left (t133: 8 lines, not 9)', () => {
+    expect(fieldCut(keep(0, 2), 112, 10, 130)).toEqual({ cut: 96 });
+    expect(fieldCut(keep(0, 3), 112, 10, 130)).toEqual({ cut: 84 });
+    expect(fieldCut(keep(0, 2), 100, 10, 130)).toEqual({ cut: 96 });
+  });
+  it('moves when widows leave fewer lines than orphans need', () => {
+    expect(fieldCut(keep(3, 9), 112, 10, 130)).toBe('move');
+  });
+  it('holds nothing below the text', () => {
+    expect(fieldCut(keep(5, 5), 64, 3, 130)).toEqual({ cut: 64 });
+  });
+  it("counts orphans only in the value's first piece", () => {
+    const tail = { ...keep(2, 0), piece: { offset: 60, lines: [5, 10] as [number, number] } };
+    expect(fieldCut(tail, 14, 10, 70)).toEqual({ cut: 12 });
   });
 });
 

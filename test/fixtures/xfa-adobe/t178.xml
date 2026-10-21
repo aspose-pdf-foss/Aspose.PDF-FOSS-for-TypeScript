@@ -1,0 +1,37 @@
+<!-- proto in root -->
+<pageSet>
+<pageArea name="P1" id="P1"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markP1" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-P1</text></value></draw></pageArea>
+<pageArea name="P2" id="P2"><medium short="8.5in" long="11in" stock="letter"/><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><draw name="markP2" x="4.5in" y="0.1in" w="3in" h="0.3in"><font typeface="Arial" size="10pt"/><value><text>AREA-P2</text></value></draw></pageArea>
+</pageSet>
+<breakBefore targetType="pageArea" target="P2" leader="#L_ID" trailer="#T_ID"/> <!-- root -->
+<draw name="D1" w="2in" h="50pt">
+<value>
+<text>D1</text>
+</value>
+</draw>
+<proto>
+<subform name="L" id="L_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Ld" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Ld</text>
+</value>
+</draw>
+<field name="Lf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+<subform name="T" id="T_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Td" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Td</text>
+</value>
+</draw>
+<field name="Tf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+</proto>

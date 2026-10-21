@@ -4,7 +4,7 @@ export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceL
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile, saveMarkdownFile, saveDocxFile,
-  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, htmlFileToPdf, docxFileToPdf,
+  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile, htmlFileToPdf, docxFileToPdf,
 } from './node.js';
 export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions } from './node.js';
 export { Document } from './document.js';
@@ -37,7 +37,7 @@ export type {
 export type { FieldStyle, WidgetStyle, FieldBorderStyle } from './fieldstyle.js';
 export type { ButtonIconPosition } from './buttonap.js';
 export type {
-  FormData, FormDataField, ExportFormDataOptions, ImportOptions, ImportReport,
+  FormData, FormDataField, ExportFormDataOptions, ExportJsonOptions, ImportOptions, ImportReport,
   ImportedAnnot, SkippedAnnot,
 } from './formdata.js';
 export type {

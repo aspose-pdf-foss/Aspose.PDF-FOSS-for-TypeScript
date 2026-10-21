@@ -1,0 +1,53 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="300pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="P" layout="position" w="7.5in" h="600pt">
+<keep intact="none"/>
+<overflow leader="#L_ID" trailer="#T_ID"/>
+<draw name="p0" x="0" y="0pt" w="1in" h="50pt">
+<value>
+<text>p0</text>
+</value>
+</draw>
+<draw name="p1" x="0" y="300pt" w="1in" h="50pt">
+<value>
+<text>p1</text>
+</value>
+</draw>
+<draw name="p2" x="0" y="550pt" w="1in" h="50pt">
+<value>
+<text>p2</text>
+</value>
+</draw>
+</subform>
+<proto>
+<subform name="L" id="L_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Ld" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Ld</text>
+</value>
+</draw>
+<field name="Lf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+<subform name="T" id="T_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Td" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Td</text>
+</value>
+</draw>
+<field name="Tf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+</proto>

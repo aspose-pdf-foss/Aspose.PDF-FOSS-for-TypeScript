@@ -1,0 +1,7 @@
+  <subform name="filler" layout="position" w="7.5in" h="400pt"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="flow" layout="lr-tb" w="7.5in">
+    <draw name="a1" w="180pt" h="30pt"><value><text>a1</text></value></draw><draw name="a2" w="180pt" h="30pt"><value><text>a2</text></value></draw><draw name="a3" w="180pt" h="30pt"><value><text>a3</text></value></draw>
+    <draw name="b1" w="180pt" h="20pt"><value><text>b1</text></value></draw>
+    <subform name="s1" layout="tb" w="180pt"><draw name="k1" w="180pt" h="30pt"><value><text>k1</text></value></draw><draw name="k2" w="180pt" h="30pt"><value><text>k2</text></value></draw><draw name="k3" w="180pt" h="30pt"><value><text>k3</text></value></draw></subform>
+    <draw name="b3" w="180pt" h="20pt"><value><text>b3</text></value></draw>
+  </subform>

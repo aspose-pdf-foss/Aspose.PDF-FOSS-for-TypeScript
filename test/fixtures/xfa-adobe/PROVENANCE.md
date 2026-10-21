@@ -127,7 +127,8 @@ it could not see this.
 
 **Ceiling:** one producer, one version, hand transcription. Not covered: a field
 split between its lines (t27, t28, t31 -- refused, 164g.13), an `lr-tb` item that
-is itself a splittable subform straddling the cut (164g.25), repeated table
+is itself a splittable subform straddling the cut (164g.25, since probed by
+t122-t126 below), repeated table
 header rows (164g.15).
 
 | File | SHA-256 |
@@ -213,9 +214,9 @@ probe script. Their goldens are therefore `absolute` -- every draw's y is
 relative to the A origin with B 360pt down -- and the subform fragments are
 derived from the draws, which are read.
 
-**t65 is compared in part (`only`):** Reader splits the empty field D 44/16
-across the break; a field directly under the content area does not split here
-(164g.13; follow-up 164g.27). C, the object adhesion moves, is compared.
+**t65:** Reader splits the empty field D 44/16 across the break, directly under
+the content area. It was compared in part until 164g.27 split a page-level
+field; now D and C, the object adhesion moves, are both compared.
 
 | File | SHA-256 |
 |---|---|
@@ -553,3 +554,307 @@ bottom alike. t114 stays recorded: its Myriad Pro row has no face here.
 |---|---|
 | `t121.pdf` | `b4df0fa5483f34e545fd81f3414181bdf9e5594bc588585348f8cc43063b25ae` |
 | `t121.xml` | `1557ab609d928a971b1ae968c88b487ac4d8a752a6bd532096dfb9a824ef9d69` |
+
+## Splittable lr-tb item probes (164g.25)
+
+**Producer:** as above, on **2026-10-20**. `tN.xml` is committed, `tN.pdf` is
+the bytes Reader rendered and `captures/tN.png` its window. Each places a
+400pt filler so 104pt are left on page 1, then an `lr-tb` flow whose second
+item `s1` is a splittable subform straddling the foot.
+
+| Probe | What it varies |
+|---|---|
+| t122 | `s1` a tb of four 40pt draws, two 180pt items after it |
+| t123 | `s1` an lr-tb of six 90pt draws, two to a line |
+| t124 | `s1` a table of three 40pt rows |
+| t125 | `s1` a tb starting on the flow's SECOND line, 74pt left |
+| t126 | `s1` a tb, beside a 150pt draw |
+
+**What Reader settled:** `s1` splits between its own children exactly as a
+page-level tb, lr-tb or table splits (164g.12): what fits the room left below
+its top stays, and the first child that does not fit ends page 1. The rest of
+the line does NOT stay on page 1 even where it would fit (t122's `a3`, 40pt
+in 104): the tail opens page 2 at x = 0 and the later items re-pack after it,
+so the flow on page 1 is as tall as the head. A table keeps its column widths
+(t124). Every field and draw of all five lands on Reader's page and box.
+
+**Not covered:** an item holding a break, which is still refused.
+
+| File | SHA-256 |
+|---|---|
+| `t122.pdf` | `b04883a568912a18d4528522e255798787002c9259dbca475f77b299bd233233` |
+| `t122.xml` | `bc9afda132656c4f62ff4f4cf408113c3cc68922076ce4b57b96308b31b48f67` |
+| `t123.pdf` | `389a5d78616dd451338a7eb0be569b867b39c181edf34fe74d3d6a2ffd6824af` |
+| `t123.xml` | `c45e3be668415552506b1173d7de2e5c00c71c102cfa713373eb1b365576d30a` |
+| `t124.pdf` | `29e7e2b849abc4aba1f2f088c80bf3137f4dd2d6907d9f775bb560be5eeae9a0` |
+| `t124.xml` | `061c3449bcbe92d36361c137d87fba529fd4edbe92e55360262dff3c8b30f8c1` |
+| `t125.pdf` | `0cb1bb8cb6c4f4f0f60585674c0d417eb5faf4831c0c4268c5e06e6470318c6c` |
+| `t125.xml` | `dbae29309ac2fc757420ef8a17f343a96c008753fabe03b565e75c506200ca53` |
+| `t126.pdf` | `8e7b6750d7a2d411ffa2be57d424eb87004a5c3362dd2ef331800a7b1a0071bd` |
+| `t126.xml` | `71607083633ab30809014f698bd2ff1d1ccf94eae46ff766247ad2ca9bbd955d` |
+
+## Field-shape split probes (164g.26)
+
+**Producer:** as above, on **2026-10-20**. `tN.xml` is committed, `tN.pdf` is
+the bytes Reader rendered and `captures/tN.png` its window. Each is t45's shape
+-- a 360pt filler, then a keep-none positioned subform holding a 2in field `f`
+of ten 10pt Courier New lines that straddles the page foot -- with one property
+164g.13 refused switched on.
+
+| Probe | What it varies | Reader's page-1 piece |
+|---|---|---|
+| t127 | a left caption, 1in reserve | 60, as t45 |
+| t128 | a top caption, 20pt reserve | 56 = 20 + 3 x 12 |
+| t129 | top and bottom insets of 10pt | 58 = 10 + 4 x 12 |
+| t130 | `vAlign="bottom"` in a 160pt field | 54 = 42 + 12 (the block is 118, not 120) |
+| t131 | `lineHeight="15pt"` | 57 = 12 + 3 x 15 |
+| t132 | `orphans="2"`, 14pt left | none: moved whole (t52 kept one line) |
+| t133 | `widows="2"`, 112pt left | 96, 8 lines (9 without widows) |
+| t134 | a check button | none: moved whole |
+| t135 | a list box (`choiceList open="always"`) | none: moved whole |
+| t136 | a comb of one line | 64, a free cut below the text |
+| t137 | rich text, one 20pt line among 10pt | 60 = 12 + 12 + 24 + 12 |
+| t138 | `lineHeight="20pt"` | 52 = 12 + 2 x 20 |
+| t139 | `lineHeight="9pt"` | 63 = 7 x 9 |
+| t140 | `vAlign="middle"` | 57 = 21 + 3 x 12 |
+| t141 | t128 with 25pt left | none: moved whole, not cut at the caption |
+| t142 | t130 with 30pt left | none: moved whole, not cut above the text |
+
+**What Reader settled:** a field cuts at a line bottom of its own grid, from
+the field's top: the text starts below the top inset and a top caption and is
+moved down by `vAlign`; each line is 1.2 x its own size, or a stated
+`lineHeight` L -- every line L under 1.2s, the first line 1.2s and the rest L
+otherwise. With no line bottom above the room it moves. `orphans` and
+`widows` count lines of the whole plain-text value, newline records included.
+A field that is not a text entry moves rather than splitting. All sixteen
+land on Reader's page; t127-t129, t134 and t141 hold a widget smaller than
+the field box, so they compare our layout's field boxes (`fieldBoxes`).
+
+**Not covered:** a bottom caption, paragraph spacing, a lineHeight with mixed
+sizes, and orphans or widows across rich-text paragraphs.
+
+| File | SHA-256 |
+|---|---|
+| `t127.pdf` | `dd0bba05737e7b8af87c5da8dc7f0f494c0054ab14e0b026bad048612695dc9b` |
+| `t127.xml` | `297499138dadff9a98b29f145d765917a4c3c3bdd35343df05f5ee19ab881897` |
+| `t128.pdf` | `f9d0d8eafac3383574ddc099a9c259b1f36172c1b3534d4399ffb73bf81ba0d6` |
+| `t128.xml` | `31c11e7f960f354565654ac1c1b07a5ff45e1b96ed539719e107f41b836ce51c` |
+| `t129.pdf` | `5a6ddf02789d162f7d1f916a10f153e9dcbb624a9b5e0714f3d2d409d884b57a` |
+| `t129.xml` | `c63d68877bf0696a4ecf934c1e58f66d553e01e6452e63ed2dbf3ae8f15c3e02` |
+| `t130.pdf` | `54a36b832ac81512af6139b7095aa69e2d5b81dac67f99747473925f1ddc94e5` |
+| `t130.xml` | `b6390f044deadc040f849bf7ffe620bbdb14182a22acda175305482db367a900` |
+| `t131.pdf` | `71dd4d8ab573101b3347c5c65c27026e1290c7bdab5c8e58832caebb1e471635` |
+| `t131.xml` | `5922b5f4523b281d40870eaf14cbd6b4e822cf393fbddc79d1e161f3536fa426` |
+| `t132.pdf` | `e878a9ceff522ba9ede7d9f6d80e684cfcd017268c9d244508d1851f39ecf191` |
+| `t132.xml` | `25c62bbdfbbd7d203a88c8ab0522017edfa5c4db8529164023dff6dc8738897e` |
+| `t133.pdf` | `3fa10afb70d154c62e259b3c36b880fa6f2e100f5dff6b8b641779d66e23c8c5` |
+| `t133.xml` | `2a428d61bbae3acc804b08347646e73bb26c5a862dff50b0637c70006c5500cf` |
+| `t134.pdf` | `f1dc1e7b3940b0f14739a7cec45faae961c77deff55adf52662baabace449dae` |
+| `t134.xml` | `df01d658f59bc9288a81e70a67859a0dd475b8a66f8bea39dc5a1a91e2c52175` |
+| `t135.pdf` | `a8b3d7fdaedbdf6b2caddee1447c10f20b4f0766d8ff08b70b4280a46c9d90bf` |
+| `t135.xml` | `bb68f7ee44062da28763c038b0f108587ad307f86e62f6dab2c2dfb074dc97c3` |
+| `t136.pdf` | `2d029a98812e0147eb91c2c044535afa29d40b791864c66ce503bd761726419e` |
+| `t136.xml` | `759254b69ab182d546791b5f9e630885bd3667108b728bedd2934c3b7d46c1cc` |
+| `t137.pdf` | `2e49d8eaa5b3e1450916039dfedefac99b7450720e5a99deb6497da8804be771` |
+| `t137.xml` | `d89564480f0d8ae45cab87525ccefe52d89afaf43957e56a44c508198042a2a3` |
+| `t138.pdf` | `5c3dc1d198e98bc3971cba0b1a78e6d3010fcd43d7ec1ee3c6274eaada147a07` |
+| `t138.xml` | `516dacc218ba24b35b9e5f6364cb00a62f9ba65be0cffdf6c6bb1c17011ff4d5` |
+| `t139.pdf` | `53503d3c0e590c435afe1922624d2b39ed68217bb6b8a3de4b03c34bb1120ec8` |
+| `t139.xml` | `31e4628e0ccb5a626809ba3c9925cee896501b8cbdcb7155373b2ef8d346343a` |
+| `t140.pdf` | `0d870739d468681bbc3d9b156f294374f0870aa427f61b517ffcad833388431d` |
+| `t140.xml` | `9a2bd311323d1bcf21023140cb4a6b11ecf5a08546308f4f2a0a8d652ca7df3b` |
+| `t141.pdf` | `99e24e988acddcdc796bda6a7b2bbd2480088f73529f376dfb0d154f2fed9e5a` |
+| `t141.xml` | `d53f633715bb00b321f29a233e5a3902b3b09bd91508755237b0d69f0f30c8ce` |
+| `t142.pdf` | `868ae0103c5500ee3df1c679e2450b9f1301b4d545f4d5a3088fa0cab9a8a3a7` |
+| `t142.xml` | `71cf8732b35023fb3a7824fe78f35df31852b1163605557467a48af8d686aca0` |
+
+## Overflow target probes (164g.30)
+
+**Producer:** as above, 2026-10-21. t143-t159 test `<overflow target>` (XFA 3.3
+p. 366-367, 791). The generator gained one hook: an `<overflow .../>` followed
+by `<!-- root -->` goes on the ROOT subform. Two page sets: P1 = { C1 (5in), C2
+(3in) } with P2 = { F (10in) }, or P1 = { C1 } with P2 = { G1 (2.5in), G2
+(5in) }; content is 72pt draws. Each capture is cropped to the report.
+
+**The goldens are DERIVED, not read** (`adobe-target.json`): each draw's and
+field's top in PAGE coordinates, from its reported y, its parent's fragment and
+its content area's origin. Reader's `pageSpan` counts pages, so a fragment in
+a page's second content area is reported under the NEXT page number (t67's
+trap); each node's own `xfa.layout.page` is reliable, and its y within the
+parent's fragment tells which content area it sits in.
+
+**What Reader settled:** the target replaces the natural next region for EVERY
+overflow of the container stating it, a root child that merely does not fit
+included (t143, t144, t149, t150, t153); a content-area target behaves as a
+`startNew` content-area break (t157) and a page-area target opens a new page
+of it every time (t147); a target is inherited (t146), holds only while its
+container continues (t145), and a stated `target=""` blocks the inherited one
+(t158); a positioned subform IGNORES its own target (t151) but follows the
+root's (t159); a target naming nothing goes to the next PAGE, never the
+page's next content area (t148, against the t154 control); and a leader opens
+the target region (t152, t156; t155 is the control).
+
+**A false start, recorded:** the first t152, t155 and t156 put the leader's
+`<proto>` at template level, which Reader ignores (164g.15 R1, t74/t75), so no
+leader appeared even in the control. The vendored ones carry `<!-- proto in
+root -->`.
+
+**Ceiling:** one producer, one version, hand transcription. Not covered: a
+trailer beside a target, a SOM-expression target, a target in a nested page
+set, a root field split under a root leader.
+
+| File | SHA-256 |
+|---|---|
+| `t143.pdf` | `892a5cf0dbcd4d12330042451b7c23fcbce28562b2b3aa302432db83a11677c7` |
+| `t143.xml` | `6004a116967661a6491ba1766dd28dd2e327c5a0bc0e653d378772df534f8e83` |
+| `t144.pdf` | `2c81ef17b8b756266cb32b4ff057aaa9ddf3826c29abe7b663cfc1b129e8c061` |
+| `t144.xml` | `b762cbf6f445c84fa010c43ff0e24455637cefa165cbe8fbd81d961e37b68310` |
+| `t145.pdf` | `dca583f62b062856062a95ab7719045be76bb8dd8fe3302d0048b61c8421839a` |
+| `t145.xml` | `48ec00bb63d8ed3a15845e7533cf8a3feb252460b354f75a4181a815242a3a6c` |
+| `t146.pdf` | `8fb5d47141068c45a98a12568212d159058dbfef4adbd4f05d1f53d97b8a01d3` |
+| `t146.xml` | `3a7ff9c36c2251afec5c391716a3492b219d5d2b12ad579745d641bea7280b00` |
+| `t147.pdf` | `705808bd0ee14375fc758278d52e042dcba17b26efa287e9ebecbdb531d915ce` |
+| `t147.xml` | `fee2e4f824e705f0f8cc5097b7fec43474edd9049321bc771ce7c9e8068fef62` |
+| `t148.pdf` | `35b188615ee23caffddc7c596e5519a03d9b68d3e7c12636d777748c346eff4e` |
+| `t148.xml` | `1c0eb382faea11e32def6439d5d78d162a84fc1ed6a8ffc879cd5b567b4fc26f` |
+| `t149.pdf` | `82706da1166df0e77cc8f4439de127ca42540fb7e813c19c70139234fb9f41ff` |
+| `t149.xml` | `357be37b1813af00c41169fc296a094feb964384ab5cd45e1ac5710734c48d28` |
+| `t150.pdf` | `ddfef9733f6eb3c17b42bcec85116cc2f3a4b9c14abf42eaab1e4d4a6bc5fb62` |
+| `t150.xml` | `692de6ef0f8bec7551f7cf9eb61001530f13a460e0a935bd33285753a51df298` |
+| `t151.pdf` | `8310e447d5fa8bd015adcfccda32010f577eda91f59d92ee419872c914052457` |
+| `t151.xml` | `11a7fbf5c02a24e540e5dbc108470395eec2f0d9429e32a0dc9cc31f290d32ae` |
+| `t152.pdf` | `afca9c871faeb174a75e5e50df7bfe0605d287451c3d249cb7936c2aa0635c1a` |
+| `t152.xml` | `6de8f0acda00a78ac4b621ceb065b562a9c03bb013e14eb67133334abc293ce9` |
+| `t153.pdf` | `91e53acef3ea9fb3dcea7ff474beca57f849fa05ea25d98bb94d0ffb802b07ae` |
+| `t153.xml` | `04ed9d5d6543ee6ef4c0980d1fb0bcbccdda65f4e8922a31fa90d7b2521ab4b0` |
+| `t154.pdf` | `20dc91d3bf6ceb5a8246e597e4f501b21b7eb3c2f94b199c34484eb416ad7de9` |
+| `t154.xml` | `46cf5dc0f857ae97b7bb231fdcd29bc321fe3787cbb054cf5939b62a6da343f0` |
+| `t155.pdf` | `8e6d073d4005b152414f28ec3235a1955f77c8b6fe2de262a1da91395ac06b3d` |
+| `t155.xml` | `1ba0211824ae0abb5e08ebfc7875cf997a36580b6be52635d26f7f3d9c3ddacc` |
+| `t156.pdf` | `1edc634ca9b5feb83eb049ba71b0fb00fc6f8efe95b9f2ca975ea0028bd9f728` |
+| `t156.xml` | `954e1a43d55ca7b9957c50aa9d9ed134ac6c70903c18680f523c052db0449279` |
+| `t157.pdf` | `fbddc955f83c371170fddc07c6adf0d41dd0df631a1d8d782bc884338fd275ce` |
+| `t157.xml` | `04592973f2266e12b9db1f57babbb9923b53b16c132b19400a0afe6b097f93da` |
+| `t158.pdf` | `ee928460ef2cc02c314731a5afa8b3fdad8dedab475c0a883a06998610a42a7e` |
+| `t158.xml` | `9e19a4031b528ddc83e9c15306f19b1099ae84cdf9a78f26ed1d75d2efc64201` |
+| `t159.pdf` | `63d7d37000563cd0bd532befc0d98c422079f4f5a695e3e56128af502604f95c` |
+| `t159.xml` | `9636983d66a34b2d3683d6b73086e568bce37b77314f1d5a4bdc23c7adbe1634` |
+| `adobe-target.json` | `33f8414d5c1ef243a29af84f80f68013b3b4e7f073a5e617c7bfdb94e2fd65e6` |
+
+## Bookend probes (164g.29)
+
+**Producer:** as above, 2026-10-21. t160-t176 test `<bookend leader trailer>`
+and the deprecated `<break bookendLeader bookendTrailer>` (XFA 3.3 p. 317-318,
+326, 625, 634). The generator gained one hook: a `<bookend .../>` followed by
+`<!-- root -->` goes on the ROOT subform, as `<overflow>` already could. L and
+T are positioned subforms 20pt tall, each holding a draw and a field, in a
+`<proto>` inside the root subform unless the probe says otherwise. Each
+capture is cropped to the report; the goldens in `adobe.json` are READ, in
+164g.11's parent-relative form.
+
+**What Reader settled:** a bookend leader is the subform's first child and the
+trailer its last (t160), through a split (t163), in an lr-tb (t169) and a table
+(t176), with no other content (t162), on the root subform at the start and end
+of the document (t166), and through the deprecated `<break>` attributes
+(t170). Every subform, and every instance of a repeating one, gets its own
+copy; a target's default `occur max` of 1 does not limit them (t161, t167,
+t174). A copy is a form instance named after the instances the walk counted
+(t172: `S.H[1]` beside the in-flow `S.H`). A positioned subform ignores its
+bookend (t168); a template-level proto (t165) and a draw (t173) are ignored as
+an overflow target is. A break leader goes before the bookend leader and a break
+trailer after the bookend trailer (t171, p. 364, 366); a bookend trailer is
+ordinary content and reserves nothing (t175); combined with an overflow leader
+and trailer (t164, Example 8.46), each kind does its own job.
+
+**Ceiling:** one producer, one version, hand transcription. Not covered: a
+bookend copy and an overflow copy of one name in one scope, an `rl-tb` or
+`rl-row` layout, a bookend target that states a bookend of its own. Draws a
+probe repeats on one page (`Ld` and `Td` in t161, t167, t174; `Hd` in t172) are left out of
+`draws`, the harness matching a draw by its bare label; their subforms are
+checked through their fields.
+
+| File | SHA-256 |
+|---|---|
+| `t160.pdf` | `d9d4d5ff986c82b5c1bf2d1732178d206876cd832375f3ad626b4532e68158d1` |
+| `t160.xml` | `972e5e5a378c57aeca8e48d56a6292b39fc5e20b3dd791e58148b77af9fb7f0c` |
+| `t161.pdf` | `c0cf172f1934754ec746ed1236604a2819bf86649f410cdf9fdc8461144f4045` |
+| `t161.xml` | `6e8d8aa5de3f72212846ca4d109681fb620ade4fd9a4241115a9b0c839102fe5` |
+| `t162.pdf` | `4991e624cbb4b3c92594fdc0c38284afaa68adc6b8b045d519a5fe46be03c834` |
+| `t162.xml` | `ee821257b74ea63f92d8a2e1479b536f86a8c2ed9ac8af7be78f9cfa733e50cd` |
+| `t163.pdf` | `4dfd5136e46ea6998459c78d21d81c6f609e19fb40253542f8654fe5febf26bc` |
+| `t163.xml` | `3fac3c0e69c3f6473ae27cd78c69f58b45cdbfe38277fa36d65afcb82f774bdd` |
+| `t164.pdf` | `60dc345273b3c2e15e1a289d841edd9b292199736702222a4ed4c1d36b43cf7b` |
+| `t164.xml` | `9d83d4db2a35858438ffa86795fc5e550c7a558642069e30f3c3db29d865aa00` |
+| `t165.pdf` | `616c6bf0e44aa1df645d323517e505c3a3299689bcb1664b51be0e08886da7c8` |
+| `t165.xml` | `5df31cc7e5c5f0c4a2facd8357f9aa7e7c646af0c225333ea3c36746bd50a5d0` |
+| `t166.pdf` | `7d20526593f60ea0b89cd5c19cc0bc4b740715a1cc74951e273372531b4855be` |
+| `t166.xml` | `06405b048f1a973b464bb656729c9baafac62ee7ce3c7099722b7e4d9ab34f70` |
+| `t167.pdf` | `449e7f5ff9378a30cb60d3bbb05b77cd74232e68f62436973da20628dcfb510c` |
+| `t167.xml` | `b69e99318f51ccbdfacb6083205a7964981bf83cb422ef3630a06f3d21787a94` |
+| `t168.pdf` | `f78ab47ec905e74ed9533ab6848006ce531e83defbc26b4b8d9f8de87aa1b4e3` |
+| `t168.xml` | `1d7481dbfc77366a6f0c820f89569996366db203c3ed0ea66a0feb94fc5d5310` |
+| `t169.pdf` | `db27023a059802833e940336fc9bd9df13627ccb645317fa132c7807f30688f0` |
+| `t169.xml` | `9c0446a05d9cd813199cd9d0e93bab494822bcc8ba979393758db55ec422b18a` |
+| `t170.pdf` | `c686c443371c6d437edb73dfdaf791dbce6ae2567a51121b14dc060bdd45b598` |
+| `t170.xml` | `6ec954bfe2b340cb31442df089ce845a872ff354dc1d035987dc6d561ed9777b` |
+| `t171.pdf` | `78657804f8cb31b4c12afdc12df74421c5ac7b277ff840f2c3faa6a4de993862` |
+| `t171.xml` | `0391e6781dd09591dcfab15d7f2a0a42574fa99bec6122e8ec1bb10b8de72d0d` |
+| `t172.pdf` | `8be6b200c14a70bdc3fbbad7cb15dbf0cbf3c8f774685565a4b2d74e6ac0d251` |
+| `t172.xml` | `1c9e53ac5fc8af4f50c15e5972a0f0a897da0db9411163946cf92ed5a378b3d5` |
+| `t173.pdf` | `a0a94c7a542d6bbe6af134861949bda5f4a598f7b9ebc06d512b64c3d6d64ecd` |
+| `t173.xml` | `7c6a71919f97d2ad937607fb8306693ef49294b48f5add3ad87d1e27390f9705` |
+| `t174.pdf` | `82a3a29fc474ddb63036a771b4379d086c0c4210ecc5b3fb8fb33ef45ba9f220` |
+| `t174.xml` | `35657077c64f17ec8dd450a15fb7919f8726090f6f9835b175738dfaee8a38ef` |
+| `t175.pdf` | `964b50f211011fdda4c6a81574e6e83685495da1037b6136f3d4ab0b3609f1a6` |
+| `t175.xml` | `5c651e054248de983dbcef7b7eece45852d5e399bfb4b63b010220d15d361a67` |
+| `t176.pdf` | `b358786367b6b9c584f352bf26881a22ce606f01283dfe35e82f883a23bd3241` |
+| `t176.xml` | `aec8f1654409d233dafe02581621e48dd1dc8853da1a0cb07b57db6671359612` |
+
+## Refused leader and trailer shapes (164g.31)
+
+**Producer:** as above, 2026-10-21. t177-t186 test the leader and trailer
+shapes 164g.15 refused as unprobed. The generator's root hook now also takes a
+`<breakBefore .../> <!-- root -->`. L and T are positioned 20pt subforms with a
+draw and a field, `occur max="-1"`; S2 is a positioned 50pt subform carrying
+the break. Each capture is cropped to the report; goldens in `adobe.json` are
+READ. t177 and t180 drew a blank window on the first run (Reader had not
+finished) and were captured again after 25 seconds.
+
+**What Reader settled:** a leader or trailer on the break that chooses where
+layout starts is ignored (t177, t178); a break that does not move -- `auto`
+(t179) or a page area naming the current one (t180) -- lays its trailer then
+its leader in place; a trailer that does not fit opens a page of its own and
+the break then applies from there (t181); inside a split chain the copies are
+children of the breaking subform's parent, the trailer closing its fragment
+and the leader opening the next (t182), and a trailing breakAfter's leader
+makes a fragment of its own (t184); a break lays no OVERFLOW leader or trailer
+(t183); a split positioned subform's overflow trailer is reserved in the cut
+and laid in the content area's flow below the fragment (t185); a positioned
+child's overflow inside a split positioned subform is ignored (t186).
+
+**Ceiling:** one producer, one version, hand transcription. Not covered: an
+`auto` breakAfter, a trailer that does not fit inside a split chain, a break
+nested below the root child's own children, a non-moving break inside a chain.
+
+| File | SHA-256 |
+|---|---|
+| `t177.pdf` | `4b041eaef913022741f14401320adbc66839fd30ed1c47c6beb83cc118d3e368` |
+| `t177.xml` | `3fbdf2986ce8a60c7c2cf8e751a68415869304b672ba0276a202b3fc5ae2692f` |
+| `t178.pdf` | `aaa4804157ae34cfd41137821fbe34e94164f0414b3f26f976d908b4766dcee3` |
+| `t178.xml` | `51133578c960eec28ff78ce3306a48433c7da80b8f4173d552884bdf090897df` |
+| `t179.pdf` | `6b95c33163ad683ef1194aceaddc6fb1beac0fe41775d16b67cd94a9a9a9eda0` |
+| `t179.xml` | `7d6fc77db5342db7a3b1dd75efbe68bd10be7f21596ce16375349b491bc7920a` |
+| `t180.pdf` | `6fbcb5c97a3c7b8a90899f9a6a8b6d7fac67adb06e6a86356cbd038b53b474ca` |
+| `t180.xml` | `b5344c4d995aaf3e6704719b57bff409a2816176491e28c672d6442d6a09967c` |
+| `t181.pdf` | `008e207105f8672a9622ad6c29d85c32b3badd83e430a3f2d9cd12d0ec95e7bd` |
+| `t181.xml` | `c79a30126f02bbd0e82706908fa0ef8710b8e87efb88da588a41bbdbf0f25761` |
+| `t182.pdf` | `fa031f51fb4ae201ea21bf4ed39e9c8984b0feb0533ed3d71b1e86775072ee59` |
+| `t182.xml` | `32a810aa024952d7a1ebdd066fd83bc779b329f0e08dbc85c13898c033234b31` |
+| `t183.pdf` | `d25b6b87652f1659458aeffb4f578925629758ecfc548a82b9893d7a2c1265e8` |
+| `t183.xml` | `b11271e3edc83226c39fb4a78a0003c658b79e10ea9cc6010e76901efd477339` |
+| `t184.pdf` | `1196b5582e1a74d526270c2304e9f3ab709604efdfc7b44ba0e2ab282f5e2b3e` |
+| `t184.xml` | `a8d247943d575babf8389dec55c9024e8b3e7bed854014e3be359819529c9b7b` |
+| `t185.pdf` | `0ffe9d2324c0fec076400c9b9e0f98be884841c0f9f71971d7213c7c33d99298` |
+| `t185.xml` | `d40024eb1a465c818fbf2a684e9d6daa62401ab5cea1cc7ee37504d8eb0765d4` |
+| `t186.pdf` | `b953827c830f53bf75a2251e5d8a4419b721ab98109308e8138808722b82169d` |
+| `t186.xml` | `97fea1a64cd915d9d4983fd8dd04a570feebe60cbc26a5b0bbb836bd01873130` |

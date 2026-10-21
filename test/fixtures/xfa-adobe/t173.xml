@@ -1,0 +1,40 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="100pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="S" layout="tb" w="7.5in">
+<bookend leader="#Q_ID" trailer="#T_ID"/>
+<draw name="D1" w="2in" h="50pt">
+<value>
+<text>D1</text>
+</value>
+</draw>
+<draw name="D2" w="2in" h="50pt">
+<value>
+<text>D2</text>
+</value>
+</draw>
+</subform>
+<proto>
+<draw name="Q" id="Q_ID" w="2in" h="20pt">
+<value>
+<text>Q</text>
+</value>
+</draw>
+<subform name="T" id="T_ID" layout="position" w="7.5in" h="20pt">
+<draw name="Td" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Td</text>
+</value>
+</draw>
+<field name="Tf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+</proto>

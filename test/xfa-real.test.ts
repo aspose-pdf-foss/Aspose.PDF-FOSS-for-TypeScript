@@ -471,22 +471,27 @@ describe('occurrence numbering against Adobe (164g.33)', () => {
   });
 
   // Adobe writes these groups with an /Opt array, so its state names are the
-  // INDICES and the export values are /Opt's (32000-1 12.7.4.2.4). We name each
-  // state by its export value; the two say the same thing, widget by widget.
-  it("dod-dd3183.pdf: every radio widget exports the value Adobe's /Opt names", () => {
+  // INDICES and the export values are /Opt's (32000-1 12.7.4.2.4). Since
+  // 164g.37 we write the same: the same /Opt, and each widget the same index
+  // state as its Adobe twin -- which also makes the exports agree.
+  it("dod-dd3183.pdf: every radio group carries Adobe's /Opt and index states", () => {
     const bytes = load('dod-dd3183.pdf');
     const src = Document.Open(bytes);
     const doc = stripAcroFields(bytes);
     doc.ConvertXfaToAcroForm({ removeXfa: false });
     const radios = src.Form.Fields.filter((f) => f.Type === 'radio');
     expect(radios).toHaveLength(15);
-    for (const g of radios) {
-      const opt = (src.resolve(g.Dict.get('Opt')) as Array<{ bytes: Uint8Array }>)
+    const optOf = (d: Document, f: { Dict: Map<string, unknown> }): string[] =>
+      (d.resolve(f.Dict.get('Opt') as never) as Array<{ bytes: Uint8Array }>)
         .map((o) => new TextDecoder('latin1').decode(o.bytes));
+    for (const g of radios) {
+      const ours = doc.Form.Get(g.FullName)!;
+      expect(optOf(doc, ours), g.FullName).toEqual(optOf(src, g));
+      expect(ours.Options, g.FullName).toEqual(g.Options);
       const mine = kidsOf(doc, g.FullName);
       for (const w of kidsOf(src, g.FullName)) {
         const twin = mine.find((m) => near(doc.resolve(m.get('Rect')) as number[], src.resolve(w.get('Rect')) as number[]))!;
-        expect(onState(doc, twin), g.FullName).toBe(opt[Number(onState(src, w))]);
+        expect(onState(doc, twin), g.FullName).toBe(onState(src, w));
       }
     }
   });
@@ -532,7 +537,8 @@ describe('millipoint layout, against Adobe (164g.35)', () => {
   // decimals, at most 0.0005, on every vendored form. In floating point
   // DD 2952 reached 0.0024 and fw9 0.0007 while still inside the 0.01 bound.
   // DD 3019's six left-captioned Myriad Pro fields sit exactly one millipoint
-  // right of Adobe's (164g.38): no rule over the measurements explains them.
+  // right of Adobe's (164g.38): no rule over the measurements explains them,
+  // and the rects are Designer's, so no Reader probe can reproduce them.
   const OVER: Record<string, string[]> = {
     'dod-dd3019.pdf': [
       'form1[0].#subform[0].Arrival[0].TransitTime[0]',

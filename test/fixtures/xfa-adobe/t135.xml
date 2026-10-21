@@ -1,0 +1,5 @@
+  <subform name="filler" layout="position" w="7.5in" h="5in"><draw name="d0" x="0" y="0" w="1in" h="10pt"><value><text>filler</text></value></draw></subform>
+  <subform name="pos" layout="position" w="7.5in" h="4in"><keep intact="none"/>
+    <field name="f" x="0" y="80pt" w="2in" h="130pt"><font typeface="Courier New" size="10pt"/><ui><choiceList open="always"/></ui><items><text>i01</text><text>i02</text><text>i03</text><text>i04</text><text>i05</text><text>i06</text><text>i07</text><text>i08</text><text>i09</text><text>i10</text></items></field>
+    <field name="z" x="5in" y="0.2in" w="1in" h="0.3in"><ui><textEdit/></ui></field>
+  </subform>

@@ -29,7 +29,7 @@ describe('U+2028 in XFA text (164g.23, Adobe t91)', () => {
   const ds = set.packets.get('datasets');
   const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(ds));
   const values = ds ? parseXfaDatasets(ds) : new Map<string, string | string[]>();
-  const r = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).count);
+  const r = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).grid);
   const h = (label: string): number => {
     const n = r.pages[0].nodes.find((x) => x.node.label === label);
     if (!n || !('box' in n)) throw new Error(`${label} not placed`);

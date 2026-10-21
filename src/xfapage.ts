@@ -26,8 +26,8 @@ import { measureToPt, type XfaMedium } from './xfageom.js';
 import {
   positionedCut, positionedFragment, positionedSplittable, type XfaChildBoxes,
 } from './xfasplitpos.js';
-import { fieldCut, fontSizeOf, pieceOf, ptStr } from './xfafieldsplit.js';
-import { adheres, intactSplits, nextAdhering } from './xfakeep.js';
+import { fieldCut, fontSizeOf, pieceOf, ptStr, type FieldLines } from './xfafieldsplit.js';
+import { adheres, concealed, FLOWED, intactSplits, nextAdhering } from './xfakeep.js';
 
 /** A qualified page area's qualifiers (XFA 3.3 p. 302-303); absent reads as `any`. */
 export type XfaPagePosition = 'any' | 'first' | 'last' | 'rest' | 'only';
@@ -117,9 +117,10 @@ export interface XfaPaginateHooks {
   columns?: (n: LayoutNode) => number[] | { reason: string };
   /** `n`'s top within `root` once `root` is laid out, in points (rule 7). */
   topOf?: (root: LayoutNode, n: LayoutNode) => number | undefined;
-  /** A field value's wrapped line count, 0 when empty (164g.13). Without it a
-   *  straddling field whose value is not known empty is refused. */
-  fieldLines?: (n: LayoutNode) => number | undefined;
+  /** What is known of a field value's lines (164g.13, 164g.26): its grid, or a
+   *  bare count (0 when empty). Without it a straddling field whose value is not
+   *  known empty is refused. */
+  fieldLines?: (n: LayoutNode) => FieldLines;
 }
 
 /** A measurer that measures each node once per box: a split re-measures its
@@ -140,7 +141,7 @@ export function memoMeasure(m: XfaMeasure): XfaMeasure {
 /** The hooks over `xfaflow.ts`, for one measurer. `topOf` lays `root` out on a
  *  probe page, since leaves under a flow are only placed when a content-area
  *  bottom bounds them. */
-export function layoutHooks(measure?: XfaMeasure, lines?: (n: LayoutNode) => number | undefined): XfaPaginateHooks {
+export function layoutHooks(measure?: XfaMeasure, lines?: (n: LayoutNode) => FieldLines): XfaPaginateHooks {
   return {
     // Without a counter, only a field whose template value is empty is known.
     fieldLines: lines ?? ((n) => (n.text && n.text.refusal === undefined
@@ -187,7 +188,6 @@ export function chooseArea(areas: readonly XfaPageAreaModel[], s: PageState, mod
   return i < 0 ? undefined : i;
 }
 
-const concealed = (n: LayoutNode): boolean => n.presence === 'hidden' || n.presence === 'inactive';
 const after = (cause: string): string => `an earlier item in its flow could not be laid out (${cause})`;
 
 /** A break target to the page area and, for a content-area target, the content
@@ -212,8 +212,19 @@ function resolveTarget(
   return hits[0];
 }
 
-/** The layouts that split between their children (164g.8, 164g.12). */
-const SPLITS: ReadonlySet<string> = new Set(['tb', 'lr-tb', 'table']);
+/** An overflow target to the one area it names (164g.30): `<overflow>` has no
+ *  targetType (XFA 3.3 p. 366), so it is resolved against content areas AND
+ *  page areas, and must name exactly one of either. */
+function resolveOverflowTarget(ps: XfaPageSet, target: string): { type: 'contentArea' | 'pageArea' } | { reason: string } {
+  const ca = resolveTarget(ps, 'contentArea', target);
+  const pa = resolveTarget(ps, 'pageArea', target);
+  if (!('reason' in ca) && !('reason' in pa)) return { reason: 'names both a contentArea and a pageArea' };
+  if (!('reason' in ca)) return { type: 'contentArea' };
+  if (!('reason' in pa)) return { type: 'pageArea' };
+  if (/is a SOM expression/.test(ca.reason)) return { reason: 'is a SOM expression, which is not resolved' };
+  if (/more than one/.test(ca.reason + pa.reason)) return { reason: 'names more than one contentArea or pageArea' };
+  return { reason: 'names no contentArea or pageArea' };
+}
 
 /** XFA 3.3 p. 291-292, narrowed to what 164g.8 and 164g.12 implement: a `tb`,
  *  `lr-tb` or `table` subform with no stated h whose keep intact is none -- or
@@ -225,7 +236,7 @@ const SPLITS: ReadonlySet<string> = new Set(['tb', 'lr-tb', 'table']);
  *  positioned subform splits geometrically instead, when it states keep
  *  intact="none" (xfasplitpos.ts, 164g.11). */
 export function splittable(n: LayoutNode): boolean {
-  return n.kind === 'subform' && SPLITS.has(n.layout ?? 'position') && n.geom.h === undefined
+  return n.kind === 'subform' && FLOWED.has(n.layout ?? 'position') && n.geom.h === undefined
     && n.refusal === undefined && intactSplits(n);
 }
 
@@ -237,19 +248,28 @@ interface Leaf { node: LayoutNode; path: LayoutNode[]; brks: XfaBreak[] }
 
 /** A splittable node as its leaves (164g.12). A tb's child that is itself
  *  splittable and shows something is flattened in turn -- an lr-tb or a table as
- *  much as a tb (rule 6, t31, t32). An lr-tb's items and a table's rows are
- *  leaves. A table's whole-table widths go into `widths`, so every fragment
+ *  much as a tb (rule 6, t31, t32) -- and so is an lr-tb's item that is a
+ *  splittable subform (164g.25, t122-t126): Adobe splits it between ITS
+ *  children into the room left on its line, its head ends the region, and its
+ *  tail opens the next one at x = 0 with the later items re-packed after it,
+ *  which is this per-leaf fit one level down. One with a break inside it stays
+ *  an item (unprobed) and `straddle` refuses it. A table's rows are leaves.
+ *  A table's whole-table widths go into `widths`, so every fragment
  *  keeps them (rule 4, t30).
  *
  *  164g.16: a breakAfter takes effect before the NEXT leaf, as a breakBefore on
  *  it would (Adobe t92, t93). One with no leaf after it in the chain is
  *  `trailing`, applied once the chain is placed, as a root child's breakAfter
  *  is -- which is what makes t94's next root child open page 2, and t95's
- *  break with nothing after it a page of its own. */
+ *  break with nothing after it a page of its own.
+ *
+ *  164g.31 S4: `homes` records, per break, the path to the BREAKING subform's
+ *  parent -- where its leader and trailer are laid (t182, t184) -- since a
+ *  breakAfter rides on the NEXT leaf, which may sit in another container. */
 function flatten(
   c: LayoutNode, hooks: XfaPaginateHooks, widths: Map<LayoutNode, number[]>,
-  path: LayoutNode[] = [], brks: XfaBreak[] = [],
-): { leaves: Leaf[]; trailing: XfaBreak[] } | { reason: string } {
+  path: LayoutNode[] = [], brks: XfaBreak[] = [], homes = new Map<XfaBreak, LayoutNode[]>(),
+): { leaves: Leaf[]; trailing: XfaBreak[]; homes: Map<XfaBreak, LayoutNode[]> } | { reason: string } {
   const m = insetsOf(c);
   if ('reason' in m) return { reason: m.reason };
   if (c.layout === 'table' && hooks.columns) {
@@ -264,9 +284,12 @@ function flatten(
     // A hidden child takes no part in layout (p. 67): no height, and its break
     // and refusals do not apply -- as at the root.
     if (concealed(k)) { out.push({ node: k, path: chain, brks: [] }); continue; }
+    if (k.breakBefore) homes.set(k.breakBefore, chain);
+    if (k.breakAfter) homes.set(k.breakAfter, chain);
     const own = k.breakBefore ? [...pending, k.breakBefore] : pending;
-    if (c.layout === 'tb' && splittable(k) && k.children.some((x) => !concealed(x))) {
-      const inner = flatten(k, hooks, widths, chain, own);
+    if ((c.layout === 'tb' || (c.layout === 'lr-tb' && !innerBreak(k)))
+      && splittable(k) && k.children.some((x) => !concealed(x))) {
+      const inner = flatten(k, hooks, widths, chain, own, homes);
       if ('reason' in inner) return inner;
       out.push(...inner.leaves);
       pending = inner.trailing;
@@ -276,7 +299,7 @@ function flatten(
     }
     if (k.breakAfter) pending = [...pending, k.breakAfter];
   }
-  return { leaves: out, trailing: pending };
+  return { leaves: out, trailing: pending, homes };
 }
 
 /** Whether a splittable node's chain holds a break below it: such a node is
@@ -322,7 +345,7 @@ function fragmentOf(leaves: readonly Leaf[], widths: ReadonlyMap<LayoutNode, num
  *  (t27, t28, t31, t47, t49) -- in a `tb`, a field the rules refuse MOVES, as
  *  under 164g.8, so no form that converted before loses it. In an `lr-tb` a
  *  draw moves (t37, t38), a refused field is refused, and a splittable subform
- *  item is refused (164g.25). A table row and a `tb` draw always move (t29, t48).
+ *  item -- one `flatten` kept whole for a break inside it -- is refused (164g.25). A table row and a `tb` draw always move (t29, t48).
  *  The room for the leaf is the region's room less its top in the candidate
  *  fragment and the bottom margins around it. */
 function straddle(
@@ -350,8 +373,8 @@ function straddle(
     if ('reason' in hh) return undefined;
     const cut = positionedCut(n, piece, hooks.boxes!, hooks.fieldLines);
     if (typeof cut === 'object' || cut <= EPS) return undefined;
-    const head = positionedFragment(n, 0, cut, hooks.boxes!);
-    const tail = positionedFragment(n, cut, hh.h, hooks.boxes!);
+    const head = positionedFragment(n, 0, cut, hooks.boxes!, hooks.fieldLines);
+    const tail = positionedFragment(n, cut, hh.h, hooks.boxes!, hooks.fieldLines);
     if ('refusal' in head || 'refusal' in tail) return undefined;
     return { head, tail };
   }
@@ -361,10 +384,11 @@ function straddle(
     const fc = fieldCut(n, piece, hooks.fieldLines?.(n), hh.h);
     if (fc === 'move') return undefined;
     if ('refusal' in fc) return lay === 'tb' ? undefined : fc.refusal;
-    return { head: pieceOf(n, 0, fc.cut), tail: pieceOf(n, fc.cut, hh.h - fc.cut) };
+    const g = hooks.fieldLines?.(n);
+    return { head: pieceOf(n, 0, fc.cut, g), tail: pieceOf(n, fc.cut, hh.h - fc.cut, g) };
   }
   if (splittable(n))
-    return `${n.label}: an lr-tb item that is itself a splittable subform is not split across content areas (164g.25)`;
+    return `${n.label}: an lr-tb item that is a splittable subform with a break inside it is not split across content areas (164g.25)`;
   return undefined;
 }
 
@@ -376,33 +400,55 @@ type Lead = 'yes' | 'no' | { fallback: string };
  *  chain); else its first piece: a splittable subform's first leaf (t58, t70)
  *  or a field's first piece by `fieldCut` (t65). Measured through the same
  *  `height` and `fragmentOf` as the fit test, so the two cannot disagree. A
- *  shape no probe settles is a fallback (spec section 4). */
+ *  shape no probe settles is a fallback (spec section 4). `root` is the root
+ *  subform, which decides whether a root-level field splits at all.
+ *
+ *  164g.28: a LOOP along the chain, never recursion -- a chain of adhering root
+ *  children is as long as the form makes it. */
 function leadFits(
   sibs: readonly LayoutNode[], iy: number, room: number, height: XfaHeight, hooks: XfaPaginateHooks,
+  root?: LayoutNode,
 ): Lead {
-  const y = sibs[iy];
-  if (y.breakBefore)
-    return { fallback: `${y.label}: adhesion into a sibling with a breakBefore is not implemented (164g.14)` };
-  const r = height(y, Infinity);
-  // Its own refusal is reported where it is placed; it does not hold anything off.
-  if ('reason' in r) return 'yes';
-  if (r.h <= room + EPS) {
-    const iz = nextAdhering(sibs, iy);
-    return iz === undefined ? 'yes' : leadFits(sibs, iz, room - r.h, height, hooks);
+  for (let i = iy; ;) {
+    const y = sibs[i];
+    if (y.breakBefore)
+      return { fallback: `${y.label}: adhesion into a sibling with a breakBefore is not implemented (164g.14)` };
+    const r = height(y, Infinity);
+    // Its own refusal is reported where it is placed; it does not hold anything off.
+    if ('reason' in r) return 'yes';
+    if (r.h <= room + EPS) {
+      const iz = nextAdhering(sibs, i);
+      if (iz === undefined) return 'yes';
+      room -= r.h;
+      i = iz;
+      continue;
+    }
+    if (hooks.boxes && positionedSplittable(y))
+      return { fallback: `${y.label}: adhesion into a positioned subform that splits is not implemented (164g.14)` };
+    if (y.kind === 'field') {
+      // 164g.28: the root loop moves a field WHOLE where it does not split,
+      // so a piece that would fit puts nothing here.
+      if (!rootFieldsSplit(root)) return 'no';
+      const fc = fieldCut(y, room, hooks.fieldLines?.(y), r.h);
+      return typeof fc === 'object' && 'cut' in fc ? 'yes' : 'no';
+    }
+    if (!splittable(y)) return 'no';
+    return firstLeafFits(y, room, height, hooks);
   }
-  if (hooks.boxes && positionedSplittable(y))
-    return { fallback: `${y.label}: adhesion into a positioned subform that splits is not implemented (164g.14)` };
-  if (y.kind === 'field') {
-    const fc = fieldCut(y, room, hooks.fieldLines?.(y), r.h);
-    return typeof fc === 'object' && 'cut' in fc ? 'yes' : 'no';
-  }
-  if (!splittable(y)) return 'no';
+}
+
+/** Whether a splittable subform's first piece fits `room` (R2, t58, t70). */
+function firstLeafFits(y: LayoutNode, room: number, height: XfaHeight, hooks: XfaPaginateHooks): Lead {
   const widths = new Map<LayoutNode, number[]>();
   const flat = flatten(y, hooks, widths);
   if ('reason' in flat) return 'no';
   const leaves = flat.leaves;
   const first = leaves.findIndex((l) => !concealed(l.node));
   if (first < 0) return 'yes';
+  // 164g.28: a first piece that BREAKS goes elsewhere whatever the room says,
+  // which no probe settles -- the adhesion is not kept, and that is said.
+  if (leaves[first].brks.length > 0)
+    return { fallback: `${y.label}: adhesion into a sibling whose first piece breaks is not implemented (164g.14)` };
   const f = fragmentOf(leaves.slice(0, first + 1), widths);
   const q = height(f, Infinity);
   if ('reason' in q) return 'no';
@@ -423,17 +469,17 @@ function keepWith(
   // says whether Adobe then still holds the child off.
   if (sibs[i].breakAfter)
     return { warning: `${sibs[i].label}: adhesion from a subform with a breakAfter is not implemented (164g.14)` };
-  const lead = leadFits(sibs, iy, room, height, hooks);
+  const lead = leadFits(sibs, iy, room, height, hooks, p.root);
   if (lead === 'yes') return 'place';
   if (typeof lead === 'object') return { warning: lead.fallback };
   // R1, R3: hold off when the pair fits the next region -- from an EMPTY one
   // too, as p. 295 advances a child the next region can hold (emptyRegion).
   // Termination: the pair fits where it advances to, so it is placed there.
   const s = p.snapshot();
-  const moved = p.advance();
+  const moved = p.overflow([]);
   const cap = moved === undefined ? p.capacity() : 0;
   p.restore(s);
-  if (moved === undefined && h <= cap + EPS && leadFits(sibs, iy, cap - h, height, hooks) === 'yes') return 'advance';
+  if (moved === undefined && h <= cap + EPS && leadFits(sibs, iy, cap - h, height, hooks, p.root) === 'yes') return 'advance';
   // R4 (t59, t69): nothing waits; the next runs past this region after it.
   if (splittable(sibs[iy]))
     return { warning: `${sibs[iy].label}: adheres to the content before it, which together cannot fit an empty content area, and is splittable; the adhesion is not kept (164g.14)` };
@@ -688,6 +734,31 @@ class Paginator {
     }
   }
 
+  /** Where a warning about the run goes (164g.30); set by paginateOnce. */
+  warn: (w: string) => void = () => undefined;
+
+  /**
+   * Move on because content does not fit (164g.30): to the overflow target of
+   * the innermost container in `[root, ...path]` stating one, else to the
+   * natural next region. A stated blank target blocks inheritance (R5, t158).
+   * A content-area target is a content-area break with startNew (R3, t144,
+   * t157), a page-area target a page-area break with startNew (R4, t147). One
+   * naming nothing goes to the next PAGE, as Adobe does (R7, t148; p. 367
+   * recommends a warning).
+   */
+  overflow(path: readonly LayoutNode[]): string | undefined {
+    const chain = this.root ? [this.root, ...path] : path;
+    let t: string | undefined;
+    for (let i = chain.length - 1; i >= 0 && t === undefined; i--) t = chain[i].overflow?.target;
+    if (t === undefined || t === '') return this.advance();
+    const hit = resolveOverflowTarget(this.ps, t);
+    if ('reason' in hit) {
+      this.warn(`overflow target "${t}" ${hit.reason}, so an overflow continues on the next page (XFA 3.3 p. 367; Adobe t148)`);
+      return this.nextPage();
+    }
+    return this.apply({ targetType: hit.type, target: t, startNew: true });
+  }
+
   /** The next content area on this page, else the next page (p. 294). */
   advance(): string | undefined {
     if (this.ca + 1 < this.ps.pageAreas[this.area].contentAreas.length) {
@@ -780,8 +851,9 @@ class Paginator {
   /** Where layout starts (p. 296): the break's target, else the first page area. */
   start(b: XfaBreak | undefined): string | undefined {
     if (b?.refusal !== undefined) return b.refusal;
+    // 164g.31 S1 (t177, t178): Adobe lays neither down.
     if (b?.leader || b?.trailer)
-      return 'a break leader or trailer on the break that chooses where layout starts is not implemented (164g.31)';
+      this.warn('a break leader or trailer on the break that chooses where layout starts is ignored, as Adobe ignores it (164g.31)');
     // A parity break chooses where layout starts by the mid-document rule:
     // page 1 is odd, so pageEven needs a filler, or can never be met (final review).
     if (b && (b.targetType === 'pageEven' || b.targetType === 'pageOdd'))
@@ -889,19 +961,14 @@ function effectiveCopy(
   return undefined;
 }
 
-/** A container in `path` whose `<overflow target>` would choose where it
- *  continues, which is not implemented (164g.30). */
-function targetRefusal(path: readonly LayoutNode[]): string | undefined {
-  const n = path.find((x) => x.overflow?.target !== undefined);
-  return n && `${n.label}: its <overflow target> would choose where it continues, which is not implemented (164g.30)`;
-}
-
 /**
  * Apply root child `label`'s break `b`, laying down its leader and trailer
  * (164g.15 R7). Adobe SWAPS XFA 3.3 Example 8.36's roles (t85, t86): the
  * TRAILER goes into the region the break leaves, the LEADER into the one it
- * enters, both in the content area's flow. What no probe settles refuses by
- * name: a break that does not move, a trailer that does not fit.
+ * enters, both in the content area's flow. 164g.31: a break that does not move
+ * lays both in place, trailer first (t180, as t179 shows for `auto`); a
+ * trailer that does not fit is ordinary content, opening the next region, and
+ * the break then applies from there (t181).
  */
 function applyBreak(p: Paginator, b: XfaBreak, label: string, height: XfaHeight): string | undefined {
   if (!b.leader && !b.trailer) return p.apply(b);
@@ -915,32 +982,34 @@ function applyBreak(p: Paginator, b: XfaBreak, label: string, height: XfaHeight)
   const to = p.regionKey();
   p.restore(s0);
   if (moved !== undefined) return moved;
-  if (to === from)
-    return `${label}: a break leader or trailer on a break that does not move is not implemented (164g.31)`;
-  const lay = (spec: XfaCopySpec, fit: boolean): string | undefined => {
+  const lay = (spec: XfaCopySpec): string | undefined => {
     if (!p.left(spec)) return undefined;
     const node = p.peek(spec);
     const q = height(node, Infinity);
     if ('reason' in q) return q.reason;
-    if (fit && p.used + q.h > p.capacity() + EPS)
-      return `${label}: its break trailer does not fit the region the break leaves, which is not implemented (164g.31)`;
+    // S3 (t181): a trailer that does not fit opens the next region.
+    if (p.used > EPS && p.used + q.h > p.capacity() + EPS) {
+      const r = p.overflow([]);
+      if (r !== undefined) return `${label}: ${r}`;
+    }
     p.commit(spec, node);
     p.place(node, q.h);
     return undefined;
   };
-  // `lay` refuses an unfitting trailer before it places anything.
-  const why = b.trailer ? lay(b.trailer, true) : undefined;
+  const why = b.trailer ? lay(b.trailer) : undefined;
   if (why !== undefined) return why;
-  const r = p.apply(b);
-  if (r !== undefined) return r;
-  return b.leader ? lay(b.leader, false) : undefined;
+  if (to !== from) {
+    const r = p.apply(b);
+    if (r !== undefined) return r;
+  }
+  return b.leader ? lay(b.leader) : undefined;
 }
 
 /** The capacity of the region an advance would open, or undefined when no
  *  advance is possible. Changes nothing. */
-function nextCapacity(p: Paginator): number | undefined {
+function nextCapacity(p: Paginator, path: readonly LayoutNode[]): number | undefined {
   const s = p.snapshot();
-  const moved = p.advance();
+  const moved = p.overflow(path);
   const h = moved === undefined ? p.capacity() : undefined;
   p.restore(s);
   return h;
@@ -950,12 +1019,40 @@ function nextCapacity(p: Paginator): number | undefined {
  *  unit alike: advance when the next region can hold `h`, place when nothing
  *  drawn lies past, otherwise refuse. */
 function emptyRegion(
-  p: Paginator, h: number, past: () => boolean, label: string,
+  p: Paginator, h: number, past: () => boolean, label: string, path: readonly LayoutNode[] = [],
 ): { act: 'advance' } | { act: 'place' } | { reason: string } {
-  const nextH = nextCapacity(p);
+  const nextH = nextCapacity(p, path);
   if (nextH !== undefined && h <= nextH + EPS) return { act: 'advance' };
   if (!past()) return { act: 'place' };
   return { reason: `${label}: does not fit an empty content area and would need ${SPLIT_LATER}` };
+}
+
+/** 164g.27: a root-level field splits unless the ROOT lays overflow copies,
+ *  where it moves whole (unprobed). One owner, asked by `rootFieldPiece` and
+ *  by `leadFits`, so adhesion and placement cannot disagree (164g.28). */
+function rootFieldsSplit(root: LayoutNode | undefined): boolean {
+  const ov = root?.overflow;
+  return !(ov && ((ov.leader?.length ?? 0) > 0 || (ov.trailer?.length ?? 0) > 0));
+}
+
+/**
+ * Where root field `f`, `h` tall, splits in the room the region has left
+ * (164g.27, t65): its head and tail by `fieldCut`, or undefined when it does
+ * not split. A draw is never asked: a `tb` draw moves (t48). The root is the
+ * container that continues, so a root stating an `<overflow>` leader or
+ * trailer -- unprobed for a split root field -- keeps it whole, as before. A
+ * root target is followed (164g.30, t153), by the caller's overflow move.
+ */
+function rootFieldPiece(
+  p: Paginator, f: LayoutNode, h: number, hooks: XfaPaginateHooks,
+): { head: LayoutNode; tail: LayoutNode; cut: number } | undefined {
+  // No room left needs no guard: fieldCut moves a piece below the font size.
+  const room = p.capacity() - p.used;
+  if (!rootFieldsSplit(p.root)) return undefined;
+  const g = hooks.fieldLines?.(f);
+  const fc = fieldCut(f, room, g, h);
+  if (typeof fc !== 'object' || !('cut' in fc)) return undefined;
+  return { head: pieceOf(f, 0, fc.cut, g), tail: pieceOf(f, fc.cut, h - fc.cut, g), cut: fc.cut };
 }
 
 /** Split a keep-none positioned root child from the room left (164g.11, spec
@@ -965,41 +1062,46 @@ function emptyRegion(
  *  the cut reached the top -- and the caller places it whole by today's rules. */
 function placePositioned(
   p: Paginator, c: LayoutNode, h: number, boxes: XfaChildBoxes, height: XfaHeight,
-  lines?: (n: LayoutNode) => number | undefined,
+  lines?: (n: LayoutNode) => FieldLines,
 ): 'whole' | string | undefined {
   const s = p.snapshot();
   /** 164g.15 R6 (t83): a continuation's leader goes into the CONTENT AREA's
    *  flow, directly above the fragment. */
   type Lead = { spec: XfaCopySpec; node: LayoutNode; h: number };
-  const plan: Array<{ node: LayoutNode; h: number; lead?: Lead }> = [];
+  /** 164g.31 S6 (t185): a continuing fragment's trailer is reserved in its cut
+   *  and laid in the content area's flow directly below it. */
+  const plan: Array<{ node: LayoutNode; h: number; lead?: Lead; trail?: Lead }> = [];
   let lead: Lead | undefined;
   let cur = c;
   let left = h;
   for (;;) {
     const room = p.capacity() - p.used;
     if (left <= room + EPS) { plan.push({ node: cur, h: left, ...(lead ? { lead } : {}) }); break; }
-    const cut = positionedCut(cur, room, boxes, lines);
+    const tr = effectiveCopy(p, 'trailer', [c]);
+    if (tr && 'refusal' in tr) { p.restore(s); return tr.refusal; }
+    let trail: Lead | undefined;
+    if (tr) {
+      const node = p.peek(tr.use);
+      const q = height(node, Infinity);
+      if ('reason' in q) { p.restore(s); return q.reason; }
+      trail = { spec: tr.use, node, h: q.h };
+    }
+    const cut = positionedCut(cur, room - (trail?.h ?? 0), boxes, lines);
     if (typeof cut === 'object') { p.restore(s); return cut.refusal; }
     if (cut <= EPS) {
       p.restore(s);
       return plan.length === 0 ? 'whole'
         : `${c.label}: does not fit an empty content area and would need ${SPLIT_LATER}`;
     }
-    // 164g.15: it continues. A target is 164g.30's; a trailer is unprobed here.
-    const why = targetRefusal([c]);
-    if (why !== undefined) { p.restore(s); return why; }
-    const tr = effectiveCopy(p, 'trailer', [c]);
-    if (tr) {
-      p.restore(s);
-      return 'refusal' in tr ? tr.refusal
-        : `${c.label}: an overflow trailer on a split positioned subform is not implemented (164g.31)`;
-    }
-    const head = positionedFragment(cur, 0, cut, boxes);
-    const tail = positionedFragment(cur, cut, left, boxes);
+    const head = positionedFragment(cur, 0, cut, boxes, lines);
+    const tail = positionedFragment(cur, cut, left, boxes, lines);
     if ('refusal' in head) { p.restore(s); return head.refusal; }
     if ('refusal' in tail) { p.restore(s); return tail.refusal; }
-    plan.push({ node: head, h: cut, ...(lead ? { lead } : {}) });
-    const moved = p.advance();
+    plan.push({ node: head, h: cut, ...(lead ? { lead } : {}), ...(trail ? { trail } : {}) });
+    if (trail) p.commit(trail.spec, trail.node);
+    // 164g.30 R6: a positioned subform's OWN target is ignored (t151) while an
+    // inherited one is followed (t159), so only the root's is asked.
+    const moved = p.overflow([]);
     if (moved !== undefined) { p.restore(s); return moved; }
     // The leader is committed while planning, so the next continuation counts
     // it; `restore` takes it back before the plan is placed again.
@@ -1019,9 +1121,10 @@ function placePositioned(
   }
   p.restore(s);
   plan.forEach((f, i) => {
-    if (i > 0) p.advance();
+    if (i > 0) p.overflow([]);
     if (f.lead) { p.commit(f.lead.spec, f.lead.node); p.place(f.lead.node, f.lead.h); }
     p.place(f.node, f.h);
+    if (f.trail) { p.commit(f.trail.spec, f.trail.node); p.place(f.trail.node, f.trail.h); }
   });
   return undefined;
 }
@@ -1080,24 +1183,45 @@ function placeSplit(
       return { unsplittable: `${part.y.label}: adhesion into a sibling with a breakBefore is not implemented (164g.14)` };
     link.set(j, k);
   }
+  /** Chain walks (164g.28), by the leaf their fragment starts at: the room,
+   *  every leaf measured, and the answer. Keyed rather than single, since
+   *  `fitsNextEmpty` walks from a different start between two region walks. */
+  const walked = new Map<Leaf, { cap: number; through: Set<number>; answer: boolean }>();
   /** Whether leaf `k` (adhered to) puts something into a region whose room is
-   *  `capRoom`, after `cand` -- and onward along the chain. */
-  const chainLead = (cand: Leaf[], k: number, capRoom: number): boolean => {
-    const withK = [...cand, leaves[k]];
-    const f = fragmentOf(withK, widths);
-    const q = height(f, Infinity);
-    if ('reason' in q) return true;
-    if (q.h <= capRoom + EPS) {
+   *  `capRoom`, after `cand` -- and onward along the chain.
+   *
+   *  164g.28: a LOOP, and remembered. A region grows one leaf at a time, so the
+   *  call for a later leaf of the same region measures exactly the fragments
+   *  the earlier walk already did, from the leaf it starts at on: cand there is
+   *  the region's first leaf through the one before. A walk therefore gives
+   *  the same answer again for any leaf it passed, with the same region start
+   *  and room -- yes or no alike, since a no does not end the region (an
+   *  unkeepable adhesion is warned about and the leaf taken). */
+  const chainLead = (cand: Leaf[], k0: number, capRoom: number): boolean => {
+    const w = walked.get(cand[0]);
+    if (w && w.cap === capRoom && w.through.has(k0)) return w.answer;
+    const acc = [...cand];
+    const seen: number[] = [];
+    const yes = (r: boolean): boolean => {
+      walked.set(cand[0], { cap: capRoom, through: new Set(seen), answer: r });
+      return r;
+    };
+    for (let k = k0; ;) {
+      seen.push(k);
+      acc.push(leaves[k]);
+      const f = fragmentOf(acc, widths);
+      const q = height(f, Infinity);
+      if ('reason' in q) return yes(true);
+      if (q.h > capRoom + EPS) return yes(typeof straddle(leaves[k], f, capRoom, hooks, height) === 'object');
       const n = link.get(k);
-      if (n !== undefined) return chainLead(withK, n, capRoom);
-      return k === lastVis && tail ? tail(capRoom - q.h) : true;
+      if (n === undefined) return yes(k === lastVis && tail ? tail(capRoom - q.h) : true);
+      k = n;
     }
-    return typeof straddle(leaves[k], f, capRoom, hooks, height) === 'object';
   };
   /** Whether leaf `j` (as `cur`) and what it adheres to fit the next region, empty. */
   const fitsNextEmpty = (j: number, cur: Leaf): boolean => {
     const s = p.snapshot();
-    const moved = p.advance();
+    const moved = p.overflow(overflowPath(cur));
     const capN = moved === undefined ? p.capacity() : 0;
     p.restore(s);
     if (moved !== undefined) return false;
@@ -1144,14 +1268,19 @@ function placeSplit(
     while (d < a.path.length && d < b.path.length && a.path[d] === b.path[d]) d++;
     return b.path.slice(0, d);
   };
+  /** 164g.30: the containers an overflow before `next` continues -- whose
+   *  target it follows. With nothing visible in the region, the last
+   *  continuation's; before the child has begun, none (only the root's). */
+  let lastPath: LayoutNode[] = [];
+  const overflowPath = (next: Leaf): LayoutNode[] =>
+    (hasVisible(region) ? common(region[region.length - 1], next) : lastPath);
   /** R4, R5: close this region with the trailer of the innermost container
    *  that continues into the next one -- the deepest common to the region's
    *  last leaf and `next` -- arm that container's leader, and advance. */
   const continueTo = (next: Leaf): string | undefined => {
+    const path = overflowPath(next);
     if (hasVisible(region)) {
-      const path = common(region[region.length - 1], next);
-      const why = targetRefusal(path);
-      if (why !== undefined) return why;
+      lastPath = path;
       const tr = copyLeaf('trailer', path);
       if (tr && 'refusal' in tr) return tr.refusal;
       if (tr) {
@@ -1168,7 +1297,51 @@ function placeSplit(
       armed = ld;
     }
     flush();
-    return p.advance();
+    return p.overflow(path);
+  };
+  /** A break inside the chain (164g.31 S4, t182, t184): its TRAILER is the
+   *  last leaf of the region it closes and its LEADER the first of the one it
+   *  opens, both children of the BREAKING subform's parent (`flat.homes`). A
+   *  trailer that does not fit opens the next region, as at the root (S3,
+   *  unprobed here). A break that does not move still closes the fragment, as
+   *  a bare break always has. */
+  const breakInChain = (b: XfaBreak): string | undefined => {
+    if (b.refusal !== undefined) return b.refusal;
+    for (const s of [b.trailer, b.leader]) if (s?.refusal !== undefined) return s.refusal;
+    const home = flat.homes.get(b) ?? [c];
+    const copy = (spec: XfaCopySpec | undefined): Leaf | { reason: string } | undefined =>
+      (spec && p.left(spec) ? { node: p.peek(spec), path: home, brks: [] } : undefined);
+    const t = copy(b.trailer);
+    if (t && 'reason' in t) return t.reason;
+    if (t) {
+      let cand = [...region, t];
+      let q = height(fragmentOf(cand, widths), Infinity);
+      if ('reason' in q) return q.reason;
+      if (hasVisible(region) && p.used + q.h > p.capacity() + EPS) {
+        flush();
+        const m = p.overflow(home);
+        if (m !== undefined) return m;
+        cand = [t];
+        q = height(fragmentOf(cand, widths), Infinity);
+        if ('reason' in q) return q.reason;
+      }
+      p.commit(b.trailer!, t.node);
+      region = cand;
+      regionH = q.h;
+    }
+    flush();
+    const r = p.apply(b);
+    if (r !== undefined) return r;
+    const ld = copy(b.leader);
+    if (ld && 'reason' in ld) return ld.reason;
+    if (ld) {
+      const q = height(fragmentOf([ld], widths), Infinity);
+      if ('reason' in q) return q.reason;
+      p.commit(b.leader!, ld.node);
+      region = [ld];
+      regionH = q.h;
+    }
+    return undefined;
   };
   for (const [j, l] of leaves.entries()) {
     if (concealed(l.node)) {
@@ -1179,20 +1352,11 @@ function placeSplit(
       else pending.push(l);
       continue;
     }
-    if (l.brks.length > 0) {
-      // 164g.15: a break that continues a container laying down leaders or
-      // trailers -- one common to the leaves either side of it -- or that has
-      // its own, is unprobed.
-      if (l.brks.some((b) => b.leader || b.trailer))
-        return failFrom(j, `${l.node.label}: a break leader or trailer inside a split subform is not implemented (164g.31)`);
-      const across = hasVisible(region) ? common(region[region.length - 1], l) : armed?.leaf.path;
-      if (across && (effectiveCopy(p, 'leader', across) || effectiveCopy(p, 'trailer', across)))
-        return failFrom(j, `${l.node.label}: a break inside a split subform with an overflow leader or trailer is not implemented (164g.31)`);
-      flush();
-      for (const b of l.brks) {
-        const r = p.apply(b);
-        if (r !== undefined) return failFrom(j, r);
-      }
+    // 164g.31 S5 (t183): a break lays no OVERFLOW leader or trailer -- it is
+    // not an overflow -- so only its own copies are laid (S4).
+    for (const b of l.brks) {
+      const r = breakInChain(b);
+      if (r !== undefined) return failFrom(j, r);
     }
     let cur = l;
     for (;;) {
@@ -1228,7 +1392,7 @@ function placeSplit(
         else if (s !== undefined && !(fresh && p.used === 0)) return failFrom(j, s);
         if (!split && fresh && p.used === 0) {
           const past = (): boolean => { const q = height(f, cap); return 'reason' in q ? true : q.past; };
-          const e = emptyRegion(p, r.h, past, cur.node.label);
+          const e = emptyRegion(p, r.h, past, cur.node.label, overflowPath(cur));
           if ('reason' in e) return failFrom(j, e.reason);
           take = e.act === 'place';
         }
@@ -1275,15 +1439,14 @@ function placeSplit(
     if (!('reason' in q)) regionH = q.h;
     pending = [];
   }
-  flush();
   // 164g.16: a breakAfter with no leaf after it in the chain takes effect once
   // the chain is placed (t94, t95), before the root child's own breakAfter.
+  // 164g.31 S4 (t184): its leader then opens a fragment of its own.
   for (const b of flat.trailing) {
-    if (b.leader || b.trailer)
-      return `${c.label}: a break leader or trailer inside a split subform is not implemented (164g.31)`;
-    const r = p.apply(b);
+    const r = breakInChain(b);
     if (r !== undefined) return r;
   }
+  flush();
   return undefined;
 }
 
@@ -1376,6 +1539,7 @@ function paginateOnce(
   });
 
   const p = new Paginator(ps, maxOf, heights, mode, force, body.root, ps.sets, o.noRedo);
+  p.warn = (w) => { if (!warnings.includes(w)) warnings.push(w); };
   // p. 296: the root's break, else its first subform child's, chooses the start.
   // Rule 2 applies only "Else": when the ROOT's break chose the start, the
   // first child's break is an ordinary break on entry and still runs.
@@ -1425,9 +1589,11 @@ function paginateOnce(
     // Why a splittable child's chain could not be split, once tried: it is then
     // placed whole, and named if it does not fit an empty region either.
     let unsplit: string | undefined;
+    /** What of a root field is still to place: a split leaves its tail (164g.27). */
+    let cur = c;
     for (;;) {
       const H = p.capacity();
-      const r = height(c, H);
+      const r = height(cur, H);
       if ('reason' in r) { fail(r.reason); break; }
       const split = splittable(c) && unsplit === undefined;
       // A splittable child whose chain holds a break is split even when it fits.
@@ -1447,20 +1613,33 @@ function paginateOnce(
       if (!breaks && p.used + need <= H + EPS) {
         const k = keepWith(p, kids, i, H - p.used - r.h, r.h, height, hooks);
         if (k === 'advance') {
-          const moved = p.advance();
+          const moved = p.overflow([]);
           if (moved !== undefined) { fail(moved); break; }
           continue;
         }
         if (k === 'force') runAway = true;
         else if (typeof k === 'object') warn(k.warning);
-        p.place(c, r.h); placed = true; break;
+        p.place(cur, r.h); placed = true; break;
+      }
+      if (cur.kind === 'field') {
+        // 164g.27 (t65): a root field that straddles the region's end splits
+        // where fieldCut says; the head closes this region and the tail is
+        // retried in the next. One that moves or is refused moves, as in a tb.
+        const piece = rootFieldPiece(p, cur, r.h, hooks);
+        if (piece !== undefined) {
+          p.place(piece.head, piece.cut);
+          const moved = p.overflow([]);
+          if (moved !== undefined) { fail(moved); break; }
+          cur = piece.tail;
+          continue;
+        }
       }
       if (split) {
         // p. 290: the top goes into the current region (164g.8).
         // 164g.14: the split child's last piece adheres to the next root child.
         const iy = nextAdhering(kids, i);
         const tail = iy === undefined ? undefined : (room: number): boolean => {
-          const l = leadFits(kids, iy, room, height, hooks);
+          const l = leadFits(kids, iy, room, height, hooks, p.root);
           if (typeof l === 'object') { warn(l.fallback); return true; }
           return l === 'yes';
         };
@@ -1485,18 +1664,18 @@ function paginateOnce(
         // 164g.19 (t4): a positioned subform that does not split and that the
         // next, empty, region cannot hold either is placed whole HERE, running
         // past the content area -- ink included, and whatever the region holds.
-        const nextH = nextCapacity(p);
+        const nextH = nextCapacity(p, []);
         if (nextH !== undefined && r.h > nextH + EPS) { p.place(c, r.h); placed = true; break; }
       }
       if (p.used === 0) {
         // p. 295: the region is EMPTY. Override its boundary only when the next
         // region cannot hold the child either, and only when nothing it draws
         // lies past -- anything else needs splitting.
-        const e = emptyRegion(p, r.h, () => r.past, c.label);
+        const e = emptyRegion(p, r.h, () => r.past, cur.label);
         if ('reason' in e) { fail(unsplit ?? e.reason); break; }
-        if (e.act === 'place') { p.place(c, r.h); placed = true; break; }
+        if (e.act === 'place') { p.place(cur, r.h); placed = true; break; }
       }
-      const moved = p.advance();
+      const moved = p.overflow([]);
       if (moved !== undefined) { fail(moved); break; }
     }
     if (placed && c.breakAfter) {
@@ -1526,7 +1705,7 @@ export interface XfaLayoutResult {
  *  owner of "where is this field, on which page", shared by the converter and
  *  the oracles. */
 export function layoutPages(
-  body: XfaBody, measure?: XfaMeasure, warnings: string[] = [], lines?: (n: LayoutNode) => number | undefined,
+  body: XfaBody, measure?: XfaMeasure, warnings: string[] = [], lines?: (n: LayoutNode) => FieldLines,
 ): XfaLayoutResult {
   // Heights are measured again when the page is laid out, which records any
   // swap warning; the measuring pass's own copy is discarded.

@@ -32,6 +32,10 @@ export interface AdobeProbe {
    *  a positioned split's leader sits in the content area's flow, above the
    *  continuation, while its SOM name is `P.L`): its layout parent's path. */
   layoutParent?: Record<string, string>;
+  /** 164g.26: a field whose widget lies INSIDE its box -- beside a caption,
+   *  within an inset, a check button's button -- so its fields are compared
+   *  through our layout's field boxes, as draws are, and its widgets by page. */
+  fieldBoxes?: true;
 }
 export interface AdobeGoldens { reader: string; probes: Record<string, AdobeProbe> }
 
@@ -41,7 +45,9 @@ const DIR = new URL('../fixtures/xfa-adobe/', import.meta.url);
  *  t55-t72: adhesion and keep intact="pageArea" (164g.14); t73-t90: overflow
  *  and break leaders and trailers (164g.15); t92-t95: a breakAfter inside a
  *  split chain (164g.16); t96-t100, t103, t104: a split positioned subform's
- *  margins (164g.20); t105-t110: one inside a split tb chain (164g.21). t91 (164g.23) is not a geometry golden -- its line
+ *  margins (164g.20); t105-t110: one inside a split tb chain (164g.21);
+ *  t127-t142: a field split with a caption, insets, vAlign, a lineHeight,
+ *  orphans or widows, mixed sizes, a comb or a non-text ui (164g.26). t91 (164g.23) is not a geometry golden -- its line
  *  heights are 164g.32's -- and `test/xfa-linesep.test.ts` reads it alone; nor
  *  are t101 and t102, visual probes on small pages read from the capture.
  *  t111-t117 (164g.32): how tall a line of text is -- faces, sizes, line
@@ -52,9 +58,15 @@ const DIR = new URL('../fixtures/xfa-adobe/', import.meta.url);
  *  reserve-less top captions, is recorded for 164g.36. t120: rich paragraph
  *  margins, summed. t121 (164g.36): reserve-less captions and over-wide words;
  *  its captioned fields are compared by test/xfa-caption.test.ts, since the
- *  harness compares a field's widget, which excludes the caption. */
-export const ADOBE_PROBES: readonly string[] = Array.from({ length: 119 }, (_, i) => `t${String(i + 3)}`)
-  .filter((t) => !['t91', 't101', 't102', 't111', 't113', 't114'].includes(t));
+ *  harness compares a field's widget, which excludes the caption. t160-t176
+ *  (164g.29): bookend leaders and trailers. t177-t186 (164g.31): the leader and
+ *  trailer shapes 164g.15 refused. t143-t159 are 164g.30's, compared
+ *  by test/xfa-adobe-target-oracle.test.ts. */
+export const ADOBE_PROBES: readonly string[] = [
+  ...Array.from({ length: 140 }, (_, i) => `t${String(i + 3)}`)
+    .filter((t) => !['t91', 't101', 't102', 't111', 't113', 't114'].includes(t)),
+  ...Array.from({ length: 27 }, (_, i) => `t${String(i + 160)}`),
+];
 /** Probes with a golden that is recorded but not compared (164g.32): t111 and
  *  t113 for their Myriad Pro rows, t114 for 164g.36's captions. */
 export const ADOBE_RECORDED: readonly string[] = ['t111', 't113', 't114'];
@@ -102,3 +114,23 @@ export const QUALIFIED_PROBES: readonly string[] = [
 ];
 export const qualifiedGoldens = (): QualifiedGoldens =>
   JSON.parse(readFileSync(new URL('adobe-qualified.json', DIR), 'utf8')) as QualifiedGoldens;
+
+/** An `<overflow target>` probe (164g.30) as Reader laid it out. */
+export interface TargetProbe {
+  /** Page area NAME per page, page 1 first, from the probe's `areas=` line. */
+  areas: string[];
+  /** The rule the probe settles, in words. */
+  note: string;
+  /** A draw's or field's fragments as [page, top, h]: top in page points from
+   *  the page's top edge, derived from the reported y, its parent's fragment
+   *  and the content area's origin (Reader's pageSpan counts pages, so a
+   *  fragment in a page's second content area is reported under the next
+   *  page number; each node's own page is what is read). */
+  nodes: Record<string, Array<[page: number, top: number, h: number]>>;
+}
+export interface TargetGoldens { reader: string; coords: string; probes: Record<string, TargetProbe> }
+/** t143-t159 (164g.30): an overflow target, with t154 (no target) and t155
+ *  (a leader, no target) as controls. */
+export const TARGET_PROBES: readonly string[] = Array.from({ length: 17 }, (_, i) => `t${String(i + 143)}`);
+export const targetGoldens = (): TargetGoldens =>
+  JSON.parse(readFileSync(new URL('adobe-target.json', DIR), 'utf8')) as TargetGoldens;

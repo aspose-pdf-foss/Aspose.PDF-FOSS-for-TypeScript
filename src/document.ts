@@ -68,10 +68,11 @@ import { Form } from './form.js';
 import { appendField, attachWidget, ensureAcroForm } from './formcreate.js';
 import {
   collectFormData, applyFormData,
-  type ExportFormDataOptions, type ImportOptions, type ImportReport,
+  type ExportFormDataOptions, type ExportJsonOptions, type ImportOptions, type ImportReport,
 } from './formdata.js';
 import { readFdf, writeFdf } from './fdf.js';
 import { readXfdf, writeXfdf } from './xfdf.js';
+import { readFormJson, writeFormJson } from './formjson.js';
 import { OptionalContent } from './ocg.js';
 import { buildPages, PageTree } from './pagetree.js';
 import { checkPageTree } from './pagecheck.js';
@@ -1220,6 +1221,27 @@ export class Document {
   /** Import field values from an XFDF data file. See ImportFdf. */
   ImportXfdf(bytes: Uint8Array, opts: ImportOptions = {}): ImportReport {
     return applyFormData(this, readXfdf(bytes), opts);
+  }
+
+  /** Export the current form-field values as JSON. Each field carries its type,
+   *  its TYPED value -- a checkbox a boolean, a radio group its export, a
+   *  multi-select choice an array -- and the options it offers. Annotations are
+   *  not carried; use XFDF for those. */
+  ExportJson(opts: ExportJsonOptions = {}): string {
+    if ((opts as { annotations?: unknown }).annotations)
+      throw new UnsupportedFeatureError('ExportJson does not carry annotations; use ExportXfdf');
+    const { indent, ...rest } = opts;
+    if (indent !== undefined && (!Number.isInteger(indent) || indent < 0 || indent > 10))
+      throw new RangeError('indent must be an integer from 0 to 10');
+    return writeFormJson(collectFormData(this, rest, true), indent);
+  }
+
+  /** Import field values from JSON, as `ExportJson` writes it. A malformed file
+   *  is refused whole with `PdfParseError`; a field with no match, a value
+   *  the field rejects and an entry whose stated type differs from the field's
+   *  are reported in `skipped` rather than thrown. */
+  ImportJson(src: string | Uint8Array): ImportReport {
+    return applyFormData(this, readFormJson(src));
   }
 
   /** The document's optional-content (layers) model, rebuilt from the live

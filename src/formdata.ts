@@ -1,6 +1,7 @@
 import type { Document } from './document.js';
 import type { Field, FieldType } from './form.js';
-import { readRichTextValue } from './formfield.js';
+import { readRichTextValue, widgetOnState } from './formfield.js';
+import { parseOptions, type ChoiceOption } from './choiceopt.js';
 import { applyAnnots, collectAnnots, type AnnotData } from './annotdata.js';
 import { isArray, isDict, isString } from './types.js';
 import { encodePdfText } from './metadata.js';
@@ -18,6 +19,14 @@ export interface FormDataField {
   values: string[];
   /** Verbatim XHTML from /RV, when present. */
   richText?: string;
+  /** The field's TYPED value, as `Field.Value` reads and writes it: a checkbox
+   *  is a boolean and a radio group its export rather than its appearance
+   *  state. Only JSON carries it (2srz.1); when present, import hands it to the
+   *  setter as is and `values` is not consulted. */
+  value?: string | string[] | boolean;
+  /** What the field offers: a choice field's `/Opt` entries, a button's
+   *  exports. Exported for the reader of the data; import ignores it. */
+  options?: ChoiceOption[];
 }
 
 export interface FormData {
@@ -39,6 +48,17 @@ export interface ExportFormDataOptions {
   file?: string;
   /** Include annotations. Default false. */
   annotations?: boolean;
+}
+
+/** Options for `ExportJson`: the FDF/XFDF options minus `annotations`, which
+ *  the JSON format does not carry, plus the indentation. */
+export interface ExportJsonOptions {
+  /** Emit fields whose value is empty, unchecked or Off. Default false. */
+  includeEmpty?: boolean;
+  /** The source-file reference written as `file`. Omitted when absent. */
+  file?: string;
+  /** Spaces to indent by, as `JSON.stringify` takes them. Default: none. */
+  indent?: number;
 }
 
 /** Options for the four import methods. */
@@ -95,9 +115,15 @@ function readDocId(doc: Document): [string, string] | undefined {
   return [hex(a.bytes), hex(b.bytes)];
 }
 
-/** A checked checkbox exports as its widget's on-state name. */
-function checkedState(field: Field): string {
-  return field.Options[0] ?? 'Yes';
+/** A checked checkbox exports as its widget's on-state NAME -- not its
+ *  `Options` entry, which is the /Opt export since 164g.39: FDF and XFDF carry
+ *  a button's appearance state. */
+function checkedState(doc: Document, field: Field): string {
+  for (const w of field.Widgets) {
+    const s = widgetOnState(doc, w);
+    if (s !== undefined) return s;
+  }
+  return 'Yes';
 }
 
 /** True when the value carries no information: empty text/choice, or Off. */
@@ -105,19 +131,41 @@ function isEmpty(values: string[]): boolean {
   return values.length === 0 || (values.length === 1 && (values[0] === '' || values[0] === 'Off'));
 }
 
-/** Read the document's form into the format-neutral model. */
-export function collectFormData(doc: Document, opts: ExportFormDataOptions = {}): FormData {
+/** What a field offers, as the JSON export spells it: a choice field's `/Opt`
+ *  as `ChoiceOption`s (a bare string where there is no display half), a
+ *  button's exports. Undefined when the field offers nothing. */
+function optionsOf(doc: Document, field: Field): ChoiceOption[] | undefined {
+  const out: ChoiceOption[] = field.Type === 'choice'
+    ? parseOptions(doc, field.Dict).map((o) => (o.display === undefined ? o.export : { export: o.export, display: o.display }))
+    : field.Options;
+  return out.length > 0 ? out : undefined;
+}
+
+/** Read the document's form into the format-neutral model. `typed` also
+ *  fills `value` and `options`, which only the JSON format carries -- left
+ *  off, FDF and XFDF see exactly the model they always did. */
+export function collectFormData(
+  doc: Document, opts: ExportFormDataOptions = {}, typed = false,
+): FormData {
   const fields: FormDataField[] = [];
   for (const f of doc.Form.Fields) {
     if (!SETTABLE.has(f.Type)) continue; // signature, pushbutton, unknown
-    const v = f.Value;
-    const values = typeof v === 'boolean' ? [v ? checkedState(f) : 'Off']
+    // 164g.39: a radio group travels as its STATE name, which is what `Value`
+    // no longer answers once /Opt names an export.
+    const v = f.Type === 'radio' ? f.radioState() : f.Value;
+    const values = typeof v === 'boolean' ? [v ? checkedState(doc, f) : 'Off']
       : Array.isArray(v) ? v
       : [v];
     if (isEmpty(values) && !opts.includeEmpty) continue;
     const entry: FormDataField = { name: f.FullName, type: f.Type, values };
     const rv = readRichTextValue(doc, f.Dict);
     if (rv !== undefined) entry.richText = rv;
+    if (typed) {
+      // `v` is a radio group's STATE (above); the typed value is its export.
+      entry.value = f.Type === 'radio' ? f.Value : v;
+      const options = optionsOf(doc, f);
+      if (options !== undefined) entry.options = options;
+    }
     fields.push(entry);
   }
 
@@ -177,8 +225,20 @@ export function applyFormData(
         report.skipped.push({ name: e.name, reason: 'field type is not settable' });
         continue;
       }
+      // A format that states the type (JSON) is checked against the form: data
+      // for a different field of the same name must not be coerced into it.
+      if (e.type !== 'unknown' && e.type !== field.Type) {
+        report.skipped.push({ name: e.name, reason: `field is ${field.Type}, data is ${e.type}` });
+        continue;
+      }
       try {
-        field.Value = typedValue(field.Type, e.values);
+        if (e.value !== undefined) {
+          field.Value = e.value;
+        } else {
+          // 164g.39: a radio's data is a STATE; `Value` takes the export it stands for.
+          const typed = typedValue(field.Type, e.values);
+          field.Value = field.Type === 'radio' && typeof typed === 'string' ? field.radioValueOfState(typed) : typed;
+        }
       } catch (err) { rethrowLimit(err);
         report.skipped.push({ name: e.name, reason: (err as Error).message });
         continue;

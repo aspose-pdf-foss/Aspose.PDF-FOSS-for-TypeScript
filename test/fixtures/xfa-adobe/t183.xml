@@ -1,0 +1,55 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="100pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="S" layout="tb" w="7.5in">
+<overflow leader="#X_ID" trailer="#Y_ID"/>
+<draw name="D1" w="2in" h="100pt">
+<value>
+<text>D1</text>
+</value>
+</draw>
+<subform name="S2" layout="position" w="7.5in" h="50pt">
+<breakBefore targetType="pageArea"/>
+<draw name="S2d" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>S2d</text>
+</value>
+</draw>
+</subform>
+<draw name="D3" w="2in" h="100pt">
+<value>
+<text>D3</text>
+</value>
+</draw>
+</subform>
+<proto>
+<subform name="X" id="X_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Xd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Xd</text>
+</value>
+</draw>
+<field name="Xf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+<subform name="Y" id="Y_ID" layout="position" w="7.5in" h="20pt"><occur max="-1"/>
+<draw name="Yd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>Yd</text>
+</value>
+</draw>
+<field name="Yf" x="2in" y="0" w="1in" h="10pt">
+<ui>
+<textEdit/>
+</ui>
+</field>
+</subform>
+</proto>

@@ -25,7 +25,11 @@ const proto = body.includes('<!-- proto in root -->') ? null : /<proto\b[\s\S]*?
 /** A probe may shrink the oracle field (164g.20): `<!-- oracle 1in -->` makes room
  *  on a small page for a probe read from the capture rather than the report. */
 const oracleH = /<!-- oracle (\S+) -->/.exec(body)?.[1] ?? '3in';
-const content = [own?.[0], proto?.[0]].reduce((s, x) => (x ? s.replace(x, '') : s), body);
+/** A probe may give the ROOT subform an `<overflow>` (164g.30), a `<bookend>`
+ *  (164g.29) or a `<breakBefore>` (164g.31): an element followed by
+ *  `<!-- root -->` goes beside the root's pageSet. */
+const rootOverflow = /<(?:overflow|bookend|breakBefore)\b[^>]*\/>\s*<!-- root -->/.exec(body);
+const content = [own?.[0], proto?.[0], rootOverflow?.[0]].reduce((s, x) => (x ? s.replace(x, '') : s), body);
 
 /** Walk xfa.form and write each node's fragments -- page, then x, y, w, h in
  *  points relative to its parent's content box -- into form1.oracle.out. */
@@ -84,6 +88,7 @@ if (typeof probeDone == "undefined") {
 // dynamically; without the config packet it draws a blank static page.
 const CONFIG = `<config xmlns="http://www.xfa.org/schema/xci/2.8/"><agent name="designer"><destination>pdf</destination></agent><present><pdf><version>1.7</version><scriptModel>XFA</scriptModel><interactive>1</interactive></pdf><common><data><adjustData>1</adjustData></data></common><script><runScripts>both</runScripts></script></present><acrobat><acrobat7><dynamicRender>required</dynamicRender></acrobat7><common><validate>preSubmit</validate></common></acrobat></config>`;
 const template = `<template xmlns="http://www.xfa.org/schema/xfa-template/2.8/"><subform name="form1" layout="tb" locale="en_US">
+  ${rootOverflow ? rootOverflow[0].replace(/\s*<!-- root -->$/, '') : ''}
   ${pageSet}
   <event activity="docReady" ref="$host"><script contentType="application/x-javascript">${script.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</script></event>
   <subform name="oracle" layout="tb" w="7.5in"><field name="out" w="7.5in" h="${oracleH}"><font typeface="Courier New" size="8pt"/><ui><textEdit multiLine="1"/></ui></field></subform>

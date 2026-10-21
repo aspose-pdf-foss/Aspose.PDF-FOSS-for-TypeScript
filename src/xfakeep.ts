@@ -11,10 +11,15 @@
  */
 import type { LayoutNode } from './xfaflow.js';
 
-/** The layouts a subform splits BETWEEN its children (164g.8, 164g.12). */
-const FLOWED: ReadonlySet<string> = new Set(['tb', 'lr-tb', 'table']);
+/** The layouts a subform splits BETWEEN its children (164g.8, 164g.12): a tb
+ *  between its children, an lr-tb between its items, a table between its rows.
+ *  One owner -- `xfapage.ts`'s `splittable` reads it too (164g.28). */
+export const FLOWED: ReadonlySet<string> = new Set(['tb', 'lr-tb', 'table']);
 
-const concealed = (n: LayoutNode): boolean => n.presence === 'hidden' || n.presence === 'inactive';
+/** XFA 3.3 p. 67: `hidden` and `inactive` take no space in the layout. One
+ *  owner for pagination's yes-or-no form, read by `xfapage.ts` too (164g.28);
+ *  `xfaflow.ts` keeps its own, which answers the REASON. */
+export const concealed = (n: LayoutNode): boolean => n.presence === 'hidden' || n.presence === 'inactive';
 
 /** R1, R7: `a` adheres to the sibling `b` after it when `a` states keep next or
  *  `b` keep previous -- "In all three cases the effect is the same" (p. 312,

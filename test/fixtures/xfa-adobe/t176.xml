@@ -1,0 +1,61 @@
+<!-- proto in root -->
+<subform name="filler" layout="position" w="7.5in" h="100pt">
+<draw name="fillerd" x="0" y="0pt" w="1in" h="10pt">
+<value>
+<text>fillerd</text>
+</value>
+</draw>
+</subform>
+<subform name="S" layout="table" columnWidths="2in 2in" w="4in">
+<bookend leader="#R_ID" trailer="#Q_ID"/>
+<subform name="r1"  layout="row">
+<draw name="r1a" w="2in" h="40pt">
+<value>
+<text>r1a</text>
+</value>
+</draw>
+<draw name="r1b" w="2in" h="40pt">
+<value>
+<text>r1b</text>
+</value>
+</draw>
+</subform>
+<subform name="r2"  layout="row">
+<draw name="r2a" w="2in" h="40pt">
+<value>
+<text>r2a</text>
+</value>
+</draw>
+<draw name="r2b" w="2in" h="40pt">
+<value>
+<text>r2b</text>
+</value>
+</draw>
+</subform>
+</subform>
+<proto>
+<subform name="R" id="R_ID" layout="row">
+<draw name="Ra" w="2in" h="30pt">
+<value>
+<text>Ra</text>
+</value>
+</draw>
+<draw name="Rb" w="2in" h="30pt">
+<value>
+<text>Rb</text>
+</value>
+</draw>
+</subform>
+<subform name="Q" id="Q_ID" layout="row">
+<draw name="Qa" w="2in" h="30pt">
+<value>
+<text>Qa</text>
+</value>
+</draw>
+<draw name="Qb" w="2in" h="30pt">
+<value>
+<text>Qb</text>
+</value>
+</draw>
+</subform>
+</proto>

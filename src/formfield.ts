@@ -138,20 +138,56 @@ export class Field {
     return widgetOnState(this.doc, widget);
   }
 
-  /** Selectable values: choice → /Opt export values; checkbox/radio →
-   *  widget on-states in widget order; other types → []. */
+  /**
+   * A button's widgets with their on-state and EXPORT value (164g.39). A
+   * button field's `/Opt` (32000-1 12.7.4.2.4) holds one text string per widget
+   * in `/Kids` order, naming that widget's export, while the on-state may then
+   * be an index name (`/0`, `/1`) -- Adobe writes exactly that for every radio
+   * group of DoD DD 3183. Without `/Opt`, or past its end, a widget's export is
+   * its on-state, which is what this library always assumed.
+   */
+  protected buttonChoices(): Array<{ widget: PdfDict; state: string; export: string }> {
+    const opt = this.doc.resolve(this.Dict.get('Opt'));
+    const out: Array<{ widget: PdfDict; state: string; export: string }> = [];
+    this.Widgets.forEach((w, i) => {
+      const state = this.onState(w);
+      if (state === undefined) return;
+      const o = isArray(opt) ? this.doc.resolve(opt[i]) : undefined;
+      out.push({ widget: w, state, export: isString(o) ? decodePdfText(o.bytes) : state });
+    });
+    return out;
+  }
+
+  /** Selectable values: choice → /Opt export values; checkbox/radio → each
+   *  widget's export, in widget order -- its `/Opt` entry, else its on-state
+   *  (164g.39); other types → []. */
   get Options(): string[] {
     if (this.Type === 'choice')
       return parseOptions(this.doc, this.Dict).map((o) => o.export);
     if (this.Type === 'checkbox' || this.Type === 'radio') {
       const out: string[] = [];
-      for (const w of this.Widgets) {
-        const s = this.onState(w);
-        if (s !== undefined && !out.includes(s)) out.push(s);
-      }
+      for (const c of this.buttonChoices()) if (!out.includes(c.export)) out.push(c.export);
       return out;
     }
     return [];
+  }
+
+  /** @internal A radio group's value as its appearance STATE name, which is
+   *  what FDF and XFDF carry for a button (164g.39): `Value` answers the export
+   *  instead, and an export would be written into a field whose states are
+   *  `0`, `1` and `2`. `''` when `/V` is not a name. */
+  radioState(): string {
+    const v = this.rawValue();
+    return isName(v) ? v.name : '';
+  }
+
+  /** @internal The value a radio group's appearance STATE stands for: its
+   *  widget's export, so that data carried as a state is set through
+   *  `Value`'s rule check. A state no widget has comes back unchanged, and
+   *  `Value` then refuses it as it always did. */
+  radioValueOfState(state: string): string {
+    if (state === 'Off') return state;
+    return this.buttonChoices().find((c) => c.state === state)?.export ?? state;
   }
 
   /** The effective /V: own value when present, else the value inherited at walk time. */
@@ -170,7 +206,8 @@ export class Field {
       case 'checkbox':
         return isName(v) && v.name !== 'Off';
       case 'radio':
-        return isName(v) ? v.name : '';
+        // 164g.39: the selected widget's export, by its /Opt entry.
+        return isName(v) ? this.radioValueOfState(v.name) : '';
       case 'choice':
         if (isArray(v)) {
           const out: string[] = [];
@@ -370,10 +407,20 @@ export class Field {
   private setRadio(v: string | string[] | boolean): void {
     if (typeof v !== 'string') throw new TypeError('radio group value must be a string');
     const widgets = this.Widgets;
-    if (v !== 'Off' && !widgets.some((w) => this.hasState(w, v)))
-      throw new RangeError(`radio group has no option '${v}'`);
-    this.Dict.set('V', name(v));
-    for (const w of widgets) w.set('AS', name(this.hasState(w, v) ? v : 'Off'));
+    // 164g.39: `v` is an EXPORT, matched by the widget's /Opt entry where there
+    // is one -- never by state name, since DD 3183 states an export '1' on the
+    // widget whose state is '3'. The first widget exporting it wins.
+    // Without /Opt any state some widget's /AP /N holds is still accepted, as
+    // before: a widget may carry more than the one on-state `onState` reports.
+    let state = v;
+    if (v !== 'Off') {
+      const hit = this.buttonChoices().find((c) => c.export === v);
+      if (hit) state = hit.state;
+      else if (this.Dict.has('Opt') || !widgets.some((w) => this.hasState(w, v)))
+        throw new RangeError(`radio group has no option '${v}'`);
+    }
+    this.Dict.set('V', name(state));
+    for (const w of widgets) w.set('AS', name(this.hasState(w, state) ? state : 'Off'));
     this.regen();
   }
 

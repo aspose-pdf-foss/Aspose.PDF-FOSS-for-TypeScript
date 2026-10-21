@@ -159,12 +159,12 @@ describe('paginate: splitting a tb subform between its children (164g.8)', () =>
   // A child that cannot be split falls back to whole placement (final review),
   // so these reach a refusal only when the whole child does not fit an empty
   // region either -- 'T!' draws past it -- and then the chain reason is named.
-  it('refuses what it cannot do in a split chain, naming the child issue', () => {
-    const big = (k: LayoutNode, t: Partial<LayoutNode> = {}) => body([area([ca(100)])], [tb('T!', [kid('a', 60), k], t)]);
-    // An <overflow target> container that continues into a second region
-    // would choose where (164g.30); its leaders and trailers are laid down.
-    const r = splitRefusals(big(kid('O', 60), { overflow: { target: 'X' } }));
-    expect(r[0]).toEqual(['O', expect.stringMatching(/T!: its <overflow target> .*\(164g\.30\)/) as unknown as string]);
+  it('continues a split tb in its <overflow target> (164g.30)', () => {
+    // Natural: the second content area of page 1. Target A: A on a new page (t144).
+    const two = () => area([ca(100, { name: 'A' }), ca(100)]);
+    const T = (t?: string) => tb('T', [kid('a', 60), kid('O', 60)], t === undefined ? {} : { overflow: { target: t } });
+    expect(split(body([two()], [T()]))).toEqual(['0:T(a) 1:T(O)']);
+    expect(split(body([two()], [T('A')]))).toEqual(['0:T(a)', '0:T(O)']);
   });
 
   // 164g.14 R8: a flowed subform's keep intact="pageArea" splits like none (t66-t68).
@@ -294,10 +294,12 @@ describe('paginate: splitting an lr-tb between items and a table between rows (1
     expect(realRefusals(refused)).toEqual([]);
   });
 
-  it('refuses, in an lr-tb, a field that would split and may not, naming 164g.26', () => {
+  // 164g.26 (t134, t135): a field that is not a text entry moves, as a draw does.
+  it('moves, in an lr-tb, a straddling field that is not a text entry', () => {
     const f = fldN('f4', 100, 30, { ui: 'checkButton' });
-    const r = realRefusals(body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), f])]));
-    expect(r[0]).toEqual(['f4', expect.stringMatching(/^f4: a <checkButton> field would split .*\(164g\.26\)$/) as unknown as string]);
+    const b = body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), f])]);
+    expect(realRefusals(b)).toEqual([]);
+    expect(realSplit(b)).toEqual(['0:A,L(d1,d2,d3)', '0:L(f4)']);
   });
 
   // t38: a draw never splits -- it moves however much of it would fit.
@@ -329,11 +331,22 @@ describe('paginate: splitting an lr-tb between items and a table between rows (1
       .toEqual(['0:A,T(top,L(d1,d2,d3))', '0:T(L(d4,d5,d6))']);
   });
 
-  // Rule 7: a straddling item that is itself a splittable subform is not split yet.
-  it('refuses a straddling lr-tb item that is a splittable subform, naming 164g.25', () => {
+  // 164g.25 (t122-t126): a straddling lr-tb item that is itself a splittable
+  // subform splits between ITS children; its head ends the region, and the
+  // tail opens the next one, the later items re-packed after it.
+  it('splits a straddling lr-tb item that is a splittable subform', () => {
     const S = tb('S', [drwN('s1', 100, 20), drwN('s2', 100, 20)]);
+    const b = body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), S, drwN('z', 100, 10)])]);
+    expect(realSplit(b)).toEqual(['0:A,L(d1,d2,d3,S(s1))', '0:L(S(s2),z)']);
+    expect(realRefusals(b)).toEqual([]);
+  });
+
+  // Unprobed: a break inside such an item. It stays one item, and is refused
+  // where it straddles.
+  it('refuses a straddling lr-tb item with a break inside it, naming 164g.25', () => {
+    const S = tb('S', [drwN('s1', 100, 20), drwN('s2', 100, 20, { breakAfter: pb() }), drwN('s3', 100, 20)]);
     const r = realRefusals(body([area([ca(100)])], [kid('A', 50), lrtb('L', [...draws(3), S])]));
-    expect(r[0]).toEqual(['S', 'S: an lr-tb item that is itself a splittable subform is not split across content areas (164g.25)']);
+    expect(r[0]).toEqual(['S', 'S: an lr-tb item that is a splittable subform with a break inside it is not split across content areas (164g.25)']);
   });
 
   // p. 295 on a row: placed past the boundary when nothing it draws lies past,
@@ -347,12 +360,13 @@ describe('paginate: splitting an lr-tb between items and a table between rows (1
       .toEqual(['r2', `r2: does not fit an empty content area and would need ${SPLIT_LATER}`]);
   });
 
-  it('refuses an <overflow target> lr-tb or table that would continue (164g.30)', () => {
-    const L = lrtb('L', draws(6), { overflow: { target: 'X' } });
-    const r = realRefusals(body([area([ca(100)])], [kid('A', 50), L]));
-    expect(r[0]).toEqual(['d4', expect.stringMatching(/^L: its <overflow target> .*\(164g\.30\)$/) as unknown as string]);
-    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 30)])), { overflow: { target: 'X' } });
-    expect(realRefusals(body([area([ca(100)])], [kid('A', 50), T]))[0][1]).toMatch(/^T: its <overflow target> .*\(164g\.30\)$/);
+  it('continues an <overflow target> lr-tb or table in its target (164g.30)', () => {
+    const two = () => area([ca(100, { name: 'A' }), ca(100)]);
+    const L = lrtb('L', draws(6), { overflow: { target: 'A' } });
+    expect(realRefusals(body([two()], [kid('K', 50), L]))).toEqual([]);
+    expect(realSplit(body([two()], [kid('K', 50), L]))).toEqual(['0:K,L(d1,d2,d3)', '0:L(d4,d5,d6)']);
+    const T = tableN('T', '100pt', [1, 2, 3].map((i) => rowN(`r${String(i)}`, [drwN(`c${String(i)}`, 100, 30)])), { overflow: { target: 'A' } });
+    expect(realSplit(body([two()], [kid('K', 50), T]))).toEqual(['0:K,T(r1)', '0:T(r2,r3)']);
   });
 
   it('places an lr-tb or table kept intact whole', () => {
@@ -791,9 +805,15 @@ describe('paginate: splitting a keep-none positioned root child (164g.11)', () =
     expect(r.refused.get(p)).toMatch(/discarded/);
     expect(r.pages[0].contentAreas[0].children.map((k) => k.label)).toEqual(['O', 'F']);
   });
-  it('refuses a keep-none subform with an <overflow target> that would continue (164g.30)', () => {
-    const p = P(288, [fld('a', 36, 21.6)], { overflow: { target: 'X' } });
-    expect(run([...lead, p]).refused.get(p)).toMatch(/164g\.30/);
+  it("ignores a keep-none subform's own <overflow target>, and follows the root's (164g.30 R6)", () => {
+    // Two 720pt content areas, the second named X. t151: its own target changes
+    // nothing, so the rest goes on to X. t159: a root target is followed.
+    const two = () => body([area([ca(720), ca(720, { name: 'X' })])],
+      [...lead, P(288, [fld('a', 36, 21.6)], { overflow: { target: '#none' } })]);
+    expect(regions([], two())).toEqual(['O F P:144pt(a@36pt)|P:144pt()']);
+    const b = two();
+    b.root.overflow = { target: '#none' };
+    expect(regions([], b)).toEqual(['O F P:144pt(a@36pt)', 'P:144pt()']);
   });
   // 164g.19 places a default positioned subform taller than an empty page, so
   // the split-later refusal no longer names it.
@@ -816,5 +836,103 @@ describe('layoutPages: a split positioned subform (164g.11)', () => {
     expect(r.pages.length).toBe(2);
     expect(r.pages[0].placed.get('g')).toEqual({ box: { x: 0, y: 676, w: 100, h: 20 } });
     expect(r.pages[1].placed.get('k')).toEqual({ box: { x: 0, y: 36, w: 100, h: 20 } });
+  });
+});
+
+describe('164g.27: a root field splits under the content area', () => {
+  // t65: a field straddling the content area's end splits where fieldCut says,
+  // its head closing the region; an empty field's cut is free (t54).
+  const piece = (n: LayoutNode): string => `${n.label}@${String(n.piece?.offset ?? 0)}+${n.geom.h ?? ''}`;
+  const run = (b: XfaBody) => realRun(b).pages.map((p) =>
+    p.contentAreas.map((c) => c.children.map(piece).join(',')).join(' '));
+  it('splits an empty root field across the break', () => {
+    const b = body([area([ca(100)])], [kid('A', 56), fldN('D', 100, 60)]);
+    expect(run(b)).toEqual(['A@0+56pt,D@0+44pt', 'D@44+16pt']);
+  });
+  it('splits a root field taller than an empty region again in the next', () => {
+    const b = body([area([ca(100)])], [kid('A', 50), fldN('D', 100, 200)]);
+    expect(run(b)).toEqual(['A@0+50pt,D@0+50pt', 'D@50+100pt', 'D@150+50pt']);
+  });
+  it('still moves a root draw whole (t48)', () => {
+    const b = body([area([ca(100)])], [kid('A', 56), drwN('C', 100, 60)]);
+    expect(run(b)).toEqual(['A@0+56pt', 'C@0+60pt']);
+  });
+  it('moves a root field whose piece would fall below its font size', () => {
+    const b = body([area([ca(100)])], [kid('A', 95), fldN('D', 100, 60)]);
+    expect(run(b)).toEqual(['A@0+95pt', 'D@0+60pt']);
+  });
+  it('keeps a root field whole under a root that states an overflow leader', () => {
+    const b = body([area([ca(100)])], [kid('A', 56), fldN('D', 100, 60)]);
+    b.root.overflow = { leader: [{ label: 'L' } as never] };
+    expect(run(b)).toEqual(['A@0+56pt', 'D@0+60pt']);
+  });
+});
+
+// 164g.30: <overflow target> (Adobe t143-t159; the oracle is
+// test/xfa-adobe-target-oracle.test.ts). These are the rules it does not isolate.
+describe('paginate: an <overflow target> (164g.30)', () => {
+  const two = (extra: { name?: string; id?: string } = { name: 'A' }) => area([ca(100, extra), ca(100)]);
+  const withRoot = (b: XfaBody, target: string): XfaBody => { b.root.overflow = { target }; return b; };
+  it('follows a root target for a root child that does not fit (R2, t150)', () => {
+    expect(split(body([two()], [kid('a', 60), kid('b', 60)]))).toEqual(['0:a 1:b']);
+    expect(split(withRoot(body([two()], [kid('a', 60), kid('b', 60)]), 'A'))).toEqual(['0:a', '0:b']);
+  });
+  it('resolves an #id as well as a name (R7, t149)', () => {
+    expect(split(withRoot(body([two({ id: 'ID' })], [kid('a', 60), kid('b', 60)]), '#ID'))).toEqual(['0:a', '0:b']);
+  });
+  it('lets a stated blank target block the root one (R5, t158)', () => {
+    const T = tb('T', [kid('a', 60), kid('O', 60)], { overflow: { target: '' } });
+    expect(split(withRoot(body([two()], [T]), 'A'))).toEqual(['0:T(a) 1:T(O)']);
+  });
+  it('inherits a container target into a nested one (R5, t146)', () => {
+    const T = tb('T', [tb('U', [kid('a', 60), kid('O', 60)])], { overflow: { target: 'A' } });
+    expect(split(body([two()], [T]))).toEqual(['0:T(U(a))', '0:T(U(O))']);
+  });
+  it('opens a NEW page of a page-area target every time, at its first content area (R4, t147)', () => {
+    const b = withRoot(body([area([ca(100)]), area([ca(100), ca(100)], { name: 'Q' })],
+      [tb('T', [kid('a', 60), kid('b', 60), kid('c', 60)])]), 'Q');
+    expect(paginate(b, flowHeight).pages.map((p) => [p.pageArea, ...p.contentAreas.map((c) => c.index)]))
+      .toEqual([[0, 0], [1, 0], [1, 0]]);
+  });
+  it('goes to the next page, warning, for a target naming nothing (R7, t148)', () => {
+    const b = withRoot(body([two()], [kid('a', 60), kid('b', 60)]), '#nope');
+    const r = paginate(b, height);
+    expect(r.pages.length).toBe(2);
+    expect(r.warnings).toContain('overflow target "#nope" names no contentArea or pageArea, so an overflow continues on the next page (XFA 3.3 p. 367; Adobe t148)');
+  });
+  it('treats a target naming a content area AND a page area as naming nothing', () => {
+    const b = withRoot(body([area([ca(100, { name: 'Z' }), ca(100)], { name: 'Z' })], [kid('a', 60), kid('b', 60)]), 'Z');
+    expect(paginate(b, height).warnings.some((w) => w.includes('names both a contentArea and a pageArea'))).toBe(true);
+  });
+  // The next three need content areas of DIFFERENT sizes: with equal ones the
+  // natural next region and the target hold the same, so no reading can win.
+  it('holds an adhering pair off to the TARGET region, measured there (keepWith)', () => {
+    // A 200 then B 50. C (40) adheres to D (40); 50 left after F. The natural
+    // next region B holds 50 < 80, so the pair would run past here; the target
+    // A of the next page holds it, so the pair moves there together.
+    const b = withRoot(body([area([ca(200, { name: 'A' }), ca(50)])],
+      [kid('F', 150), kid('C', 40, { keep: { next: 'contentArea' } }), kid('D', 40)]), 'A');
+    expect(split(b)).toEqual(['0:F', '0:C,D']);
+  });
+  it('asks whether the next region can hold a child of the TARGET region (nextCapacity)', () => {
+    // A 100 then B 300, max 2 pages. Y (120, positioned) does not fit; the
+    // target region -- A of page 2 -- cannot hold it either, so 164g.19 places
+    // it HERE, past the end. The natural next region B could, and asked
+    // instead, Y moves on and on (unbounded, it never terminates: the capacity
+    // probe and the move must agree) until the pages run out.
+    const b = withRoot(body([area([ca(100, { name: 'A' }), ca(300)], { max: 2 })],
+      [kid('X', 60), kid('Y', 120)], { max: 1 }), 'A');
+    expect(split(b)).toEqual(['0:X,Y']);
+  });
+  it("follows the continuing container's target from an empty region (lastPath)", () => {
+    // A 100 then B 50. T (target B) continues into B; b (80) does not fit B,
+    // and the next B -- the target again, on page 2 -- cannot hold it either,
+    // so b is placed in B past its end rather than moved to page 2's A.
+    const T = tb('T', [kid('a', 60), kid('b', 80)], { overflow: { target: 'B' } });
+    expect(split(body([area([ca(100), ca(50, { name: 'B' })])], [T]))).toEqual(['0:T(a) 1:T(b)']);
+  });
+  it('does not resolve a SOM expression, warning', () => {
+    const b = withRoot(body([two()], [kid('a', 60), kid('b', 60)]), 'form1.A');
+    expect(paginate(b, height).warnings.some((w) => w.includes('is a SOM expression'))).toBe(true);
   });
 });

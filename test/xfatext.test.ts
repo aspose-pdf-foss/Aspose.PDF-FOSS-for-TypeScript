@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseXml } from '../src/xml.js';
 import { leafText, withValue, type RunStyle } from '../src/xfarich.js';
-import { measureLeaf, type FaceLookup, type FaceMetrics } from '../src/xfatext.js';
+import { layoutLeaf, measureLeaf, splitGrid, type FaceLookup, type FaceMetrics } from '../src/xfatext.js';
 
 const el = (xml: string) => leafText(parseXml(new TextEncoder().encode(xml)));
 /** 'Mono': every glyph 500/1000 wide, ascent 800, descent 200 -> a 10pt line is
@@ -147,5 +147,42 @@ describe('measureLeaf', () => {
     expect(measureLeaf(el('<draw><font letterSpacing="1pt"/><value><text>a</text></value></draw>'), {}, faces))
       .toMatchObject({ reason: expect.stringMatching(/letterSpacing/) });
     expect(measureLeaf(el('<draw><value><rectangle/></value></draw>'), {}, faces)).toEqual({ w: 0, h: 0 });
+  });
+});
+
+// 164g.26: where Adobe Reader cuts a field across a break -- each line's bottom
+// from the field's top (probes t128-t131, t137-t140).
+describe('splitGrid', () => {
+  const lines10 = Array.from({ length: 10 }, (_, i) => `l${String(i)}`).join('\n');
+  const fieldOf = (extra: string, value = `<value><text>${lines10}</text></value>`) =>
+    el(`<field><font typeface="Mono" size="10pt"/>${extra}<ui><textEdit multiLine="1"/></ui>${value}</field>`);
+  const grid = (extra: string, h: number, value?: string) => {
+    const l = layoutLeaf(fieldOf(extra, value), { width: 144 }, faces);
+    if ('reason' in l) throw new Error(l.reason);
+    return splitGrid(l, h).bottoms;
+  };
+  it('steps 1.2 x the size from the top', () => {
+    expect(grid('', 130).slice(0, 3)).toEqual([12, 24, 36]);
+  });
+  it('starts below a top caption and the top inset, not a left caption (t127-t129)', () => {
+    expect(grid('<caption placement="top" reserve="20pt"><value><text>C</text></value></caption>', 150)[0]).toBe(32);
+    expect(grid('<margin topInset="10pt" bottomInset="10pt"/>', 150)[0]).toBe(22);
+    expect(grid('<caption placement="left" reserve="1in"><value><text>C</text></value></caption>', 130)[0]).toBe(12);
+  });
+  it('moves vAligned text down by the room beside its 118pt block (t130, t140)', () => {
+    expect(grid('<para vAlign="bottom"/>', 160)[0]).toBe(54);
+    expect(grid('<para vAlign="middle"/>', 160)[0]).toBe(33);
+    // A bottom caption takes from that room.
+    expect(grid('<para vAlign="bottom"/><caption placement="bottom" reserve="20pt"><value><text>C</text></value></caption>', 160)[0]).toBe(34);
+  });
+  it('steps a stated lineHeight: L under 1.2s throughout, else 1.2s first (t131, t138, t139)', () => {
+    expect(grid('<para lineHeight="15pt"/>', 160).slice(0, 4)).toEqual([12, 27, 42, 57]);
+    expect(grid('<para lineHeight="20pt"/>', 160).slice(0, 3)).toEqual([12, 32, 52]);
+    expect(grid('<para lineHeight="9pt"/>', 160).slice(0, 3)).toEqual([9, 18, 27]);
+  });
+  it('steps each line by its own largest size (t137)', () => {
+    const rich = '<value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml">'
+      + '<p>a</p><p>b</p><p style="font-size:20pt">c</p><p>d</p></body></exData></value>';
+    expect(grid('', 160, rich)).toEqual([12, 24, 48, 60]);
   });
 });

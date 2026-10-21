@@ -76,8 +76,9 @@ export interface XfaCopySpec {
 export interface XfaOverflow {
   leader?: XfaCopySpec[];
   trailer?: XfaCopySpec[];
-  /** `target`, which is not implemented: a split that continues the container
-   *  refuses by name (164g.30). */
+  /** `target` (164g.30): the content area or page area the container continues
+   *  in when it overflows -- an id (`#x`), a name, or a SOM expression. `''` is
+   *  a STATED blank, which blocks an inherited target (t158). */
   target?: string;
 }
 
@@ -114,11 +115,10 @@ export interface LayoutNode {
   /** A field's or draw's text, insets and caption, measured when its size is
    *  not stated (164g.7). Absent on containers. */
   text?: LeafText;
-  /** A field's `<ui>` child name, its `<comb>` and whether its `<para>` states
-   *  orphans or widows (164g.13): read only to decide whether it may split. */
+  /** A field's `<ui>` child name and its `<para>` orphans and widows when
+   *  either is stated (164g.13, 164g.26): read only to decide where it splits. */
   ui?: string;
-  comb?: true;
-  lineKeep?: true;
+  lineKeep?: { orphans: number; widows: number };
   /** One piece of a field split across content areas (164g.13). */
   piece?: XfaPiece;
   /** A subform's break conditions (164g.3). Only `xfapage.ts` reads them: on
@@ -138,7 +138,7 @@ export interface LayoutNode {
 
 /** One piece of a field Adobe splits across content areas (164g.13): how far
  *  down the whole field the piece starts, and which of the value's wrapped
- *  lines [from, to) fall inside it on the `1.2 x size` grid. */
+ *  lines [from, to) fall inside it on its line grid (`FieldGrid`). */
 export interface XfaPiece { offset: number; lines: [number, number] }
 
 export type Placed = { box: XfaBox; piece?: XfaPiece } | { reason: string };

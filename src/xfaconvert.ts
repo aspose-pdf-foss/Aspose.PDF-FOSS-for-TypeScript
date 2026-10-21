@@ -47,7 +47,8 @@ import { layoutPage, type LayoutNode, type Placed, type PlacedNode, type XfaMeas
 import { chromeOps, type ChromeOp, type ChromeResult } from './xfachrome.js';
 import { paintChrome, type XfaChromePlan } from './xfapaint.js';
 import { layoutPages, type XfaLayoutResult, type XfaPageSet } from './xfapage.js';
-import { layoutLeaf, measureLeaf, resolveCaption, type FaceLookup } from './xfatext.js';
+import { layoutLeaf, measureLeaf, resolveCaption, splitGrid, type FaceLookup } from './xfatext.js';
+import type { FieldGrid } from './xfafieldsplit.js';
 import { withValue } from './xfarich.js';
 import { faceLookup } from './xfafont.js';
 import { widgetStyleOf } from './xfaborder.js';
@@ -246,7 +247,7 @@ export function buildXfaPlan(doc: Document, opts: XfaConvertOptions): XfaPlan {
   //    field's page is wherever its page subform landed.
   const measure = xfaMeasurer(doc, tpl, values, globals);
   const fieldLines = xfaFieldLines(doc, tpl, values, globals);
-  const laid = tpl.body ? layoutPages(tpl.body, measure, report.warnings, fieldLines.count)
+  const laid = tpl.body ? layoutPages(tpl.body, measure, report.warnings, fieldLines.grid)
     : { pages: [], refused: new Map<string, string>(), copies: [] };
   const pageSet = tpl.body?.pageSet;
 
@@ -859,6 +860,9 @@ function applyGroup(doc: Document, g: GroupPlan, report: XfaConvertReport): bool
     selected = undefined;
   }
   try {
+    // 164g.37: Adobe writes every exclGroup as /Opt with index states -- all 15
+    // of DD 3183's, 'Yes'/'No' groups included -- so we do too. Reading one
+    // back speaks the export (164g.39), so callers see no difference.
     addRadioGroup(doc, {
       name: g.name,
       options: g.options.map((o) => ({ page: o.page, rect: o.rect, export: o.export })),
@@ -866,7 +870,7 @@ function applyGroup(doc: Document, g: GroupPlan, report: XfaConvertReport): bool
       readOnly: g.readOnly,
       required: g.required,
       ...(g.style ?? {}),
-    });
+    }, { indexStates: true });
     return true;
   } catch (caught) { rethrowLimit(caught);
     return false;
@@ -1012,19 +1016,22 @@ export function convertXfaToAcroForm(
 
 /** @internal 164g.13: a field's value as the lines `xfatext.ts` wraps it into
  *  at the field's stated width, with the faces `xfaMeasurer` measures with --
- *  `count` is what pagination splits by (0 for an empty value), and `texts`
- *  what each piece's widget shows. Undefined where the value cannot be laid
- *  out, which refuses a split rather than guessing at one. */
+ *  `grid` is what pagination splits by (164g.26: each line's bottom from the
+ *  field's top, none for an empty value), and `texts` what each piece's widget
+ *  shows. Undefined where the value cannot be laid out, which refuses a split
+ *  rather than guessing at one. Asked first of the WHOLE field, whose stated
+ *  height places vAligned text; a piece is answered from that. */
 export function xfaFieldLines(
   doc: Document, tpl: XfaTemplate, values: XfaValues, globals?: XfaGlobals,
-): { count: (n: LayoutNode) => number | undefined; texts: Map<string, string[]> } {
+): { grid: (n: LayoutNode) => FieldGrid | undefined; texts: Map<string, string[]> } {
   const faces = faceLookup(doc);
   const byName = fieldLookup(tpl);
   const texts = new Map<string, string[]>();
-  const count = (n: LayoutNode): number | undefined => {
+  const grids = new Map<string, FieldGrid>();
+  const grid = (n: LayoutNode): FieldGrid | undefined => {
     if (n.kind !== 'field' || !n.text || n.field === undefined) return undefined;
-    const known = texts.get(n.field);
-    if (known) return known.length;
+    const known = grids.get(n.field);
+    if (known) return known;
     let t = n.text;
     const f = byName(n.field);
     if (f) {
@@ -1033,16 +1040,21 @@ export function xfaFieldLines(
       if (v !== undefined) t = withValue(t, v);
     }
     if (t.refusal !== undefined) return undefined;
-    if (t.paras.every((p) => p.runs.every((r) => r.text === ''))) { texts.set(n.field, []); return 0; }
+    if (t.paras.every((p) => p.runs.every((r) => r.text === ''))) {
+      texts.set(n.field, []);
+      grids.set(n.field, { bottoms: [] });
+      return { bottoms: [] };
+    }
     const w = n.geom.w === undefined ? undefined : measureToPt(n.geom.w);
     if (w === undefined) return undefined;
     const l = layoutLeaf(t, { width: w }, faces);
     if ('reason' in l) return undefined;
-    const out = l.lines.map((x) => x.segments.map((s) => s.text).join(''));
-    texts.set(n.field, out);
-    return out.length;
+    texts.set(n.field, l.lines.map((x) => x.segments.map((s) => s.text).join('')));
+    const g = splitGrid(l, n.geom.h === undefined ? undefined : measureToPt(n.geom.h));
+    grids.set(n.field, g);
+    return g;
   };
-  return { count, texts };
+  return { grid, texts };
 }
 
 /** A field by its SOM name, a leader or trailer COPY's included (164g.15): a
