@@ -11,6 +11,7 @@ import {
   type ComboBoxInit, type ListBoxInit, type PushButtonInit, type SignatureFieldInit,
 } from './formcreate.js';
 import { removeField } from './formremove.js';
+import { addBarcodeField, refreshBarcodeFields, type BarcodeFieldInit, type BarcodeRefreshReport } from './paperbarcode.js';
 import { recalculate, checkValues } from './afform.js';
 import type { RecalculateReport, ValueCheckReport } from './afrules.js';
 
@@ -105,6 +106,17 @@ export class Form {
    *  or a name routed through an existing terminal field. */
   AddTextField(init: TextFieldInit): TextField {
     const field = addTextField(this.doc, init);
+    this.build();
+    return field;
+  }
+
+  /** Create a paper forms barcode: a text field carrying a /PMD dictionary that
+   *  draws as a PDF417, Data Matrix or QR symbol of the form's data (2srz.4).
+   *  By default it carries Acrobat's own tab-delimited calculation script, so
+   *  Acrobat Pro recomputes it too. Throws without mutating the document on a
+   *  bad argument. */
+  AddBarcodeField(init: BarcodeFieldInit): TextField {
+    const field = addBarcodeField(this.doc, init);
     this.build();
     return field;
   }
@@ -205,6 +217,14 @@ export class Form {
     this.doc.markModified();
   }
 
+  /** Recompute every paper-barcode field's content (2srz.4) and redraw what
+   *  changed. `Save`, `Sign` and every flatten do this themselves, and a
+   *  render draws what it would write; call it to see the report. A barcode
+   *  whose content already matches is left untouched. */
+  RefreshBarcodes(): BarcodeRefreshReport {
+    return refreshBarcodeFields(this.doc);
+  }
+
   /** When true, setting a text field's `Value` first checks it against the
    *  field's recognised keystroke and validate rules and throws RangeError on
    *  a rejection, leaving the document unchanged. Default false. Stored on the
@@ -232,4 +252,39 @@ export class Form {
   CheckValues(): ValueCheckReport {
     return checkValues(this.Fields);
   }
+}
+
+/** Would `Form.Fields` stay within `maxNestingDepth`. A probe that never
+ *  throws, for a caller to whom the field tree is optional: a render draws a
+ *  paper barcode's pending appearance (2srz.4) only as a preview, and must not
+ *  refuse a page it rendered before because the preview's walk would.
+ *
+ *  It visits nodes in `build`'s order -- pre-order, kids carrying /T only,
+ *  each dict once -- so a node shared at two depths is counted at the depth
+ *  `build` meets it first, and the two answers cannot disagree. Iterative, so
+ *  the probe itself cannot overflow the stack the bound exists to protect. */
+export function fieldTreeWithinLimits(doc: Document): boolean {
+  const max = doc.loadLimits.maxNestingDepth;
+  if (max === null) return true;
+  const acro = doc.resolve(doc.catalog().get('AcroForm'));
+  if (!isDict(acro)) return true;
+  const fields = doc.resolve(acro.get('Fields'));
+  if (!isArray(fields)) return true;
+  const seen = new Set<PdfDict>();
+  const stack: [PdfObject, number][] = [];
+  for (let i = fields.length - 1; i >= 0; i--) stack.push([fields[i], 1]);
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop()!;
+    const d = doc.resolve(node);
+    if (!isDict(d) || seen.has(d)) continue;
+    seen.add(d);
+    if (depth > max) return false;
+    const kids = doc.resolve(d.get('Kids'));
+    if (!isArray(kids)) continue;
+    for (let i = kids.length - 1; i >= 0; i--) {
+      const kd = doc.resolve(kids[i]);
+      if (isDict(kd) && kd.has('T')) stack.push([kids[i], depth + 1]);
+    }
+  }
+  return true;
 }

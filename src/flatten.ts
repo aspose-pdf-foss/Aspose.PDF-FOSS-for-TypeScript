@@ -16,6 +16,7 @@ import { isAnnotVisible, resolveAppearance } from './annotappearance.js';
 import { retagAsContent, untagObjects } from './structwrite.js';
 import { removeField } from './formremove.js';
 import { enc } from './serialize.js';
+import { refreshBarcodeFields } from './paperbarcode.js';
 
 /**
  * True when `entry` is a /Popup whose parent markup is in `baked`. The parent's
@@ -111,6 +112,7 @@ function flattenPageAnnots(doc: Document, page: Page, accept: (a: PdfDict) => bo
  * annotations flattened.
  */
 export function flattenAnnotations(doc: Document, page: Page): number {
+  refreshBarcodeFields(doc);
   return flattenPageAnnots(doc, page, () => true);
 }
 
@@ -123,6 +125,7 @@ export function flattenAnnotations(doc: Document, page: Page): number {
  */
 function flattenTargets(doc: Document, targets: ReadonlySet<PdfDict>): number {
   if (targets.size === 0) return 0;
+  refreshBarcodeFields(doc);
   let count = 0;
   for (const page of doc.Pages) count += flattenPageAnnots(doc, page, (a) => targets.has(a));
   return count;
@@ -174,6 +177,9 @@ function isWidget(doc: Document, annot: PdfDict): boolean {
  * content — fields are no longer editable. Returns the number of widgets baked.
  */
 export function flattenForm(doc: Document, opts: FieldAppearanceOptions = {}): number {
+  // Paper barcodes first (2srz.4): once baked, a barcode is page content and
+  // the Save-time refresh can no longer bring it current.
+  refreshBarcodeFields(doc);
   doc.Form.GenerateAppearances(opts); // ensure every widget has an /AP to bake
   let count = 0;
   for (const page of doc.Pages) {

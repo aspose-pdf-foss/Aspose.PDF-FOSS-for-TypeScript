@@ -57,7 +57,9 @@
     "gen:aform": "node scripts/gen-aform-goldens.mjs",
     "gen:xfa": "tsx scripts/gen-xfa-goldens.ts",
     "gen:zip": "node scripts/gen-zip-fixtures.mjs",
-    "gen:hyph": "node scripts/gen-hyphenation.mjs"
+    "gen:hyph": "node scripts/gen-hyphenation.mjs",
+    "gen:barcodes": "node scripts/gen-barcode-tables.mjs",
+    "gen:barcode-goldens": "tsx scripts/gen-barcode-goldens.ts"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

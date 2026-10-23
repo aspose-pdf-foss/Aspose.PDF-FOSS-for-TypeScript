@@ -1,4 +1,5 @@
 import { Lexer } from './lexer.js';
+import { refreshBarcodeFields } from './paperbarcode.js';
 import type { FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
 import { readXref, XrefEntry, PdfRevision } from './xref.js';
@@ -68,11 +69,12 @@ import { Form } from './form.js';
 import { appendField, attachWidget, ensureAcroForm } from './formcreate.js';
 import {
   collectFormData, applyFormData,
-  type ExportFormDataOptions, type ExportJsonOptions, type ImportOptions, type ImportReport,
+  type ExportFormDataOptions, type ExportJsonOptions, type ExportXmlOptions, type ImportOptions, type ImportReport,
 } from './formdata.js';
 import { readFdf, writeFdf } from './fdf.js';
 import { readXfdf, writeXfdf } from './xfdf.js';
 import { readFormJson, writeFormJson } from './formjson.js';
+import { readFormXml, writeFormXml } from './formxml.js';
 import { OptionalContent } from './ocg.js';
 import { buildPages, PageTree } from './pagetree.js';
 import { checkPageTree } from './pagecheck.js';
@@ -1244,6 +1246,26 @@ export class Document {
     return applyFormData(this, readFormJson(src));
   }
 
+  /** Export the current form-field values as XML in Acrobat's AcroForm shape:
+   *  a `<fields>` root with one element per name segment -- the XFA datasets
+   *  shape -- and a terminal field's value as its text. A radio group writes
+   *  its export, a checkbox its on-state name or `Off`, a multi-select list
+   *  one element per value. A name segment XML cannot spell as an element is
+   *  written with `_` in its place and the real name in `xfdf:original`. */
+  ExportXml(opts: ExportXmlOptions = {}): Uint8Array {
+    const o = opts as { annotations?: unknown; file?: unknown };
+    if (o.annotations) throw new UnsupportedFeatureError('ExportXml does not carry annotations; use ExportXfdf');
+    if (o.file !== undefined) throw new UnsupportedFeatureError('ExportXml does not carry a source file; use ExportXfdf or ExportJson');
+    return writeFormXml(collectFormData(this, { includeEmpty: opts.includeEmpty }, true));
+  }
+
+  /** Import field values from XML, as `ExportXml` writes it. Text that is not
+   *  XML throws `PdfParseError`; a field with no match and a value the field
+   *  rejects are reported in `skipped`. */
+  ImportXml(bytes: Uint8Array): ImportReport {
+    return applyFormData(this, readFormXml(bytes, this.loadLimits));
+  }
+
   /** The document's optional-content (layers) model, rebuilt from the live
    *  catalog on each access. */
   get OptionalContent(): OptionalContent {
@@ -2117,6 +2139,8 @@ export class Document {
     // A completed signature fixes the exact bytes; return them verbatim so the
     // signed byte image is never re-serialized (which would break the digest).
     if (this.pendingSignedBytes) return this.pendingSignedBytes;
+    // Paper barcodes first: a refresh draws appearances, which may need fonts.
+    refreshBarcodeFields(this);
     this.finalizeEmbeddedFonts();
     // A retained key for R<=4 hashes /ID[0], so it is valid only against the
     // SAME /ID -- and resolveIds invents a fresh random one when the trailer
@@ -2171,7 +2195,9 @@ export class Document {
 
     // After the refusals, so a rejected call leaves the document untouched —
     // and before the diff, because font embedding allocates objects: taken
-    // first, every font added since Open is missing from the revision.
+    // first, every font added since Open is missing from the revision. The
+    // paper-barcode refresh goes first for the same reason.
+    refreshBarcodeFields(this);
     this.finalizeEmbeddedFonts();
 
     const delta = diffObjects(this.baselineObjects(), this.objects);
@@ -2707,7 +2733,9 @@ export class Document {
       if (c.commitmentType !== undefined) commitmentTypeOid(c.commitmentType); // validate early (throws)
     }
 
-    // Materialize any pending fonts before the byte image is frozen.
+    // Paper barcodes and pending fonts, before the byte image is frozen -- and
+    // before choosePath, since a barcode that changed modifies the document.
+    refreshBarcodeFields(this);
     this.finalizeEmbeddedFonts();
 
     const useIncremental = this.choosePath();

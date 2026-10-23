@@ -59,6 +59,7 @@ import {
   type PushButtonInit, type SignatureFieldInit,
 } from './formcreate.js';
 import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
+import { addBarcodeField, type BarcodeFieldInit } from './paperbarcode.js';
 import { registerStructIds, untagObjects } from './structwrite.js';
 import { checkOnSkipped, markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
@@ -357,6 +358,12 @@ export class Page {
    *  A thin forwarder to Form.AddTextField with `page` bound to this page. */
   AddTextField(init: Omit<TextFieldInit, 'page'>): TextField {
     return addTextField(this.doc, { ...init, page: this.Number });
+  }
+
+  /** Create a paper forms barcode field whose widget lands on this page.
+   *  A thin forwarder to Form.AddBarcodeField with `page` bound to this page. */
+  AddBarcodeField(init: Omit<BarcodeFieldInit, 'page'>): TextField {
+    return addBarcodeField(this.doc, { ...init, page: this.Number });
   }
 
   /** Create an AcroForm checkbox whose widget lands on this page.

@@ -176,7 +176,7 @@ flowchart TD
 - **HTML to PDF** — render an HTML document into a flow, into a rect on a page, or a whole document in one call: `flow.AddHtml`, `page.AddHtml`, `doc.AddHtml`. The source is parsed by a full HTML5 tree constructor and styled through a CSS cascade (a UA sheet transcribed from HTML §15, author `<style>` elements and `style=` attributes, 52 longhands, selectors up to `:has()`), then laid out as a CSS box tree — block and inline formatting contexts, anonymous boxes, used widths per CSS 2.1 §10.3.3, and full margin collapsing — and lowered onto the same flow elements Markdown uses, so it paginates, tags and mixes with hand-built content with no second layout engine. Block backgrounds, borders and padding are painted — with `border-radius` (elliptical and per-corner), and a `background-image` that is a `url()`, a `linear-gradient()` or a `radial-gradient()` sized, positioned and repeated as CSS says, matched against headless Chrome pixel for pixel — and a box split across a column keeps its side borders, draws its top and bottom (and rounds its corners) exactly once, and continues its gradient rather than restarting it. Headings become `/H1`..`/H6` under a tagged flow and take part in keep-with-next; a run of `display: list-item` siblings becomes one list, so ordinals run continuously and `/L` > `/LI` > `/LBody` follows. `font-family` resolves against the document’s registered font folders first (`RegisterFontFolder`) and falls back to the Standard-14 generics — `serif` → Times, `sans-serif` → Helvetica, `monospace` → Courier — so it renders with no setup at all; note that makes an unstyled paragraph **Times**, since the UA sheet declares `html { font-family: serif }`. `doc.AddHtml` adopts the source’s `<title>` as the PDF title unless you give one. **Tables render** through the same table engine `page.AddTable` uses — spans, repeating `<thead>` rows, per-cell borders and backgrounds, auto-fitted columns, pagination and `/Table` tagging — and an `<img>` renders either as a block figure when it is alone or **inline, on a line of text, among the words** — with `data:` URIs decoded for you and anything else supplied through a `resolveImage: (src, alt) => Uint8Array | undefined` option, so the library touches neither `fs` nor the network. **Floats place**, with text wrapping beside them and `clear` honoured; a few float, table and image cases degrade rather than drop. **Everything that does not render as the source specified names itself in `skipped`** — a list of records carrying the offending element, a construct name and a `kind` of `dropped` (nothing drawn) or `degraded` (drawn, but not as specified); `describeNotRendered(r)` flattens one to a string for logging. Content taller than an empty column **renders rather than refusing the document** — an image scales to fit, anything else draws past the column bottom — and both are reported; because they are decided while placing, a `Flow` (whose `AddHtml` returns before `Render` runs) receives them through an `onNotRendered` callback instead. See [Limitations](#scope-and-limitations).
 - **Footnotes and endnotes** — a Flow run cites a note with `{ text, footnote: { content } }` or `endnote`; the note body is text, runs, or any flow elements (a list or an image in a note). Marks are numbered across the flow — footnotes arabic, endnotes lower roman, or roman, alpha or `* † ‡` symbols, with an explicit `mark` taking no number — and drawn raised after the run. A footnote goes at the foot of the column holding its reference, under a separator rule: a line whose note cannot fit below it moves to the next column with its note, and a note too long for a column continues at the foot of the next. Endnotes follow the flow's content, or start a new page. A tagged flow writes each note as a `/Note` with an `/ID` (registered in the structure tree's `/IDTree`) placed right after the reference it belongs to. `TextRun.rise`, the baseline shift that raises the mark, is available on any run.
 - **Flow blocks** — `AddCodeBlock`, `AddQuote`, `AddRule` and `AddTable` beside the existing `AddParagraph`/`AddHeading`/`AddList`/`AddImage`, with public element builders (`paragraph`, `heading`, `list`, `image`, `codeBlock`, `quote`, `rule`, `table`) for composing nested content.
-- **Barcodes** — `page.AddBarcode(spec, [x, y, w, h], opts?)` generates and places 1D (Code128, EAN-13, UPC-A, EAN-8) and 2D (QR) barcodes as vector rectangles or a 1-bit `/ImageMask` stencil (`render: 'raster'`), with `color`, `quietZone`, human-readable `text` for 1D codes, `layer`, and structure marking (`tag`/`alt`/`artifact` — see below). QR auto-selects mode (numeric/alphanumeric/byte), version (1–40), and mask, at any of the four ECC levels. The pure generators (`makeCode128`/`makeEan13`/`makeUpcA`/`makeEan8`/`makeQr`) return a module model for custom placement. Generation only — decoding is out of scope.
+- **Barcodes** — `page.AddBarcode(spec, [x, y, w, h], opts?)` generates and places 1D (Code128, EAN-13, UPC-A, EAN-8) and 2D (QR, PDF417, Data Matrix) barcodes as vector rectangles or a 1-bit `/ImageMask` stencil (`render: 'raster'`), with `color`, `quietZone`, human-readable `text` for 1D codes, `layer`, and structure marking (`tag`/`alt`/`artifact` — see below). QR auto-selects mode (numeric/alphanumeric/byte), version (1–40), and mask, at any of the four ECC levels; PDF417 takes an error-correction level and a column count, and Data Matrix ECC 200 a square or rectangular shape, both encoding non-Latin-1 text as UTF-8 under ECI 26. The pure generators (`makeCode128`/`makeEan13`/`makeUpcA`/`makeEan8`/`makeQr`/`makePdf417`/`makeDataMatrix`) return a module model for custom placement. Generation only — decoding is out of scope.
 - **Page composition** — `page.StampWith(src, opts?)` places another page's content (from this or another document) onto the page as a shared Form XObject — letterheads, watermarks, backgrounds. The source is imported once and left untouched; by default it is fitted to the page's CropBox and drawn on top (`mode: 'underlay'` draws behind), with `rect`, `opacity`, and an extra clockwise `rotate` (0/90/180/270) options. `doc.Overlay(src, opts?)` is the multi-page convenience: `src` may be a `Page` or a `Document` (first page used), imported **once** and placed on every page (or just `pages: [...]`) — the same `underlay` / `rect` / `opacity` / `rotate` options apply. `doc.NUp(cols, rows, opts?)` imposes the document's pages `cols`×`rows` per sheet into a **new** `Document` (this one untouched), each page scaled-to-fit and centered in its grid cell (`pageSize`, `margin`, `gutter`, row/column `order`, and `drawBorder` to frame each imposed cell for a readable proof sheet). `doc.Booklet(opts?)` imposes the pages as a saddle-stitch booklet into a **new** `Document` — padded to a multiple of 4 and reordered so printing duplex and folding down the middle reads in sequence, two pages per printed side (`binding` for an RTL book, `pageSize`, `margin`, `gutter`, and `creep` to compensate for the fore-edge push-out of nested sheets). By default the whole book is one signature; `sheetsPerSignature` splits it into several separately-folded signatures (40 nested sheets is not physically foldable), the last one short unless `padSignatures` pads every signature full. `page.Resize(box, opts?)` sets the MediaBox/CropBox (optionally scaling content to fill it) and `page.Scale(factor)` uniformly scales a page's content and boundary boxes.
 - **Page decoration** — `doc.AddWatermark(opts)` stamps a repeating text or image watermark across a page range (exactly one of `text`/`image`), `doc.AddHeaderFooter(opts)` fills up to three cells per band (`header`/`footer` × `left`/`center`/`right`), and `doc.AddBatesNumbering(opts?)` stamps a Bates sequence, returning the next unused number so a run chains across a document set. Text carries `{page}`/`{total}`/`{label}`/`{date}`/`{time}` tokens (and `{bates}`), resolved per page; an unknown token throws rather than stamping literal text. Pages are selected with a 1-based array or a range string (`'1-5,8,12-'`). Positioning presets (`diagonal`, `center`, the four corners and edge centers) anchor to the page **as displayed**, so stamps land correctly and upright regardless of `/Rotate` or a non-zero CropBox origin, with `opacity`, `rotate`, `margin`, and overlay/underlay options. A diagonal watermark auto-fits to the page diagonal; an image watermark is embedded once and shared across every stamped page.
 - **Text extraction** — `page.GetText()` returns the page's visible text with reasonable word/line ordering. It walks the content stream coordinate-by-coordinate and decodes through simple-font encodings (WinAnsi/MacRoman/Standard/PDFDoc + `/Differences`), `/ToUnicode` CMaps, and composite (Type0) fonts, recursing into Form XObjects. A composite font's `/Encoding` resolves through its CMap — an embedded CMap stream or any of the 195 bundled predefined Adobe CMaps (Adobe-Japan1, GB1, CNS1, Korea1, KR, Identity), following `usecmap` chains — so codes of mixed byte-width (Shift-JIS, EUC, Big5, UHC) split correctly and each code maps to the CID that selects its glyph and its `/W` advance; a name outside the bundled set degrades to Identity. A font with no `/ToUnicode` — or a partial one — still extracts: the CID resolves to a character through Adobe's published table for the collection its `/CIDSystemInfo` names (Adobe-Japan1, GB1, CNS1, Korea1, KR, all bundled), with `/ToUnicode` taking precedence wherever it has an answer. A CID neither source can map contributes no text rather than a replacement character, and an unrecognised registry or ordering (including `Identity`, whose CIDs are glyph indices with no character meaning) is left unmapped rather than guessed at. Vertical writing (`/WMode 1`, the `-V` CMaps) is honoured: glyphs advance down the page by `/W2`/`/DW2` and are placed at their per-glyph vertical origins, and extraction reads each column top-to-bottom with columns ordered right-to-left, reporting `vertical: true` on the fragment. A page mixing directions lays each out under its own rule, vertical text first. Returns `""` for pages with no text. `page.GetTextFragments()` returns the same text as positioned `TextFragment[]` — runs of consecutive glyphs sharing one font, size, and baseline, each with a page-space `quad`, `fontSize`, and `fontName`. `page.GetStructuredText()` assembles those fragments into a `TextBlock[]` tree (blocks → lines → fragments) grouped by baseline, vertical gap, and left-edge alignment. All three answer **what the page shows**: text the document's default optional-content configuration hides — a switched-off watermark, a "do not print" overlay, a disabled CAD layer — is absent, exactly as it is from `ToImage`. Pass `{ includeHidden: true }` to ask instead what the file *contains*, which is what a forensic read or a redaction audit wants. The content-editing entries never need it: `ReplaceText`, `RedactText` and `MarkRedactText` always act on everything the file holds, because removing only the occurrences a viewer happens to show would leave the rest in the bytes while reporting success. A hidden run still advances the pen, so the visible text after it keeps its true position.
@@ -196,7 +196,8 @@ flowchart TD
 - **Form fields (AcroForm)** — `doc.Form` enumerates fields (name, type, value) and fills text fields, checkboxes, radio groups, and choice fields, regenerating each field's appearance stream (`/AP`) so values render without `/NeedAppearances`; values survive `Save()`. Fields can also be **created**: `form.AddTextField({ page, rect, name, … })` (or `page.AddTextField`) bootstraps `/AcroForm` and its `/DR` font, wires the field into the tree — a dotted `name` builds the intermediate nodes — and generates the widget's `/AP`. Fields can be **styled** — background, border
 (five `/BS /S` styles) and text colour — at creation or afterwards with
 `field.SetStyle({ … })`.
-- **Form data (FDF / XFDF)** — `doc.ExportFdf()` / `doc.ExportXfdf()` write the current field values as a standalone data file, and `doc.ImportFdf(bytes)` / `doc.ImportXfdf(bytes)` read one back into a form, regenerating appearances and returning an `ImportReport` of what was `imported` and what was `skipped` (unknown field names, values the field rejects). Pass `{ annotations: true }` on both sides to carry annotations as well — the 18 XFDF types, with their appearance streams — reported separately as `importedAnnots` / `skippedAnnots`. `doc.ExportJson()` / `doc.ImportJson(src)` do the same as JSON, where each field carries its type, its typed value and the options it offers.
+- **Form data (FDF / XFDF)** — `doc.ExportFdf()` / `doc.ExportXfdf()` write the current field values as a standalone data file, and `doc.ImportFdf(bytes)` / `doc.ImportXfdf(bytes)` read one back into a form, regenerating appearances and returning an `ImportReport` of what was `imported` and what was `skipped` (unknown field names, values the field rejects). Pass `{ annotations: true }` on both sides to carry annotations as well — the 18 XFDF types, with their appearance streams — reported separately as `importedAnnots` / `skippedAnnots`. `doc.ExportJson()` / `doc.ImportJson(src)` do the same as JSON, where each field carries its type, its typed value and the options it offers, and `doc.ExportXml()` / `doc.ImportXml(bytes)` as XML in Acrobat's AcroForm shape — one element per name segment, the XFA datasets shape.
+- **Paper forms barcodes** — `form.AddBarcodeField({ page, rect, name, symbology?, encoding? })` creates Acrobat's kind of barcode field: a text field with a `/PMD` dictionary that draws as a PDF417, Data Matrix or QR symbol of the form's data, carrying Acrobat's own tab-delimited calculation script by default so Acrobat Pro recomputes it too. `Save`, `Sign`, the incremental save and flattening recompute every barcode field, including one in a form made in Acrobat, as Acrobat's script would compute it, without running the script, and redraw only what changed; rendering draws the recomputed symbol without writing it. `form.RefreshBarcodes()` returns what was recomputed and what was left as it was, and why.
 - **XFA forms (read and convert)** — `doc.ConvertXfaToAcroForm()` decodes an `/AcroForm /XFA` packet (single-stream XDP or the alternating name/stream array), models the `template` packet's field set, binds values out of `datasets`, and emits a real `/AcroForm` field tree — so a form only Acrobat could fill becomes one every viewer can read, fill, flatten, redact and export. Geometry is not all-or-nothing: a `<subform layout="position">` states absolute `x`/`y`/`w`/`h`, so static and XFAF forms get **real widgets with appearance streams**, and fields under `tb`, `lr-tb` and `table` subforms are laid out from the sizes the template states — or, where the template leaves a size to the text, from the text itself, measured with the face the template names (embedded in the document, registered with `RegisterFontFolder`, or the bundled Liberation face for Arial, Times New Roman and Courier New). Pages are laid out as XFA's ordered pagination produces them -- a `<pageArea>` reused for as many pages as the form needs, page breaks, repeating page subforms -- and a *dynamic* form's placeholder page is replaced by the pages its layout produces, painted with the form's draws, borders, fills and captions (a hybrid's pages, which carry Designer's rendering already, are untouched); widget borders map to `/MK`/`/BS`. A field whose place depends on splitting content across pages, or on a face that cannot be found, gets a **geometry-less field dict** that `doc.Form` still fills and `ExportFdf` still exports. No rect is approximated — every geometry refusal is reported on an `XfaConvertReport` instead, and `report.dataOnly` says a document converted to data and renders nothing at all. A hybrid document reconciles by name (the synthesized name is the SOM expression, which is what LiveCycle wrote into the AcroForm half), `/XFA` and `/NeedsRendering` are removed once something converts, and the conversion is one-way. A `tb` subform too tall for the room left is split between its children, and a positioned subform that states `keep intact="none"` is split where Adobe Reader splits it; other content moves to the next page whole.
 - **Optional content (layers / OCG)** — `doc.OptionalContent` enumerates layers, reads/toggles their visibility in the default and named viewing configurations, edits configs (add/remove/rename, locked state), adopts one as the document's current state (`ApplyConfiguration`, with `SaveConfiguration` snapshotting `/D` first), and deletes a layer together with its marked content (`/OC … BDC … EMC`, in page `/Contents` and recursively inside referenced Form XObject streams) and its bound annotations. Any Form/Image XObject used only by the layer — bound by its own `/OC`, or invoked (`Do`) only inside excised layer content — is removed along with its `Do` ops and resource entries (an XObject still drawn by surviving content is kept; one bound via an OCMD is un-layered). It also prunes the deleted layer out of any surviving OCMD's `/VE`/`/OCGs` membership and drops OCMDs left with no members, along with the page `/Properties` entries (direct-OCG or now-empty-OCMD) they orphan. It also **creates** new layers (`AddLayer`, with `/Order` nesting and default visibility) and tags authored content into them — `PageGraphics.BeginLayer`/`EndLayer`, `AddImage({ layer })`, and `Annotation.Layer`. It also resolves the visibility of any `/OC` value — an OCG, or an OCMD via its `/VE` visibility expression (`/And`/`/Or`/`/Not`) or `/P` policy — with `doc.OptionalContent.Default.ResolveVisibility(oc)`. A group's `/Usage` dictionary is read (`layer.Usage`) and written together with the `/AS` entry that applies it (`layer.SetUsage`/`config.SetUsage`), and a configuration turns those statements into states for an event — `config.ResolveForEvent('Print')` reports, `config.ApplyUsage('Print')` applies, with any category saying OFF winning and `/Zoom`/`/Language` silent unless a magnification or BCP 47 tag is supplied. Finally, `doc.FlattenLayers()` collapses the document to ONE rendering: every marked-content span the default configuration hides is deleted from the stream it sits in, hidden XObject draws and hidden annotations go with them, every surviving `/OC` wrapper and `/OC` key is removed, and `/OCProperties` is deleted, leaving an ordinary PDF with no layers left to toggle. Edits round-trip through `Save()` (classic and compressed).
 - **Outlines (bookmarks)** — `GetOutlines` reads the nested bookmark tree (titles, expanded state, `/C` colour and `/F` bold/italic flags, and destinations from explicit `/Dest` or `/A` GoTo actions — page targets resolved, named targets reported by name); `SetOutlines` writes or replaces the whole tree, taking either destination form and wiring up the sibling/child links and `/Count` for you.
@@ -1498,20 +1499,26 @@ alpha channel into an `/SMask`. CMYK JPEG and interlaced PNG throw
 
 ### Generate Barcodes and QR Codes
 
-Generate 1D (Code128, EAN-13, UPC-A, EAN-8) and 2D (QR) barcodes and place them
+Generate 1D (Code128, EAN-13, UPC-A, EAN-8) and 2D (QR, PDF417, Data Matrix) barcodes and place them
 on a page as crisp vector graphics (default) or a 1-bit `/ImageMask` stencil:
 
 ```ts
 page.AddBarcode({ type: 'qr', data: 'https://example.com', ecc: 'M' }, [x, y, 120, 120]);
 page.AddBarcode({ type: 'ean13', data: '5901234123457' }, [x, y, 160, 70]);   // check digit auto
 page.AddBarcode({ type: 'code128', data: 'ABC-123' }, [x, y, 200, 60], { render: 'raster' });
+page.AddBarcode({ type: 'pdf417', data: 'ID 1234567890123', ecLevel: 3 }, [x, y, 240, 80]);
+page.AddBarcode({ type: 'datamatrix', data: 'LOT-42', shape: 'rectangle' }, [x, y, 120, 40]);
 ```
 
 Options: `render: 'vector' | 'raster'`, `color`, `quietZone`, `text` (human-readable
 digits under 1D codes — on by default for EAN/UPC), and `layer`/`tag`. QR supports
 all four ECC levels (`L`/`M`/`Q`/`H`) with automatic mode selection and version
-sizing (1–40). The low-level generators (`makeCode128`, `makeEan13`, `makeUpcA`,
-`makeEan8`, `makeQr`) return a module model for custom placement.
+sizing (1–40). PDF417 takes `ecLevel` (0–8, default by data length per ISO/IEC 15438
+Annex E) and `columns` (1–30), and draws each row three modules tall; Data Matrix
+takes `shape` (`square`, `rectangle`, `any`) and picks the smallest of its 30 ECC 200
+sizes. Both are checked against ZXing, a decoder this library did not write. The
+low-level generators (`makeCode128`, `makeEan13`, `makeUpcA`, `makeEan8`, `makeQr`,
+`makePdf417`, `makeDataMatrix`) return a module model for custom placement.
 
 Code128 auto-selects code sets A/B/C, so the full ASCII range (0x00–0x7F),
 including control characters used by GS1-128, encodes. Generation only — barcode
@@ -2469,6 +2476,95 @@ file whose structure is wrong — not JSON, no `fields` array, an entry with no
 refused whole with `PdfParseError`, before any field is set. Annotations are not
 carried; `ExportJson({ annotations: true })` throws, so use XFDF for those.
 
+### Add a Paper Forms Barcode
+
+A barcode field is a text field that draws as a PDF417, Data Matrix or QR symbol
+of the form's data, so a printed form can be scanned back without retyping. It
+is Acrobat's own kind of field (a `/PMD` dictionary on a text field):
+
+```ts
+doc.Form.AddTextField({ name: 'name', page: 1, rect: [72, 700, 300, 720], value: 'Ada' });
+doc.Form.AddTextField({ name: 'zip', page: 1, rect: [72, 670, 300, 690], value: '007' });
+doc.Form.AddBarcodeField({ name: 'bc', page: 1, rect: [320, 600, 540, 720] });
+
+doc.Form.Get('name')!.Value = 'Bob';
+doc.Save();                              // the barcode now holds "Bob\t7"
+const report = doc.Form.RefreshBarcodes(); // or ask for the report yourself
+```
+
+By default the field carries **Acrobat's own tab-delimited calculation script**,
+so Acrobat Pro keeps it current too, and back-office scanners read the format
+they expect. This library never runs that script. It reproduces what the script
+computes, by rules read from Adobe Reader's own script engine:
+
+- fields in code-unit order of their full names;
+- push buttons skipped;
+- a value that looks decimal printed as a JavaScript number (`007` becomes `7`);
+- a multi-select list joined with commas;
+- a checkbox or radio group as its export or `Off`;
+- line breaks folded to a space, or to CR in a multiline barcode field.
+
+A password field contributes its plaintext, as in Acrobat. `fields` limits what
+is carried (default: every field that exists when the barcode is created, except
+signature fields, push buttons and other barcode fields), and
+`fieldNames: true` adds a header row.
+
+`encoding: 'json'` holds `ExportJson` of the carried fields instead, so a scan
+goes straight into `ImportJson`. Acrobat has no such encoding, so only this
+library keeps it current. `encoding: 'value'` shows the field's own value.
+
+`Save`, `Sign`, the incremental save and every flatten refresh every barcode
+field and redraw only those whose content changed; `ToImage`, `ToSvg` and the
+other renders draw what `Save` would write without changing the document. An untouched document saves byte-identical,
+and a barcode that a signature locks is never rewritten. A barcode that cannot be
+recomputed faithfully keeps its content and is listed in
+`report.notRecomputed`, with one of these reasons:
+
+- `'xml-encoding'` — Acrobat's XML encoding;
+- `'unrecognised-script'` — a script that is not Acrobat's;
+- `'too-large'` — content too large for the symbol;
+- `'locked'` — a signature locks the field;
+- `'unprobed-value'` — a carried field whose value shape no probe settled.
+
+Adobe Reader neither recomputes nor draws these barcodes, so in Reader the field
+shows its last saved appearance.
+
+### Import and Export Form Data as XML
+
+The XML form is the one Acrobat writes for an AcroForm: a `<fields>` root and one
+element per segment of a field's name, a terminal field's value as its text.
+That is the shape of an XFA `datasets` packet, so tools built for XFA data read
+it too.
+
+```ts
+const xml = doc.ExportXml();   // UTF-8 bytes
+// <?xml version="1.0" encoding="UTF-8"?>
+// <fields xmlns:xfdf="http://ns.adobe.com/xfdf-transition/">
+//   <name>Ada</name>
+//   <agree>Yes</agree>
+//   <tags>a</tags>
+//   <tags>b</tags>
+//   <parent>
+//     <child>kid</child>
+//   </parent>
+//   <RadioButtonList_1_ xfdf:original="RadioButtonList[1]">No</RadioButtonList_1_>
+// </fields>
+
+const report = other.ImportXml(xml);
+```
+
+A checkbox is written as its on-state name or `Off`, a radio group as its
+**export** (`Off` when nothing is selected), and a multi-select list as one
+element per selected value. A name segment that is not a valid XML element name
+is written with `_` in place of each character XML does not allow, and the
+real name in `xfdf:original`, which import reads back. On import the root
+element's name is not checked, and a value's whitespace is kept as written.
+Text that is not XML throws `PdfParseError`. Unknown fields and rejected values
+are reported in `skipped`, as for FDF and XFDF. No source-file reference, no
+document ID, no rich text and no annotations are carried, and
+`ExportXml({ file })` / `ExportXml({ annotations })` throw rather than
+ignoring them.
+
 ### Read and Write Outlines (Bookmarks)
 
 ```ts
@@ -2998,7 +3094,7 @@ import {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile,
   exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile,
-  htmlFileToPdf, docxFileToPdf,
+  exportXmlFile, importXmlFile, htmlFileToPdf, docxFileToPdf,
 } from '@asposefoss/pdf';
 
 await splitPdfFile('input.pdf', 'out/');             // writes out/page-1.pdf, page-2.pdf, ...
@@ -3016,6 +3112,8 @@ const report = await importXfdfFile('form.pdf', 'data.xfdf', 'filled.pdf'); // o
 await importXfdfFile('doc.pdf', 'notes.xfdf', 'out.pdf', { annotations: true });
 await exportJsonFile('form.pdf', 'data.json', { indent: 2 });
 await importJsonFile('form.pdf', 'data.json', 'filled.pdf');
+await exportXmlFile('form.pdf', 'data.xml');
+await importXmlFile('form.pdf', 'data.xml', 'filled.pdf');
 
 // HTML in, PDF out. The encoding comes from the bytes (BOM, then the
 // document's own <meta charset>), and a relative <img src> is read from beside
@@ -3375,7 +3473,7 @@ Budgets are in characters (`maxInputChars`, default 48,000 per request) because 
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 469 public types plus 156
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 475 public types plus 160
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -3490,6 +3588,8 @@ of these tables.
 | `makeEan8(digits)` | An EAN-8 model: 7 digits (check computed) or 8 (check validated) |
 | `makeUpcA(digits)` | A UPC-A model: 11 digits (check computed) or 12 (check validated) |
 | `makeQr(data, opts?)` | A QR model: `ecc` defaults to `'M'`, and the smallest fitting version is chosen unless `version` forces one |
+| `makePdf417(data, opts?)` | A PDF417 model: text, byte and numeric compaction, `ecLevel` 0..8 (default per ISO/IEC 15438 Annex E) and `columns` 1..30 (default about 3:1 wide); rows are three modules tall |
+| `makeDataMatrix(data, opts?)` | A Data Matrix ECC 200 model: ASCII or Base256 encodation in the smallest `shape` (`'square'`, `'rectangle'` or `'any'`) that holds the data |
 | `AddImageOptions` | Interface with 5 properties. |
 | `AddImagePagesOptions` | Interface with 3 properties. |
 | `AddImagePagesResult` | Interface with 2 properties. |
@@ -3501,6 +3601,9 @@ of these tables.
 | `AutoTagOptions` | Options for AutoTag. |
 | `AutoTagReport` | Counts of the elements AutoTag produced. |
 | `BackgroundStyle` | A fill painted behind the glyphs. |
+| `BarcodeFieldInit` | Options for Form.AddBarcodeField / Page.AddBarcodeField: `symbology`, `ecLevel`/`columns` (PDF417), `ecc` (QR), `encoding` (`tab`, `json`, `value`), `fields`, `fieldNames`, `compress`, `value`. |
+| `BarcodeRefreshReport` | What `Form.RefreshBarcodes` did: `updated` field names, and `notRecomputed` entries naming a field, a `reason` and, for `unprobed-value`, the carried field it stopped at. |
+| `BarcodeSkipReason` | Why a barcode was left as it was: `'xml-encoding'`, `'unrecognised-script'`, `'locked'`, `'unprobed-value'` or `'too-large'`. |
 | `BatesOptions` | Options for AddBatesNumbering. |
 | `BookletOptions` | Options for Booklet. |
 | `BorderEdges` | The four edge flags, resolved from a BorderSides. |
@@ -3532,6 +3635,7 @@ of these tables.
 | `ConvertOptions` | Interface with 5 properties. |
 | `Crl` | Interface with 7 properties. |
 | `CrlEntry` | Interface with 2 properties. |
+| `DataMatrixOptions` | What `makeDataMatrix` takes: `{ shape }`, `'square'` by default. |
 | `DecorationOptions` | The decoration options shared by every text-authoring options type. |
 | `DecorationStyle` | A rule drawn beneath (underline) or through (strikethrough) the text. |
 | `DocumentJavaScript` | One entry of the document-level JavaScript name tree. |
@@ -3541,6 +3645,7 @@ of these tables.
 | `ElemOpts` | Options for creating a structure element. |
 | `ExportFormDataOptions` | Interface with 3 properties. |
 | `ExportJsonOptions` | What `ExportJson` takes: `{ includeEmpty, file, indent }`. |
+| `ExportXmlOptions` | What `ExportXml` takes: `{ includeEmpty }`. |
 | `ExternalSigner` | Sign via an external callback (HSM/KMS/smartcard) — the key never leaves the device. |
 | `ExtractPagesOptions` | Interface with 1 property. |
 | `FieldActions` | A field's additional-actions (/AA), PDF 32000-1 table 197. |
@@ -3602,7 +3707,7 @@ of these tables.
 | `LoadFontOptions` | A style request alongside the ordinary font options. |
 | `LoadLimitPatch` | A partial policy for `LoadLimits.with`: `undefined` leaves a field, `null` disables it. |
 | `LoadLimitValues` | The seventeen `LoadLimits` fields, each a positive integer or `null`. |
-| `MatrixBarcode` | 2D barcode geometry: a square matrix of dark/light modules, row-major. |
+| `MatrixBarcode` | 2D barcode geometry: a matrix of dark/light modules, row-major, with optional `width`, `height`, `rowHeight` and `quiet` for non-square symbols. |
 | `MdBlockQuote` | Interface with 2 properties. |
 | `MdCode` | Interface with 2 properties. |
 | `MdCodeBlock` | `info` is the raw info string of a fenced block, entity-decoded and backslash-unescaped but not split on whitespace; '' for an indented block. |
@@ -3647,6 +3752,7 @@ of these tables.
 | `PathEvent` | A painted vector path, its subpaths flattened to page-space segments. |
 | `PathPaint` | Interface with 2 properties. |
 | `PathSubpath` | Interface with 2 properties. |
+| `Pdf417Options` | What `makePdf417` takes: `{ ecLevel, columns }`. |
 | `PdfUaConvertOptions` | Interface with 3 properties. |
 | `PdfXConvertOptions` | Interface with 9 properties. |
 | `PemSigner` | Sign from a PEM private key plus its PEM/DER certificate chain (leaf first). |
@@ -3989,6 +4095,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `saveDocxFile(inputPath, outPath, opts?)` | Export to a `.docx` |
 | `exportFdfFile(pdfPath, fdfPath, opts?)` / `exportXfdfFile(pdfPath, xfdfPath, opts?)` | Write a PDF's form-field values as FDF or XFDF |
 | `importFdfFile(pdfPath, fdfPath, outPath?, opts?)` / `importXfdfFile(pdfPath, xfdfPath, outPath?, opts?)` | Import FDF or XFDF values; `outPath` defaults to rewriting `pdfPath` |
+| `exportXmlFile(pdfPath, xmlPath, opts?)` / `importXmlFile(pdfPath, xmlPath, outPath?)` | Write a PDF's form-field values as AcroForm XML, or import them; `outPath` defaults to rewriting `pdfPath` |
 | `exportJsonFile(pdfPath, jsonPath, opts?)` / `importJsonFile(pdfPath, jsonPath, outPath?)` | Write a PDF's form-field values as JSON, or import them; `outPath` defaults to rewriting `pdfPath` |
 | `htmlFileToPdf(inputPath, outPath, opts?)` | Render an HTML file to a PDF, decoding its bytes and resolving relative `<img src>` inside its own directory → `{ skipped }` |
 | `docxFileToPdf(inputPath, outPath, opts?)` | Render a Word document (.docx) to a PDF → `{ skipped }` |
@@ -4036,6 +4143,8 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.Form.AddListBox(init)` / `page.AddListBox(init)` | Create a list box → `ChoiceField` |
 | `doc.Form.AddPushButton(init)` / `page.AddPushButton(init)` | Create a push button → `ButtonField` |
 | `doc.Form.AddSignatureField(init)` / `page.AddSignatureField(init)` | Create an empty signature field (`/FT /Sig`, no `/V`) for `doc.Sign({ fieldName })` to fill later, optionally with a `seedValue` (`/SV`) and a `lock` (`/Lock`), read back on `doc.Signatures[i]` → `Field` |
+| `doc.Form.AddBarcodeField(init)` / `page.AddBarcodeField(init)` | Create a paper forms barcode: a text field with a `/PMD` dictionary that draws as a PDF417, Data Matrix or QR symbol of the form's data, by default with Acrobat's tab-delimited script → `TextField` |
+| `doc.Form.RefreshBarcodes()` | Recompute every barcode field's content and redraw what changed (`Save`, `Sign` and flattening do this too) → `BarcodeRefreshReport` |
 | `ButtonField.Action` | Read/write the `/A` action (`goto`, `uri`, `submit`, `reset`, `javascript`) |
 | `field.SetStyle(style)` | Restyle an existing field: `/MK` background, `/BS` border, `/DA` text; regenerates the `/AP` |
 | `FieldStyle` on every `Add*` | `backgroundColor`, `borderColor`, `borderWidth`, `borderStyle`, `dashPattern`, `font`, `fontSize`, `textColor` |
@@ -4155,6 +4264,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `field.Flatten()` | Bake one field's widgets and unwire it from `/AcroForm /Fields` → count |
 | `annotation.Flatten()` | Bake one annotation (unwiring its field when it is a widget) → boolean |
 | `doc.ExportFdf(opts?)` / `doc.ExportXfdf(opts?)` | Export form-field values as FDF / XFDF bytes (`{ includeEmpty, file, annotations }`) |
+| `doc.ExportXml(opts?)` / `doc.ImportXml(bytes)` | Form-field values as Acrobat's AcroForm XML — one element per name segment — and back → `ImportReport` |
 | `doc.ExportJson(opts?)` / `doc.ImportJson(src)` | Form-field values as JSON — type, typed value and options per field — and back → `ImportReport` |
 | `doc.ImportFdf(bytes, opts?)` / `doc.ImportXfdf(bytes, opts?)` | Import field values, regenerating appearances → `ImportReport` (`imported`, `skipped`, `importedAnnots`, `skippedAnnots`); `{ annotations }` to apply annotations |
 | `doc.Optimize(opts?)` | Shrink in place: fonts/dedup/compress (lossless, each opt-out) plus opt-in lossy `images` → `OptimizeReport` |
@@ -4464,6 +4574,11 @@ still carries GitHub's number.
 - **No CFF2 and no variable-font instancing, by decision** — the two halves are separate. *An embedded CFF2 program* (PDF 2.0's `/FontFile3 /Subtype /OpenType` carrying a `CFF2` table) is not read: there is no CFF2 charstring interpreter and no subsetting of an `ItemVariationStore`. Such a document still opens, and its text still extracts through `/Widths` and `/ToUnicode`, but its glyphs are not drawn from the program. `AddFont` does not accept a CFF2 font either; it throws `UnsupportedFeatureError` naming CFF2. *A variable font found on the system*, as a render substitute (`RegisterRenderFontFolder`) or through `LoadFontByName`, is used at its **default instance**. `fvar`, `gvar` and `avar` are not applied, and its named instances are not indexed as separate faces, so asking for Bold from a variable family gets the default face. A system face whose only outlines are CFF2 is left out of the index altogether, so a lookup falls through to the next usable face rather than choosing one it cannot draw. Few PDFs embed a CFF2 font today. Rendering through a Bahnschrift- or SF-style system face is the case that shows the limit: it draws in the family's default weight.
 - **Network calls only through a client you build, by decision** — the library never reaches a host on its own initiative, so opening, rendering, converting or exporting a document makes no network request, whatever URLs the document contains. A call happens only through a client object the caller constructs and hands in. Today there are two: `httpTimestampProvider(url)`, an RFC 3161 timestamp client, and `openAiModel(baseUrl, opts)`, a chat-completions client for OpenAI-compatible servers — both over Node's built-in `fetch`, bounded by a timeout and a response-size cap, with no default endpoint. There is one narrow exception, and a caller opts into it by signing a prepared field: when a signature field's seed value **requires** a timestamp and the call brought no TSA, `Sign` builds that client for the field's own `/TimeStamp` URL, over http(s) only and never for a merely suggested URL. Every href an HTML, Markdown or SVG source names goes through your `resolveImage` instead. Future network-backed features follow the same rule, AI assistance included: they take a client or a callback you supply and never call a default endpoint.
 - **DOCX import is a documented subset, not a Word layout engine; legacy `.doc` is out of scope, by decision** — `AddDocx` maps WordprocessingML onto the same flow engine `AddHtml` and `AddMarkdown` use, so a document **reflows**: line and page breaks fall where this engine puts them, not where Word did, and a document relying on absolute positioning will not look the same. What renders: paragraphs and their resolved styles, headings by outline level, character formatting, numbered and bulleted lists with Word's own labels, tables with column spans and vertical merges, inline and block images (JPEG, PNG, BMP, TIFF), external hyperlinks, and the last section's page size and margins. What is **reported in `skipped` rather than drawn**: headers and footers, comments, a note reference inside another note (Word never writes one), a note placement Word allows and the engine does not (notes beneath the text, endnotes at each section's end), a section whose note format or start differs from the last section's (the last one's is used), text boxes and floating drawings (a floating picture is placed in line), section-level layout (columns, per-section page sizes — only the last section's geometry is used), tab stops (a tab is one space), internal hyperlinks and bookmarks, fields such as a table of contents (the stored result text is kept), tracked changes (shown as final text), table borders and column widths beyond the grid (every table draws a uniform 0.5pt grid), block structure inside a table cell (its paragraphs are joined by line breaks and a nested table is flattened), sub/superscript, EMF/WMF images, and a bullet glyph from Symbol or Wingdings (drawn as `•`). An empty paragraph's height is that of the default 10pt size, since the model does not carry the paragraph mark's own. There is **no oracle for the rendering**: the reader beneath it is checked against Word 2010 and LibreOffice on a vendored corpus and the spacing rule against Word through COM, while where the ink lands is held by hand-built cases. Legacy binary `.doc` is not read at all: its OLE compound-file container is a separate format that nothing else in the library needs.
+- **Paper forms barcodes are reproduced, checked against Reader, and partly unverifiable**
+  - **The content.** Acrobat's tab-delimited content is reproduced from rules read off Adobe Reader 26.1's own script engine, so it is evidence from one producer and one version. Acrobat's XML encoding is recognised but not recomputed, and is reported.
+  - **Not checked against Acrobat Pro.** None of it could be checked against Acrobat Pro, which was not available. That covers how Acrobat turns the content into symbol bytes (character encoding, ECI, `/DataPrep` compression) and which `/PMD` keys it needs, so an Acrobat Pro that redraws a field we created may size its symbol differently.
+  - **Reader.** Reader neither recomputes nor draws these barcodes: Acrobat's script needs an object Reader lacks, so the value becomes a single space there. A paper barcode therefore stays current only in Acrobat Pro or through this library.
+  - **`json` encoding.** It has no script, so only this library keeps it current.
 - **Document JavaScript is stored, never executed, by decision** — scripts are written and read (`SetJavaScript`, `GetJavaScripts`, JavaScript actions, and a field's `format`, `keystroke`, `validate` and `calculate` actions through `SetActions`), but the library runs none of them. XFA's FormCalc does not run either. Running script a document supplies is a security decision before it is an engineering one, and Node's `vm` module is not a sandbox. Calculations and formats are therefore **not run as JavaScript**. Instead, Acrobat's 17 standard AForm calls are **recognised by shape** — a script that is exactly one such call with literal arguments — and implemented natively when you opt in: `form.Recalculate()` for `AFSimple_Calculate` in `/CO` order, `{ format: true }` on `GenerateAppearances` and `FlattenForm` (and `field.FormattedValue`) for the format functions, `form.CheckValues()` and `form.EnforceRules` for the keystroke and validate rules. Without those calls nothing changes: a total keeps whatever value you write and appearances draw the stored value (`1234.5`, not `$1,234.50`). Any other script is reported, never run. The semantics are pdf.js's, checked against goldens generated from it, with three stated divergences: a date that does not match its picture exactly is left unformatted and rejected (pdf.js then guesses, defaulting to the current year), negative styles 1 and 3 get their parentheses but not their red colour, and `EnforceRules` accepts or rejects a value but never rewrites it. `Recalculate()` is not refused on a signed or certified document: changing `/V` is form filling, which DocMDP permits, so the caller decides.
 - **No lazy or streaming open, by decision** — `Document.Open` parses every object in the file (about 670 bytes each) and keeps the input bytes alive, because an encoded stream payload is a view into them rather than a copy. Stream payloads are *not* decoded on open: page content, images and fonts are decompressed only when something reads them, and the decoded bytes are not retained by the object model. So what separates this from a streaming opener (such as Aspose.PDF for Python's `open_streaming`) is the number of objects, not the size of the content. Lazy object parsing is declined because the whole-document operations depend on a fully materialized model: `Save()`'s mark-sweep and compact renumbering, the incremental-update delta that compares every object against the document as opened, and the all-objects validation scans. A partly parsed model would have to report objects nobody had looked at as unchanged, and that is exactly the assumption the incremental writer refuses to make for the objects it can see. To bound memory on large or untrusted input, lower `LoadLimits`' `maxObjects` and `maxFileBytes` (see *Open Untrusted PDFs Under Resource Limits*).
 - **No facade layer, by decision** — there is no Aspose-shaped facade (`PdfFileEditor`, `PdfExtractor`, `PdfFileSignature`, `FormEditor`, … as in Aspose.PDF for Java) and no plugin layer (`Merger`, `Splitter`, `Optimizer`, `TextExtractor` over file/byte/stream data sources, as in Aspose.PDF for Python), and neither is planned. Both would compose operations this library already has, so they add migration convenience and no capability — at the price of a second, permanent public surface for every operation, whose two spellings would have to be kept in agreement forever. `Document` and `Page` are the API; the file-based helpers (`splitPdfFile`, `saveImagesFile`, `htmlFileToPdf`, …) are the low-code tier; and a data source is simply `Document.Open(bytes)` or `Document.OpenFile(path)`, a result `doc.Save()` (bytes) or `doc.WriteTo(path)`. The table below maps the common facade and plugin operations to their equivalents here.

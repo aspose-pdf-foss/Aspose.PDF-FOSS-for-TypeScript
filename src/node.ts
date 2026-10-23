@@ -6,7 +6,7 @@ import { LoadLimits } from './loadlimits.js';
 import { Metadata, MetadataUpdate } from './metadata.js';
 import { ImageOptions } from './raster.js';
 import { imageExtension, imageKey, type SaveImageOptions } from './imagehref.js';
-import type { ExportFormDataOptions, ExportJsonOptions, ImportOptions, ImportReport } from './formdata.js';
+import type { ExportFormDataOptions, ExportJsonOptions, ExportXmlOptions, ImportOptions, ImportReport } from './formdata.js';
 import type { MarkdownExportOptions } from './mdexport.js';
 import type { DocxOptions } from './docxexport.js';
 import { parseHtmlBytes } from './htmltree.js';
@@ -241,6 +241,30 @@ export async function importJsonFile(
 ): Promise<ImportReport> {
   const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportJson(new Uint8Array(await readFile(jsonPath)));
+  await writeFile(outPath, doc.Save());
+  return report;
+}
+
+/** Read a PDF from disk and write its form-field values to `xmlPath` as XML.
+ *  See `Document.ExportXml`. */
+export async function exportXmlFile(
+  pdfPath: string,
+  xmlPath: string,
+  options?: ExportXmlOptions,
+): Promise<void> {
+  const doc = Document.Open(await readPdfFile(pdfPath));
+  await writeFile(xmlPath, doc.ExportXml(options));
+}
+
+/** Import XML field values into a PDF on disk. Writes to `outPath`, which
+ *  defaults to `pdfPath` (in-place rewrite). See `Document.ImportXml`. */
+export async function importXmlFile(
+  pdfPath: string,
+  xmlPath: string,
+  outPath = pdfPath,
+): Promise<ImportReport> {
+  const doc = Document.Open(await readPdfFile(pdfPath));
+  const report = doc.ImportXml(new Uint8Array(await readFile(xmlPath)));
   await writeFile(outPath, doc.Save());
   return report;
 }

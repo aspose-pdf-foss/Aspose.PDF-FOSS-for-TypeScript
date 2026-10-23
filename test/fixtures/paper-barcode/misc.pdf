@@ -1,0 +1,259 @@
+%PDF-1.7
+%âãÏÓ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R /OpenAction << /S /JavaScript /JS (this.calculateNow\(\); var s = "BC=" + JSON.stringify\(this.getField\("bc"\).value\) + "\\n"; for \(var i = 0; i < this.numFields; ++i\) { var n = this.getNthFieldName\(i\); if \(n == "dbg"\) continue; var v = this.getField\(n\).value; s += i + " " + n + " " + this.getField\(n\).type + " " + \(typeof v\) + " " + JSON.stringify\(v\) + "\\n"; } this.getField\("dbg"\).value = s;) >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Fields [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R] /DR << /Font << /Helv 12 0 R >> >> /DA (/Helv 0 Tf 0 0 0 rg) /CO [10 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 500] /Resources << >> /Annots [5 0 R 6 0 R 13 0 R 14 0 R 8 0 R 9 0 R 10 0 R 11 0 R] >>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 470 200 488] /F 4 /P 4 0 R /FT /Ch /T (j1) /DA (/Helv 0 Tf 0 0 0 rg) /Opt [(007) (x)] /V (007) /I [0] /AP << /N 15 0 R >> >>
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 448 200 466] /F 4 /P 4 0 R /FT /Btn /T (j2) /DA (/Helv 0 Tf 0 0 0 rg) /V /007 /AS /007 /AP << /N << /007 16 0 R /Off 17 0 R >> >> >>
+endobj
+7 0 obj
+<< /FT /Btn /Ff 32768 /T (j3) /V /007 /DA (/Helv 0 Tf 0 0 0 rg) /Kids [13 0 R 14 0 R] >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 404 200 422] /F 4 /P 4 0 R /FT /Tx /T (j4) /Ff 8192 /DA (/Helv 0 Tf 0 0 0 rg) /V (secret) /AP << /N 18 0 R >> >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 382 200 400] /F 4 /P 4 0 R /FT /Tx /T (j5) /Ff 16777216 /DA (/Helv 0 Tf 0 0 0 rg) /V (0042) /MaxLen 4 /AP << /N 19 0 R >> >>
+endobj
+10 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [220 300 600 490] /F 4 /P 4 0 R /FT /Tx /T (bc) /Ff 1 /DA (/Helv 0 Tf 0 0 0 rg) /V () /PMD << /Symbology /PDF417 /DataPrep 0 >> /AA << /C << /S /JavaScript /JS (function bMemberOf\(strName, aStrNames\)\n{\n    for \(var nMembIdx in aStrNames\)\n    {\n        if \(strName == aStrNames[nMembIdx]\)\n            return true;\n    }\n    return false;\n}\nfunction strTabDelimited\(oParam\)\n{\n    var bNeedTab = false;\n    var strNames = "";\n    var strValues = "";\n    for \(var i = 0; i < oParam.oDoc.numFields; ++i\)\n    {\n        var strFieldName = oParam.oDoc.getNthFieldName\(i\);\n        if \(\(null == oParam.aFields || bMemberOf\(strFieldName, oParam.aFields\)\)\n            && \(null == oParam.strXclField || strFieldName != oParam.strXclField\)\n            && \(oParam.oDoc.getField\(strFieldName\).type != "button"\)\)\n        {\n            if \(bNeedTab\)\n            {\n                if \(oParam.bFieldNames\)\n                    strNames += "\\t";\n                strValues += "\\t";\n            }\n            if \(oParam.bFieldNames\)\n                strNames += strFieldName;\n            strValues += oParam.oDoc.getField\(strFieldName\).value;\n            bNeedTab = true;\n        }\n    }\n    if \(oParam.bFieldNames\)\n        return strNames + "\\n" + strValues;\n    else\n        return strValues;\n}\n\n\nevent.value = strTabDelimited\({oDoc: this, aFields: ["j1","j2","j3","j4","j5"], bFieldNames: false}\);) >> >> /AP << /N 20 0 R >> >>
+endobj
+11 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 10 602 290] /F 4 /P 4 0 R /FT /Tx /T (dbg) /Ff 4097 /DA (/Helv 9 Tf 0 0 0 rg) /V () /AP << /N 21 0 R >> >>
+endobj
+12 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+13 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 426 28 444] /F 4 /P 4 0 R /Parent 7 0 R /AS /007 /AP << /N << /007 22 0 R /Off 23 0 R >> >> >>
+endobj
+14 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [40 426 58 444] /F 4 /P 4 0 R /Parent 7 0 R /AS /Off /AP << /N << /8 24 0 R /Off 25 0 R >> >> >>
+endobj
+15 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 26 0 R >> >> /Length 119 >>
+stream
+q
+0 0 190 18 re W n
+0.6 0.6 0.6 rg
+0 4.2 190 13.8 re f
+BT
+/Helv 12 Tf
+0 0 0 rg
+13.8 TL
+2 7.8 Td
+(007) Tj
+T*
+(x) Tj
+ET
+Q
+endstream
+endobj
+16 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /ZaDb 27 0 R >> >> /Length 55 >>
+stream
+q
+BT
+/ZaDb 14.4 Tf
+0 0 0 rg
+88.9088 4.68 Td
+(4) Tj
+ET
+Q
+endstream
+endobj
+17 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 28 0 R >> >> /Length 4 >>
+stream
+q
+
+Q
+endstream
+endobj
+18 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 29 0 R >> >> /Length 87 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(\225\225\225\225\225\225) Tj
+ET
+Q
+endstream
+endobj
+19 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 30 0 R >> >> /Length 124 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12.6 Tf
+0 0 0 rg
+20.2472 5.22 Td
+(0) Tj
+47.5 0 Td
+(0) Tj
+47.5 0 Td
+(4) Tj
+47.5 0 Td
+(2) Tj
+ET
+Q
+endstream
+endobj
+20 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 380 190] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 31 0 R >> >> /Length 4 >>
+stream
+q
+
+Q
+endstream
+endobj
+21 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 592 280] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 32 0 R >> >> /Length 68 >>
+stream
+q
+0 0 592 280 re W n
+BT
+/Helv 9 Tf
+10.35 TL
+0 0 0 rg
+2 270.8 Td
+ET
+Q
+endstream
+endobj
+22 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 18 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /ZaDb 33 0 R >> >> /Length 54 >>
+stream
+q
+BT
+/ZaDb 14.4 Tf
+0 0 0 rg
+3.3048 4.68 Td
+(l) Tj
+ET
+Q
+endstream
+endobj
+23 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 18 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 34 0 R >> >> /Length 4 >>
+stream
+q
+
+Q
+endstream
+endobj
+24 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 18 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /ZaDb 35 0 R >> >> /Length 54 >>
+stream
+q
+BT
+/ZaDb 14.4 Tf
+0 0 0 rg
+3.3048 4.68 Td
+(l) Tj
+ET
+Q
+endstream
+endobj
+25 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 18 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 36 0 R >> >> /Length 4 >>
+stream
+q
+
+Q
+endstream
+endobj
+26 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+27 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>
+endobj
+28 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+29 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+30 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+31 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+32 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+33 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>
+endobj
+34 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+35 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>
+endobj
+36 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 37
+0000000000 65535 f 
+0000000019 00000 n 
+0000000502 00000 n 
+0000000559 00000 n 
+0000000708 00000 n 
+0000000858 00000 n 
+0000001041 00000 n 
+0000001232 00000 n 
+0000001336 00000 n 
+0000001507 00000 n 
+0000001690 00000 n 
+0000003230 00000 n 
+0000003396 00000 n 
+0000003494 00000 n 
+0000003648 00000 n 
+0000003800 00000 n 
+0000004096 00000 n 
+0000004327 00000 n 
+0000004506 00000 n 
+0000004769 00000 n 
+0000005070 00000 n 
+0000005250 00000 n 
+0000005495 00000 n 
+0000005724 00000 n 
+0000005902 00000 n 
+0000006131 00000 n 
+0000006309 00000 n 
+0000006407 00000 n 
+0000006481 00000 n 
+0000006579 00000 n 
+0000006677 00000 n 
+0000006775 00000 n 
+0000006873 00000 n 
+0000006971 00000 n 
+0000007045 00000 n 
+0000007143 00000 n 
+0000007217 00000 n 
+trailer
+<< /Size 37 /Root 1 0 R >>
+startxref
+7315
+%%EOF

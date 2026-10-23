@@ -146,8 +146,14 @@ export type QrMode = 'numeric' | 'alphanumeric' | 'byte';
 
 const ALNUM = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
 
+/** A QR payload: a string, whose mode is chosen for it, or bytes, which are
+ *  always byte mode (a compressed paper-barcode payload must not be read as
+ *  digits because its bytes happen to be). */
+export type QrData = string | Uint8Array;
+
 /** Auto-select the tightest applicable encoding mode for `data`. */
-export function qrMode(data: string): QrMode {
+export function qrMode(data: QrData): QrMode {
+  if (typeof data !== 'string') return 'byte';
   if (/^\d+$/.test(data)) return 'numeric';
   if ([...data].every((c) => ALNUM.includes(c))) return 'alphanumeric';
   return 'byte';
@@ -169,12 +175,13 @@ class BitWriter {
   }
 }
 
-function utf8(data: string): number[] {
-  return Array.from(new TextEncoder().encode(data));
+/** The bytes byte mode encodes: a string as UTF-8, bytes as they are. */
+function bytesOf(data: QrData): number[] {
+  return Array.from(typeof data === 'string' ? new TextEncoder().encode(data) : data);
 }
 
 /** Number of data-codeword bytes a payload needs (mode header + segment). */
-function payloadBitLength(data: string, mode: QrMode, version: number): number {
+function payloadBitLength(data: QrData, mode: QrMode, version: number): number {
   const header = 4 + countBits(mode, version);
   if (mode === 'numeric') {
     const groups = Math.floor(data.length / 3);
@@ -184,11 +191,11 @@ function payloadBitLength(data: string, mode: QrMode, version: number): number {
   if (mode === 'alphanumeric') {
     return header + Math.floor(data.length / 2) * 11 + (data.length % 2) * 6;
   }
-  return header + utf8(data).length * 8;
+  return header + bytesOf(data).length * 8;
 }
 
 /** Smallest version (1..40) whose data capacity fits `data` at `ecc`. */
-export function chooseQrVersion(data: string, ecc: QrEcc): number {
+export function chooseQrVersion(data: QrData, ecc: QrEcc): number {
   const mode = qrMode(data);
   for (let v = 1; v <= 40; v++) {
     if (payloadBitLength(data, mode, v) <= dataCodewordCount(v, ecc) * 8) return v;
@@ -198,19 +205,19 @@ export function chooseQrVersion(data: string, ecc: QrEcc): number {
 
 /** Encode `data` into the version/ecc data codewords (mode header + segment +
  *  terminator + 0xEC/0x11 padding to capacity). */
-export function encodeQrData(data: string, version: number, ecc: QrEcc): number[] {
+export function encodeQrData(data: QrData, version: number, ecc: QrEcc): number[] {
   const mode = qrMode(data);
   const w = new BitWriter();
   w.put(MODE_INDICATOR[mode], 4);
-  const count = mode === 'byte' ? utf8(data).length : data.length;
+  const count = mode === 'byte' ? bytesOf(data).length : data.length;
   w.put(count, countBits(mode, version));
 
-  if (mode === 'numeric') {
+  if (mode === 'numeric' && typeof data === 'string') {
     for (let i = 0; i < data.length; i += 3) {
       const chunk = data.slice(i, i + 3);
       w.put(parseInt(chunk, 10), chunk.length === 3 ? 10 : chunk.length === 2 ? 7 : 4);
     }
-  } else if (mode === 'alphanumeric') {
+  } else if (mode === 'alphanumeric' && typeof data === 'string') {
     for (let i = 0; i < data.length; i += 2) {
       if (i + 1 < data.length) {
         w.put(ALNUM.indexOf(data[i]) * 45 + ALNUM.indexOf(data[i + 1]), 11);
@@ -219,7 +226,7 @@ export function encodeQrData(data: string, version: number, ecc: QrEcc): number[
       }
     }
   } else {
-    for (const b of utf8(data)) w.put(b, 8);
+    for (const b of bytesOf(data)) w.put(b, 8);
   }
 
   const capacityBits = dataCodewordCount(version, ecc) * 8;
@@ -315,7 +322,7 @@ export interface QrEncodeResult {
 }
 
 /** Full QR encode: data → codewords → matrix with masking and format info. */
-export function encodeQr(data: string, opts: QrOptions = {}): QrEncodeResult {
+export function encodeQr(data: QrData, opts: QrOptions = {}): QrEncodeResult {
   const ecc = opts.ecc ?? 'M';
   if (!FORMAT_ECC_BITS.hasOwnProperty(ecc)) throw new TypeError(`QR: invalid ecc '${ecc}'`);
   const version = opts.version ?? chooseQrVersion(data, ecc);
@@ -465,4 +472,12 @@ export function makeQr(data: string, opts: QrOptions = {}): MatrixBarcode {
   if (typeof data !== 'string' || data.length === 0)
     throw new TypeError('makeQr: data must be a non-empty string');
   return encodeQr(data, opts).matrix;
+}
+
+/** {@link makeQr} over bytes, always in byte mode: the path a paper-barcode
+ *  field draws through, whose content may be compressed. Not exported from
+ *  index.ts. */
+export function makeQrBytes(bytes: Uint8Array, opts: QrOptions = {}): MatrixBarcode {
+  if (bytes.length === 0) throw new TypeError('makeQrBytes: bytes must be non-empty');
+  return encodeQr(bytes, opts).matrix;
 }

@@ -9,6 +9,7 @@ import { escapeHtml } from './html.js';
 import { parseAction } from './actions.js';
 import { decodePdfText, parsePdfDate } from './metadata.js';
 import { rethrowLimit } from './errors.js';
+import { readPmd } from './pmd.js';
 
 /** AcroForm fields as real HTML controls, for `ToHtml({ mode: 'fixed',
  *  forms: true })`.
@@ -142,6 +143,12 @@ function controlFor(
   const s = ` style="${style}"`;
 
   if (field.Type === 'text') {
+    // A paper forms barcode (2srz.6) is not converted: its appearance is the
+    // symbol, and an <input> would show the tab-delimited content as text.
+    // Left unclaimed, the page render keeps drawing it. Same test the
+    // appearance generator asks, so the two agree on what is a barcode.
+    const pmd = doc.resolve(field.Dict.get('PMD'));
+    if (isDict(pmd) && readPmd(pmd, (o) => doc.resolve(o)) !== undefined) return undefined;
     const tf = field as TextField;
     const v = typeof field.Value === 'string' ? field.Value : '';
     if (tf.Multiline)

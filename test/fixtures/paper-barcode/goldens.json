@@ -1,0 +1,18 @@
+{
+ "reader": "Adobe Acrobat Reader 26.1.21691.0 (app.viewerVersion 26.00121691), Windows 11, 2026-10-22",
+ "channel": "JSON.stringify(barcode value) written into a visible field by the probe's /OpenAction, captured from the window (<name>.png) and transcribed by hand",
+ "probes": [
+  { "name": "order", "content": "B\tu\t10\t9\ta\tma\tmb\tm\tz\te" },
+  { "name": "numbers", "content": "7\t1.5\t1e3\t0\t 42 \t0x1F\t12345678901234567000\t0.5" },
+  { "name": "buttons", "content": "Yes\tOff\tSi\tb\tOff" },
+  { "name": "choices", "content": "Two\tB\tA,C" },
+  { "name": "empty", "content": "\t" },
+  { "name": "header", "content": "a\tb x\ty" },
+  { "name": "text", "content": "é\tЖ\ta\tb\ta b" },
+  { "name": "multiline", "content": "m1\tm2\tm3\ra\rb\tc\rd\te\rf" },
+  { "name": "linebreaks", "content": "c d\te f" },
+  { "name": "numbers2", "content": "5\t1.\t-0.5\t1,5\t0\t-7\t1.2.3\t-\t1 000\tInfinity\t0.1\t1e-7\t1e-7\t1.2345678901234569e+23\t7\t007,1.50" },
+  { "name": "misc", "content": "7\t7\t7\tsecret\t42" },
+  { "name": "format", "content": "3" }
+ ]
+}

@@ -8,6 +8,8 @@ import { generateFieldAppearance, buildButtonAP, synthOnState } from './appearan
 import { regeneratePushButtonAP } from './buttonap.js';
 import { flattenFieldWidgets } from './flatten.js';
 import { resolveDA } from './da.js';
+import { readPmd } from './pmd.js';
+import { barcodeModel } from './barcodemodel.js';
 import { readRichTextMarkup, richTextToPlain } from './richtext.js';
 import { formatValue, evaluateRules } from './afrules.js';
 import {
@@ -385,6 +387,12 @@ export class Field {
 
   private setText(v: string | string[] | boolean): void {
     if (typeof v !== 'string') throw new TypeError('text field value must be a string');
+    // A paper forms barcode (2srz.4) whose symbol cannot hold `v` refuses it
+    // before /V is written: otherwise /V changes while the drawn symbol keeps
+    // the old content, and a scan reads data the field no longer says.
+    const pmdDict = this.doc.resolve(this.Dict.get('PMD'));
+    const pmd = isDict(pmdDict) ? readPmd(pmdDict, (o) => this.doc.resolve(o)) : undefined;
+    if (pmd !== undefined) barcodeModel(v, pmd); // throws RangeError when too large
     this.Dict.set('V', { kind: 'string', bytes: encodePdfText(v) });
     this.regen();
   }

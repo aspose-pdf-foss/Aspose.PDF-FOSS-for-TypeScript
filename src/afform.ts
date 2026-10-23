@@ -10,6 +10,7 @@ import type { Document } from './document.js';
 import type { Field } from './formfield.js';
 import { isArray, isDict } from './types.js';
 import { parseAfCall } from './afcall.js';
+import { parseBarcodeScript } from './pmd.js';
 import { simpleCalculate } from './afcalc.js';
 import {
   evaluateRules,
@@ -49,6 +50,8 @@ export function recalculate(doc: Document, fields: readonly Field[]): Recalculat
   for (const f of ordered) {
     const script = calcScript(f);
     if (script === undefined) continue;
+    // A paper barcode's script is the barcode refresh's (2srz.4), not ours.
+    if (parseBarcodeScript(script) !== undefined) continue;
     const call = parseAfCall(script);
     if (call === undefined || call.name !== 'AFSimple_Calculate' || f.Type !== 'text') {
       unrecognised.push({ field: f.FullName, trigger: 'calculate', script });

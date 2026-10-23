@@ -39,6 +39,9 @@ export interface FormData {
   annots?: AnnotData[];
   /** Annotations the format module could not read. Surfaced on ImportReport. */
   annotSkips?: SkippedAnnot[];
+  /** A radio group's value is its EXPORT, as `Field.Value` reads it, rather
+   *  than the appearance state FDF and XFDF carry (2srz.2). */
+  radioExports?: boolean;
 }
 
 export interface ExportFormDataOptions {
@@ -48,6 +51,13 @@ export interface ExportFormDataOptions {
   file?: string;
   /** Include annotations. Default false. */
   annotations?: boolean;
+}
+
+/** Options for `ExportXml`: the FDF/XFDF options minus `annotations` and
+ *  `file`, which the XML format does not carry. */
+export interface ExportXmlOptions {
+  /** Emit fields whose value is empty, unchecked or Off. Default false. */
+  includeEmpty?: boolean;
 }
 
 /** Options for `ExportJson`: the FDF/XFDF options minus `annotations`, which
@@ -237,7 +247,8 @@ export function applyFormData(
         } else {
           // 164g.39: a radio's data is a STATE; `Value` takes the export it stands for.
           const typed = typedValue(field.Type, e.values);
-          field.Value = field.Type === 'radio' && typeof typed === 'string' ? field.radioValueOfState(typed) : typed;
+          field.Value = field.Type === 'radio' && typeof typed === 'string' && !data.radioExports
+            ? field.radioValueOfState(typed) : typed;
         }
       } catch (err) { rethrowLimit(err);
         report.skipped.push({ name: e.name, reason: (err as Error).message });

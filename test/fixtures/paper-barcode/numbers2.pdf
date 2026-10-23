@@ -1,0 +1,447 @@
+%PDF-1.7
+%âãÏÓ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R /OpenAction << /S /JavaScript /JS (this.calculateNow\(\); var s = "BC=" + JSON.stringify\(this.getField\("bc"\).value\) + "\\n"; for \(var i = 0; i < this.numFields; ++i\) { var n = this.getNthFieldName\(i\); if \(n == "dbg"\) continue; var v = this.getField\(n\).value; s += i + " " + n + " " + this.getField\(n\).type + " " + \(typeof v\) + " " + JSON.stringify\(v\) + "\\n"; } this.getField\("dbg"\).value = s;) >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Fields [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R 14 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R 20 0 R 21 0 R 22 0 R] /DR << /Font << /Helv 23 0 R >> >> /DA (/Helv 0 Tf 0 0 0 rg) /CO [21 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 500] /Resources << >> /Annots [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R 14 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R 20 0 R 21 0 R 22 0 R] >>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 470 200 488] /F 4 /P 4 0 R /FT /Tx /T (k01) /DA (/Helv 0 Tf 0 0 0 rg) /V (+5) /AP << /N 24 0 R >> >>
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 448 200 466] /F 4 /P 4 0 R /FT /Tx /T (k02) /DA (/Helv 0 Tf 0 0 0 rg) /V (1.) /AP << /N 25 0 R >> >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 426 200 444] /F 4 /P 4 0 R /FT /Tx /T (k03) /DA (/Helv 0 Tf 0 0 0 rg) /V (-.5) /AP << /N 26 0 R >> >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 404 200 422] /F 4 /P 4 0 R /FT /Tx /T (k04) /DA (/Helv 0 Tf 0 0 0 rg) /V (1,5) /AP << /N 27 0 R >> >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 382 200 400] /F 4 /P 4 0 R /FT /Tx /T (k05) /DA (/Helv 0 Tf 0 0 0 rg) /V (00) /AP << /N 28 0 R >> >>
+endobj
+10 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 360 200 378] /F 4 /P 4 0 R /FT /Tx /T (k06) /DA (/Helv 0 Tf 0 0 0 rg) /V (-007) /AP << /N 29 0 R >> >>
+endobj
+11 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 338 200 356] /F 4 /P 4 0 R /FT /Tx /T (k07) /DA (/Helv 0 Tf 0 0 0 rg) /V (1.2.3) /AP << /N 30 0 R >> >>
+endobj
+12 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 316 200 334] /F 4 /P 4 0 R /FT /Tx /T (k08) /DA (/Helv 0 Tf 0 0 0 rg) /V (-) /AP << /N 31 0 R >> >>
+endobj
+13 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 294 200 312] /F 4 /P 4 0 R /FT /Tx /T (k09) /DA (/Helv 0 Tf 0 0 0 rg) /V (1 000) /AP << /N 32 0 R >> >>
+endobj
+14 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 272 200 290] /F 4 /P 4 0 R /FT /Tx /T (k10) /DA (/Helv 0 Tf 0 0 0 rg) /V (Infinity) /AP << /N 33 0 R >> >>
+endobj
+15 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 250 200 268] /F 4 /P 4 0 R /FT /Tx /T (k11) /DA (/Helv 0 Tf 0 0 0 rg) /V (0.1000) /AP << /N 34 0 R >> >>
+endobj
+16 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 228 200 246] /F 4 /P 4 0 R /FT /Tx /T (k12) /DA (/Helv 0 Tf 0 0 0 rg) /V (1e-7) /AP << /N 35 0 R >> >>
+endobj
+17 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 206 200 224] /F 4 /P 4 0 R /FT /Tx /T (k13) /DA (/Helv 0 Tf 0 0 0 rg) /V (0.0000001) /AP << /N 36 0 R >> >>
+endobj
+18 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 184 200 202] /F 4 /P 4 0 R /FT /Tx /T (k14) /DA (/Helv 0 Tf 0 0 0 rg) /V (123456789012345678901234) /AP << /N 37 0 R >> >>
+endobj
+19 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 162 200 180] /F 4 /P 4 0 R /FT /Ch /T (k15) /Ff 131072 /DA (/Helv 0 Tf 0 0 0 rg) /Opt [(007) (8)] /V (007) /I [0] /AP << /N 38 0 R >> >>
+endobj
+20 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 140 200 158] /F 4 /P 4 0 R /FT /Ch /T (k16) /Ff 2097152 /DA (/Helv 0 Tf 0 0 0 rg) /Opt [(007) (1.50) (x)] /V [(007) (1.50)] /I [0 1] /AP << /N 39 0 R >> >>
+endobj
+21 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [220 300 600 490] /F 4 /P 4 0 R /FT /Tx /T (bc) /Ff 1 /DA (/Helv 0 Tf 0 0 0 rg) /V () /PMD << /Symbology /PDF417 /DataPrep 0 >> /AA << /C << /S /JavaScript /JS (function bMemberOf\(strName, aStrNames\)\n{\n    for \(var nMembIdx in aStrNames\)\n    {\n        if \(strName == aStrNames[nMembIdx]\)\n            return true;\n    }\n    return false;\n}\nfunction strTabDelimited\(oParam\)\n{\n    var bNeedTab = false;\n    var strNames = "";\n    var strValues = "";\n    for \(var i = 0; i < oParam.oDoc.numFields; ++i\)\n    {\n        var strFieldName = oParam.oDoc.getNthFieldName\(i\);\n        if \(\(null == oParam.aFields || bMemberOf\(strFieldName, oParam.aFields\)\)\n            && \(null == oParam.strXclField || strFieldName != oParam.strXclField\)\n            && \(oParam.oDoc.getField\(strFieldName\).type != "button"\)\)\n        {\n            if \(bNeedTab\)\n            {\n                if \(oParam.bFieldNames\)\n                    strNames += "\\t";\n                strValues += "\\t";\n            }\n            if \(oParam.bFieldNames\)\n                strNames += strFieldName;\n            strValues += oParam.oDoc.getField\(strFieldName\).value;\n            bNeedTab = true;\n        }\n    }\n    if \(oParam.bFieldNames\)\n        return strNames + "\\n" + strValues;\n    else\n        return strValues;\n}\n\n\nevent.value = strTabDelimited\({oDoc: this, aFields: ["k01","k02","k03","k04","k05","k06","k07","k08","k09","k10","k11","k12","k13","k14","k15","k16"], bFieldNames: false}\);) >> >> /AP << /N 40 0 R >> >>
+endobj
+22 0 obj
+<< /Type /Annot /Subtype /Widget /Rect [10 10 602 290] /F 4 /P 4 0 R /FT /Tx /T (dbg) /Ff 4097 /DA (/Helv 9 Tf 0 0 0 rg) /V () /AP << /N 41 0 R >> >>
+endobj
+23 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+24 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 42 0 R >> >> /Length 65 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(+5) Tj
+ET
+Q
+endstream
+endobj
+25 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 43 0 R >> >> /Length 65 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(1.) Tj
+ET
+Q
+endstream
+endobj
+26 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 44 0 R >> >> /Length 66 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(-.5) Tj
+ET
+Q
+endstream
+endobj
+27 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 45 0 R >> >> /Length 66 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(1,5) Tj
+ET
+Q
+endstream
+endobj
+28 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 46 0 R >> >> /Length 65 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(00) Tj
+ET
+Q
+endstream
+endobj
+29 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 47 0 R >> >> /Length 67 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(-007) Tj
+ET
+Q
+endstream
+endobj
+30 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 48 0 R >> >> /Length 68 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(1.2.3) Tj
+ET
+Q
+endstream
+endobj
+31 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 49 0 R >> >> /Length 64 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(-) Tj
+ET
+Q
+endstream
+endobj
+32 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 50 0 R >> >> /Length 68 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(1 000) Tj
+ET
+Q
+endstream
+endobj
+33 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 51 0 R >> >> /Length 71 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(Infinity) Tj
+ET
+Q
+endstream
+endobj
+34 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 52 0 R >> >> /Length 69 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(0.1000) Tj
+ET
+Q
+endstream
+endobj
+35 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 53 0 R >> >> /Length 67 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(1e-7) Tj
+ET
+Q
+endstream
+endobj
+36 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 54 0 R >> >> /Length 72 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(0.0000001) Tj
+ET
+Q
+endstream
+endobj
+37 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 55 0 R >> >> /Length 87 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(123456789012345678901234) Tj
+ET
+Q
+endstream
+endobj
+38 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 56 0 R >> >> /Length 66 >>
+stream
+q
+0 0 190 18 re W n
+BT
+/Helv 12 Tf
+0 0 0 rg
+2 5.4 Td
+(007) Tj
+ET
+Q
+endstream
+endobj
+39 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 190 18] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 57 0 R >> >> /Length 168 >>
+stream
+q
+0 0 190 18 re W n
+0.6 0.6 0.6 rg
+0 4.2 190 13.8 re f
+0.6 0.6 0.6 rg
+0 -9.6 190 13.8 re f
+BT
+/Helv 12 Tf
+0 0 0 rg
+13.8 TL
+2 7.8 Td
+(007) Tj
+T*
+(1.50) Tj
+T*
+(x) Tj
+ET
+Q
+endstream
+endobj
+40 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 380 190] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 58 0 R >> >> /Length 4 >>
+stream
+q
+
+Q
+endstream
+endobj
+41 0 obj
+<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 592 280] /Matrix [1 0 0 1 0 0] /Resources << /Font << /Helv 59 0 R >> >> /Length 68 >>
+stream
+q
+0 0 592 280 re W n
+BT
+/Helv 9 Tf
+10.35 TL
+0 0 0 rg
+2 270.8 Td
+ET
+Q
+endstream
+endobj
+42 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+43 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+44 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+45 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+46 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+47 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+48 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+49 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+50 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+51 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+52 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+53 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+54 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+55 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+56 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+57 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+58 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+59 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 60
+0000000000 65535 f 
+0000000019 00000 n 
+0000000502 00000 n 
+0000000559 00000 n 
+0000000785 00000 n 
+0000001004 00000 n 
+0000001163 00000 n 
+0000001322 00000 n 
+0000001482 00000 n 
+0000001642 00000 n 
+0000001801 00000 n 
+0000001963 00000 n 
+0000002126 00000 n 
+0000002285 00000 n 
+0000002448 00000 n 
+0000002614 00000 n 
+0000002778 00000 n 
+0000002940 00000 n 
+0000003107 00000 n 
+0000003289 00000 n 
+0000003485 00000 n 
+0000003700 00000 n 
+0000005311 00000 n 
+0000005477 00000 n 
+0000005575 00000 n 
+0000005816 00000 n 
+0000006057 00000 n 
+0000006299 00000 n 
+0000006541 00000 n 
+0000006782 00000 n 
+0000007025 00000 n 
+0000007269 00000 n 
+0000007509 00000 n 
+0000007753 00000 n 
+0000008000 00000 n 
+0000008245 00000 n 
+0000008488 00000 n 
+0000008736 00000 n 
+0000008999 00000 n 
+0000009241 00000 n 
+0000009586 00000 n 
+0000009766 00000 n 
+0000010011 00000 n 
+0000010109 00000 n 
+0000010207 00000 n 
+0000010305 00000 n 
+0000010403 00000 n 
+0000010501 00000 n 
+0000010599 00000 n 
+0000010697 00000 n 
+0000010795 00000 n 
+0000010893 00000 n 
+0000010991 00000 n 
+0000011089 00000 n 
+0000011187 00000 n 
+0000011285 00000 n 
+0000011383 00000 n 
+0000011481 00000 n 
+0000011579 00000 n 
+0000011677 00000 n 
+trailer
+<< /Size 60 /Root 1 0 R >>
+startxref
+11775
+%%EOF

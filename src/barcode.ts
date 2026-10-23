@@ -16,11 +16,21 @@ export interface LinearBarcode {
   text?: string;
 }
 
-/** 2D barcode geometry: a square matrix of dark/light modules, row-major. */
+/** 2D barcode geometry: a matrix of dark/light modules, row-major. A QR code
+ *  is `size` x `size`; a PDF417 or a rectangular Data Matrix states `width`
+ *  and `height` (and `size` then equals `width`). */
 export interface MatrixBarcode {
   kind: 'matrix';
   size: number;
   dark: boolean[];
+  /** Columns of modules. Default `size`. */
+  width?: number;
+  /** Rows of modules. Default `size`. */
+  height?: number;
+  /** How many module widths tall one row is drawn: 3 for PDF417. Default 1. */
+  rowHeight?: number;
+  /** Recommended quiet zone in modules on every side. Default 4 (QR). */
+  quiet?: number;
 }
 
 export type BarcodeModel = LinearBarcode | MatrixBarcode;

@@ -17,6 +17,10 @@ export const PAD = 2;
 import { FF_MULTILINE, FF_COMB, FF_COMBO, FF_PASSWORD, FF_RICHTEXT } from './fieldflags.js';
 import { parseRichText, richTextBody, styleFromFace, type RichAlign, type RichBody } from './richlayout.js';
 import { readRichTextMarkup } from './richtext.js';
+import { readPmd, type PaperMetadata } from './pmd.js';
+import { rethrowLimit } from './errors.js';
+import { barcodeBody, barcodeModel } from './barcodemodel.js';
+import type { MatrixBarcode } from './barcode.js';
 
 // ZapfDingbats glyphs used for synthesized button marks.
 const ZADB_CHECK = '4';  // a check mark
@@ -584,7 +588,8 @@ function listBox(
   return s + 'ET';
 }
 
-function widgetsOf(doc: Document, fieldDict: PdfDict): PdfDict[] {
+/** A field's widgets: its /Kids, else the field itself (a merged dict). */
+export function widgetsOf(doc: Document, fieldDict: PdfDict): PdfDict[] {
   const kids = doc.resolve(fieldDict.get('Kids'));
   if (!isArray(kids)) return [fieldDict];
   const out: PdfDict[] = [];
@@ -598,6 +603,19 @@ export function generateFieldAppearance(
   doc: Document, acroForm: PdfDict, fieldDict: PdfDict,
   type: FieldType, ff: number, value: PdfObject,
 ): void {
+  if (type === 'text') {
+    const pmdDict = doc.resolve(fieldDict.get('PMD'));
+    const pmd = isDict(pmdDict) ? readPmd(pmdDict, (o) => doc.resolve(o)) : undefined;
+    if (pmd !== undefined) {
+      // A paper forms barcode (2srz.4) draws its value as a symbol, never as
+      // text -- whichever path asked for the appearance. Content too large
+      // for the symbol keeps the appearance it has.
+      let model: MatrixBarcode | undefined;
+      try { model = barcodeModel(textOf(value), pmd); } catch (caught) { rethrowLimit(caught); if (caught instanceof RangeError) return; throw caught; }
+      drawBarcodeAppearance(doc, fieldDict, pmd, textOf(value), model);
+      return;
+    }
+  }
   const da = resolveDA(doc, fieldDict, acroForm);
   const q = qOf(doc, fieldDict, acroForm);
   const widgets = widgetsOf(doc, fieldDict);
@@ -649,5 +667,38 @@ export function generateFieldAppearance(
     }
     if (body === undefined) continue;
     installAP(doc, widget, buildAppearanceXObject(doc, g, da.std, 'Helv', mk.ops + clipOps(g, mk.inset) + body, faces));
+  }
+}
+
+/** One barcode widget's appearance as an INLINE stream with no resources --
+ *  the body draws no text -- for rendering a barcode whose stored appearance
+ *  is stale without writing anything (2srz.4). Geometry and body are
+ *  `drawBarcodeAppearance`'s, so the two draw the same pixels. */
+export function barcodeWidgetStream(g: WidgetGeom, model: MatrixBarcode | undefined): PdfStream {
+  const quarter = g.rotate % 180 !== 0;
+  const body = barcodeBody(model, quarter ? g.h : g.w, quarter ? g.w : g.h);
+  const raw = enc(`q\n${body}\nQ`);
+  const dict: PdfDict = new Map<string, PdfObject>([
+    ['Type', name('XObject')], ['Subtype', name('Form')], ['FormType', 1],
+    ['BBox', [0, 0, g.w, g.h]], ['Matrix', matrixFor(g)], ['Length', raw.length],
+  ]);
+  return { kind: 'stream', dict, raw };
+}
+
+/** Draw `content` as the barcode `pmd` describes into every widget of
+ *  `field` (a paper forms barcode, 2srz.4), fitted to each widget's box with
+ *  its quiet zone. Empty content draws an empty appearance. `model` is the
+ *  symbol when the caller already built it. Throws RangeError when the content
+ *  does not fit the symbology. */
+export function drawBarcodeAppearance(
+  doc: Document, field: PdfDict, pmd: PaperMetadata, content: string,
+  model: MatrixBarcode | undefined = barcodeModel(content, pmd),
+): void {
+  for (const w of widgetsOf(doc, field)) {
+    const g = widgetGeom(doc, w);
+    if (g === undefined) continue;
+    const quarter = g.rotate % 180 !== 0;
+    installAP(doc, w, buildAppearanceXObject(doc, g, 'Helvetica', 'Helv',
+      barcodeBody(model, quarter ? g.h : g.w, quarter ? g.w : g.h)));
   }
 }

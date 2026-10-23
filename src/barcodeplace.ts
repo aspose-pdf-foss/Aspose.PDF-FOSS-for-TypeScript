@@ -14,12 +14,19 @@ import {
   type LinearBarcode, type MatrixBarcode, type BarcodeModel,
 } from './barcode.js';
 import { makeQr, type QrEcc } from './qr.js';
+import { makePdf417, type Pdf417Options } from './pdf417.js';
+import { makeDataMatrix, type DataMatrixOptions } from './datamatrix.js';
+import { matrixLayout, matrixRects, type Rect } from './barcodemodel.js';
+
+export { matrixLayout, matrixRects, type Rect };
 
 /** Which barcode to draw. */
 export type BarcodeSpec =
   | { type: 'code128'; data: string }
   | { type: 'ean13' | 'upca' | 'ean8'; data: string }
-  | { type: 'qr'; data: string; ecc?: QrEcc; version?: number };
+  | { type: 'qr'; data: string; ecc?: QrEcc; version?: number }
+  | ({ type: 'pdf417'; data: string } & Pdf417Options)
+  | ({ type: 'datamatrix'; data: string } & DataMatrixOptions);
 
 export interface AddBarcodeOptions {
   /** 'vector' (filled rectangles, default) or 'raster' (1-bit /ImageMask stencil). */
@@ -29,7 +36,7 @@ export interface AddBarcodeOptions {
   /** Include the symbology's recommended quiet-zone margins. Default true. */
   quietZone?: boolean;
   /** Draw the human-readable payload under a 1D barcode. Default: on for
-   *  EAN/UPC, off for Code128; ignored for QR. */
+   *  EAN/UPC, off for Code128; ignored for 2D symbols. */
   text?: boolean;
   /** Attach the drawing to an optional-content layer. */
   layer?: Layer;
@@ -57,14 +64,12 @@ function toModel(spec: BarcodeSpec): BarcodeModel {
     case 'upca': return makeUpcA(spec.data);
     case 'ean8': return makeEan8(spec.data);
     case 'qr': return makeQr(spec.data, { ecc: spec.ecc, version: spec.version });
+    case 'pdf417': return makePdf417(spec.data, { ecLevel: spec.ecLevel, columns: spec.columns });
+    case 'datamatrix': return makeDataMatrix(spec.data, { shape: spec.shape });
     default: throw new TypeError(`AddBarcode: unknown barcode type '${(spec as { type: string }).type}'`);
   }
 }
 
-/** A dark rectangle in PDF user space. */
-interface Rect { x: number; y: number; w: number; h: number; }
-
-/** Compute the dark rectangles for a 1D barcode filling `[x, y+textStrip, w, barsH]`. */
 function linearRects(m: LinearBarcode, x: number, yBars: number, w: number, barsH: number, quiet: boolean): Rect[] {
   const qL = quiet ? m.quietLeft : 0;
   const qR = quiet ? m.quietRight : 0;
@@ -76,27 +81,6 @@ function linearRects(m: LinearBarcode, x: number, yBars: number, w: number, bars
     const runW = m.modules[i] * u;
     if (i % 2 === 0) rects.push({ x: cursor, y: yBars, w: runW, h: barsH }); // bar
     cursor += runW;
-  }
-  return rects;
-}
-
-/** Geometry of a matrix barcode centered in `rect`. */
-function matrixLayout(m: MatrixBarcode, x: number, y: number, w: number, h: number, quiet: boolean) {
-  const q = quiet ? 4 : 0;
-  const wq = m.size + 2 * q;
-  const u = Math.min(w, h) / wq;
-  const side = wq * u;
-  const x0 = x + (w - side) / 2;
-  const yTop = y + (h - side) / 2 + side; // top edge of the square
-  return { q, wq, u, side, x0, yTop };
-}
-
-function matrixRects(m: MatrixBarcode, x: number, y: number, w: number, h: number, quiet: boolean): Rect[] {
-  const { q, u, x0, yTop } = matrixLayout(m, x, y, w, h, quiet);
-  const rects: Rect[] = [];
-  for (let my = 0; my < m.size; my++) for (let mx = 0; mx < m.size; mx++) {
-    if (!m.dark[my * m.size + mx]) continue;
-    rects.push({ x: x0 + (q + mx) * u, y: yTop - (q + my + 1) * u, w: u, h: u });
   }
   return rects;
 }
@@ -128,7 +112,7 @@ export function addBarcode(
   const quiet = opts.quietZone !== false;
   const model = toModel(spec);
 
-  // Human-readable text: default on for EAN/UPC, off for Code128, n/a for QR.
+  // Human-readable text: default on for EAN/UPC, off for Code128, n/a for 2D symbols.
   const textDefault = spec.type === 'ean13' || spec.type === 'upca' || spec.type === 'ean8';
   const textEnabled = model.kind === 'linear' && (opts.text ?? textDefault) && !!model.text;
   const textStrip = textEnabled ? Math.min(0.2 * h, 12) : 0;
@@ -184,15 +168,15 @@ function rasterContent(
     raw = packBits(width, height, (_r, c) => cols[c]);
     cm = `${num(w)} 0 0 ${num(barsH)} ${num(x)} ${num(yBars)} cm`;
   } else {
-    const { q, wq, side, x0, yTop } = matrixLayout(model, x, yBars, w, barsH, quiet);
-    width = wq; height = wq;
+    const { q, cols, rows, rh, wq, hq, sw, sh, x0, yTop } = matrixLayout(model, x, yBars, w, barsH, quiet);
+    width = wq; height = hq;
     raw = packBits(width, height, (r, c) => {
-      const mx = c - q, my = r - q;
-      if (mx < 0 || my < 0 || mx >= model.size || my >= model.size) return false;
-      return model.dark[my * model.size + mx];
+      const mx = c - q, my = Math.floor((r - q) / rh);
+      if (mx < 0 || r < q || mx >= cols || my >= rows) return false;
+      return model.dark[my * cols + mx];
     });
-    // Image space maps [0,1]x[0,1] with row 0 at top; place the square with top at yTop.
-    cm = `${num(side)} 0 0 ${num(side)} ${num(x0)} ${num(yTop - side)} cm`;
+    // Image space maps [0,1]x[0,1] with row 0 at top; place the box with top at yTop.
+    cm = `${num(sw)} 0 0 ${num(sh)} ${num(x0)} ${num(yTop - sh)} cm`;
   }
 
   const dict: PdfDict = new Map<string, PdfObject>([

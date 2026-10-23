@@ -4,7 +4,7 @@ export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceL
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile, saveMarkdownFile, saveDocxFile,
-  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile, htmlFileToPdf, docxFileToPdf,
+  exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile, exportXmlFile, importXmlFile, htmlFileToPdf, docxFileToPdf,
 } from './node.js';
 export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions } from './node.js';
 export { Document } from './document.js';
@@ -34,10 +34,11 @@ export type {
   FieldInit, TextFieldInit, CheckboxInit, RadioOption, RadioGroupInit,
   ChoiceOption, ChoiceInit, ComboBoxInit, ListBoxInit, PushButtonInit, SignatureFieldInit,
 } from './formcreate.js';
+export type { BarcodeFieldInit, BarcodeRefreshReport, BarcodeSkipReason } from './paperbarcode.js';
 export type { FieldStyle, WidgetStyle, FieldBorderStyle } from './fieldstyle.js';
 export type { ButtonIconPosition } from './buttonap.js';
 export type {
-  FormData, FormDataField, ExportFormDataOptions, ExportJsonOptions, ImportOptions, ImportReport,
+  FormData, FormDataField, ExportFormDataOptions, ExportJsonOptions, ExportXmlOptions, ImportOptions, ImportReport,
   ImportedAnnot, SkippedAnnot,
 } from './formdata.js';
 export type {
@@ -217,6 +218,10 @@ export type { ReplaceImageOptions, RemoveImageOptions } from './imageedit.js';
 export { makeCode128, makeEan13, makeUpcA, makeEan8, makeQr } from './barcode.js';
 export type { LinearBarcode, MatrixBarcode, BarcodeModel } from './barcode.js';
 export type { QrEcc, QrOptions } from './qr.js';
+export { makePdf417 } from './pdf417.js';
+export type { Pdf417Options } from './pdf417.js';
+export { makeDataMatrix } from './datamatrix.js';
+export type { DataMatrixOptions } from './datamatrix.js';
 export type { BarcodeSpec, AddBarcodeOptions } from './barcodeplace.js';
 export type { StampWithOptions, OverlayOptions, NUpOptions, ResizeOptions } from './compose.js';
 export type { BookletOptions } from './booklet.js';

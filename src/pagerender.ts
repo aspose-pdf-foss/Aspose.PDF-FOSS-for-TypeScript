@@ -7,7 +7,9 @@ import { inlineImageToStream } from './inlinedict.js';
 import { inflateStream } from './flate.js';
 import { resolveColorSpace, deviceGray, Rgb, ColorConverter } from './colorspace.js';
 import { TextFont, glyphDisplacement, runDisplacement, tjShift } from './font.js';
-import { isAnnotVisible, resolveAppearance } from './annotappearance.js';
+import { isAnnotVisible, resolveAppearance, type AnnotAppearance } from './annotappearance.js';
+import { pendingBarcodeAppearances } from './paperbarcode.js';
+import { fieldTreeWithinLimits } from './form.js';
 import { BlendMode, blendModeFromName } from './blend.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 import { rethrowLimit } from './errors.js';
@@ -489,11 +491,21 @@ function drawAnnots(
 ): void {
   const annots = ctx.doc.resolve(page.Dict.get('Annots'));
   if (!isArray(annots)) return;
+  // A paper barcode (2srz.4) whose stored appearance is stale draws what Save
+  // would write, built inline and never installed: rendering must not mutate.
+  // Asked only when a page holds a barcode widget, and once per page. The
+  // preview needs the field tree, which a render otherwise does not: a tree
+  // past maxNestingDepth draws the stored appearances rather than refusing a
+  // page that rendered before 2srz.4 (2srz.5).
+  let pending: Map<PdfDict, AnnotAppearance> | undefined;
   for (const e of annots) {
     const annot = ctx.doc.resolve(e);
     if (!isDict(annot) || !isAnnotVisible(ctx.doc, annot)) continue;
     if (hide?.has(annot)) continue;
-    const ap = resolveAppearance(ctx.doc, annot);
+    if (pending === undefined && isBarcodeWidget(ctx.doc, annot)) {
+      pending = fieldTreeWithinLimits(ctx.doc) ? pendingBarcodeAppearances(ctx.doc) : new Map();
+    }
+    const ap = pending?.get(annot) ?? resolveAppearance(ctx.doc, annot);
     if (ap === undefined) continue;
     try {
       // drawForm re-applies the stream's /Matrix on top, giving the spec's
@@ -504,6 +516,14 @@ function drawAnnots(
       // Degrade: a malformed appearance costs only itself.
     }
   }
+}
+
+/** A widget of a field carrying /PMD: the field is the widget itself (a
+ *  merged dict) or its /Parent. */
+function isBarcodeWidget(doc: Document, annot: PdfDict): boolean {
+  if (annot.has('PMD')) return true;
+  const parent = doc.resolve(annot.get('Parent'));
+  return isDict(parent) && parent.has('PMD');
 }
 
 const MAX_XOBJECT_DEPTH = 8;
