@@ -77,7 +77,10 @@ export type { PagePath, PathSubpath, PathSegment, PathPaint } from './paths.js';
 export type { PageMode, PageLayout } from './pagemode.js';
 export { extractArtifacts } from './artifact.js';
 export { imageKey } from './imagehref.js';
-export type { PageArtifact, ArtifactEdge, ArtifactBBoxSource } from './artifact.js';
+export type { PageArtifact, ArtifactEdge, ArtifactBBoxSource, ArtifactFilter } from './artifact.js';
+export type {
+  FindWatermarksOptions, WatermarkCandidate, XObjectWatermark, TextWatermark, WatermarkOccurrence,
+} from './watermarkdetect.js';
 export type { TableStitchOptions } from './tablestitch.js';
 export { StructTreeRoot, StructElement, STANDARD_STRUCTURE_TYPES } from './struct.js';
 export type {

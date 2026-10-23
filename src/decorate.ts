@@ -14,7 +14,7 @@ import {
 import { buildImageXObject } from './imageembed.js';
 import {
   appendContent, prependContent, ensureOwnResources, ensureOwnSubdict,
-  freshKey, registerExtGState, num,
+  freshKey, registerExtGState, num, wrapPaginationArtifact,
 } from './pagecontent.js';
 import { enc } from './serialize.js';
 import { isStream, type PdfRef } from './types.js';
@@ -177,6 +177,30 @@ export interface Placement {
   underline?: Decoration;
   strikethrough?: Decoration;
   background?: Background;
+  /** Write the stamp as a typed pagination artifact (krf2.1): `'watermark'`
+   *  is /Subtype /Watermark wherever it sits, `'band'` takes Header or Footer
+   *  from the position. Undefined writes no artifact, as before. */
+  artifact?: 'watermark' | 'band';
+}
+
+/** @internal `opts.artifact` checked as a boolean before any page is touched. */
+function checkArtifact(v: unknown): boolean {
+  if (v !== undefined && typeof v !== 'boolean') throw new TypeError('artifact must be a boolean');
+  return v === true;
+}
+
+/** @internal The artifact a placement writes. A band stamp's subtype comes from
+ *  the VISUAL band its position names -- the edge a reader sees it on, which on
+ *  a /Rotate page is not the user-space one -- and a position in neither band
+ *  (`center`, `diagonal`) states no subtype: 32000-1 Table 330 names only
+ *  Header, Footer and Watermark, and calling a centred number either would be a
+ *  guess. */
+function artifactWrap(p: Placement): ((body: Uint8Array) => Uint8Array) | undefined {
+  if (p.artifact === undefined) return undefined;
+  if (p.artifact === 'watermark') return (b) => wrapPaginationArtifact(b, 'Watermark');
+  if (p.position.startsWith('top-')) return (b) => wrapPaginationArtifact(b, 'Header', 'Top');
+  if (p.position.startsWith('bottom-')) return (b) => wrapPaginationArtifact(b, 'Footer', 'Bottom');
+  return (b) => wrapPaginationArtifact(b);
 }
 
 /** @internal Validate a placement up front, before any page is touched, so a
@@ -225,6 +249,8 @@ export function drawText(doc: Document, page: Page, text: string, p: Placement):
   const fontSize = fontSizeFor(text, p, f);
   const a = textAnchor(p.position, f, p.margin, fontSize);
   const [x, y] = apply(f.M, a.vx, a.vy);
+  const put = p.underlay ? prependContent : appendContent;
+  const wrap = artifactWrap(p);
   stampText(doc, page, text, x, y, {
     font: p.font,
     fontSize,
@@ -235,7 +261,7 @@ export function drawText(doc: Document, page: Page, text: string, p: Placement):
     underline: p.underline,
     strikethrough: p.strikethrough,
     background: p.background,
-  }, p.underlay ? prependContent : appendContent);
+  }, wrap === undefined ? put : (d, pg, body) => put(d, pg, wrap(body)));
 }
 
 /** @internal Token values for page `n`. `needsLabel` gates the /PageLabels
@@ -297,7 +323,8 @@ function drawImage(
   let s = 'q\n';
   if (gsKey) s += `/${gsKey} gs\n`;
   s += `${cm.map(num).join(' ')} cm\n/${key} Do\nQ`;
-  const body = enc(s);
+  const wrap = artifactWrap(p);
+  const body = wrap === undefined ? enc(s) : wrap(enc(s));
   if (p.underlay) prependContent(doc, page, body);
   else appendContent(doc, page, body);
 }
@@ -350,6 +377,10 @@ export interface WatermarkOptions {
   strikethrough?: Decoration;
   /** Fill painted behind the stamped text. Default: none. */
   background?: Background;
+  /** Mark each watermark as an `/Artifact` with `/Type /Pagination /Subtype
+   *  /Watermark`, so `page.Artifacts` reports it and a tagged document does
+   *  not count it as untagged content. Default false: nothing is marked. */
+  artifact?: boolean;
 }
 
 /** @internal Implementation of {@link Document.AddWatermark}. */
@@ -371,6 +402,7 @@ export function addWatermark(doc: Document, opts: WatermarkOptions): void {
     underline: opts.underline,
     strikethrough: opts.strikethrough,
     background: opts.background,
+    artifact: checkArtifact(opts.artifact) ? 'watermark' : undefined,
   });
   if (opts.width !== undefined && (!Number.isFinite(opts.width) || opts.width <= 0))
     throw new TypeError('width must be a positive finite number');
@@ -425,10 +457,15 @@ export interface HeaderFooterOptions {
   strikethrough?: Decoration;
   /** Fill painted behind the stamped text. Default: none. */
   background?: Background;
+  /** Mark each header cell as an `/Artifact` with `/Type /Pagination /Subtype
+   *  /Header /Attached [/Top]`, and each footer cell with `/Footer` and
+   *  `[/Bottom]`. Default false: nothing is marked. */
+  artifact?: boolean;
 }
 
 /** @internal Implementation of {@link Document.AddHeaderFooter}. */
 export function addHeaderFooter(doc: Document, opts: HeaderFooterOptions): void {
+  const artifact = checkArtifact(opts.artifact) ? 'band' as const : undefined;
   const slots: Array<{ text: string; position: StampPosition }> = [];
   const bands = [['header', 'top'], ['footer', 'bottom']] as const;
   for (const [key, band] of bands) {
@@ -457,6 +494,7 @@ export function addHeaderFooter(doc: Document, opts: HeaderFooterOptions): void 
     underline: opts.underline,
     strikethrough: opts.strikethrough,
     background: opts.background,
+    artifact,
   });
 
   const pagesArr = doc.Pages;
@@ -507,6 +545,11 @@ export interface BatesOptions {
   strikethrough?: Decoration;
   /** Fill painted behind the stamped text. Default: none. */
   background?: Background;
+  /** Mark each number as an `/Artifact` with `/Type /Pagination`. A `top-*`
+   *  position adds `/Subtype /Header /Attached [/Top]`, a `bottom-*` one
+   *  `/Subtype /Footer /Attached [/Bottom]`, and `center` or `diagonal` no
+   *  subtype: ISO 32000-1 names none for a Bates number. Default false. */
+  artifact?: boolean;
 }
 
 /** @internal Implementation of {@link Document.AddBatesNumbering}. Returns the
@@ -538,6 +581,7 @@ export function addBatesNumbering(doc: Document, opts: BatesOptions = {}): numbe
     underline: opts.underline,
     strikethrough: opts.strikethrough,
     background: opts.background,
+    artifact: checkArtifact(opts.artifact) ? 'band' : undefined,
   });
 
   const pagesArr = doc.Pages;

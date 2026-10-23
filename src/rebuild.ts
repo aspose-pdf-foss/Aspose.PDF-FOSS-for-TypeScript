@@ -12,6 +12,7 @@ import { LoadLimits } from './loadlimits.js';
 import { readXmp, mirrorXmpToMeta } from './xmp.js';
 import { applyUpdate } from './metadata.js';
 import { inflateStream } from './flate.js';
+import { isEncryptDict } from './crypto.js';
 
 /** Register every object the /ObjStm containers in `entries` declare, mutating
  *  `entries` in place and returning the object numbers added plus a damage
@@ -190,14 +191,7 @@ export function findEncryptDict(
       rethrowLimit(e);
       continue;
     }
-    if (!isDict(d) || d.has('Type')) continue;
-    const f = d.get('Filter');
-    if (!isName(f)) continue;
-    if (f.name === 'Standard') {
-      if (['V', 'R', 'O', 'U', 'P'].every((k) => d.has(k))) return { num, dict: d };
-    } else if (f.name === 'Adobe.PubSec') {
-      if (d.has('Recipients') || d.has('CF')) return { num, dict: d };
-    }
+    if (isDict(d) && isEncryptDict(d)) return { num, dict: d };
   }
   return undefined;
 }

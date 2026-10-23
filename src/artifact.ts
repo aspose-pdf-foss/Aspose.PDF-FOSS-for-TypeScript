@@ -18,6 +18,8 @@ import { PdfDict, PdfObject, isArray, isName } from './types.js';
 import type { ContentAddr } from './editcontent.js';
 import { visitContent, type Rect } from './text.js';
 import { rethrowLimit } from './errors.js';
+import { serializeObject } from './serialize.js';
+import { removeArtifactSpans } from './artifactremove.js';
 
 /** Which edges of the page a pagination artifact is attached to (Table 331). */
 export type ArtifactEdge = 'Top' | 'Bottom' | 'Left' | 'Right';
@@ -62,6 +64,88 @@ export interface PageArtifact {
    *  are reported one per declared scope, so this is how a caller tells an
    *  inner scope from an outer one. */
   parent?: ContentAddr;
+  /** Delete this artifact from the page: its `BMC`/`BDC`, everything inside
+   *  it and its `EMC`, and any resource only it used (the form it draws, a
+   *  font, an /ExtGState), which `Save` then drops from the file. An artifact
+   *  inside a Form XObject is removed from THIS page's copy of the form.
+   *
+   *  The handle is checked first: removing anything from a page shifts the
+   *  addresses of what follows, so a handle taken before an earlier removal
+   *  may no longer name its artifact, and `Remove` throws `RangeError` rather
+   *  than cut something else. To remove several, use `page.RemoveArtifacts`. */
+  Remove(): void;
+}
+
+/** Which artifacts `page.RemoveArtifacts` removes: a predicate, or the `type`
+ *  and/or `subtype` an artifact must declare (both, when both are given). */
+export type ArtifactFilter =
+  | ((artifact: PageArtifact) => boolean)
+  | { readonly type?: string; readonly subtype?: string };
+
+/** A record with a `Remove` that cannot be confused with a field: the page and
+ *  the fingerprint are PRIVATE, so `toEqual` and `Object.keys` see the same
+ *  fields a plain record has. */
+class ArtifactRecord implements PageArtifact {
+  type?: string;
+  subtype?: string;
+  attached?: ArtifactEdge[];
+  bbox?: Rect;
+  bboxSource?: ArtifactBBoxSource;
+  properties?: PdfDict;
+  addr!: ContentAddr;
+  parent?: ContentAddr;
+  #doc: Document;
+  #page: Page;
+  constructor(doc: Document, page: Page, fields: Omit<PageArtifact, 'Remove'>) {
+    this.#doc = doc;
+    this.#page = page;
+    Object.assign(this, fields);
+  }
+  Remove(): void {
+    const now = extractArtifacts(this.#doc, this.#page).find((a) => key(a.addr) === key(this.addr));
+    if (now === undefined || fingerprint(now) !== fingerprint(this))
+      throw new RangeError('PageArtifact.Remove: this handle no longer names its artifact; enumerate page.Artifacts again');
+    removeArtifactSpans(this.#doc, this.#page, [this.addr]);
+  }
+}
+
+/** What a handle must still match to be trusted: everything the artifact says
+ *  about itself and where its ink is. Two scopes alike in all of that draw the
+ *  same thing, so removing either is the same removal. */
+function fingerprint(a: Omit<PageArtifact, 'Remove'>): string {
+  return JSON.stringify([
+    a.properties ? new TextDecoder('latin1').decode(serializeObject(a.properties)) : null,
+    a.bbox ?? null, a.bboxSource ?? null, a.parent ? key(a.parent) : null,
+  ]);
+}
+
+/** Implementation of `page.RemoveArtifacts`. The filter is required -- no
+ *  argument would otherwise mean every running head, rule and background on
+ *  the page -- and checked before anything is touched. A selected artifact
+ *  nested inside another selected one goes with its parent, never on its own:
+ *  editing a form that the parent's removal orphans would put it back. */
+export function removeArtifacts(doc: Document, page: Page, filter: ArtifactFilter): number {
+  let test: (a: PageArtifact) => boolean;
+  if (typeof filter === 'function') test = filter;
+  else if (filter !== null && typeof filter === 'object') {
+    const { type, subtype } = filter;
+    if (type !== undefined && typeof type !== 'string') throw new TypeError('filter.type must be a string');
+    if (subtype !== undefined && typeof subtype !== 'string') throw new TypeError('filter.subtype must be a string');
+    if (type === undefined && subtype === undefined)
+      throw new TypeError('filter must name a type or a subtype');
+    test = (a) => (type === undefined || a.type === type) && (subtype === undefined || a.subtype === subtype);
+  } else throw new TypeError('RemoveArtifacts needs a filter: a predicate or { type, subtype }');
+
+  const all = extractArtifacts(doc, page);
+  const chosen = new Set(all.filter((a) => test(a)).map((a) => key(a.addr)));
+  const byKey = new Map(all.map((a) => [key(a.addr), a]));
+  const covered = (a: PageArtifact): boolean => {
+    for (let p = a.parent; p; p = byKey.get(key(p))?.parent) if (chosen.has(key(p))) return true;
+    return false;
+  };
+  const targets = all.filter((a) => chosen.has(key(a.addr)) && !covered(a)).map((a) => a.addr);
+  removeArtifactSpans(doc, page, targets);
+  return chosen.size;
 }
 
 /** A scope identity. Joined on a character no PDF name may contain, because
@@ -119,7 +203,7 @@ function segmentBox(segments: readonly [number, number, number, number][]): Rect
 }
 
 interface Rec {
-  out: PageArtifact;
+  out: Omit<PageArtifact, 'Remove'>;
   /** Ink measured directly inside this scope, before nested scopes fold in. */
   measured?: Rect;
 }
@@ -184,5 +268,5 @@ export function extractArtifacts(doc: Document, page: Page): PageArtifact[] {
       rec.out.bboxSource = 'content';
     }
   }
-  return recs.map((r) => r.out);
+  return recs.map((r) => new ArtifactRecord(doc, page, r.out));
 }

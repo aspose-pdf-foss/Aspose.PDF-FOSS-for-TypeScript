@@ -4495,6 +4495,16 @@ Source (`src/`):
   and `AddBatesNumbering` (position anchors, `{page}`/`{bates}`/date templates)
   across a page selection resolved by `pagerange.ts` (an explicit 1-based list or
   a `"1-5,8,12-"` range string).
+  **Invariant (`krf2.1`):** `artifact: true` wraps each stamp in
+  `pagecontent.ts`'s `wrapPaginationArtifact` -- `/Type /Pagination` plus a
+  `/Subtype` -- and is OFF by default, which is what keeps every existing
+  caller byte-identical. One wrap per stamp, at the splice (`drawText` hands
+  `stampText` a wrapping splice; `drawImage` wraps its body), so an underlay
+  stays a prepend. A band stamp's subtype comes from the VISUAL band of its
+  position (`top-*` Header/Top, `bottom-*` Footer/Bottom); `center` and
+  `diagonal` state none, since 32000-1 Table 330 has no Bates subtype -- a
+  user decision, not an oversight. **Measured:** dropping the image wrap
+  reddens 1 case, swapping the top band to Footer reddens 2.
 - **svgserialize.ts** — an inline `<svg>` subtree back to XML markup
   (`zch2.12`). A pure leaf over `htmldom.js` and `htmlforeign.js` that never
   throws. Note the DIRECTION: this is HTML DOM → markup so the SVG IMPORTER can
@@ -4941,6 +4951,17 @@ Source (`src/`):
   appearance and to which `v0tz.5` added the one body naming several faces.
 - **crypto.ts** additionally owns `CryptKeys` and `isSignatureDict`, the two
   things preserving a document's encryption needs (`0cr3`).
+  **Invariant (`e8y8`):** `isEncryptDict` is the ONE shape test for an
+  encryption dictionary, asked by `rebuild.ts`'s `findEncryptDict` and by
+  `Document.build`'s decrypt step, which skips any object it matches, not only
+  the trailer's `/Encrypt`. An encryption dictionary is never encrypted, and
+  LiveCycle Designer 11.0 left an UNREFERENCED plaintext copy in DD 3019
+  (`fixtures/xfa/dod-dd3019-2021.pdf`): AES-decrypting its `/O`/`/U` threw and
+  the strict rung refused the file. Under rc4 nothing throws and the copy is
+  garbled silently, which is why `test/stale-encrypt-dict.test.ts` compares the
+  copy's strings rather than only that the file opens. **Measured:** keying the
+  exemption on `encObjNum` alone reddens all 5 cases. Not mirrored on write,
+  since `Save` sweeps an unreferenced copy.
   **Invariant (`lj8t`):** a stream's OWN crypt filter (`/Filter [/Crypt]`, its
   `/DecodeParms /Name`, `/Identity` when there is none; 32000-1 7.4.10) decides
   how that stream is encrypted, NOT `/StmF`, when reading and when writing.
@@ -6646,9 +6667,86 @@ Source (`src/`):
   inside an artifact (every one drew paths), none put a non-edge name in
   `/Attached`, and none made two scopes collide on address. Do not read a
   path-only fixture as covering the glyph or image attribution.
-  **Note:** `Remove` is deliberately absent and the writer is unchanged —
-  teaching `wrapArtifact` to declare a `/Type` would move bytes in every tagged
-  document we write, and no caller has asked.
+  **Note (superseded twice):** this entry once said `Remove` was absent and the
+  writer unchanged. `krf2.1` added TYPED artifacts behind decorate.ts's
+  `artifact: true` (`wrapPaginationArtifact`; bare `wrapArtifact` still moves no
+  byte), and `krf2.2` added removal, below.
+  **Invariant (`krf2.2`):** each record is an `ArtifactRecord` whose page and
+  document are ES PRIVATE fields, so `Object.keys`, `toEqual` and every
+  pre-existing assertion see the plain record they always did. `Remove()`
+  RE-ENUMERATES (read-only) and requires the record at the same address to
+  carry the same FINGERPRINT -- serialized properties, `bbox`, `bboxSource`,
+  `parent` -- before cutting. It cannot fingerprint the ops instead: parsing a
+  form through `EditableContent` copies it on write, and reading must not
+  mutate. **Measured, and the obvious fixture is a false witness:** a stale
+  address landing on a NON-artifact op is already refused by the span check,
+  so the fingerprint stayed GREEN until `buildThreeArtifactsPdf` made the stale
+  address land on a DIFFERENT artifact of equal op length.
+  **Invariant:** `removeArtifacts` DROPS a selected artifact whose ancestor is
+  also selected. Editing a form the parent's removal orphans would COW it, and
+  `EditableContent.commit`'s `ownerOf` then writes the pruned /XObject entry
+  BACK (it checks no presence). Measured: dropping the filter reddens the
+  across-form case.
+- **artifactremove.ts** — cutting artifact spans out of a page (`krf2.2`),
+  behind `PageArtifact.Remove` and `page.RemoveArtifacts`. Takes ADDRESSES and
+  never imports `artifact.ts`, so that edge is one-way.
+  **Invariant:** it DELETES the span -- marker, contents, `EMC` -- where
+  `structremove.ts` untags and keeps the ink. That is the feature.
+  **Invariant:** the page scope is ONE op list over every /Contents stream,
+  so a span may open in one and close in the next (7.8.2; `ocflatten.ts`'s
+  rule). The end is found by counting EVERY `BMC`/`BDC` against `EMC`, and an
+  unclosed span is REFUSED with nothing changed -- removing to the end of the
+  scope could wipe the page. Every address is located before any edit.
+  **Invariant:** an indirect page /Resources is replaced by the page's own
+  shallow copy BEFORE `EditableContent` exists. Both its copy-on-write (which
+  repoints an /XObject entry) and the prune write into that dict, and a dict
+  another page shares would change that page too -- a hazard `sanitizeResources`
+  (redaction) still has. Measured: dropping the copy reddens 3.
+  **Invariant:** only CANDIDATES are pruned -- names the removed ops used --
+  through `resprune.ts`'s `pruneCandidates`, never an orphan that was already
+  there. What still names a resource is the scope's remaining ops PLUS every
+  form they draw that has no /Resources of its own (`inheritedRefs`), since it
+  looks names up in this scope's dict. Measured: dropping that reddens the
+  inherited-font case, and pruning every candidate reddens 3.
+  **Invariant (`resprune.ts`):** `referencedNames` now reads EVERY category
+  (Font, XObject, ExtGState, ColorSpace, Pattern, Shading, Properties), and
+  `sanitizeResources` still prunes only its three (`NAME_OP`) -- one reading of
+  "referenced", so redaction's behaviour did not move.
+  **Note:** a form drawn TWICE on one page is one stream, so a span inside it
+  comes out of both drawings.
+  **Invariant (`krf2.3`):** `cutAndPrune(doc, page, plan)` is the ONE
+  cut-apply-prune-commit engine, shared by artifact removal and
+  `watermarkdetect.ts`'s XObject `Remove`; each caller only marks flat op
+  indices. Two engines is how two removals come to disagree about the
+  shared-/Resources copy or what is orphaned. Extracting it moved no case in
+  `test/artifact-remove.test.ts`.
+- **watermarkdetect.ts** — `doc.FindWatermarks` (`krf2.3`): UNTAGGED content
+  repeated across pages, as candidates. Two shapes: the same Form or image
+  XObject at the same place (a top-level walk of `Do`s tracking `q`/`Q`/`cm`
+  and the marked-content stack, since the content visitor has no form event),
+  and the same text line at the same place (`visitContent` glyphs through
+  `layoutLines`, digit runs folded to `#`, so `P1`/`P2` match).
+  **Invariant:** untagged means outside every `/Artifact` AND every sequence
+  carrying /MCID. An artifact is krf2.2's to remove and tagged content is the
+  document's meaning, so neither is a candidate.
+  **Invariant:** TOP-LEVEL content only -- text inside a form is reported once,
+  as the repeated XObject. XObjects match by stream OBJECT identity, so
+  byte-identical copies are two things: conservative, and stated in README.
+  **Invariant:** "the same place" is every bbox edge within `tolerance` of the
+  group's FIRST box, so a group cannot drift by small steps. Default
+  `minPages` is max(2, ceil(n/2)) over the pages in scope -- a user decision.
+  **Invariant:** only an XObject candidate removes. `Remove()` verifies every
+  occurrence on every page (a `Do` naming the same stream) before editing ANY
+  page, then cuts through `content.ts`'s `imageCutSet` so a `q … gs … cm Q`
+  wrapper goes too and its /ExtGState can be pruned. Text is reported only --
+  a user decision, cutting glyphs from a shared BT being redaction-grade.
+  **Note, a fixture trap that was a true positive:** `buildDecorateTarget`
+  labels each page `P1`, `P2`, ... at one spot, which this detector rightly
+  reports, so the tests build their own pages and pin that label as a case.
+  **Note, measured:** all 13 mutations redden, four only after cases were
+  added -- the MCID test on a `Do`, the form /Matrix and the CTM (no case
+  asserted a box until `buildRepeatedFormsPdf`), and max(2, …) versus a flat 2
+  (indistinguishable below six pages).
 - **editcontent.ts** (`EditableContent` — per-stream op model with Form-XObject
   copy-on-write), **redact.ts** + **imageredact.ts** (`Redact`/`RedactText`:
   drop covered glyphs, delete/partially re-encode images, prune orphans),

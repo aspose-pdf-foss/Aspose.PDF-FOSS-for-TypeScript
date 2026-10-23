@@ -438,10 +438,34 @@ cases. Dropping the unnamed member reddens 2 here and 1 builder case. The name
 check alone does NOT see the member rule, because a member left on its group's
 path spells the group's name. The rect and `/Opt` cases are what hold it.
 
-**Another capture of DD 3019 is NOT vendored and does not open.** The
-`20210318094803` capture (CDX digest `4FHKJKEEZIOY2QV5FGN24AR7VC4XEDC7`, matched)
-is refused with "object 5706 could not be parsed at its xref offset", where
-qpdf 12 finds no errors. That is filed separately.
+## DD 3019, 2021-03 capture (`e8y8`)
+
+`dod-dd3019-2021.pdf` is vendored as an `Open` fixture, not an XFA oracle. It is
+the `20210318094803` capture of the same URL, fetched **2026-10-23** (CDX digest
+`4FHKJKEEZIOY2QV5FGN24AR7VC4XEDC7`, matched). Producer **`Adobe LiveCycle
+Designer 11.0`**, AESV2 (`/R 4`, empty user password).
+
+- `dod-dd3019-2021.pdf` — `6b1f5c62a40ac51c80096ad79c07c9c3df33cacf4268b0fbb82b8e9e1bbc9cba` (718,014 bytes)
+
+```bash
+curl -o test/fixtures/xfa/dod-dd3019-2021.pdf 'https://web.archive.org/web/20210318094803id_/https://www.esd.whs.mil/Portals/54/Documents/DD/forms/dd/dd3019.pdf'
+```
+
+**What it carries:** two encryption dictionaries. The trailer names object 6579.
+Object 5706 is an identical, plaintext copy that nothing references. An
+encryption dictionary is never encrypted, but we decrypted every object except
+the one the trailer named. AES unpadding of 5706's `/O` and `/U` threw, the
+object counted as unparseable, and the strict last rung refused the file with
+"object 5706 could not be parsed at its xref offset". qpdf 12 finds no errors.
+Now an encryption dictionary is recognised by shape and left undecrypted
+wherever it appears. The file opens with no recovery: 5 pages and 1,156 fields.
+Tests are in `test/stale-encrypt-dict.test.ts`, beside a hand-built fixture that
+shows the same rule under rc4 and AES-256.
+
+**What it does NOT cover:** an UNREFERENCED copy only. A second encryption
+dictionary that something references would be written encrypted on `Save` (the
+write side exempts only the trailer's), and read back undecrypted. No producer
+is known to write one.
 
 ## DoD DD 3218 (`164g.35`)
 

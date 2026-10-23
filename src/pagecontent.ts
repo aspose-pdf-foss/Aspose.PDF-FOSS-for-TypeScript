@@ -44,6 +44,27 @@ export function wrapArtifact(body: Uint8Array): Uint8Array {
   return out;
 }
 
+/** Wrap a content-stream body as a TYPED pagination artifact (krf2.1):
+ *  `/Artifact <</Type /Pagination /Subtype /S /Attached [/E]>> BDC` … `EMC`
+ *  (32000-1 14.8.2.2, Tables 330-331). `subtype` and `attached` are omitted
+ *  when undefined -- both are optional in the format. The typed sibling of
+ *  {@link wrapArtifact}: page decoration says WHICH furniture it is, so a reader
+ *  (`page.Artifacts`, and a later removal) can tell a watermark from a footer. */
+export function wrapPaginationArtifact(
+  body: Uint8Array, subtype?: 'Header' | 'Footer' | 'Watermark', attached?: 'Top' | 'Bottom',
+): Uint8Array {
+  let props = '/Type /Pagination';
+  if (subtype !== undefined) props += ` /Subtype /${subtype}`;
+  if (attached !== undefined) props += ` /Attached [/${attached}]`;
+  const head = enc(`/Artifact <<${props}>> BDC\n`);
+  const tail = enc('\nEMC');
+  const out = new Uint8Array(head.length + body.length + tail.length);
+  out.set(head, 0);
+  out.set(body, head.length);
+  out.set(tail, head.length + body.length);
+  return out;
+}
+
 export function freshKey(d: PdfDict, prefix: string): string {
   for (let i = 0; ; i++) {
     const k = `${prefix}${i}`;

@@ -37,7 +37,7 @@ import { stampWith, StampWithOptions, resizePage, scalePage, ResizeOptions } fro
 import type { Rect } from './text.js';
 import { extractTables, type Table, type TableExtractOptions } from './table.js';
 import { extractPaths, type PagePath } from './paths.js';
-import { extractArtifacts, type PageArtifact } from './artifact.js';
+import { extractArtifacts, removeArtifacts, type PageArtifact, type ArtifactFilter } from './artifact.js';
 import {
   Annotation, wrapAnnotation, addTextNote, TextAnnotation, TextNoteOptions,
   addStamp, StampAnnotation, StampAnnotationOptions,
@@ -493,9 +493,19 @@ export class Page {
    *  producers write, so `bboxSource` says which of the two `bbox` is.
    *
    *  Nested scopes are reported one entry each, the inner naming the outer as
-   *  its `parent`. Descends into Form XObjects. Read-only. */
+   *  its `parent`. Descends into Form XObjects. Reading changes nothing; each
+   *  entry's `Remove()` deletes it. */
   get Artifacts(): PageArtifact[] {
     return extractArtifacts(this.doc, this);
+  }
+
+  /** Delete every artifact `filter` selects -- a predicate, or the `type`
+   *  and/or `subtype` it must declare, e.g. `{ subtype: 'Watermark' }` -- with
+   *  everything inside it and any resource only it used. A filter is required,
+   *  so nothing is wiped by a missing argument. Returns how many it selected; an
+   *  artifact nested inside a selected one goes with it. */
+  RemoveArtifacts(filter: ArtifactFilter): number {
+    return removeArtifacts(this.doc, this, filter);
   }
 
   /** Extract visible text from the page with reasonable word/line ordering.

@@ -128,6 +128,26 @@ export function isSignatureDict(d: PdfDict): boolean {
   return d.has('ByteRange') && d.has('Contents');
 }
 
+/** An encryption dictionary, by SHAPE: /Filter /Standard with the handler's
+ *  own /V /R /O /U /P, or /Filter /Adobe.PubSec with /Recipients or /CF, and
+ *  no /Type. Requiring the handler's keys keeps an unrelated dict carrying a
+ *  /Filter (a stream dict, a filespec) from matching.
+ *
+ *  Two callers: `rebuild.ts`'s `findEncryptDict`, for a file that lost the
+ *  trailer reference, and the decrypt loop, which must not decrypt one that is
+ *  NOT the trailer's (`e8y8`). An encryption dictionary is never encrypted
+ *  (32000-1 7.6.1), so a second copy -- LiveCycle Designer 11.0 left an
+ *  unreferenced one in DD 3019 -- is plaintext, and AES-decrypting its /O and
+ *  /U threw and refused the whole file. */
+export function isEncryptDict(d: PdfDict): boolean {
+  if (d.has('Type')) return false;
+  const f = d.get('Filter');
+  if (!isName(f)) return false;
+  if (f.name === 'Standard') return ['V', 'R', 'O', 'U', 'P'].every((k) => d.has(k));
+  if (f.name === 'Adobe.PubSec') return d.has('Recipients') || d.has('CF');
+  return false;
+}
+
 export interface Decryptor {
   decryptObject(obj: PdfObject, num: number, gen: number): PdfObject;
   /** The same key and ciphers, so a save can encrypt what it writes with them

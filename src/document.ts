@@ -119,6 +119,7 @@ import {
   addWatermark, addHeaderFooter, addBatesNumbering,
   type WatermarkOptions, type HeaderFooterOptions, type BatesOptions,
 } from './decorate.js';
+import { findWatermarks, type FindWatermarksOptions, type WatermarkCandidate } from './watermarkdetect.js';
 import { serializeDocument, serializeSignedDocument, SerializeOptions } from './serializer.js';
 import { appendSignatureUpdate, appendIncrementalUpdate } from './incremental.js';
 import { diffObjects } from './incrementaldelta.js';
@@ -170,7 +171,7 @@ import {
   buildDss, readDssMaterial, readDssCerts, vriKey, dedupBlobs,
   type DssEntry, type ValidationDataOptions,
 } from './dss.js';
-import { buildDecryptor, Decryptor, CryptKeys } from './crypto.js';
+import { buildDecryptor, Decryptor, CryptKeys, isEncryptDict } from './crypto.js';
 import { buildPubSecDecryptor } from './pubsec.js';
 import { parsePkcs12 } from './pkcs12.js';
 import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys } from './encrypt.js';
@@ -976,10 +977,14 @@ export class Document {
           }, limits, lenient?.has(num) === true);
           value = parser.parseIndirectObject().value;
           // Decrypt top-level offset objects, except the /Encrypt dict and any
-          // cross-reference stream (/Type /XRef is never encrypted).
+          // cross-reference stream (/Type /XRef is never encrypted). An
+          // encryption dictionary the trailer does NOT name is exempt too, by
+          // shape (e8y8): it is plaintext like any other, and decrypting it
+          // threw on AES unpadding and refused the whole document.
           const xt = isStream(value) ? value.dict.get('Type') : undefined;
           const isXRefStream = isName(xt) && xt.name === 'XRef';
-          if (decryptor && num !== encObjNum && !isXRefStream)
+          const isEncrypt = num === encObjNum || (isDict(value) && isEncryptDict(value));
+          if (decryptor && !isEncrypt && !isXRefStream)
             value = decryptor.decryptObject(value, num, entry.gen);
         } else {
           let map = objStmCache.get(entry.streamObj);
@@ -3970,6 +3975,18 @@ export class Document {
    *  `let n = 1; for (const d of docs) n = d.AddBatesNumbering({ start: n });` */
   AddBatesNumbering(opts: BatesOptions = {}): number {
     return addBatesNumbering(this, opts);
+  }
+
+  /** Find likely watermarks: UNTAGGED content repeated across pages -- the
+   *  same Form or image XObject drawn at the same place, or the same text at
+   *  the same place, digit runs matching any digits (`Page 3 of 10`). Content
+   *  inside an `/Artifact` or a tagged sequence is never a candidate; remove
+   *  an artifact with `page.RemoveArtifacts`. By default something must
+   *  appear on at least half the pages in scope, and never fewer than two.
+   *  An XObject candidate's `Remove()` deletes every occurrence; a text
+   *  candidate is reported only. Reading changes nothing. */
+  FindWatermarks(opts: FindWatermarksOptions = {}): WatermarkCandidate[] {
+    return findWatermarks(this, opts);
   }
 
   /** Impose this document's pages `cols`×`rows` per sheet into a **new**
