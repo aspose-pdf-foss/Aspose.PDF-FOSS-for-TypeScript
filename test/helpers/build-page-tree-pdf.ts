@@ -56,3 +56,26 @@ export function buildInheritedPageCopyPdf(level: 'root' | 'nested' | 'page' | 'm
     '[10 20 310 520]',
   ]);
 }
+
+/** A shallow, default-limit-sized page graph with many independent objects. */
+export function buildWidePageGraphPdf(count: number): Uint8Array {
+  const refs = Array.from({ length: count }, (_, i) => `${i + 4} 0 R`).join(' ');
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>',
+    `<< /Type /Page /Parent 2 0 R /WideGraph [${refs}] >>`,
+  ];
+  for (let i = 0; i < count; i++) objects.push(String(i));
+  return buildRawPdf(objects);
+}
+
+/** A wide, flat tree, with an optionally wrong count and legal null child. */
+export function buildManyPagesPdf(count: number, wrongCount = false, nullChild = false): Uint8Array {
+  const refs = Array.from({ length: count }, (_, i) => `${i + 3} 0 R`).join(' ');
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${refs}${nullChild ? ' null' : ''}] /Count ${wrongCount ? count - 1 : count} /MediaBox [0 0 200 200] >>`,
+  ];
+  for (let i = 0; i < count; i++) objects.push(`<< /Type /Page /Parent 2 0 R /Sequence ${i} >>`);
+  return buildRawPdf(objects);
+}

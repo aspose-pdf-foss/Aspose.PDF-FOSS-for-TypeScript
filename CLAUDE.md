@@ -2,6 +2,12 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
+**Bug-fix completion:** Keep the issue `in_progress` until its fix branch is
+merged into `main` and both quality gates pass on `main`. Only then run
+`bd close`. This standing instruction authorizes merging fix branches into
+`main` without asking for confirmation again. Push `main` and sync Beads before
+reporting completion.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker
 
@@ -56,7 +62,7 @@ is not worth the line.
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Update CHANGELOG.md** - Add an `## [Unreleased]` entry for any user-visible change (see Changelog above)
 3. **Run quality gates** (if code changed) - Tests, linters, builds
-4. **Update issue status** - Close finished work, update in-progress items
+4. **Merge fixes, then update issue status** - Merge fix branches into `main` and verify both quality gates on `main` before closing their issues; update other in-progress items
 5. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
@@ -363,6 +369,13 @@ Source (`src/`):
   `AESV3`) via `node:crypto`.
 - **document.ts** — the `Document` facade: `Open`/`Save`, page-tree edits,
   metadata (`/Info` + XMP), outlines, forms, annotations, split/merge/extract.
+  **Invariant (`daqd`):** object and page counts never become function-argument
+  counts in splitting, bulk insertion or page-list rebuilds. A shallow graph
+  of 150,000 objects is below the default load bounds but exceeds V8's argument
+  limit: `Math.max(...keys)`, `splice(...pages)` and `push(...pages)` all threw
+  `RangeError`. The max scan, insertion concatenation and per-page append loops
+  keep those paths bounded while preserving the public `Pages` array identity.
+  Repair's null-child cleanup reuses its filtered array for the same reason.
 - **page.ts**, **pagetree.ts** — `Page` wrapper plus page-tree flattening and
   attribute inheritance.
   **Invariant (`1lr9`):** `buildPages` walks the tree as a DAG. A node reached
@@ -453,6 +466,11 @@ Source (`src/`):
   foreign references. Pruning runs AFTER materialization so explicit policy
   exclusions still apply. Copying and editing the output leave the source
   unchanged, including its inherited arrays and resource objects.
+  **Invariant (`daqd`):** extraction and import queues advance by a cursor,
+  checking the growing queue length as references are discovered. Repeated
+  `shift()` made a wide graph quadratic even after the argument-limit crash
+  was removed. Breadth-first numbering and shared-object deduplication stay
+  unchanged; the complexity follows from the cursor, not a timing assertion.
 - **serializer.ts**, **serialize.ts** — output: classic xref table (default) and
   compressed (cross-reference stream + `/ObjStm`) via `Save({ compressed: true })`.
   **Invariant (`909q`):** the `%PDF-x.y` header is `headerVersion()`'s answer —

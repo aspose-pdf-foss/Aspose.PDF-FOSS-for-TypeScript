@@ -15,6 +15,12 @@ npm run typecheck   # tsc --noEmit
 npm test            # vitest run
 ```
 
+**Bug-fix completion:** Keep the issue `in_progress` until its fix branch is
+merged into `main` and both quality gates pass on `main`. Only then run
+`bd close`. This standing instruction authorizes merging fix branches into
+`main` without asking for confirmation again. Push `main` and sync Beads before
+reporting completion.
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database
@@ -92,7 +98,7 @@ bd close <id>         # Complete work
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
+3. **Merge fixes, then update issue status** - Merge fix branches into `main` and verify both quality gates on `main` before closing their issues; update other in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase

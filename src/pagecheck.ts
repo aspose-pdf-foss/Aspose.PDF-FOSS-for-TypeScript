@@ -74,7 +74,7 @@ function visit(
   const boxHere = boxAbove || node.has('MediaBox');
   const kidsVal = w.doc.resolve(node.get('Kids'));
   const kids: PdfObject[] = isArray(kidsVal) ? kidsVal : [];
-  const kept: PdfObject[] = [];
+  let kept: PdfObject[] = [];
   let changed = false;
   let pages = 0;
 
@@ -135,7 +135,7 @@ function visit(
       // Only where /Count is being corrected: a null kid is legal, so a node
       // Validate passes keeps it and a clean document stays byte-identical.
       const live = kept.filter((k) => isDict(w.doc.resolve(k)));
-      if (live.length !== kept.length) { kept.length = 0; kept.push(...live); changed = true; }
+      if (live.length !== kept.length) { kept = live; changed = true; }
     }
   }
   if (w.fix && changed) node.set('Kids', kept);

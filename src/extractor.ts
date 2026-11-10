@@ -98,10 +98,7 @@ export function extractPage(doc: Document, pageDict: PdfDict, policy: PrunePolic
     return { kind: 'ref', num: nn, gen: 0 };
   };
 
-  while (queue.length) {
-    const cur = queue.shift()!;
-    rewriteRefs(cur, enqueueRef);
-  }
+  for (let i = 0; i < queue.length; i++) rewriteRefs(queue[i], enqueueRef);
   return { objects, pageNum };
 }
 

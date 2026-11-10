@@ -323,7 +323,8 @@ export type SaveOptions = SerializeOptions;
 function assembleSinglePageDoc(
   objects: Map<number, PdfObject>, pageObjNum: number,
 ): { objects: Map<number, PdfObject>; rootNum: number } {
-  const maxExisting = Math.max(...objects.keys());
+  let maxExisting = 0;
+  for (const num of objects.keys()) if (num > maxExisting) maxExisting = num;
   const pagesNum = maxExisting + 1;
   const catalogNum = maxExisting + 2;
   const page = objects.get(pageObjNum);
@@ -1533,7 +1534,7 @@ export class Document {
     this.markModified();
     const tree = buildPages(this);
     this.Pages.length = 0;
-    this.Pages.push(...tree.pages);
+    for (const page of tree.pages) this.Pages.push(page);
     this.pageObjNums = tree.pageObjNums;
     return fixed;
   }
@@ -3581,7 +3582,7 @@ export class Document {
     this.install(rootNum, pagesNode);
     const tree = buildPages(this);
     this.Pages.length = 0;
-    this.Pages.push(...tree.pages);
+    for (const page of tree.pages) this.Pages.push(page);
     this.pageObjNums = tree.pageObjNums;
   }
 
@@ -3914,7 +3915,7 @@ export class Document {
       leafNums.push(leafNum);
     }
 
-    while (queue.length) rewriteRefs(queue.shift()!, remap);
+    for (let i = 0; i < queue.length; i++) rewriteRefs(queue[i], remap);
 
     for (const num of leafNums) {
       const leaf = this.objects.get(num);
@@ -3938,8 +3939,7 @@ export class Document {
     const newNums = this.importPages(other, rootNum);
     if (newNums.length === 0) return [];
     const kids = this.currentKids();
-    kids.splice(at - 1, 0, ...newNums.map((num) => ref(num)));
-    this.syncPages(kids);
+    this.syncPages(kids.slice(0, at - 1).concat(newNums.map((num) => ref(num)), kids.slice(at - 1)));
     if (options.preserveStructure ?? true) {
       const origins: PageOrigin[] = newNums.map((newNum, i) => ({
         srcDoc: other, srcPageNum: other.pageObjNums[other.Pages[i].Number - 1], newPageNum: newNum,
