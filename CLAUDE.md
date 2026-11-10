@@ -444,6 +444,15 @@ Source (`src/`):
   indirect reference, so it is held by agreeing with `buildPages` rather than
   by the suite. Do not read the green suite as covering it.
 - **extractor.ts** — single-page / object-graph extraction with a `PrunePolicy`.
+  **Invariant (`ld4w`):** `clonePageDict` materializes inherited `MediaBox`,
+  `CropBox`, `Resources` and `Rotate` BEFORE `/Parent` is dropped or changed.
+  `extractPage` (Split and single-page imports) and `importPages` share it;
+  otherwise only the bulk copy preserves a page's size, orientation and fonts.
+  The nearest ancestor wins, a leaf's own value stays, and raw references are
+  copied through the same graph walk as page-owned values, never installed as
+  foreign references. Pruning runs AFTER materialization so explicit policy
+  exclusions still apply. Copying and editing the output leave the source
+  unchanged, including its inherited arrays and resource objects.
 - **serializer.ts**, **serialize.ts** — output: classic xref table (default) and
   compressed (cross-reference stream + `/ObjStm`) via `Save({ compressed: true })`.
   **Invariant (`909q`):** the `%PDF-x.y` header is `headerVersion()`'s answer —

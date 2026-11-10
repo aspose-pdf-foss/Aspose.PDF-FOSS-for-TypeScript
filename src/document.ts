@@ -108,7 +108,10 @@ import {
   CollectionSettings, buildCollection, readCollection,
 } from './collection.js';
 import { PageLabel, parsePageLabels, buildPageLabels, resolvePageLabel } from './pagelabels.js';
-import { extractPage, defaultPrunePolicy, PrunePolicy, cloneShallow, rewriteRefs } from './extractor.js';
+import {
+  extractPage, defaultPrunePolicy, PrunePolicy, cloneShallow, rewriteRefs,
+  INHERITABLE_PAGE_KEYS, clonePageDict,
+} from './extractor.js';
 import { preserveStructure, PageOrigin } from './structpreserve.js';
 import { overlay, OverlayOptions, placeFitted, resolveNUpBorder, NUpOptions } from './compose.js';
 import { PageGraphics, buildTilingPattern, type VectorGraphics } from './graphics.js';
@@ -359,23 +362,6 @@ function offsetRefs(o: PdfObject, offset: number): void {
       else offsetRefs(v, offset);
     }
   }
-}
-
-/** The page attributes 7.7.3.4 makes inheritable. */
-const INHERITABLE_PAGE_KEYS = ['MediaBox', 'CropBox', 'Resources', 'Rotate'] as const;
-
-/** First ancestor value of `key` up `src`'s /Parent chain in `doc` (raw, not
- *  resolved); null if none. Cycle-guarded. Does not read `src` itself. */
-function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject {
-  let node: PdfObject = doc.resolve(src.get('Parent'));
-  const seen = new Set<PdfDict>();
-  while (isDict(node)) {
-    if (seen.has(node)) break;
-    seen.add(node);
-    if (node.has(key)) return node.get(key)!;
-    node = doc.resolve(node.get('Parent'));
-  }
-  return null;
 }
 
 /** A prepared signature field Sign fills instead of creating a new one. */
@@ -3894,7 +3880,6 @@ export class Document {
    *  in `pages` order. Does not mutate `other`. */
   private importPages(other: Document, rootNum: number, pages: Page[] = other.Pages): number[] {
     const policy = defaultPrunePolicy();
-    const inheritable = INHERITABLE_PAGE_KEYS;
     let next = this.maxObjNum();
     const map = new Map<number, number>(); // other old-num -> this new-num (dedup)
     const queue: PdfObject[] = [];
@@ -3917,14 +3902,7 @@ export class Document {
     // after the rewrite so rootNum (a THIS-document ref) is never remapped.
     const leafNums: number[] = [];
     for (const page of pages) {
-      const src = page.Dict;
-      const leaf: PdfDict = new Map(src);
-      for (const key of inheritable) {
-        if (!leaf.has(key)) {
-          const v = inheritedValue(other, src, key);
-          if (v !== null) leaf.set(key, v);
-        }
-      }
+      const leaf = clonePageDict(other, page.Dict);
       for (const k of policy.dropPageKeys) leaf.delete(k);
       if (leaf.has('Annots')) {
         const annots = other.resolve(leaf.get('Annots'));

@@ -35,14 +35,45 @@ export function defaultPrunePolicy(): PrunePolicy {
 
 export interface Extraction { objects: Map<number, PdfObject>; pageNum: number; }
 
+/** @internal The page attributes 7.7.3.4 makes inheritable. */
+export const INHERITABLE_PAGE_KEYS = ['MediaBox', 'CropBox', 'Resources', 'Rotate'] as const;
+
+/** First ancestor value, raw so the copying walk can remap any references.
+ *  Null if absent. Cycle-guarded; does not read the leaf itself. */
+function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject {
+  let node: PdfObject = doc.resolve(src.get('Parent'));
+  const seen = new Set<PdfDict>();
+  while (isDict(node)) {
+    if (seen.has(node)) break;
+    seen.add(node);
+    if (node.has(key)) return node.get(key)!;
+    node = doc.resolve(node.get('Parent'));
+  }
+  return null;
+}
+
+/** @internal Shallow-copy a leaf and materialize its inherited attributes
+ *  before callers drop /Parent. Values still belong to the source graph;
+ *  rewriteRefs and the caller's object-copy walk make them independent. */
+export function clonePageDict(doc: Document, src: PdfDict): PdfDict {
+  const page = new Map(src);
+  for (const key of INHERITABLE_PAGE_KEYS) {
+    if (!page.has(key)) {
+      const v = inheritedValue(doc, src, key);
+      if (v !== null) page.set(key, v);
+    }
+  }
+  return page;
+}
+
 /** Build the self-contained, already-renumbered object set for one page.
  *  The page object becomes object 1; referenced objects get sequential numbers
  *  in BFS order. All refs inside the emitted objects are rewritten to the new
  *  numbers, so the writer can serialize the map directly. */
 export function extractPage(doc: Document, pageDict: PdfDict, policy: PrunePolicy): Extraction {
   const objects = new Map<number, PdfObject>();
-  // Prepare the page object: drop unwanted keys, sanitize annots.
-  const page: PdfDict = new Map(pageDict);
+  // Materialize inheritance before dropping /Parent; then apply pruning.
+  const page = clonePageDict(doc, pageDict);
   for (const k of policy.dropPageKeys) page.delete(k);
   if (page.has('Annots')) {
     const annots = doc.resolve(page.get('Annots'));
