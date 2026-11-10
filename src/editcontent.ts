@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfStream, PdfRef, isArray, isDict, isStream, isRef } from './types.js';
 import { ContentOp, parseContentStream, serializeContentStream, type ContentTokenBudget } from './content.js';
-import { streamOf, ensureOwnResources, ensureOwnSubdict } from './pagecontent.js';
+import { streamOf, ensureUnsharedResources, ensureOwnSubdict } from './pagecontent.js';
 import { inflateStream } from './flate.js';
 import { budgetFor } from './decodebudget.js';
 
@@ -119,7 +119,7 @@ export class EditableContent {
     if (hit) return hit;
     if (path.length === 0) throw new RangeError('xobjectOps requires a non-empty path');
 
-    let resources: PdfDict = ensureOwnResources(this.doc, this.page);
+    let resources: PdfDict = ensureUnsharedResources(this.doc, this.page);
     let clone: PdfStream | undefined;
     let lastNm = '';
     for (const nm of path) {
@@ -147,7 +147,7 @@ export class EditableContent {
    *  by walking the page's live resources. Done at commit time because resource
    *  sanitization may have replaced a sub-dict captured during the COW walk. */
   private ownerOf(path: readonly string[]): { ownerDict: PdfDict; nm: string } | undefined {
-    let resources: PdfDict = ensureOwnResources(this.doc, this.page);
+    let resources: PdfDict = ensureUnsharedResources(this.doc, this.page);
     for (let d = 0; d < path.length; d++) {
       const xobjDict = this.doc.resolve(resources.get('XObject'));
       if (!isDict(xobjDict)) return undefined;

@@ -173,6 +173,20 @@ export interface SubstMatch {
   rung: 'name' | 'coverage';
 }
 
+/** Rung 1 of {@link resolveSubstitute}: the face `name` addresses -- exact
+ *  PostScript name, else the family by CSS Fonts 4 slant-then-weight at
+ *  `style`. Shared with substitution RULES (g0ky.6), whose substitute names
+ *  resolve by exactly this rule. */
+export function resolveByName(
+  faces: readonly FaceRecord[], name: string, style: FontStyle,
+): FaceRecord | undefined {
+  const want = name.trim().toLowerCase();
+  if (want === '') return undefined;
+  const byPs = faces.find((f) => f.names.postScriptName?.trim().toLowerCase() === want);
+  if (byPs) return byPs;
+  return matchChain(faces, [name], { weight: style.bold ? 700 : 400, italic: style.italic });
+}
+
 /**
  * The installed face that substitutes for a non-embedded font, or `undefined`
  * when none should -- an ordinary outcome, where the caller falls back to the
@@ -205,12 +219,7 @@ export function resolveSubstitute(
     // The family match stays behind it, because a producer naming a font it
     // did not embed very often writes the plain family (`/Arial`), and because
     // it is what brings CSS Fonts 4 slant-then-weight matching to bear.
-    const want = req.baseFont.trim().toLowerCase();
-    const byPs = faces.find((f) => f.names.postScriptName?.trim().toLowerCase() === want);
-    if (byPs) return { face: byPs, rung: 'name' };
-
-    const hit = matchChain(faces, [req.baseFont],
-      { weight: req.style.bold ? 700 : 400, italic: req.style.italic });
+    const hit = resolveByName(faces, req.baseFont, req.style);
     if (hit) return { face: hit, rung: 'name' };
   }
 

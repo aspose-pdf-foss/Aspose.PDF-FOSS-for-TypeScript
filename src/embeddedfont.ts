@@ -1,6 +1,7 @@
 import { SfntFont } from './sfnt.js';
 import { FontDriver } from './layout.js';
 import { shapeText, measureShaped, type ShapedRun, type ShapeOpts } from './shape.js';
+import { verticalGlyph } from './otlayout.js';
 
 /**
  * An opaque handle to a font program registered with {@link Document.AddFont}.
@@ -16,6 +17,10 @@ export class EmbeddedFont {
   /** @internal object number of the Type0 font dict, reserved on first draw and
    *  filled by the document's finalize pass at Save (undefined until then). */
   objNum: number | undefined;
+  /** @internal object number of a VERTICAL Type0 font dict over the same
+   *  descendant (`/Identity-V`), reserved when text is written vertically in
+   *  this font (`ReplaceFont` of a vertical font, g0ky.8); undefined until then. */
+  verticalObjNum: number | undefined;
   /** @internal default shaping flag, from {@link Document.AddFont}({ shape }). */
   shape = false;
   /** @internal gid → source text, for /ToUnicode of shaped/ligated/RTL glyphs. */
@@ -50,6 +55,54 @@ export class EmbeddedFont {
       }
     }
     return Uint8Array.from(out);
+  }
+
+  /** @internal `gid` -> the glyph drawn for it in vertical writing, memoized. */
+  private readonly vglyphs = new Map<number, number>();
+  private vglyph(gid: number): number {
+    let v = this.vglyphs.get(gid);
+    if (v === undefined) { v = verticalGlyph(this.sfnt, gid); this.vglyphs.set(gid, v); }
+    return v;
+  }
+
+  /** @internal {@link encode} for the VERTICAL twin (g0ky.10): each glyph is
+   *  the face's vertical form (`vrt2`, else `vert`), so a rotated `ー` or `「`
+   *  is drawn rather than the horizontal one. A substituted glyph usually has
+   *  no cmap entry, so its text is recorded for `/ToUnicode`. */
+  encodeVertical(text: string): Uint8Array {
+    const out: number[] = [];
+    for (const ch of text) {
+      const base = this.sfnt.cmapLookup(ch.codePointAt(0)!);
+      if (base === undefined) continue;
+      const gid = this.vglyph(base);
+      out.push((gid >> 8) & 0xff, gid & 0xff);
+      this.usedGids.add(gid);
+      if (gid !== base && !this.toUnicode.has(gid)) this.toUnicode.set(gid, ch);
+    }
+    return Uint8Array.from(out);
+  }
+
+  /** @internal `gid`'s `/W2` entry -- `[w1y, vx, vy]` in 1/1000 em -- from
+   *  the face's `vmtx`: advance height down, half the advance width across,
+   *  and the vertical origin at `yMax + topSideBearing` (OpenType). Undefined
+   *  without `vhea`/`vmtx`, where the twin's `/DW2` default answers. */
+  verticalMetricsOf(gid: number): [number, number, number] | undefined {
+    const m = this.sfnt.verticalMetrics(gid);
+    if (!m) return undefined;
+    const em = (v: number): number => Math.round((v * 1000) / (this.sfnt.unitsPerEm || 1000));
+    return [-em(m.advance), em(this.sfnt.advanceWidth(gid) / 2), em((this.sfnt.glyphYMax(gid) ?? 0) + m.tsb)];
+  }
+
+  /** @internal How far `text` advances in the vertical twin, in em -- negative,
+   *  downward -- by the same rounding `/W2` is written with. */
+  verticalAdvance(text: string): number {
+    let a = 0;
+    for (const ch of text) {
+      const base = this.sfnt.cmapLookup(ch.codePointAt(0)!);
+      if (base === undefined) continue;
+      a += (this.verticalMetricsOf(this.vglyph(base))?.[0] ?? -1000) / 1000;
+    }
+    return a;
   }
 
   /** @internal Count of cmappable chars in `text`, without recording glyphs. */

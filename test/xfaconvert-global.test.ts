@@ -79,3 +79,19 @@ describe('ConvertXfaToAcroForm: bind match="global" (yy09)', () => {
     expect(h(tall.doc)).toBeGreaterThan(h(short.doc));
   });
 });
+
+describe('global exclGroup warning in a repeating subform (b8h8)', () => {
+  it('warns once for the group, not once per instance', () => {
+    const template = `<template><subform name="form1" layout="tb">
+      <pageSet><pageArea name="P1">${LETTER}<contentArea x="0.5in" y="0.5in" w="7.5in" h="9in"/></pageArea></pageSet>
+      <subform name="R" layout="position" w="7.5in" h="1in"><occur min="2" max="2"/>
+        <exclGroup name="g" x="1in" y="0in"><bind match="global"/>
+          <field name="r1" w="10pt" h="10pt"><ui><checkButton shape="round"/></ui><items><text>1</text></items></field>
+          <field name="r2" x="20pt" w="10pt" h="10pt"><ui><checkButton shape="round"/></ui><items><text>2</text></items></field></exclGroup>
+      </subform></subform></template>`;
+    const doc = Document.Open(buildXfaPdf({ template, pages: 1 }));
+    const r = convertXfaToAcroForm(doc, { removeXfa: false });
+    expect(r.fields.filter((f) => /R\[1\]/.test(f.name)).length).toBeGreaterThan(0);
+    expect(r.warnings.filter((w) => /exclGroup.*match="global"/.test(w))).toHaveLength(1);
+  });
+});

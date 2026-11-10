@@ -369,6 +369,11 @@ export interface GlyphEvent {
    *  that compares an event. Read by ISO 14289-2's glyph rules, four of which
    *  exempt mode 3 (invisible text, the OCR layer of a scanned page). */
   renderMode?: number;
+  /** The `Do` operators that drew the Form XObject holding this glyph,
+   *  outermost first, each addressed in the scope it sits in; absent in page
+   *  content. `addr.path` names WHICH form; this says which DRAWING of it, so a
+   *  form drawn twice can be told apart (g0ky.5). */
+  drawnBy?: readonly ContentAddr[];
   /** The character CODE this glyph was selected by — the bytes the show string
    *  actually held, before any CMap.
    *
@@ -552,7 +557,10 @@ type TextGState = Omit<TextState, 'tm' | 'tlm'>;
 
 function saveTextState(st: TextState): TextGState {
   const { tm: _tm, tlm: _tlm, ...rest } = st;
-  return rest;
+  // `font` and `fontKey` are stated even when unset: `Q` restores with
+  // Object.assign, which leaves a key the saved state lacks untouched, so a
+  // font first set inside `q … Q` used to survive the `Q` (g0ky.5).
+  return { ...rest, font: st.font, fontKey: st.fontKey };
 }
 
 function newState(): TextState {
@@ -562,6 +570,9 @@ function newState(): TextState {
 interface Ctx {
   doc: Document;
   visitor: ContentVisitor;
+  /** The `Do` operators that drew the form being walked, outermost first;
+   *  undefined in page content (g0ky.5). */
+  drawnBy?: readonly ContentAddr[];
   fontCache: Map<PdfDict, TextFont>;
   /** The `maxContentTokens` count for this WHOLE walk — page content and every
    *  form it reaches — rather than for each stream parsed (`ibzo.8`). */
@@ -887,6 +898,22 @@ function walkScope(
         case 'TL': st.leading = num(op.operands[0]); break;
         case 'Ts': st.rise = num(op.operands[0]); break;
         case 'Tr': st.renderMode = num(op.operands[0]); break;
+        case 'gs': {
+          // (g0ky.5) An ExtGState's /Font [font size] sets the font exactly as
+          // `Tf` does (32000-1 Table 58). No resource key names it, so
+          // `fontKey` is cleared: a glyph's `tfKey` is '' for such a font.
+          const g = isName(op.operands[0]) ? resolveDict(ctx.doc, resolveDict(ctx.doc, resources?.get('ExtGState'))?.get(op.operands[0].name)) : undefined;
+          const spec = g ? ctx.doc.resolve(g.get('Font')) : undefined;
+          const fd = isArray(spec) ? ctx.doc.resolve(spec[0]) : undefined;
+          if (isArray(spec) && isDict(fd)) {
+            let tf = ctx.fontCache.get(fd);
+            if (!tf) { tf = new TextFont(fd, (o) => ctx.doc.resolve(o), (s) => inflateStream(s as PdfStreamLike)); ctx.fontCache.set(fd, tf); }
+            st.font = tf;
+            st.fontKey = undefined;
+            st.fontSize = num(spec[1]);
+          }
+          break;
+        }
         case 'Tf': {
           st.fontSize = num(op.operands[1]);
           const fname = op.operands[0];
@@ -967,9 +994,12 @@ function walkScope(
             const mat = nums(ctx.doc.resolve(xo.dict.get('Matrix')) as PdfObject[] | undefined);
             const childCtm = mat.length === 6 ? mul(mat as Matrix, curCtm) : curCtm;
             const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
+            const outer = ctx.drawnBy;
+            ctx.drawnBy = [...(outer ?? []), addr];
             walkScope(ctx, [{ bytes: inflateStream(xo), streamIndex: 0 }],
               childRes, [...path, xn.name], childCtm, depth + 1, seen,
               activeMcid, artScope, fill, mcProps, saveTextState(st), fillSet, strokeSet);
+            ctx.drawnBy = outer;
             seen.delete(xo.dict);
           }
           break;
@@ -1045,6 +1075,7 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
       tm: startTm, tlm: st.tlm, ctm,
       ...(st.renderMode !== 0 ? { renderMode: st.renderMode } : {}),
       ...(mcProps !== undefined ? { mcProps } : {}),
+      ...(ctx.drawnBy !== undefined ? { drawnBy: ctx.drawnBy } : {}),
       ...(fillSet !== undefined ? { fillState: fillSet } : {}),
       ...(strokeSet !== undefined ? { strokeState: strokeSet } : {}),
     });

@@ -205,13 +205,16 @@ describe('ReplaceText reporting and atomicity', () => {
 });
 
 describe('doc.ReplaceText over pages that share resources and a form', () => {
-  // Both pages reach ONE form through ONE indirect /Resources dict, so applying
-  // page 1 repoints the form for page 2 as well. A plan made against the
-  // original form must not be applied to the edited one.
+  // Both pages reach ONE form through ONE indirect /Resources dict. Until v9fp
+  // applying page 1 repointed the form for page 2 as well, so page 2 found
+  // nothing left and the call counted 2; each page now gets its own copy of
+  // the dict and edits its own form copy, so both pages' occurrences count.
+  // The per-page re-plan stays: a plan made against an original form must
+  // never be applied to an edited one.
   it('replaces each occurrence once, all original font', () => {
     const doc = Document.Open(buildSharedFormPagesPdf('BT /F1 12 Tf 20 250 Td (aXbXc) Tj ET'));
     expect(doc.Pages.map((p) => p.GetText())).toEqual(['aXbXc', 'aXbXc']);
-    expect(doc.ReplaceText('X', 'YY')).toBe(2);
+    expect(doc.ReplaceText('X', 'YY')).toBe(4);
     expect(doc.Pages.map((p) => p.GetText())).toEqual(['aYYbYYc', 'aYYbYYc']);
   });
 

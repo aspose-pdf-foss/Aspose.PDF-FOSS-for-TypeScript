@@ -41,6 +41,17 @@ describe('global binding on real forms (yy09)', () => {
     expect(doc.Form.Get(n)!.Value).toBe(true);
   });
 
+  // b8h8: "0" is no on-state of any c1_8 box, so a box checked in Adobe's
+  // AcroForm half first is turned OFF -- unlike a blank datum, which sets
+  // nothing. Every vendored box starts off, where the two cannot be told apart.
+  it('f1040: a checked AcroForm box whose global datum is "0" is turned off', () => {
+    const doc = open('xfa/irs-f1040.pdf');
+    const n = 'topmostSubform[0].Page1[0].Checkbox_ReadOrder[0].c1_8[1]';
+    doc.Form.Get(n)!.Value = true;
+    doc.ConvertXfaToAcroForm();
+    expect(doc.Form.Get(n)!.Value).toBe(false);
+  });
+
   // OPM 1644 (dynamic). checkbox1[0] and [1] (on VA, OR) share the global
   // datum OF1644.checkbox1, "Off" as vendored. pdf.js 6.3.289's rule names the
   // same datum: no ordinary match within three data levels of the field, so

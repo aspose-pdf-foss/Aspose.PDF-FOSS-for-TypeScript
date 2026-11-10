@@ -36,6 +36,20 @@ describe('README API Reference matches index.ts (clik)', () => {
       .toEqual({ types: types.length, values: values.length });
   });
 
+  it('splits no row: every row has its header row cell count', () => {
+    // A bare `|` inside a code span still splits a GFM cell, so a union type
+    // written `a | b` renders as an extra column (g0ky.6's review found one).
+    const cells = (row: string): number => row.replace(/\\\|/g, '').split('|').length;
+    const bad: string[] = [];
+    let width = 0;
+    for (const line of api.split('\n')) {
+      if (!line.startsWith('|')) { width = 0; continue; }
+      if (width === 0) { width = cells(line); continue; }
+      if (cells(line) !== width) bad.push(line.slice(0, 60));
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('carries no module-suffixed pseudo-names', () => {
     // `Rect-text`, `RGB-annotdraw`: a generator's way of telling same-named
     // declarations apart. index.ts exports ONE of each name, so the suffixed

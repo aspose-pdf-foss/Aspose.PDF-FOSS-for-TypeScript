@@ -52,8 +52,10 @@ it adds nothing `sf1153` does not already cover.
 - **No `/Crypt` naming a non-Identity filter** appears in either file. That
   path, `/DecodeParms /Name`, is covered by hand-built cases only.
 - **No producer that writes `/EncryptMetadata false` and leaves the XMP plaintext
-  with NO `/Crypt` marker** is vendored. The reader does not infer plaintext from
-  the flag alone: a file this library wrote before `lj8t` encrypted its XMP
-  whatever the flag said, and still has to open.
+  with NO `/Crypt` marker** is vendored HERE. qpdf is that producer, and its
+  output is in `test/fixtures/qpdf-xmp/` (`hch6`). The reader does not infer
+  plaintext from the flag alone -- a file this library wrote before `lj8t`
+  encrypted its XMP whatever the flag said, and still has to open -- but from
+  whether the unmarked stream's bytes already read as XMP.
 - **One damaged `/Info`.** The lenient mode is only checked against the shape
   `sf50` has.

@@ -2,14 +2,8 @@ import { PdfDict, PdfObject, name, isString, isArray, isDict, isStream, isName }
 import {
   aesCbcEncrypt, aesCbcEncryptNoPad, aes256EcbEncrypt, randomBytes, hash2B,
   md5, rc4, padPassword, PASSWORD_PADDING, fileKeyR234, objectKeyV4, Cipher, CryptKeys, isSignatureDict,
-  streamCryptFilter,
+  streamCryptFilter, isMetadataStream,
 } from './crypto.js';
-
-/** A `/Type /Metadata` stream -- what `/EncryptMetadata false` exempts. */
-function isMetadataStream(d: PdfDict): boolean {
-  const t = d.get('Type');
-  return isName(t) && t.name === 'Metadata';
-}
 
 export interface Permissions {
   printing?: boolean;

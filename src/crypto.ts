@@ -202,6 +202,39 @@ export function streamCryptFilter(dict: PdfDict, resolve: Resolve): string | und
   return (isDict(parms) ? asName(resolve(parms.get('Name'))) : undefined) ?? 'Identity';
 }
 
+/** A `/Type /Metadata` stream -- what `/EncryptMetadata false` exempts. The
+ *  writer (`encrypt.ts`) and the reader ask this one test. */
+export function isMetadataStream(d: PdfDict): boolean {
+  const t = d.get('Type');
+  return isName(t) && t.name === 'Metadata';
+}
+
+const XMP_MARKERS = ['<?xpacket', '<x:xmpmeta', '<x:xapmeta', '<rdf:RDF'];
+
+/**
+ * Does an UNMARKED metadata stream's raw payload already read as an XMP packet
+ * -- an XMP marker after nothing but whitespace or a UTF-8 BOM?
+ *
+ * **Invariant (hch6):** under `/EncryptMetadata false` an unmarked
+ * `/Type /Metadata` stream is decided by its CONTENT, never by the flag alone.
+ * qpdf 12.3.2's `--cleartext-metadata` writes it plaintext with no `/Crypt`
+ * marker (`test/fixtures/qpdf-xmp/`), so decrypting it threw on the AES
+ * unpadding and refused the file, or garbled the XMP under RC4. This library
+ * before lj8t wrote it ENCRYPTED with no marker, and those files must still
+ * open. Ciphertext that opens with an XMP marker is not a case to plan for.
+ *
+ * **Note:** only the RAW payload is looked at. A compressed plaintext packet
+ * still goes through the cipher: qpdf inflates the XMP it leaves in clear, and
+ * no producer found writes one compressed, so there is nothing to test it on.
+ */
+function readsAsXmp(bytes: Uint8Array): boolean {
+  let i = 0;
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) i = 3;
+  while (i < bytes.length && (bytes[i] === 0x20 || bytes[i] === 0x09 || bytes[i] === 0x0a || bytes[i] === 0x0d)) i++;
+  const head = String.fromCharCode(...bytes.subarray(i, i + 16));
+  return XMP_MARKERS.some((m) => head.startsWith(m));
+}
+
 /** Algorithm 6 (R2/R3+): validate the user password by recomputing /U. */
 function validateUserR234(fileKey: Uint8Array, U: Uint8Array, id0: Uint8Array, R: number): boolean {
   if (R === 2) {
@@ -282,7 +315,12 @@ export function buildDecryptor(
     if (isStream(obj)) {
       for (const [k, v] of obj.dict) obj.dict.set(k, decryptObject(v, num, gen));
       const own = streamCryptFilter(obj.dict, resolve);
-      const cipher = own === undefined ? streamCipher : filterCipher(cf, own, resolve);
+      let cipher = own === undefined ? streamCipher : filterCipher(cf, own, resolve);
+      // hch6: an unmarked metadata stream under /EncryptMetadata false (V >= 4,
+      // the only versions the flag means anything in) is plaintext when it
+      // reads as one.
+      if (own === undefined && V >= 4 && !encryptMetadata && isMetadataStream(obj.dict)
+        && readsAsXmp(obj.raw)) cipher = 'identity';
       return { kind: 'stream', dict: obj.dict, raw: applyCipher(cipher, obj.raw, num, gen) };
     }
     return obj;

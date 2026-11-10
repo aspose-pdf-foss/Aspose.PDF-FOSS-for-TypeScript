@@ -87,33 +87,58 @@ export function xmpText(ctx: Ctx): string | undefined {
 // ---- fonts -----------------------------------------------------------------
 
 /** Every distinct font dict referenced by any page (recursing Form XObject
- *  resources), deduped by indirect ref. */
-export function enumerateFonts(ctx: Ctx): { ref?: PdfRef; dict: PdfDict }[] {
+ *  resources), deduped by dict, in the order first met.
+ *
+ *  `pages` (g0ky.1) is the 1-based pages whose resource tree DECLARES the
+ *  font -- not whether any glyph is drawn in it. A resources dict shared by
+ *  several pages is therefore walked once per page rather than once per
+ *  document; the record order and every other field are what they were. */
+export function enumerateFonts(ctx: Ctx): { ref?: PdfRef; dict: PdfDict; pages: number[] }[] {
   return memo(ctx, 'fonts', () => {
-    const out: { ref?: PdfRef; dict: PdfDict }[] = [];
-    const seen = new Set<PdfDict>();
-    const seenRes = new Set<PdfDict>();
-    const visitRes = (resObj: PdfObject | undefined, depth: number): void => {
-      const res = ctx.R(resObj);
-      if (!isDict(res) || seenRes.has(res)) return;
-      seenRes.add(res);
-      ctx.doc.loadLimits.enforce('maxNestingDepth', depth, 'Form XObject resources');
-      const fonts = ctx.R(res.get('Font'));
-      if (isDict(fonts)) {
-        for (const v of fonts.values()) {
+    const out: { ref?: PdfRef; dict: PdfDict; pages: number[] }[] = [];
+    const byDict = new Map<PdfDict, { pages: number[] }>();
+    ctx.doc.Pages.forEach((page, i) => {
+      const n = i + 1;
+      const seenRes = new Set<PdfDict>();
+      const visitRes = (resObj: PdfObject | undefined, depth: number): void => {
+        const res = ctx.R(resObj);
+        if (!isDict(res) || seenRes.has(res)) return;
+        seenRes.add(res);
+        ctx.doc.loadLimits.enforce('maxNestingDepth', depth, 'Form XObject resources');
+        const add = (v: PdfObject | undefined): void => {
           const d = ctx.R(v);
-          if (isDict(d) && !seen.has(d)) { seen.add(d); out.push({ ref: isRef(v) ? v : undefined, dict: d }); }
+          if (!isDict(d)) return;
+          let rec = byDict.get(d);
+          if (!rec) {
+            const fresh = { ref: isRef(v) ? v : undefined, dict: d, pages: [] as number[] };
+            out.push(fresh);
+            byDict.set(d, fresh);
+            rec = fresh;
+          }
+          if (rec.pages[rec.pages.length - 1] !== n) rec.pages.push(n);
+        };
+        const fonts = ctx.R(res.get('Font'));
+        if (isDict(fonts)) for (const v of fonts.values()) add(v);
+        // (g0ky.5) An ExtGState's /Font [font size] selects a font no /Font
+        // entry names (32000-1 Table 58); it is drawn, so it is listed.
+        const egs = ctx.R(res.get('ExtGState'));
+        if (isDict(egs)) {
+          for (const v of egs.values()) {
+            const g = ctx.R(v);
+            const spec = isDict(g) ? ctx.R(g.get('Font')) : undefined;
+            if (isArray(spec)) add(spec[0]);
+          }
         }
-      }
-      const xobjs = ctx.R(res.get('XObject'));
-      if (isDict(xobjs)) {
-        for (const v of xobjs.values()) {
-          const x = ctx.R(v);
-          if (isStream(x)) visitRes(x.dict.get('Resources'), depth + 1);
+        const xobjs = ctx.R(res.get('XObject'));
+        if (isDict(xobjs)) {
+          for (const v of xobjs.values()) {
+            const x = ctx.R(v);
+            if (isStream(x)) visitRes(x.dict.get('Resources'), depth + 1);
+          }
         }
-      }
-    };
-    for (const page of ctx.doc.Pages) visitRes(page.Resources, 1);
+      };
+      visitRes(page.Resources, 1);
+    });
     return out;
   });
 }

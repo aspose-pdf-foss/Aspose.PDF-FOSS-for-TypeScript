@@ -23,6 +23,14 @@ function leafValue(el: XmlNode): string | string[] {
   return el.text;
 }
 
+/** A data GROUP: an element with children other than `<value>`, or one that
+ *  says so (`xfa:dataNode="dataGroup"`, XFA 3.3 p. 193) -- an EMPTY group is
+ *  no blank value, and read as one it shadowed a real datum of its name
+ *  (b8h8; OPM 1644's `Header` rows are empty groups). */
+function isGroup(el: XmlNode): boolean {
+  return el.attrs.get('dataNode') === 'dataGroup' || el.children.some((g) => g.name !== 'value');
+}
+
 function collect(el: XmlNode, path: readonly string[], out: Map<string, string | string[]>): void {
   const counts = new Map<string, number>();
   for (const c of el.children) {
@@ -33,8 +41,7 @@ function collect(el: XmlNode, path: readonly string[], out: Map<string, string |
     // container carries no value of its own -- XmlNode.text is the
     // concatenation of a subtree's text, so recording it would invent a datum
     // spanning every field beneath it.
-    const containers = c.children.filter((g) => g.name !== 'value');
-    if (containers.length === 0) out.set(sub.join('.'), leafValue(c));
+    if (!isGroup(c)) out.set(sub.join('.'), leafValue(c));
     else collect(c, sub, out);
   }
 }
@@ -66,7 +73,7 @@ export function parseXfaGlobals(root: XmlNode): XfaGlobals {
   const out = new Map<string, string | string[]>();
   const walk = (el: XmlNode): void => {
     for (const c of el.children) {
-      if (c.children.some((g) => g.name !== 'value')) walk(c);
+      if (isGroup(c)) walk(c);
       else if (!out.has(c.name)) out.set(c.name, leafValue(c));
     }
   };
@@ -89,6 +96,8 @@ function indexed(path: string): string {
  * order and every element yields at least one key -- a leaf records itself
  * (an empty one as `''`), a container recurses until it reaches one -- so the
  * first key always begins with the first element. `undefined` for no data.
+ * The one exception is an EMPTY data group (b8h8), which yields no key; as the
+ * record it would hold no data at all, so nothing binds through it anyway.
  */
 function recordOf(values: XfaValues): string | undefined {
   const first = values.keys().next();
@@ -109,7 +118,9 @@ export function bindFieldValue(
   field: XfaField, values: XfaValues, globals?: XfaGlobals,
 ): string | string[] | undefined {
   if (field.bindMatch === 'none') return undefined;
-  if (field.bindRef !== undefined && field.bindRef !== '') {
+  // `ref` belongs to match="dataRef" alone (XFA 3.3 p. 362): a ref beside
+  // match="global" or "once" is ignored, and a global field still searches.
+  if (field.bindMatch === 'dataRef' && field.bindRef !== undefined && field.bindRef !== '') {
     // '$data.' and '$.' name the data root, which is what the paths in
     // `values` are already relative to. '$record.' does NOT (c3jq): with
     // record processing off it is the OUTER data element -- XFA 3.3 p. 91-92,

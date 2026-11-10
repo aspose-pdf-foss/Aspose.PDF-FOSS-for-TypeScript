@@ -86,6 +86,28 @@ export function ensureOwnResources(doc: Document, page: Page): PdfDict {
   return copy;
 }
 
+/** `ensureOwnResources`, but an own /Resources is first replaced on the
+ *  page by a shallow copy (v9fp, f6bm). Both indirect dicts and direct maps
+ *  shared by Reorder duplicates may belong to several pages. Repointing an
+ *  /XObject entry at an edited clone or pruning a name in place changes every
+ *  page that holds it. For edits that
+ *  must stay on one page: content surgery, image replace/remove, pruning.
+ *  Adding a resource is harmless to a sharer, which is why the plain function
+ *  keeps writing in place and every stamping caller stays byte-identical. */
+export function ensureUnsharedResources(doc: Document, page: Page): PdfDict {
+  unshareResources(doc, page);
+  return ensureOwnResources(doc, page);
+}
+
+/** Replace the page's own /Resources by a shallow copy, whether direct or
+ *  indirect. An inherited one is left for ensureOwnResources. Changes no
+ *  appearance, so a caller may do it before an edit that may still refuse. */
+export function unshareResources(doc: Document, page: Page): void {
+  const own = page.Dict.get('Resources');
+  const d = doc.resolve(own);
+  if (isDict(d)) page.Dict.set('Resources', new Map(d));
+}
+
 /** A fresh own sub-dict (e.g. Font), shallow-copying any existing entries so we
  *  mutate only structures this page owns. */
 export function ensureOwnSubdict(doc: Document, resources: PdfDict, key: string): PdfDict {

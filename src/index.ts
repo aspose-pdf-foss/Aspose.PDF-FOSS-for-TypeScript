@@ -81,6 +81,11 @@ export type { PageArtifact, ArtifactEdge, ArtifactBBoxSource, ArtifactFilter } f
 export type {
   FindWatermarksOptions, WatermarkCandidate, XObjectWatermark, TextWatermark, WatermarkOccurrence,
 } from './watermarkdetect.js';
+export type { DocumentFont, FontProgramKind } from './fontinventory.js';
+export type { EmbedFontsOptions, EmbedFontsReport, EmbeddedFontRecord, EmbedFontSkip, EmbedFontSkipReason } from './embedfonts.js';
+export type { SimpleEmbedDecline } from './simpleembed.js';
+export type { ReplaceFontOptions, ReplaceFontReport, ReplaceFontRefusal, ReplaceFontUndrawable } from './fontreplace.js';
+export type { FontSubstitutionRule, FontSubstitutionRequest, FontSubstitutionHandler } from './fontsubstrules.js';
 export type { TableStitchOptions } from './tablestitch.js';
 export { StructTreeRoot, StructElement, STANDARD_STRUCTURE_TYPES } from './struct.js';
 export type {

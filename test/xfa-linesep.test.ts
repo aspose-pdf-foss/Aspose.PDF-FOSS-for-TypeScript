@@ -5,7 +5,7 @@ import { isDict } from '../src/types.js';
 import { decodeXfaPackets } from '../src/xfapacket.js';
 import { decodeStream } from '../src/filters.js';
 import { parseXfaTemplate } from '../src/xfatemplate.js';
-import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
+import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals } from '../src/xfadata.js';
 import { layoutPages } from '../src/xfapage.js';
 import { xfaFieldLines, xfaMeasurer } from '../src/xfaconvert.js';
 import { plainParas } from '../src/xfarich.js';
@@ -29,7 +29,8 @@ describe('U+2028 in XFA text (164g.23, Adobe t91)', () => {
   const ds = set.packets.get('datasets');
   const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(ds));
   const values = ds ? parseXfaDatasets(ds) : new Map<string, string | string[]>();
-  const r = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).grid);
+  const globals = ds ? parseXfaGlobals(ds) : new Map<string, string | string[]>();
+  const r = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values, globals), [], xfaFieldLines(doc, tpl, values, globals).grid);
   const h = (label: string): number => {
     const n = r.pages[0].nodes.find((x) => x.node.label === label);
     if (!n || !('box' in n)) throw new Error(`${label} not placed`);

@@ -722,6 +722,30 @@ Source (`src/`):
   since `export … from` creates no local binding and `redactRegions` calls it),
   so `redact.js` stays the import path it has always been. One owner: redaction
   and image removal must not disagree about what "unreferenced" means.
+  **Invariant (`v9fp`):** an edit that must stay on ONE page writes through
+  `pagecontent.ts`'s `ensureUnsharedResources`, which first replaces the
+  own page /Resources -- possibly shared by several pages -- with a shallow
+  copy on the page: `EditableContent.cowXObject`, `sanitizeResources`,
+  `ImageInfo.Replace`/`Remove`, and `artifactremove.ts` (through
+  `unshareResources`). Written in place, the copy-on-write repointed the shared
+  /XObject entry, so page 2 drew page 1's redacted or replaced form, and the
+  prune deleted names page 2 still drew. Plain `ensureOwnResources` keeps
+  writing in place, on purpose: ADDING a resource is harmless to a sharer, and
+  every stamping caller stays byte-identical.
+  **Invariant (`f6bm`):** the copy includes DIRECT dictionaries too. `Reorder`
+  shallow-copies a repeated page, so its direct /Resources map can belong to
+  several live pages just like an indirect dictionary. Testing only parsed
+  indirect sharing misses edits that corrupt a duplicated sibling. The shared
+  resource suite covers direct, inherited and indirect resources after
+  `Reorder([1, 1])`, and checks saved text and literal image samples; image
+  replacement uses a different picture so an accidental sibling replacement
+  cannot cancel out.
+  **Note, measured, a REDUNDANT PAIR:** in a Redact that also edits a form,
+  the copy-on-write's unshare and the prune's each protect page 2 alone, since
+  `commit` writes the edited form into the page's own copy. The prune's half is
+  held by `test/shared-resources-edit.test.ts`'s image-only Redact, the
+  copy-on-write's by the shared-form `ReplaceText` case, which since `v9fp`
+  counts 4 (two per page) where page 1's write had left page 2 nothing to find.
 - **form.ts**, **formfield.ts**, **formcreate.ts**, **fieldstyle.ts**,
   **choiceopt.ts**, **fieldflags.ts**, **actions.ts**, **buttonap.ts** —
   AcroForm: `form.ts` is the
@@ -4977,8 +5001,19 @@ Source (`src/`):
   agreed. Other readers decoded garbage. It is now written plaintext and
   MARKED with an Identity `/Crypt`, Acrobat's shape. The reader still does NOT
   infer plaintext from the flag alone, because files written before the fix
-  have encrypted, unmarked XMP and must still open. An unmarked plaintext XMP
-  from another producer is `hch6`.
+  have encrypted, unmarked XMP and must still open.
+  **Invariant (`hch6`):** so an UNMARKED `/Type /Metadata` stream under
+  `/EncryptMetadata false` is decided by its CONTENT: kept as it is when its RAW
+  bytes open with an XMP marker (after whitespace or a UTF-8 BOM), decrypted
+  otherwise. qpdf 12.3.2's `--cleartext-metadata` writes it plaintext and
+  unmarked (`fixtures/qpdf-xmp/`): AES threw on the unpadding and refused the
+  file, RC4 garbled the XMP. Gated on V >= 4, the only versions the flag means
+  anything in. `isMetadataStream` moved here from `encrypt.ts`, so writer
+  and reader share it. **Note:** a COMPRESSED plaintext packet is still
+  decrypted -- qpdf inflates the one it leaves in clear, and no producer of the
+  compressed shape was found. **Measured:** all 6 mutations redden (the sniff,
+  the flag-alone reading, the V gate, the type gate, the flag gate, matching a
+  marker anywhere rather than at the start).
   **Note, measured, a REDUNDANT PAIR:** for a metadata stream the
   `/EncryptMetadata` exemption and the stream's own `/Crypt` each keep it
   plaintext on save, so the OPM SF 1153 round trip passes with either rule
@@ -6243,6 +6278,13 @@ Source (`src/`):
   bundled table → whole words, silently. The hyphen face is the unit's own
   font through `drawCode('-')`, then registered, then `fallbackFonts` where
   the scope can switch; a foreign hyphen is encoded at APPLY time.
+  **Invariant (`g72b`):** the element comes from `textedit.ts`'s
+  `elementOf`, which `taggedKeys` (the paragraph key) asks too, and it reads
+  a glyph INSIDE A FORM through the page's `/StructParents` like any other
+  MCID consumer here. Both excluded form glyphs, so tagged text drawn
+  through a form was refused `not-found` and never reached its `/Lang`.
+  **Measured:** restoring either exclusion reddens
+  `test/reflow-form-tagged.test.ts` (2 and 1).
   **Invariant (`6y39`):** a split edit carries `StrEdit.breaks` and always
   goes through `showPieces` (`spliceShowOp` cannot place a `Tm`); the pen
   leaves a split glyph where its LAST line box ends, which is what spares the
@@ -6253,7 +6295,16 @@ Source (`src/`):
   **Note, a known approximation:** `layoutRuns` measures every unit WITH its
   kern lead while placement drops the lead of a unit that starts a line, so a
   tail whose first glyph carried a producer kern measures that kern wider than
-  it draws — hundredths of a point, never an overlap.
+  it draws — hundredths of a point, never an overlap. KEPT (`g72b`): moving
+  the lead onto the preceding unit errs the other way, past the hyphen.
+  **Note (`g72b`):** `RestyleText` groups a piece's line boxes by `y`, which
+  carries the rise, and that CANNOT split a line: a piece is one show-string
+  element and a rise changes only between elements. Probed, not fixed.
+  **Note (`g72b`):** right and centre alignment with hyphens are pinned by a
+  TAGGED `AddTextBlock` oracle in `test/reflow-hyphen.test.ts` — untagged, a
+  ragged-left block is one paragraph per line to `groupLineBlocks`. The
+  placement is written TWICE in `reflowwrap.ts` (atomic and hyphenated), so
+  a mutation must name its copy: the first-match replace hits the atomic one.
   **Note, measured, and the fixtures were the hard part:** every planned
   mutation reddens, but SIX planned fixtures measured nothing and were rebuilt:
   `well-`/`known` (en breaks `wellknown` at 4 — `cross-`/`over` instead);
@@ -6697,11 +6748,12 @@ Source (`src/`):
   rule). The end is found by counting EVERY `BMC`/`BDC` against `EMC`, and an
   unclosed span is REFUSED with nothing changed -- removing to the end of the
   scope could wipe the page. Every address is located before any edit.
-  **Invariant:** an indirect page /Resources is replaced by the page's own
+  **Invariant:** the page's own /Resources, direct or indirect, is replaced by a
   shallow copy BEFORE `EditableContent` exists. Both its copy-on-write (which
   repoints an /XObject entry) and the prune write into that dict, and a dict
-  another page shares would change that page too -- a hazard `sanitizeResources`
-  (redaction) still has. Measured: dropping the copy reddens 3.
+  another page shares would change that page too. Measured: dropping the copy
+  reddens 3. Since `v9fp` the step is `pagecontent.ts`'s `unshareResources`,
+  shared with redaction and image editing (see `resprune.ts`).
   **Invariant:** only CANDIDATES are pruned -- names the removed ops used --
   through `resprune.ts`'s `pruneCandidates`, never an orphan that was already
   there. What still names a resource is the scope's remaining ops PLUS every
@@ -7473,6 +7525,12 @@ Source (`src/`):
   the line is unnecessary.
   **Note the residual limit:** a TYPE 1 face is reachable by name and never by
   coverage, having no `cmap` for `peekCmap` to read.
+  **Invariant (`u5es`):** `raster.ts` draws an installed OpenType-CFF face
+  from its CFF table, through `glyphprogram.ts`'s `sfntCff` -- the one owner
+  the embedded program and `faceOutline` share. `SfntFont.glyphOutline` reads
+  `glyf` only and answers `[]` for a CFF face, which the rasterizer reads as a
+  BLANK glyph, so ink and placeholder box alike vanished and installing the
+  face made the page strictly worse than the bundled Helvetica.
   **Invariant (`lqcs.5`):** a face may also be supplied as BYTES,
   `doc.AddRenderFont(bytes, { faceIndex })`, for one with no path to point at.
   **`FaceRecord` did NOT become a discriminated union, and this entry claimed
@@ -7513,6 +7571,45 @@ Source (`src/`):
   change one byte of it. The issue's own acceptance criterion named `ToSvg` and
   was wrong to; `test/render-fonts.test.ts` asserts the identity directly so it
   reads as a decision rather than a gap.
+- **fontsubstrules.ts** — font substitution RULES and the custom handler
+  (`g0ky.6`), behind `doc.AddFontSubstitution`, `doc.SetFontSubstitutionHandler`,
+  `doc.FontSubstitutions` and `doc.ClearFontSubstitutions`. A pure leaf over
+  `metrics.js`: the rule types, `ruleMatches`, `std14Substitute`, and the
+  family split `fontFamilyKeys`/`squashFontName`, which `embedfonts.ts` now
+  imports, so a rule for `Arial` and `EmbedFonts` agree about which fonts are
+  Arial. `raster.ts`'s `installedSubstitute` asks the handler, then the rules,
+  then `fontsubst.ts`'s ladder unchanged; a substitute NAME resolves through
+  `fontsubst.ts`'s `resolveByName` (rung 1, extracted so both use one rule),
+  else a bundled Standard-14 face.
+  **Invariant:** RENDER-ONLY, decided with the user. `Save()`, `EmbedFonts`,
+  `ReplaceFont` and `ToSvg` never consult it: embedding a stand-in would write
+  into the file that it IS the missing font. Authoring folders
+  (`RegisterFontFolder`) are not searched, `lqcs.2`'s separate-lists rule.
+  **Invariant:** PER DOCUMENT, not process-wide as .NET's `FontRepository` is,
+  decided with the user, like the render font folders.
+  **Invariant:** a rule matches the whole `/BaseFont` or its family part
+  (`Arial-BoldMT`, `Arial,Bold` -> `Arial`), case, spaces and hyphens
+  ignored, so it cannot catch `ArialNarrow`. A rule whose substitute resolves
+  to nothing is skipped.
+  **Invariant:** the handler is asked at most ONCE per font dict per document
+  (`Document.fontSubstitutionAnswer`, a `WeakMap`) and its RAW answer is
+  memoized -- a name, or the parsed bytes -- never the resolved face, so a name
+  resolves against faces registered later. The memo is cleared whenever a rule
+  or the handler changes.
+  **Invariant:** a Standard-14 outcome still returns from `installedSubstitute`
+  and so is marked `substituted`, which is what makes a composite font select
+  by Unicode (`lqcs.1`).
+  **Invariant:** opt-in stays structural: with no rule and no handler the early
+  return and the ladder are exactly as before.
+  **Invariant (final review):** only renders that DRAW text ask it. A
+  glyph-less `backdrop: 'raster'` never reaches a glyph source, and
+  `htmlfontembed.ts` builds none for a font with no `/FontFile*` -- it could
+  never embed one, and building it ran the caller's handler for nothing (a
+  throwing handler broke `ToHtml({ fonts: 'embed' })`).
+  **Note, measured:** all 7 mutations redden. One HUNG first, and the cause was
+  the test: a failing `expect(sfntA).toBe(sfntB)` makes vitest render a diff of
+  two parsed fonts, which killed the worker after 38 minutes and read as
+  LOAD-ERROR. Faces are compared by identity (`a === b`) for that reason.
 - **ttc.ts** — TrueType/OpenType Collections. `ttcFaceOffsets` reads the `ttcf`
   header (versions 1.0 and 2.0 differ only after the offset array, so one
   reader serves both, and `.otc` is the same container with CFF faces);
@@ -8464,6 +8561,294 @@ Source (`src/`):
   resolves for any caller supplying `opts.lang`. It is the ONLY rule in the
   whole epic an existing pass fixes, and `test/pdfua2-text.test.ts` asserts it
   rather than leaving it to be noticed.
+- **fontinventory.ts** — `doc.Fonts` (`g0ky.1`): one `DocumentFont` per font
+  the pages' resources reach. A leaf over `validatectx.ts` and `text.ts`.
+  **Invariant:** NOT a third font walk. Which fonts exist and which pages
+  DECLARE them is `validatectx.ts`'s `enumerateFonts`, the walk the PDF/A,
+  PDF/X and PDF/UA rules share; which pages DRAW with one is `visitContent`'s
+  glyphs, joined through `TextFont.dict` (memoized per dict, so it is the very
+  object `enumerateFonts` yields).
+  **Invariant:** `declaredOn` and `usedOn` are kept APART -- a user decision.
+  Producers commonly share one /Resources across every page, so "declared"
+  alone claims every font on every page.
+  **Invariant (`enumerateFonts`):** it now walks the resource tree PER PAGE,
+  its seen-resources set reset for each, to record `pages`. With one set per
+  document a resources dict shared by two pages was visited once, and page 2
+  declared nothing. The record order and existing fields are unchanged, so
+  the validators did not move. **Measured, and the obvious fixture cannot see
+  it:** pages with their OWN inline resources pass with the old document-wide
+  set; only a fixture whose pages share ONE indirect /Resources reddens.
+  **Note:** `embedded` is `hasFontProgram` (or Type 3), and `program` names the
+  descriptor key -- an unknown /FontFile3 /Subtype is embedded with `program`
+  undefined rather than guessed. Annotation-appearance and AcroForm /DR fonts
+  are not listed, `enumerateFonts`' own reach. All 10 mutations redden.
+- **simpleembed.ts**, **embedfonts.ts** — `doc.EmbedFonts()` (`g0ky.2`).
+  `simpleembed.ts` is the ENGINE that was `pdfastd14.ts`'s body: embed a
+  TrueType program into a non-embedded simple font dict, scan once, keep it
+  only when every SHOWN code has a glyph and a `/Widths` entry within 1/1000 em
+  of the advance, else put the dict back from a snapshot. `pdfastd14.ts`
+  (ConvertToPdfA's bundled Standard-14 pass) and `embedfonts.ts` (registered
+  faces) are its two callers, so "agrees with what is shown" has one owner.
+  `pdfa-std14.test.ts` passed UNEDITED across the extraction.
+  **Invariant:** the font becomes a non-symbolic `/TrueType` with an explicit
+  WinAnsi/MacRoman base encoding expressing the same code -> name map, so every
+  reader goes name -> Unicode -> (3,1) cmap, the chain the check walks.
+  **Invariant:** what needs no scan (CFF outlines, a non-Latin encoding, no
+  (3,1) cmap, no `/Widths` on a non-Standard-14 font) is decided BEFORE
+  anything is touched, and a run that keeps nothing clears the modified flag it
+  raised (`Document.clearModifiedInternal`), since every object is back as it
+  was -- `pagemode.ts`'s sign-path trap. Measured: dropping the clear reddens
+  the byte-identity case.
+  **Invariant, and it was a live bug in `pdfastd14.ts`:** a descriptor shared
+  by several font dicts is COPIED before it is written. Written in place, the
+  first font's `/FontFile2` made the second count as embedded, and it stayed a
+  `/Type1` naming a TrueType program. Measured: dropping the copy reddens 2.
+  **Invariant (`embedfonts.ts`):** the face is found by NAME, never coverage --
+  PostScript name, else the family part before `,` or `-` with spaces ignored
+  (`TimesNewRoman,Bold`), and then the face's style must EQUAL `fontStyleOf`'s.
+  Embedding states the face IS the font; coverage substitution is
+  `fontsubst.ts`'s render-only job. A monospaced bold and regular share their
+  widths, so the width check cannot catch a wrong-weight face: the style test
+  is what does.
+  **Note, measured:** 11 of 12 mutations redden. The green one, refusing a
+  cmap hit on gid 0, is EQUIVALENT on every fixture -- no (3,1) entry maps to
+  glyph 0 -- and stays as defence. Byte comparisons use `Buffer.compare`: two
+  mutants TIMED OUT on `toEqual` rendering a diff of a font program.
+  **Note:** only INDIRECT font dicts are considered (the `objectEntries` walk
+  `pdfastd14.ts` always used); `Type0` fonts are reported, not embedded; no
+  subset tag is added, since the shrinkers erase glyphs and keep every slot,
+  as the PDF/A pass already did.
+  **Invariant (`g0ky.4`): three ROUTES, decided by `routeFor` before anything
+  is touched, each with its OWN code -> glyph chain that `gidFor` checks.**
+  `truetype` (name -> Unicode -> (3,1)), `symbolic` (no `/Encoding` on a
+  symbolic font: (3,0) at the code or 0xF000 | code, the chain the usage scan
+  unions, and the font STAYS symbolic with no encoding) and `cff` (an OTTO
+  whose CFF is NAME-keyed: the bare CFF as `/FontFile3 /Type1C` under a
+  `/Type1` font, name -> charset). `Type1C` rather than `/OpenType`, because
+  PDF 1.2 readers take it. A CID-keyed CFF -- what `type1cff.ts` makes of a
+  `.pfb` -- has no names a simple font can select by, so it is `outlines`
+  with that detail.
+  **Invariant:** "symbolic" is Symbolic set AND Nonsymbolic clear, or no
+  descriptor on Symbol/ZapfDingbats; a symbolic font that STATES an encoding
+  takes the text route, since its codes then have names.
+  **Note, measured:** 14 of 15 route mutations redden, four only after cases
+  were added (flags 4|32, a Symbol with no descriptor -- tested through
+  `embedSimpleFonts` directly, since no registered face is named Symbol --
+  symbolic `/Widths`, and a charset name with no Unicode route, `fi`). The
+  green one, measuring a CFF glyph by `hmtx` instead of its charstring, is
+  EQUIVALENT on NimbusSans, whose two agree; the charstring is right because
+  the bare CFF carries no `hmtx`.
+  **Note:** this work found `u5es`: rendering a non-embedded font through an
+  INSTALLED OpenType-CFF face (`RegisterRenderFontFolder`) drew nothing, a
+  page byte-identical to a blank one. Fixed since (`glyphprogram.ts`'s
+  `sfntCff`), and `test/render-substitute-cff.test.ts` now holds that render
+  byte-identical to this route's embedded output -- each path the other's
+  oracle.
+  **Invariant (`g0ky.7`):** fonts are found through `simpleembed.ts`'s
+  `heldFonts` -- `enumerateFonts`' page-resource walk, which is the only place
+  a font dict written DIRECTLY in a /Resources is found, then every indirect
+  `/Type /Font` it did not reach. The descriptor-sharing count goes through it
+  too: counting indirect dicts only let a shared descriptor be written in place
+  under a direct font. A direct font has no object number, so its records carry
+  `pages` and no `object`. **Measured:** both halves redden alone.
+  **Invariant (`g0ky.7`):** a registered Type 1 face is embedded as ITSELF
+  (the `type1` route, `Document.registeredFaceType1`), never through the
+  CID-keyed CFF `registeredFaceSfnt` converts it to: `eraseType1Glyphs` with
+  every name kept writes the PDF shape (binary eexec, `/Length1..3`), a code
+  goes name -> `gidForName` (gid 0 is a REAL glyph here), widths come from the
+  charstrings, and the subset is `shrinkType1`. A code naming a glyph the
+  program lacks is caught by the usage scan first and reads `usage`, not
+  `glyph`. **Measured:** 4 of 4 mutations redden.
+  **Invariant (`g0ky.9`):** `heldFonts` also searches what `enumerateFonts`
+  does not enter -- annotation appearances, tiling patterns, Type 3 fonts'
+  resources and `/AcroForm /DR` -- for a DIRECT font dict only they hold.
+  `enumerateFonts` itself is NOT widened: the validators and `doc.Fonts` read
+  it, and their reports must not move for a reach only embedding needs.
+  `embedSimpleFonts` takes the caller's walk (`held`), so `EmbedFonts` walks
+  once; that is a COST rule and no test can see it.
+  **Invariant (`g0ky.9`):** writing a program removes the descriptor's
+  `/CharSet` and `/CIDSet`, in both engines -- a glyph set left from no
+  program describes nothing, and a subset makes it wrong. The snapshot puts
+  them back on decline.
+- **cidembed.ts** — embedding a TrueType face into a NON-embedded composite
+  (`Type0`) font (`g0ky.7`), `simpleembed.ts`'s shape: decide first, embed,
+  scan once, check every shown CID, put back from a snapshot.
+  **Invariant:** the descendant becomes a `CIDFontType2` with `/FontFile2` and a
+  `/CIDToGIDMap` built from what each CID MEANS -- `/ToUnicode` (Identity-H:
+  code = CID), else `cidunicode.ts`'s table for the ordering -- through the
+  face's (3,1) cmap. EVERY CID that resolves is mapped, not only the shown
+  ones, so a CID drawn where the scan cannot look still draws -- under
+  `subset: false`; a subset keeps outlines for the shown glyphs only.
+  **Invariant (final review):** a descendant two `Type0` dicts name is declined
+  `shared` for both, decided in `embedFonts` before anything is touched. Each
+  request snapshotted and repointed the SAME descendant, so the report and the
+  file disagreed both ways, and a subset program for one font blanked the
+  other's shown glyphs. Measured: dropping the guard reddens its case.
+  **Invariant:** `Identity-H` only, the shape `glyphusage.ts` scans; any other
+  encoding is reported (`encoding`). Faces with CFF outlines, and Type 1
+  faces, are declined (`outlines`). The descriptor is always COPIED.
+  **Invariant:** a shown CID needs a glyph and its `/W` (else `/DW`, else
+  1000, through `TextFont.dictWidth`) within 1/1000 em of the face's advance.
+  **Invariant (`g0ky.9`):** `/ToUnicode` FIRST, then the collection table for
+  every CID it leaves out -- a partial CMap, or one that will not parse. It was
+  exclusive, and declined fonts the table resolved. A CID either source maps to
+  several characters is collected in `multi` and named as the reason.
+  **Note, measured:** 7 of 7 mutations redden. Two fixture traps: Adobe-Japan1
+  CID c is U+001F + c only for c <= 95, so the collection case shows `HELLO`;
+  and a `bfchar` override must come AFTER a `bfrange` covering it.
+- **fontreplace.ts** — `doc.ReplaceFont(from, to)` (`g0ky.3`, `g0ky.5`, `g0ky.8`).
+  **Invariant: it is a RENAMING, not a search.** Every `Tf` that selects
+  `from` in a scope on the way to one of its glyphs (the glyph's own and every
+  ancestor drawing it) selects `to`, every ExtGState whose `/Font` selects it
+  is repointed (a copy), and every show string drawn in `from` is re-encoded
+  from its Unicode text. That is what makes `q`/`Q` and a form inheriting the
+  font (mih4) come out right with no state tracking, and what lets `from`
+  leave the resources. `ReplaceText` switches font around ONE run and never
+  renames state; the two share `showsplit.ts` and `driverFor`, not a planner.
+  **Invariant (`g0ky.5`): ONE planner, two targets.** A page and an
+  annotation appearance stream are each a `Scope` (read) and an `Edit`
+  (write); `plan`/`apply` never know which. Both editors copy a form ON WRITE
+  PER PATH -- `EditableContent` for a page, `standaloneEdit` for the rest --
+  because a form an appearance draws may also be drawn by page content or
+  reached by two names. Measured: rewriting it in place reddens the
+  shared-with-page case.
+  **Invariant (`g0ky.5`):** a form drawn under `from` and under another font
+  (or under word spacings needing different kerns) is SPLIT: the `Do` of the
+  `from` drawing gets a NEW NAME for the same form (`applySplits`), found
+  through `GlyphEvent.drawnBy`, and planning runs again. A new name is enough
+  because both editors copy per path; a first draft deep-copied the form chain
+  and that copying reddened nothing, so it was removed.
+  **Invariant: no character is dropped.** A glyph `to` cannot draw goes to the
+  first `fallbackFonts` entry that can, else is written in `from` again -- a
+  `foreign` piece, restoring `to` after -- and `from` is REGISTERED in the
+  glyph's scope when that scope cannot name it (a form inheriting it, a font
+  an ExtGState set), so no shape of inheritance refuses a page.
+  **Invariant (`g0ky.5`):** `/DA` follows only a Standard-14 `to`; an
+  embedded `to` is a subset, and a field typed into later would draw missing
+  glyphs. `from` leaves `/DR` only when no `/DA` and no appearance WITHOUT its
+  own `/Resources` (which reads `/DR`) names it; an appearance given resources
+  for the rewrite gets a COPY of `/DR`, so its other fonts still resolve --
+  measured, copying from nothing reddens the second-`/DR`-font case.
+  **Note, measured, and a fixture of mine was VACUOUS for a while:** the
+  different-kern split case first omitted the form from the page's resources,
+  drew nothing, and compared two empty lists; it asserts the glyph count now.
+  And a kern can only differ between drawings through `Tw` into a two-byte
+  font -- `Tc` and the size cancel -- so that is the only fixture that reaches
+  the branch.
+  **Invariant (`g0ky.8`):** a tiling pattern's cell and a Type 3 font's glyph
+  procedures are STANDALONE targets beside an annotation appearance --
+  `visitContent` enters neither -- found by `subTargets` in the resource graph
+  (forms, patterns and Type 3 resources descended; a resources dict once) and
+  rewritten through `standaloneScope`/`standaloneEdit`. A Type 3 font is ONE
+  target whose glyph procedures are its ROOT STREAMS, as a page's /Contents
+  array is: they all read the font's /Resources (`Standalone.holder`), so a
+  per-procedure target pruned `from` there and blanked a sibling procedure.
+  A root's glyph addresses are renumbered to its index (`rootGlyphs`).
+  **Invariant:** sub-targets run BEFORE the content painting with them. Each
+  copies the resources it reads on its first write; run after, the page's
+  prune removed `from`'s name from a /Resources a pattern shared with the
+  page and the pattern drew nothing. A Type 3 font stating no /Resources reads
+  whatever shows it, so it is REPORTED (`type3-glyph`, `part`), never
+  rewritten. A pattern stating none reads those it was found under.
+  **Invariant (final review):** a pattern's dedupe key is its object SLOT
+  (`obj N`), never the stream object: `standaloneEdit.commit` REPLACES the
+  stream, so the next page resolved a stream not in `done` and rewrote the
+  cell again -- counted twice, and a glyph kept in `from` split a second time.
+  A Type 3 font's key is its dict, edited in place. That falsified this
+  entry's earlier claim that dropping the dedupe is equivalent.
+  **Invariant (final review):** a BORROWED Type 3 font (no /Resources) is
+  asked again on EVERY page -- each lends it its own names -- and the prune
+  keeps every name its procedures draw with (`borrowedRefs`, `inheritedRefs`'
+  rule for a form with no /Resources). Before, it was checked on the first
+  page only, and the page's prune cut `/F1` from under it: silent text loss.
+  **Invariant (`g0ky.11`):** a target where NO glyph lands in `to` or a
+  fallback is not applied -- its undrawable glyphs are still reported -- since
+  renaming the state to `to` would reference a font that draws nothing. And
+  `finalizeEmbeddedFonts` writes a font holding `.notdef` alone for any
+  embedded font whose slot is reserved but which drew nothing (a `to` only
+  fallback runs surround): a reserved slot means the font is NAMED somewhere,
+  and an empty dict there is a broken file.
+  **Invariant (`g0ky.11`):** a tiling pattern with no /Resources is rewritten
+  only when ONE resources dict paints it (`borrowedBy`, a pre-scan of every
+  page and appearance); under several it is refused `pattern`, since one
+  rewrite would bind every painter to the first one's names. `borrowedRefs`
+  keeps the names such a pattern draws with through the prune, as for a
+  borrowed Type 3 font.
+  **Note:** a glyph procedure is walked with a FRESH text state, so a `Tc`
+  or `Tw` the showing context sets is read as 0 there. Only a glyph that
+  becomes several characters, or a one-byte space moving into a two-byte
+  `to`, depends on either.
+  **Invariant (`g0ky.8`):** vertical text is written in an embedded face's
+  VERTICAL TWIN -- `EmbeddedFont.verticalObjNum`, filled at Save with a copy
+  of the Type0 dict under `/Identity-V` over the SAME descendant, which gains
+  `/DW2 [880 -1000]` (read only under /WMode 1, so harmless horizontally).
+  Codes are the horizontal ones, so `encode` serves both. A `Tf`, an
+  ExtGState and a run switch each pick the twin from the replaced `from`'s
+  writing mode (`verticalFont`, `TextFont.wmode`), so one name used both
+  ways becomes Identity-H and Identity-V dicts. A Standard-14 `to` still
+  refuses `vertical` for vertical TEXT; a vertical `from` that a `Tf` or
+  an ExtGState selects but that draws nothing is left as it is (final review:
+  it threw a `TypeError` registering a vertical twin of a string). The kern is
+  the horizontal arithmetic on the other axis, each new glyph advancing -1 em.
+  **Invariant (`g0ky.10`):** a vertical glyph is the face's VERTICAL FORM --
+  `otlayout.ts`'s `verticalGlyph`, `vrt2` else `vert`, its lookups taken
+  from EVERY script and language system (a CJK face lists them under
+  `hani`/`kana`, not `DFLT`) -- through `EmbeddedFont.encodeVertical`, which
+  records the substituted glyph's text in `toUnicode`, since it usually has no
+  cmap entry. Where the face has `vhea`/`vmtx` the twin's descendant states
+  `/W2` for every used glyph (`verticalMetricsOf`: advance height down, half
+  the advance width across, origin at `yMax + tsb`), and the kept-position
+  kern measures by the SAME numbers (`verticalAdvance`, of the SUBSTITUTED
+  glyph). Without vmtx the `/DW2 [880 -1000]` default answers both.
+  **Note, a stated limit:** a vertical form that is also the face's glyph for
+  another character (a presentation form like U+FE11) extracts as the
+  character it stood in for, horizontally too, `toUnicode` being one map.
+  **Note, measured:** all 9 mutations redden; the advance-of-the-substituted-
+  glyph rule only after the fixture gave the vertical form a vmtx row of its
+  own -- with one row for every glyph the two readings agree.
+  **Note on the fixture:** no vendored face has a vertical feature or vmtx, so
+  `test/helpers/build-vertical-font.ts` writes GSUB, `vhea` and `vmtx` into
+  Liberation Sans from the OpenType spec -- our reading of GSUB checked against
+  our own GSUB reader, the shared-convention class. It writes SingleSubst
+  FORMAT 2, which `test/otlayout.test.ts` (format 1, `singleSubstDelta`) does
+  not; `build-sfnt.ts`'s `buildGsub` existed and was not reused.
+  **Invariant (`glyphusage.ts`):** `type0Mapper` accepts `Identity-V` beside
+  `Identity-H` -- the same code-to-CID mapping -- or a vertical twin made the
+  shared program's usage incomplete and Optimize stopped subsetting it.
+  **Note, measured:** 9 of 10 mutations redden. The green one, letting a
+  Standard-14 FALLBACK take a vertical glyph, is unreachable with the vendored
+  faces -- Liberation Sans and Nimbus Sans both cover every WinAnsi character
+  but DEL, so no Standard-14 face is ever the first that can draw one. Held by
+  reasoning; do not read the green suite as covering it.
+  **Note, a REDUNDANT PAIR:** rewriting a shared appearance once (`done`) and
+  pruning `from` from its resources each stop a second pass finding glyphs;
+  breaking either alone reddens nothing.
+  **Invariant:** positions are kept by a kern `(new - old advance) x 1000`
+  after each glyph. The new width is the one the PDF will STATE -- rounded to
+  1/1000 em, which is how an embedded face's `/W` is written -- or the kerns
+  drift 0.003pt a glyph against the reopened file. `Tw` reaches only the
+  ONE-BYTE code 32, so it is subtracted for an old one-byte space and added for
+  a new WinAnsi one; `'natural'` keeps just that correction.
+  **Invariant: plan fully, then apply, per target**; `vertical` is decided
+  read-only, so such a page is byte-identical and nothing is marked modified.
+  `shared-form` remains only for drawings `drawnBy` cannot tell apart, or
+  after `MAX_SPLIT_ROUNDS`; a split already applied is visually neutral.
+  **Note:** `from` is matched over the object map as well as `doc.Fonts`,
+  since an appearance's or `/DR`'s font is in no page's resources
+  (descendant CIDFonts excluded).
+  **Invariant:** a page's indirect `/Resources` is copied onto the page first,
+  and `to` is ONE dict per call registered under one key per resource dict
+  (`registerShared`; `registerFontIn` makes a Standard-14 dict per scope).
+  `from` is pruned from the page and each rewritten scope through
+  `pruneCandidates` + `artifactremove.ts`'s `inheritedRefs` (exported for
+  this): a kept glyph in a form reading its parent's resources still needs the
+  parent's key.
+  **Note, measured:** all 18 mutations redden, five only after cases were
+  added -- the new-`Tw` term (no fixture had `Tw` into a Standard-14 face), the
+  vertical refusal, `inheritedRefs`, one key per resource dict, and a DIRECT
+  font dict (only the inventory finds it).
+  **Note:** a form shared by two pages is copied on write per page, as
+  `ReplaceText` already does, so the file gains one form copy per page.
 - **structvalidate.ts**, **pdfavalidate.ts**, **pdfxvalidate.ts**,
   **validation.ts** — validators (`ValidatePdfUa`, `ValidatePdfA`,
   `ValidatePdfX`) returning a shared `ValidationReport`, over the neutral scan
@@ -11084,6 +11469,15 @@ Source (`src/`):
   `<pageArea>` field, so it corroborates the body half only.
   **Invariant:** the search is by `XfaField.dataName`, the raw `name`
   attribute, never a re-split of a data path -- an XML name may hold a dot.
+  **Invariant (`b8h8`):** an element marked `xfa:dataNode="dataGroup"` is a
+  GROUP even when EMPTY (`xfadata.ts`'s `isGroup`, read by `collect` and
+  `parseXfaGlobals` alike). Read as a blank value it shadowed a later datum of
+  its name -- OPM 1644's `Header` rows are empty groups. And `<bind ref>` is
+  consulted ONLY for `match="dataRef"`: a `ref` beside `global` kept a field
+  from ever reaching the global search. `xfaMeasurer` and `xfaFieldLines` take
+  `globals` as a REQUIRED argument, so a caller cannot measure without it, and
+  the global-`exclGroup` warning keys on the group with its occurrence indices
+  stripped, so a repeating subform warns once.
   **Note:** a name global on some fields and ordinary on others (p. 247: "not
   supported"), and an `<exclGroup>` stating global (p. 176 and p. 348
   disagree), are each one warning; neither changes binding. Neither fires on
@@ -13544,6 +13938,7 @@ output, and what the fixture does and does **not** cover:
 | `fixtures/docx/` | `PROVENANCE.md` | DOCX from **Microsoft Word 2010** (Russian UI, COM automation, `scripts/gen-docx-word.ps1`, not run by `npm test`). `m2fp.2` uses it to anchor OPC reading on bytes we did not write — relationships out of Id order (`rId8` first), a content type answered by a `Default` — and resolves main document, styles, numbering, image and external hyperlink. Not byte-reproducible (Word stamps `docProps/core.xml`); the vendored file is the reference. Records for `m2fp.3` that a localized Word writes LOCALIZED style ids (`heading 1` is `w:styleId="1"`); its test is `test/opcread-docx.test.ts`. **The `m2fp.4` corpus:** five recipes written by BOTH Word 2010 (COM) and LibreOffice 26.8 (UNO, a pinned MSI unpacked outside the repo), `word2010-basic` included — styles, lists, tables, media, and the constructs `readDocx` only records — each READ by both applications into `<name>.word.json`/`<name>.lo.json` (`scripts/gen-docx-corpus.ps1`). `test/docx-corpus.test.ts` pins `disagreements.json` EXACTLY and holds `readDocx` to every value the two readers agree on; past a disagreement in LENGTH it compares elements only up to the shorter reading, while `readDocx`'s OWN length must fall between the two — the final review measured that without that bound a `readDocx` stopping at a section break or a merged cell passed exactly the files covering them. The readers disagree on five shapes, each a finding (a URL's trailing slash, TOC hyperlinks, headers of a linked section, a section-break paragraph, a covered merged cell). The corpus found `readDocx` silently dropping headers, footers, section breaks and revisions from its report, and nothing else. Beside it, `wml-oracle.docx` is OURS and `wml-oracle.json` is Word 2010's COMPUTED formatting of it through COM (`scripts/gen-wml-oracle.ps1`) — the oracle for `m2fp.3`'s style resolution, toggle XOR and list counters. It corrected no rule and confirmed every open question; it did teach the builder that Word refuses a theme lacking `a:clrScheme`/`a:fmtScheme` (`test/wml-oracle.test.ts`). Since `v9j3.3.2` a sixth recipe, `notes`, has both applications read footnotes and endnotes; they DISAGREE on the Word file's marks, LibreOffice ignoring Word's per-section restart, so those marks are held to Word alone (`test/docx-corpus.test.ts`) |
 | `fixtures/opm/` | `PROVENANCE.md` | Two OPM forms `Open` refused (`lj8t`), for two different reasons. `opm-sf50.pdf` is **Acrobat PDFWriter 3.02**, with a sound file and `/Title (pages))` in its `/Info`. It now opens on the lenient last rung and reports object 1 as repaired. `opm-sf1153.pdf` is **LiveCycle Designer ES 8.2**: AESV2, `/EncryptMetadata false`, and a plaintext XMP under its own Identity `/Crypt` filter, which we used to decrypt with `/StmF`. Neither shape is one our builders write. US federal works (`test/crypt-filter.test.ts`) |
 | `fixtures/qpdf/` | `PROVENANCE.md` | Outputs of `Save({ incremental: true })` that **qpdf 12.3.2** called clean, with its `--check` and `--show-xref` reports beside them. The incremental writer is otherwise read back only through our OWN parser, so an append our reader tolerates and the format does not is invisible; qpdf is a separate implementation. Its sharpest case is `freed-object`, the one shape our reader provably cannot check, since `readXref` drops free entries (`2yvi`) — qpdf honours the `f` entry, which is also what proves that bug is a READER bug. `test/qpdf-goldens.test.ts` asserts byte-identity and runs no qpdf, so CI needs nothing installed (`scripts/gen-qpdf-goldens.ts`, not run by `npm test`) |
+| `fixtures/qpdf-xmp/` | `PROVENANCE.md` | Documents encrypted by **qpdf 12.3.2** with `--cleartext-metadata` (AES-128, AES-256, RC4 under V 4): `/EncryptMetadata false` and a plaintext XMP with NO `/Crypt` marker, the shape this library does not write. The AES ones were refused by `Open` and the RC4 one opened with garbled XMP until `hch6`. The input is ours, the encryption qpdf's; `aes256.pdf` is not byte-reproducible (qpdf's R 6 salts are random). qpdf inflates the packet it leaves clear, so no compressed-plaintext shape exists here (`test/qpdf-xmp.test.ts`, `scripts/gen-qpdf-xmp.ts`, not run by `npm test`) |
 | `fixtures/barcode-zxing/` | `PROVENANCE.md` | PDF417 and Data Matrix symbols our encoders drew, read back by **ZXing 3.5.3** (`scripts/gen-barcode-goldens.ts`, needs a JDK, not run by `npm test`): 93 decode goldens, each with zero errors corrected, over every PDF417 compaction path and EC level and all 30 Data Matrix sizes, plus 13 writer goldens where ZXing's own Data Matrix writer draws the same modules, which is what pins the pad sequence the decoder never reads. One decoder, and the tables come from ZXing's encoder sources too, so a table error ZXing shares with itself would pass; the PDF417 patterns are also checked against ISO/IEC 15438's cluster property (`test/barcode-zxing.test.ts`) |
 | `fixtures/paper-barcode/` | `PROVENANCE.md` | Twelve AcroForms built by our own `test/helpers/build-paper-barcode-probe.ts`, each a barcode field carrying Acrobat's verbatim tab-delimited script (version guard removed), opened in **Adobe Reader 26.1**, whose own script engine computed the content and wrote it as JSON into a visible field; the window captures are transcribed by hand into `goldens.json` (`scripts/gen-paper-barcode-probes.ts`, `scripts/run-paper-barcode-probe.ps1`, not run by `npm test`). They settled every value rule `src/paperbarcode.ts` reproduces: field order by code unit, the exact decimal grammar that prints as a JavaScript number, line-break folding by the barcode field's multiline flag, button and list values, a password's plaintext. They also showed that Reader can neither run Acrobat's guarded script (`ADBE` is undefined, so the value becomes `" "`) nor draw the symbol. One producer, Reader not Acrobat Pro, so symbol bytes, `/DataPrep` and `/PMD` keys are unverified (`test/paper-barcode-oracle.test.ts`) |
 | `fixtures/compare/` | `PROVENANCE.md` | Two revisions of one document written by **Microsoft Word 2010** (COM, `scripts/gen-compare-word.ps1`, not run by `npm test`), set in the repository's own Liberation Sans, with six edits made in Word between them. The edit list is the oracle for `test/compare-real.test.ts` — text, pages and character comparison, change placement, the side-by-side document and the rendering comparison (a recoloured heading is no text change but a rendering one). It found that the minimal word diff splits a rewrite around a shared `of`, which is why `CompareText` cleans up by default, and that `<=` folding merges independent one-word edits. One producer; Latin, text-only edits |
@@ -13602,6 +13997,12 @@ Two rules apply to these, both learned the hard way:
   nobody is told. A bindingless `catch {` becomes `catch (caught) {`. The scan
   also asserts it FOUND over 150 catches, so a broken pattern cannot pass by
   matching nothing — `k738`'s lesson.
+  **Invariant (`g0ky.6`):** an error thrown by CALLER-SUPPLIED code (a font
+  substitution handler) is passed through `markCallerError`, and
+  `rethrowLimit` rethrows a marked error too -- so it passes every catch on the
+  render path (forms, annotation appearances, `renderCanvas`) with no catch
+  edited. A non-object throw is wrapped in an `Error` whose `cause` is the
+  value.
 - **Docs** — keep `README.md` (user-facing: **Key Capabilities**, **Quick
   Start**, **Additional Examples**, **API Reference**, **Scope and
   Limitations**) in sync when adding or changing a public API. Per-feature

@@ -12,7 +12,7 @@ import type { Page } from './page.js';
 import type { EditableContent } from './editcontent.js';
 import type { ContentOp } from './content.js';
 import { PdfDict, PdfObject, isDict, isName } from './types.js';
-import { ensureOwnResources, ensureOwnSubdict } from './pagecontent.js';
+import { ensureUnsharedResources, ensureOwnSubdict } from './pagecontent.js';
 
 /** Resource categories pruned by sanitization, keyed by the operator (and its
  *  first operand) that references a name in that /Resources sub-dict. */
@@ -95,7 +95,7 @@ export function sanitizeResources(doc: Document, page: Page, ec: EditableContent
   // Page scope: referenced names are the union across all top content streams.
   const pageRefs = new Map<string, Set<string>>();
   for (let i = 0; i < ec.streamCount; i++) mergeRefs(pageRefs, referencedNames(ec.topOps(i)));
-  pruneResources(doc, ensureOwnResources(doc, page), pageRefs);
+  pruneResources(doc, ensureUnsharedResources(doc, page), pageRefs);
 
   // Each edited Form XObject: prune its own /Resources against its own ops.
   for (const path of ec.editedXObjectPaths()) {

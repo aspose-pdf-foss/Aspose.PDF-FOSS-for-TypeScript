@@ -9,7 +9,10 @@ import {
 } from './rebuild.js';
 import { decodeObjStm, ObjStmDamage } from './objstm.js';
 import { PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isStream, isName, isArray, isString, ref, name } from './types.js';
-import { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, rethrowLimit } from './errors.js';
+import { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, rethrowLimit, markCallerError } from './errors.js';
+import type { FontSubstitutionHandler, FontSubstitutionRequest, FontSubstitutionRule } from './fontsubstrules.js';
+import { Type1Font } from './type1.js';
+import { isType1 } from './type1header.js';
 import { makeSearchable, type MakeSearchableOptions, type MakeSearchableReport } from './makesearchable.js';
 import { summarize, type SummarizeOptions, type SummarizeResult } from './aisummarize.js';
 import { ask, type AskOptions, type AskResult } from './aiask.js';
@@ -120,6 +123,10 @@ import {
   type WatermarkOptions, type HeaderFooterOptions, type BatesOptions,
 } from './decorate.js';
 import { findWatermarks, type FindWatermarksOptions, type WatermarkCandidate } from './watermarkdetect.js';
+import { documentFonts, type DocumentFont } from './fontinventory.js';
+import { embedFonts, type EmbedFontsOptions, type EmbedFontsReport } from './embedfonts.js';
+import { replaceFont, type ReplaceFontOptions, type ReplaceFontReport } from './fontreplace.js';
+import type { AuthoringFont } from './stamp.js';
 import { serializeDocument, serializeSignedDocument, SerializeOptions } from './serializer.js';
 import { appendSignatureUpdate, appendIncrementalUpdate } from './incremental.js';
 import { diffObjects } from './incrementaldelta.js';
@@ -179,7 +186,7 @@ import { X509Certificate, KeyObject } from 'node:crypto';
 import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { buildEmbeddedFont } from './fontembed.js';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { systemFontFolders, indexFolder, peekCmap, type FaceRecord } from './fontsource.js';
 import { readFontNames } from './fontnames.js';
 import {
@@ -427,6 +434,11 @@ export class Document {
    *  ITSELF. Identity rather than `path`, because a byte face's `path` is a
    *  cosmetic label and a real file could in principle bear the same name. */
   private readonly byteFaces = new Map<FaceRecord, SfntFont>();
+  /** Font substitution rules, in order (g0ky.6). */
+  private readonly fontSubstRules: FontSubstitutionRule[] = [];
+  private fontSubstHandler: FontSubstitutionHandler | undefined;
+  /** The handler's raw answer per font dict; `null` = asked, nothing usable. */
+  private fontSubstMemo = new WeakMap<PdfDict, string | SfntFont | null>();
   /** Fonts already loaded by name, keyed by `path#faceIndex` so that one family
    *  drawn twice is embedded once -- and so that two faces of one collection,
    *  which share a path, do not collide. */
@@ -1174,6 +1186,18 @@ export class Document {
   markModified(): void {
     this.modified = true;
     this.pendingSignedBytes = undefined;
+  }
+
+  /** @internal Whether {@link markModified} has been called. */
+  isModifiedInternal(): boolean {
+    return this.modified;
+  }
+
+  /** @internal Undo {@link markModified} after an operation that put every
+   *  object back exactly as it found it (`simpleembed.ts` declining every
+   *  font). Only the caller that saw the flag clear beforehand may call it. */
+  clearModifiedInternal(): void {
+    this.modified = false;
   }
 
   /** A pristine object map re-parsed from the bytes this document was opened
@@ -2347,6 +2371,28 @@ export class Document {
     return out;
   }
 
+  /** A registered face's ORIGINAL Type 1 program (`.pfb`/`.pfa`), parsed and
+   *  memoized, or undefined when the file is not Type 1 or will not parse.
+   *  {@link registeredFaceSfnt} converts a Type 1 to a CID-keyed CFF, which a
+   *  simple font cannot select glyphs from by name; embedding wants the
+   *  program itself (g0ky.7). Only a prefix is read to decide, so a large
+   *  sfnt or collection is not read whole just to be told it is not Type 1.
+   *  @internal */
+  registeredFaceType1(rec: FaceRecord): Type1Font | undefined {
+    if (this.measureType1.has(rec.path)) return this.measureType1.get(rec.path) ?? undefined;
+    let t1: Type1Font | null = null;
+    try {
+      const head = new Uint8Array(64);
+      const fd = openSync(rec.path, 'r');
+      let n: number;
+      try { n = readSync(fd, head, 0, head.length, 0); } finally { closeSync(fd); }
+      if (isType1(head.subarray(0, n))) t1 = new Type1Font(new Uint8Array(readFileSync(rec.path)), this.loadLimits);
+    } catch (caught) { rethrowLimit(caught); t1 = null; }
+    this.measureType1.set(rec.path, t1);
+    return t1 ?? undefined;
+  }
+  private readonly measureType1 = new Map<string, Type1Font | null>();
+
   /** @internal One registered face parsed for measurement only, memoized per
    *  path and face; `undefined` when it will not parse. */
   registeredFaceSfnt(rec: FaceRecord): SfntFont | undefined {
@@ -2456,6 +2502,83 @@ export class Document {
     const known = this.byteFaces.get(face) ?? this.renderFaces.get(`${face.path}#${face.faceIndex}`);
     if (known) return new Set(known.cmap.keys());
     return peekCmap(face.path, face.faceIndex);
+  }
+
+  /**
+   * Render a font named `original` with the face named `substitute`, when the
+   * document does not embed it (g0ky.6, .NET's `SimpleFontSubstitution`).
+   *
+   * Rendering only: saved files, {@link EmbedFonts} and {@link ReplaceFont}
+   * are unaffected, and so is `ToSvg`, which draws text through CSS. Rules are
+   * tried in the order added, after the {@link SetFontSubstitutionHandler |
+   * handler} and before the built-in choice. `original` matches the font's
+   * name or its family part (`Arial` catches `Arial-BoldMT` and `Arial,Bold`,
+   * not `ArialNarrow`), ignoring case, spaces and hyphens. `substitute` is
+   * looked up among the faces registered for rendering, keeping the font's
+   * bold and italic, else names a bundled Standard-14 face (`Times-Roman`, or
+   * the family words `Helvetica`, `Times`, `Courier`). A rule whose substitute
+   * is not available is skipped.
+   */
+  AddFontSubstitution(original: string, substitute: string): void {
+    for (const [what, v] of [['original', original], ['substitute', substitute]] as const) {
+      if (typeof v !== 'string' || v.trim() === '') throw new TypeError(`AddFontSubstitution: ${what} must be a non-empty font name`);
+    }
+    this.fontSubstRules.push(Object.freeze({ original, substitute }));
+    this.fontSubstMemo = new WeakMap();
+  }
+
+  /** The substitution rules, in the order they are tried. A frozen copy. */
+  get FontSubstitutions(): readonly FontSubstitutionRule[] {
+    return Object.freeze([...this.fontSubstRules]);
+  }
+
+  /** Remove every substitution rule. The handler, if set, stays. */
+  ClearFontSubstitutions(): void {
+    this.fontSubstRules.length = 0;
+    this.fontSubstMemo = new WeakMap();
+  }
+
+  /**
+   * Decide the substitute face per font yourself (g0ky.6, .NET's
+   * `CustomFontSubstitutionBase`). Asked before the rules, at most once per
+   * font per document until a rule or the handler changes. Return a face name
+   * (resolved as a rule's substitute is), font bytes, or `undefined` to leave
+   * the font to the rules. An answer that resolves to nothing falls through.
+   * An error the handler throws reaches the caller of the render. Pass
+   * `undefined` to remove the handler. Rendering only, like the rules.
+   */
+  SetFontSubstitutionHandler(handler: FontSubstitutionHandler | undefined): void {
+    if (handler !== undefined && typeof handler !== 'function') {
+      throw new TypeError('SetFontSubstitutionHandler: handler must be a function or undefined');
+    }
+    this.fontSubstHandler = handler;
+    this.fontSubstMemo = new WeakMap();
+  }
+
+  /** Whether any rule or a handler is set. @internal */
+  hasFontSubstitutions(): boolean {
+    return this.fontSubstRules.length > 0 || this.fontSubstHandler !== undefined;
+  }
+
+  /**
+   * The handler's RAW answer for one font dict -- a name, a parsed face, or
+   * undefined -- asked at most once per dict until rules or the handler
+   * change. Raw, so a name resolves against faces registered later. A handler
+   * error is marked as the caller's so no `catch` swallows it. @internal
+   */
+  fontSubstitutionAnswer(fontDict: PdfDict, req: FontSubstitutionRequest): string | SfntFont | undefined {
+    const handler = this.fontSubstHandler;
+    if (!handler) return undefined;
+    if (this.fontSubstMemo.has(fontDict)) return this.fontSubstMemo.get(fontDict) ?? undefined;
+    let raw: string | Uint8Array | undefined;
+    try { raw = handler(req); } catch (caught) { rethrowLimit(caught); throw markCallerError(caught); }
+    let answer: string | SfntFont | null = null;
+    if (typeof raw === 'string') answer = raw;
+    else if (raw instanceof Uint8Array) {
+      try { answer = parseSfnt(raw, 0, this.loadLimits); } catch (caught) { rethrowLimit(caught); answer = null; }
+    }
+    this.fontSubstMemo.set(fontDict, answer);
+    return answer ?? undefined;
   }
 
   /**
@@ -2616,9 +2739,32 @@ export class Document {
    *  and are swept by the renumbering serializer). */
   private finalizeEmbeddedFonts(): void {
     for (const font of this.embeddedFonts) {
-      if (font.objNum === undefined || font.usedGids.size === 0) continue;
-      const type0 = buildEmbeddedFont(font.sfnt, font.usedGids, (obj) => this.allocObject(obj), font.toUnicode);
-      this.install(font.objNum, type0);
+      if (font.objNum === undefined && font.verticalObjNum === undefined) continue;
+      // A slot is reserved only when the font is NAMED in some /Resources, so
+      // one that drew nothing -- `ReplaceFont`'s `to` around nothing but
+      // fallback runs -- still needs a real font there, not an empty dict
+      // (g0ky.11): it gets one holding .notdef alone.
+      const gids = font.usedGids.size > 0 ? font.usedGids : new Set([0]);
+      const type0 = buildEmbeddedFont(font.sfnt, gids, (obj) => this.allocObject(obj), font.toUnicode);
+      if (font.objNum !== undefined) this.install(font.objNum, type0);
+      if (font.verticalObjNum !== undefined) {
+        // The vertical dict shares the descendant: /DW2 and /W2 are read only
+        // under /WMode 1, so stating them there changes nothing horizontal
+        // (g0ky.8). /W2 is the face's own vmtx, per glyph used (g0ky.10).
+        const d0 = this.resolve((type0.get('DescendantFonts') as PdfObject[])[0]);
+        if (isDict(d0)) {
+          d0.set('DW2', [880, -1000]);
+          const w2: PdfObject[] = [];
+          for (const gid of [...font.usedGids].sort((a, b) => a - b)) {
+            const m = font.verticalMetricsOf(gid);
+            if (m) w2.push(gid, m);
+          }
+          if (w2.length > 0) d0.set('W2', w2);
+        }
+        const vertical: PdfDict = new Map(type0);
+        vertical.set('Encoding', name('Identity-V'));
+        this.install(font.verticalObjNum, vertical);
+      }
     }
   }
 
@@ -3987,6 +4133,47 @@ export class Document {
    *  candidate is reported only. Reading changes nothing. */
   FindWatermarks(opts: FindWatermarksOptions = {}): WatermarkCandidate[] {
     return findWatermarks(this, opts);
+  }
+
+  /** Every font a page's resources reach (forms included), once each, with
+   *  its name and subset tag, subtype, whether and how it is embedded, its
+   *  encoding, the pages that DECLARE it and the pages that actually DRAW a
+   *  glyph in it -- so a font declared and never used reads `usedOn: []`.
+   *  Fonts used only by annotation appearances or the AcroForm /DR are not
+   *  listed. Recomputed on each access, and reading changes nothing. */
+  get Fonts(): DocumentFont[] {
+    return documentFonts(this);
+  }
+
+  /** Embed the simple fonts (`/Type1`, `/MMType1`, `/TrueType`) the
+   *  document names and does not embed, from a face in a folder registered
+   *  with {@link RegisterFontFolder} or {@link RegisterSystemFonts}. The face
+   *  is found by NAME -- its PostScript name, else its family in the font's
+   *  own style -- never by coverage. Each font becomes a non-symbolic
+   *  `/TrueType` carrying the face, and is kept only when every code the
+   *  document shows in it has a glyph and a `/Widths` entry within 1/1000 em
+   *  of the face's advance; otherwise it is put back exactly as it was and
+   *  reported in `skipped` with the reason. Faces with CFF outlines and
+   *  composite fonts are reported, not embedded. A run that embeds nothing
+   *  leaves the document unmodified. */
+  EmbedFonts(opts: EmbedFontsOptions = {}): EmbedFontsReport {
+    return embedFonts(this, opts);
+  }
+
+  /** Draw every glyph shown in `from` in `to` instead: each `Tf` selecting
+   *  `from` on the way to one of its glyphs selects `to`, and each show string
+   *  is re-encoded from its Unicode text. `from` is a font name (`/BaseFont`
+   *  with or without its subset tag) or an entry of {@link Fonts}; `to` is a
+   *  Standard-14 face or a font from {@link AddFont}/{@link LoadFontByName}.
+   *  Glyphs keep their positions (a kern makes up each width difference)
+   *  unless `positions: 'natural'`. A glyph `to` cannot draw stays in `from`
+   *  and is reported in `undrawable`, so no character is lost; `from` leaves
+   *  a page's resources once nothing there names it. A page that cannot be
+   *  renamed consistently (vertical text, a font set by an ExtGState, a form
+   *  drawn under two fonts) is left untouched and reported in `refused`.
+   *  Annotation appearances and form fields' `/DA` are not changed. */
+  ReplaceFont(from: string | DocumentFont, to: AuthoringFont, opts: ReplaceFontOptions = {}): ReplaceFontReport {
+    return replaceFont(this, from, to, opts);
   }
 
   /** Impose this document's pages `cols`×`rows` per sheet into a **new**

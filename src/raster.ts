@@ -28,9 +28,11 @@ import { encodeGif } from './gifencode.js';
 import { resolvePages } from './pagerange.js';
 import { SfntFont } from './sfnt.js';
 import { CffFont } from './cff.js';
-import { gidForProgram, gidForCid, loadEmbeddedProgram } from './glyphprogram.js';
+import { gidForProgram, gidForCid, loadEmbeddedProgram, sfntCff } from './glyphprogram.js';
 import { peekCmap } from './fontsource.js';
-import { resolveSubstitute, wantedCodepoints, type SubstRequest } from './fontsubst.js';
+import { resolveByName, resolveSubstitute, wantedCodepoints, type SubstRequest } from './fontsubst.js';
+import { ruleMatches, std14Substitute } from './fontsubstrules.js';
+import { readFontNames } from './fontnames.js';
 import { inflateStream } from './flate.js';
 import { decodeJpeg, JpegImage } from './jpeg.js';
 import { encodePng } from './pngencode.js';
@@ -615,12 +617,18 @@ const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
  *  bundled Standard-14 substitute.
  *
  *  Every rule lives in `fontsubst.ts`, which takes its faces and its `cmap`
- *  reader as arguments; this function is only the wiring that supplies them. */
+ *  reader as arguments; this function is only the wiring that supplies them.
+ *
+ *  Order (g0ky.6): the caller's handler, then the caller's rules, then
+ *  `resolveSubstitute`'s ladder. A handler or rule may name a bundled
+ *  Standard-14 face, which comes back with no `family` -- still a
+ *  substitution, so the caller marks it `substituted`. */
 function installedSubstitute(
   doc: Document, fontDict: PdfDict, fd: PdfObject | undefined,
-): { sfnt: SfntFont; family: string } | undefined {
+): { sfnt: SfntFont; family?: string } | undefined {
   const faces = doc.renderFontFaces();
-  if (faces.length === 0) return undefined;      // opt-in, structurally
+  // Opt-in, structurally: nothing registered and nothing stated.
+  if (faces.length === 0 && !doc.hasFontSubstitutions()) return undefined;
 
   const bf = doc.resolve(fontDict.get('BaseFont'));
   const flags = isDict(fd) ? doc.resolve(fd.get('Flags')) : undefined;
@@ -631,6 +639,33 @@ function installedSubstitute(
       (s) => inflateStream(s as Parameters<typeof inflateStream>[0])),
     serif: typeof flags === 'number' ? (flags & 2) !== 0 : false,
   };
+
+  if (doc.hasFontSubstitutions()) {
+    const byName = (n: string): { sfnt: SfntFont; family?: string } | undefined => {
+      const face = resolveByName(faces, n, req.style);
+      const loaded = face ? doc.loadRenderFace(face) : undefined;
+      if (face && loaded) return { sfnt: loaded, family: face.names.typographicFamily ?? face.names.family };
+      const std = std14Substitute(n, req.style);
+      const bundled = std ? getStd14Sfnt(std) : undefined;
+      return bundled ? { sfnt: bundled } : undefined;
+    };
+    const answer = doc.fontSubstitutionAnswer(fontDict, {
+      name: req.baseFont, bold: req.style.bold, italic: req.style.italic, characters: req.wanted,
+    });
+    if (typeof answer === 'string') {
+      const got = byName(answer);
+      if (got) return got;
+    } else if (answer) {
+      const names = readFontNames(answer.raw);
+      return { sfnt: answer, family: names ? (names.typographicFamily ?? names.family) : undefined };
+    }
+    for (const rule of doc.FontSubstitutions) {
+      if (!ruleMatches(rule.original, req.baseFont)) continue;
+      const got = byName(rule.substitute);
+      if (got) return got;
+    }
+    if (faces.length === 0) return undefined;
+  }
 
   const hit = resolveSubstitute(faces, req, (f) => doc.renderFaceCoverage(f));
   if (!hit) return undefined;
@@ -699,7 +734,7 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
   const prog = loadEmbeddedProgram(fd, (o) => doc.resolve(o),
     (s) => inflateStream(s as Parameters<typeof inflateStream>[0]));
   let sfnt = prog.sfnt;
-  const cff = prog.cff;
+  let cff = prog.cff;
   const type1 = prog.type1;
 
   // Non-embedded font: substitute the bundled Standard-14 outline face. The
@@ -727,6 +762,9 @@ export function buildGlyphSource(doc: Document, fontDict: PdfDict): GlyphSource 
     const installed = installedSubstitute(doc, fontDict, fd);
     if (installed) {
       sfnt = installed.sfnt;
+      // An OpenType-CFF face draws from its CFF table (u5es); left to the sfnt,
+      // every glyph came back blank and the page drew nothing.
+      cff = sfntCff(installed.sfnt);
       substituteFamily = installed.family;
       substituted = true;
     } else if (!isType0 && symbolicUnknown(doc, fontDict, fd)) {

@@ -244,8 +244,10 @@ function type1Mapper(doc: Document, font: PdfDict, ff: PdfStream): { mapper?: Co
 
 function type0Mapper(doc: Document, font: PdfDict): { mapper?: CodeMapper; reason?: string } {
   const encoding = nameOf(doc, font.get('Encoding'));
-  if (encoding !== 'Identity-H') {
-    return { reason: `Type0 encoding is not Identity-H: ${encoding ?? 'embedded CMap'}` };
+  // Identity-V maps a code to its CID exactly as Identity-H does; only the
+  // writing direction differs (`ReplaceFont`'s vertical twin, g0ky.8).
+  if (encoding !== 'Identity-H' && encoding !== 'Identity-V') {
+    return { reason: `Type0 encoding is not Identity-H or Identity-V: ${encoding ?? 'embedded CMap'}` };
   }
   const desc = doc.resolve(font.get('DescendantFonts'));
   const d0 = isArray(desc) ? resolveDict(doc, desc[0]) : undefined;

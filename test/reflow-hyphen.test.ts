@@ -62,6 +62,31 @@ describe('ReplaceText reflow hyphenates like AddTextBlock (6y39)', () => {
       same(got, origins(want));
     });
   }
+  // g72b: a ragged-left paragraph is one block per line to the geometric
+  // grouping, so only a TAGGED one reflows as one paragraph. The wrap box is
+  // its widest original line (min left .. max right), so the oracle is laid
+  // out in exactly that box; reflow measures it with 1e-3 of slack, which goes
+  // on the side that does not move the lines.
+  for (const align of ['right', 'center'] as const) {
+    it(`an edit on the first line re-wraps with hyphens (${align}, tagged)`, () => {
+      const tagged = (text: string, rect: [number, number, number, number], hyphenate: boolean) => {
+        const d = Document.New(PageFormat.A4);
+        const p = d.CreateStructTree().Append('P');
+        d.Pages[0].AddTextBlock(text, rect, { fontSize: 12, align, tag: p, ...(hyphenate ? { hyphenate: { lang: 'en' } } : {}) });
+        return Document.Open(d.Save());
+      };
+      const doc = tagged(LONG, BOX, false);
+      const lines = doc.Pages[0].GetStructuredText().flatMap((b) => b.lines.map((l) => l.quad));
+      const left = Math.min(...lines.map((q) => q[0])), right = Math.max(...lines.map((q) => q[2]));
+      const R = 'Documentation and analysis';
+      doc.Pages[0].ReplaceText('Documentation', R, HY);
+      const x = align === 'right' ? left - 1e-3 : left - 5e-4;
+      const want = tagged(LONG.replace('Documentation', unit(R)), [x, BOX[1], right - left + 1e-3, BOX[3]], true);
+      const got = origins(doc);
+      expect(got.some(([c]) => c === SHY)).toBe(true);   // non-vacuous: a hyphen WAS drawn
+      same(got, origins(want));
+    });
+  }
   it('hyphenate absent leaves the whole-word reflow', () => {
     const a = block(LONG), b = block(LONG);
     a.Pages[0].ReplaceText('Documentation', 'Documentation and analysis', { adjust: 'reflow' });

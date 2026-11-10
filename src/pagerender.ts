@@ -658,7 +658,21 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
       case 'd': { gs.dash = isArray(o[0]) ? numbers(o[0]) : []; gs.dashPhase = num(o[1]); break; }
       case 'gs': {
         const gn = o[0];
-        if (isName(gn)) { applyExtGState(ctx, gs, gn.name); syncPaintState(ctx, gs); }
+        if (isName(gn)) {
+          applyExtGState(ctx, gs, gn.name); syncPaintState(ctx, gs);
+          // (g0ky.5) /Font [font size] sets the font as `Tf` does (32000-1
+          // Table 58); the extractor (text.ts) reads it the same way.
+          const egs = resDict(ctx, 'ExtGState');
+          const d = egs ? ctx.doc.resolve(egs.get(gn.name)) : undefined;
+          const spec = isDict(d) ? ctx.doc.resolve(d.get('Font')) : undefined;
+          const fd = isArray(spec) ? ctx.doc.resolve(spec[0]) : undefined;
+          if (isArray(spec) && isDict(fd)) {
+            let tf = fontCache.get(fd);
+            if (!tf) { tf = new TextFont(fd, r(ctx), inf(ctx)); fontCache.set(fd, tf); }
+            gs.fontRef = fd; gs.font = tf; gs.fontSize = num(spec[1]);
+            applyFontStyle(gs, tf.name);
+          }
+        }
         break;
       }
 

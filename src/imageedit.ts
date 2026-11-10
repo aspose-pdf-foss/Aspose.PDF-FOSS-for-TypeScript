@@ -13,7 +13,7 @@ import type { Page } from './page.js';
 import { PdfDict, PdfObject, PdfStream, isDict, isName, isStream } from './types.js';
 import { EditableContent } from './editcontent.js';
 import { buildImageXObject } from './imageembed.js';
-import { ensureOwnResources, ensureOwnSubdict } from './pagecontent.js';
+import { ensureUnsharedResources, ensureOwnSubdict } from './pagecontent.js';
 import { UnsupportedFeatureError } from './errors.js';
 import { imageCutSet, type ContentOp } from './content.js';
 import { sanitizeResources } from './resprune.js';
@@ -105,7 +105,7 @@ export function replaceImage(
   const ec = new EditableContent(doc, page);
   for (const { path, key } of scopes) {
     const res = path.length === 0
-      ? ensureOwnResources(doc, page)
+      ? ensureUnsharedResources(doc, page)
       : ec.ownXObjectResources(path);
     ensureOwnSubdict(doc, res, 'XObject').set(key, ref);
   }
@@ -185,7 +185,7 @@ export function removeImage(
   //    Swapping them leaves every case in test/image-edit.test.ts green.
   for (const { path, keys } of byPath.values()) {
     const res = path.length === 0
-      ? ensureOwnResources(doc, page)
+      ? ensureUnsharedResources(doc, page)
       : ec.ownXObjectResources(path);
     const xobjs = ensureOwnSubdict(doc, res, 'XObject');
     for (const key of keys) xobjs.delete(key);

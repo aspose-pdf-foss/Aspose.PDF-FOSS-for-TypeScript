@@ -39,9 +39,24 @@ export class ResourceLimitError extends Error {
  *  going past a broken object, and a bound reached is not a broken object:
  *  swallowed there, the ladder sweeps precisely the file the bound refused, and
  *  the limit refuses nothing. One helper rather than an `instanceof` at each
- *  site, so a new catch has one thing to remember. */
+ *  site, so a new catch has one thing to remember.
+ *
+ *  A {@link markCallerError | caller error} is rethrown too: it is not damage
+ *  either, and swallowing it would hide the caller's own bug. */
 export function rethrowLimit(e: unknown): void {
   if (e instanceof ResourceLimitError) throw e;
+  if (typeof e === 'object' && e !== null && callerErrors.has(e)) throw e;
+}
+
+const callerErrors = new WeakSet<object>();
+/** Mark an error thrown by caller-supplied code (a font substitution handler,
+ *  g0ky.6) so every `catch` in `src/` lets it through via {@link rethrowLimit}.
+ *  A non-object throw is wrapped in an `Error` whose `cause` is the value.
+ *  @internal */
+export function markCallerError(e: unknown): unknown {
+  const obj = typeof e === 'object' && e !== null ? e : new Error(String(e), { cause: e });
+  callerErrors.add(obj);
+  return obj;
 }
 /** A signature field's seed value (`/SV`) makes a demand this signing call
  *  cannot meet (`puep.3`). A REFUSAL, not damage: signing around a constraint

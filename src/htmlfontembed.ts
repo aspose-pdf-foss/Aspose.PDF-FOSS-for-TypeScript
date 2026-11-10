@@ -108,7 +108,12 @@ export class EmbeddedFontRegistry {
   private program(dict: PdfDict): ProgramState {
     let prog = this.programs.get(dict);
     if (prog) return prog;
-    const src = buildGlyphSource(this.doc, dict);
+    // A font with no program cannot be embedded, so its glyph source is never
+    // read -- and building one would run render-time substitution, the
+    // caller's handler included (g0ky.6), for nothing.
+    const src: GlyphSource = this.hasProgramFile(dict)
+      ? buildGlyphSource(this.doc, dict)
+      : { isType0: false, substituted: false };
     prog = {
       key: this.nextProgram, src,
       gidToCp: new Map(), claimed: new Set(), advances: new Map(),
@@ -126,13 +131,14 @@ export class EmbeddedFontRegistry {
    *  it to OpenType-CFF through `type1cff.ts`. The conversion is NOT done here
    *  — this runs the first time a font is used, and interpreting every
    *  charstring in a face that may never reach `css()` is work for nothing. */
-  private probe(dict: PdfDict, src: GlyphSource): boolean {
+  private hasProgramFile(dict: PdfDict): boolean {
     const fd = descriptorOf(this.doc, dict);
     if (!isDict(fd)) return false;
-    const hasFF2 = isStream(this.doc.resolve(fd.get('FontFile2')));
-    const hasFF3 = isStream(this.doc.resolve(fd.get('FontFile3')));
-    const hasFF1 = isStream(this.doc.resolve(fd.get('FontFile')));
-    if (!hasFF1 && !hasFF2 && !hasFF3) return false;  // non-embedded
+    return ['FontFile', 'FontFile2', 'FontFile3'].some((k) => isStream(this.doc.resolve(fd.get(k))));
+  }
+
+  private probe(dict: PdfDict, src: GlyphSource): boolean {
+    if (!this.hasProgramFile(dict)) return false;  // non-embedded
     if (!src.sfnt && !src.cff && !src.type1) return false;   // failed to parse
     // A Type 1 program carries no OS/2 table, so it states no fsType at all --
     // there are no embedding-permission bits to honour and `embed` behaves as

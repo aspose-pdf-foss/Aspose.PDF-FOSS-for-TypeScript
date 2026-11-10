@@ -5,7 +5,7 @@ import { isDict } from '../src/types.js';
 import { decodeXfaPackets } from '../src/xfapacket.js';
 import { decodeStream } from '../src/filters.js';
 import { parseXfaTemplate } from '../src/xfatemplate.js';
-import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
+import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals } from '../src/xfadata.js';
 import { layoutPages, type XfaLayoutResult } from '../src/xfapage.js';
 import { xfaFieldLines, xfaMeasurer } from '../src/xfaconvert.js';
 import { TARGET_PROBES, targetGoldens, loadAdobeProbe } from './helpers/xfa-adobe.js';
@@ -30,7 +30,8 @@ function laidOut(name: string): { doc: Document; r: XfaLayoutResult; names: stri
   const datasets = set.packets.get('datasets');
   const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(datasets));
   const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
-  const r = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).grid);
+  const globals = datasets ? parseXfaGlobals(datasets) : new Map<string, string | string[]>();
+  const r = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values, globals), [], xfaFieldLines(doc, tpl, values, globals).grid);
   const names = tpl.body!.pageSet!.pageAreas.map((pa) => pa.name ?? '?');
   return { doc, r, names };
 }

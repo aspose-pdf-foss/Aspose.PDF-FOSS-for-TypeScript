@@ -366,7 +366,14 @@ function wrapHyphenated(inp: WrapInput, hy: HyphenWrap): WrapResult | undefined 
 
 /** A unit's driver: its proxy measures the unit, `' '` the gap after its
  *  word, `'-'` the hyphen it would end with (absent: no face, so `probe`
- *  reports 0 and `layoutRuns` skips the point). */
+ *  reports 0 and `layoutRuns` skips the point).
+ *
+ *  **Note (g72b), a kept approximation:** a unit is measured WITH its kern
+ *  lead even where it opens a line, while placement drops the lead there, so
+ *  a split word's tail measures up to one kern wider than it draws. A driver
+ *  cannot know where its run lands; moving the lead onto the PRECEDING unit
+ *  instead errs the other way, carrying it past the hyphen at a break. The
+ *  cost is a fit conservative by hundredths of a point. */
 const unitDriver = (u: PUnit, gapAfter: number): FontDriver => ({
   measure: (t) => {
     let w = 0;

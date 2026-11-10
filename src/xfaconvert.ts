@@ -586,8 +586,15 @@ function reportGlobalShapes(tpl: XfaTemplate, report: XfaConvertReport): void {
     if (s.size > 1)
       report.warnings.push(`fields named "${name}" are global on some fields and ordinary on others, `
         + 'which XFA 3.3 p. 247 does not support; each binds by its own rule');
-  const groups = new Set(tpl.fields.filter((f) => f.groupGlobal && f.group !== undefined).map((f) => f.group!));
-  for (const g of groups)
+  // Once per GROUP in the template, not per instance: a repeating subform
+  // gives each instance its own SOM name (b8h8).
+  const groups = new Map<string, string>();
+  for (const f of tpl.fields) {
+    if (!f.groupGlobal || f.group === undefined) continue;
+    const key = f.group.replace(/\[\d+\]/g, '');
+    if (!groups.has(key)) groups.set(key, f.group);
+  }
+  for (const g of groups.values())
     report.warnings.push(`${g}: an <exclGroup> with bind match="global" binds by its own data path; `
       + 'XFA 3.3 p. 176 and p. 348 disagree on whether a group may be global');
 }
@@ -1022,7 +1029,7 @@ export function convertXfaToAcroForm(
  *  rather than guessing at one. Asked first of the WHOLE field, whose stated
  *  height places vAligned text; a piece is answered from that. */
 export function xfaFieldLines(
-  doc: Document, tpl: XfaTemplate, values: XfaValues, globals?: XfaGlobals,
+  doc: Document, tpl: XfaTemplate, values: XfaValues, globals: XfaGlobals,
 ): { grid: (n: LayoutNode) => FieldGrid | undefined; texts: Map<string, string[]> } {
   const faces = faceLookup(doc);
   const byName = fieldLookup(tpl);
@@ -1076,7 +1083,7 @@ function fieldLookup(tpl: XfaTemplate): (name: string) => XfaField | undefined {
  *  a leaf's text from the template, with a field's bound value in place of its
  *  default, measured with `faceLookup`'s faces. Exported so the pdf.js oracle
  *  can lay out a subtree in isolation. */
-export function xfaMeasurer(doc: Document, tpl: XfaTemplate, values: XfaValues, globals?: XfaGlobals): XfaMeasure {
+export function xfaMeasurer(doc: Document, tpl: XfaTemplate, values: XfaValues, globals: XfaGlobals): XfaMeasure {
   const faces = faceLookup(doc);
   const byName = fieldLookup(tpl);
   // A leaf's text from the template, with a field's bound value in place of

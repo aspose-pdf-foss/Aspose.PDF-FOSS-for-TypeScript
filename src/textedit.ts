@@ -3,6 +3,7 @@
 // glyph events that produced each match (op provenance for constrained replace).
 import type { Document } from './document.js';
 import type { Page } from './page.js';
+import type { StructElement } from './struct.js';
 import type { GlyphEvent, Rect, RefRun } from './text.js';
 import { visitContent, layoutLines, runFromGlyph, walkOpts, contentStreamBytes } from './text.js';
 import { inflateStream } from './flate.js';
@@ -1319,17 +1320,27 @@ function softHyphenCode(font: GlyphEvent['font'], hyphen: Uint8Array): Uint8Arra
   return Math.abs(font.decodeRun(soft).width - font.decodeRun(hyphen).width) < 1e-9 ? soft : undefined;
 }
 
+/** The structure element that marked a glyph, through the page's
+ *  `/StructParents` -- `undefined` on an untagged page or for a glyph with no
+ *  MCID.
+ *
+ *  **Invariant (g72b):** a glyph inside a Form XObject is resolved like one in
+ *  the page's own content: its MCID is inherited from the page's marked
+ *  content around the `Do`, or stated in the form and read through the page's
+ *  key, which is how `struct.ts` and every other MCID consumer here read it.
+ *  Both readers below excluded form glyphs, so tagged text drawn through a
+ *  form was refused `not-found` by reflow and never reached its `/Lang`. */
+function elementOf(doc: Document, page: Page): (g: GlyphEvent) => StructElement | undefined {
+  const root = doc.GetStructTree();
+  const sp = doc.resolve(page.Dict.get('StructParents'));
+  return (g) => (root && typeof sp === 'number' && g.mcid !== undefined ? root.ElementFor(sp, g.mcid) : undefined);
+}
+
 /** The language a reflowed paragraph hyphenates in: the anchor glyph's
  *  structure element's, which falls back to the catalog's, or the catalog's
  *  on an untagged page. */
 function langAt(doc: Document, page: Page, g: GlyphEvent): string | undefined {
-  const root = doc.GetStructTree();
-  const sp = doc.resolve(page.Dict.get('StructParents'));
-  if (root && typeof sp === 'number' && g.mcid !== undefined && g.addr.path.length === 0) {
-    const el = root.ElementFor(sp, g.mcid);
-    if (el) return el.EffectiveLang;
-  }
-  return doc.Lang;
+  return elementOf(doc, page)(g)?.EffectiveLang ?? doc.Lang;
 }
 
 /** Block-level structure types: a paragraph is the nearest of these above a
@@ -1338,17 +1349,18 @@ const BLOCK_TYPES = new Set(['P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LBod
 
 /** The tagged paragraph key: the Dict of the block-level element owning a
  *  glyph's MCID. Undefined when the page is not tagged (no structure tree or
- *  no /StructParents), so the caller falls back to geometry. A glyph inside a
- *  form, or with no MCID, has no key. */
+ *  no /StructParents), so the caller falls back to geometry. A glyph with no
+ *  MCID has no key; one inside a form has its element's (`elementOf`). */
 function taggedKeys(doc: Document, page: Page): ((g: GlyphEvent) => unknown) | undefined {
   const root = doc.GetStructTree();
   const sp = doc.resolve(page.Dict.get('StructParents'));
   if (!root || typeof sp !== 'number') return undefined;
   const memo = new Map<number, unknown>();
+  const element = elementOf(doc, page);
   return (g) => {
-    if (g.mcid === undefined || g.addr.path.length > 0) return undefined;
+    if (g.mcid === undefined) return undefined;
     if (memo.has(g.mcid)) return memo.get(g.mcid);
-    let el = root.ElementFor(sp, g.mcid);
+    let el = element(g);
     while (el && !BLOCK_TYPES.has(el.StandardType) && !/^H\d+$/.test(el.StandardType)) el = el.Parent;
     const key = el?.Dict;
     memo.set(g.mcid, key);

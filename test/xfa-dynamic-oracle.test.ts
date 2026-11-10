@@ -7,7 +7,7 @@ import { decodeXfaPackets } from '../src/xfapacket.js';
 import { parseXfaTemplate, type XfaTemplate } from '../src/xfatemplate.js';
 import { layoutPage, measureExtent, type LayoutNode } from '../src/xfaflow.js';
 import { layoutPages, paginate } from '../src/xfapage.js';
-import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
+import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals } from '../src/xfadata.js';
 import { xfaMeasurer } from '../src/xfaconvert.js';
 import {
   DYNAMIC_VARIANTS, deriveVariant, dynamicGoldens, loadDynamicPdf, packetText, sha256,
@@ -216,7 +216,8 @@ describe('164g.7: measured layout against pdf.js, table by table', () => {
   const tpl = parseXfaTemplate(packets.packets.get('template')!,
     parseXfaDataGroups(packets.packets.get('datasets')));
   const values = parseXfaDatasets(packets.packets.get('datasets')!);
-  const measure = xfaMeasurer(doc, tpl, values);
+  const globals = parseXfaGlobals(packets.packets.get('datasets')!);
+  const measure = xfaMeasurer(doc, tpl, values, globals);
   const page1 = tpl.body!.root.children[0];
   const tableNode = (label: string): LayoutNode =>
     page1.children.find((c) => c.label === label)!;
@@ -295,7 +296,7 @@ describe('164g.7: measured layout against pdf.js, table by table', () => {
       const p = decodeXfaPackets(isDict(a) ? a : undefined, (o) => d.resolve(o), (s) => decodeStream(s));
       if ('reason' in p) throw new Error(p.reason);
       const t = parseXfaTemplate(p.packets.get('template')!, parseXfaDataGroups(p.packets.get('datasets')));
-      const m = xfaMeasurer(d, t, parseXfaDatasets(p.packets.get('datasets')!));
+      const m = xfaMeasurer(d, t, parseXfaDatasets(p.packets.get('datasets')!), parseXfaGlobals(p.packets.get('datasets')!));
       const s = t.body!.root.children[0].children.find((c) => c.label === 'SectionI[0]')!;
       return layoutPage(
         { kind: 'page', label: 'contentArea', layout: 'position', geom: { w: '612pt', h: '792pt' }, children: [s] },

@@ -918,6 +918,38 @@ export function parseOtLayout(sfnt: SfntFont): OtLayout | undefined {
   return layout;
 }
 
+/**
+ * The glyph a face draws for `gid` in VERTICAL writing (g0ky.10): its GSUB
+ * `vrt2` feature when it has one -- that feature supersedes `vert`, which a
+ * face carrying both repeats inside it -- else `vert`. The lookups are taken
+ * from EVERY script and language system, since a CJK face commonly lists them
+ * under `hani` or `kana` and not under `DFLT`, and the glyph alone carries no
+ * script. A substitution that does not leave exactly one glyph (no vertical
+ * feature is a ligature) answers `gid` unchanged.
+ */
+export function verticalGlyph(sfnt: SfntFont, gid: number): number {
+  const layout = sfnt.otLayout();
+  const gsub = layout?.gsub;
+  if (!gsub) return gid;
+  const lookupsFor = (tag: string): number[] => {
+    const out = new Set<number>();
+    for (const st of gsub.scripts.values()) {
+      for (const list of [st.dfltFeatures ?? [], ...st.langSys.values()]) {
+        for (const fi of list) { const f = gsub.features[fi]; if (f?.tag === tag) for (const li of f.lookupIndices) out.add(li); }
+      }
+    }
+    return [...out].sort((a, b) => a - b);
+  };
+  let lookups = lookupsFor('vrt2');
+  if (lookups.length === 0) lookups = lookupsFor('vert');
+  if (lookups.length === 0) return gid;
+  const buf: ShapedGlyph[] = [{ gid, cluster: 0, xAdvance: sfnt.advanceWidth(gid), xOffset: 0, yOffset: 0 }];
+  try {
+    for (const li of lookups) { const lk = gsub.lookups[li]; if (lk) applyGsubLookup(lk, buf, layout!.gdef, gsub); }
+  } catch (caught) { rethrowLimit(caught); return gid; }
+  return buf.length === 1 ? buf[0].gid : gid;
+}
+
 export interface ShapeOptions { script?: string; lang?: string; features?: string[]; rtl?: boolean; }
 const DEFAULT_FEATURES = ['ccmp', 'liga', 'rlig', 'calt', 'kern', 'mark', 'mkmk'];
 

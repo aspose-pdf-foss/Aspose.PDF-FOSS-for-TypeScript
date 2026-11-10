@@ -260,6 +260,12 @@ export function planDecorations(doc: Document, style: TextRestyle, opts: Replace
     };
     // A piece a hyphenated reflow split is decorated once per line it sits
     // on, the head through its hyphen (6y39).
+    // **Note (g72b):** a box's `y` carries its glyph's rise, so grouping by
+    // `y` would split a raised glyph off its line -- but a piece is ONE
+    // show-string element, and a rise (`Ts`, or a `Tm` raising a superscript)
+    // changes only between elements, so every glyph of a piece shares one.
+    // Measured: `mc` + `5 Ts (2)` + `q` restyled together is three pieces
+    // and three rules with the rise or without it.
     const lineBoxes = piece.glyphs.flatMap((x) => (ctx.boxes.get(x) ?? []).map((bx) => ({ g: x, b: bx })));
     if (lineBoxes.length === 0) { decorateAt(g, ctx.targets.get(g), width); continue; }
     const byY = new Map<number, { g: GlyphEvent; x: number; y: number; right: number }>();

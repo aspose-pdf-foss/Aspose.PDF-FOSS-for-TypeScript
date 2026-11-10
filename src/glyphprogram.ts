@@ -35,6 +35,23 @@ function isSfnt(raw: Uint8Array): boolean {
   return tag === 0x4f54544f || tag === 0x00010000 || tag === 0x74727565 || tag === 0x74746366;
 }
 
+/** The outlines of an OpenType-CFF face, parsed out of its `CFF ` table;
+ *  undefined for a TrueType face, or when the table will not parse (a broken
+ *  font, not a broken document -- the sfnt is still kept for its cmap).
+ *
+ *  **Invariant (`u5es`):** every caller holding an sfnt it will DRAW from asks
+ *  this, because `SfntFont.glyphOutline` reads `glyf` only and answers `[]`
+ *  for every glyph of a CFF face -- which the rasterizer reads as a BLANK
+ *  glyph, drawing neither ink nor a placeholder box. The embedded program, an
+ *  installed render substitute and `faceOutline` each parsed it on their own,
+ *  and the substitute path was the one that forgot. */
+export function sfntCff(sfnt: SfntFont): CffFont | undefined {
+  if (sfnt.outlines !== 'cff') return undefined;
+  const t = sfnt.table('CFF ', false);
+  if (!t) return undefined;
+  try { return new CffFont(t, sfnt.limits); } catch (caught) { rethrowLimit(caught); return undefined; }
+}
+
 /**
  * Load `/FontFile2` (TrueType), `/FontFile3` (CFF / OpenType-CFF) or
  * `/FontFile` (Type 1), in that precedence.
@@ -63,10 +80,7 @@ export function loadEmbeddedProgram(
     try { sfnt = parseSfnt(inf(ff2), 0, budgetFor(ff2).limits); }
     catch (caught) { rethrowLimit(caught); sfnt = undefined; }
   }
-  if (sfnt?.outlines === 'cff') {
-    const t = sfnt.table('CFF ', false);
-    if (t) { try { cff = new CffFont(t, sfnt.limits); } catch (caught) { rethrowLimit(caught); /* keep sfnt for its cmap */ } }
-  }
+  if (sfnt) cff = sfntCff(sfnt);
 
   if (!cff) {
     const ff3 = resolve(fd.get('FontFile3'));

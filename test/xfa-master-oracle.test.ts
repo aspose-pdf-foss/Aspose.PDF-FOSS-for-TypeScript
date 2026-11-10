@@ -4,7 +4,7 @@ import { Document } from '../src/document.js';
 import { decodeXfaPackets } from '../src/xfapacket.js';
 import { decodeStream } from '../src/filters.js';
 import { parseXfaTemplate } from '../src/xfatemplate.js';
-import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
+import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals } from '../src/xfadata.js';
 import { layoutPage } from '../src/xfaflow.js';
 import { layoutPages } from '../src/xfapage.js';
 import { xfaMeasurer } from '../src/xfaconvert.js';
@@ -35,8 +35,9 @@ describe('master-page layout, against pdf.js (d3mq)', () => {
       const datasets = set.packets.get('datasets');
       const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(datasets));
       const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
+      const globals = datasets ? parseXfaGlobals(datasets) : new Map<string, string | string[]>();
       const areas = tpl.body!.pageSet!.pageAreas;
-      const measure = xfaMeasurer(doc, tpl, values);
+      const measure = xfaMeasurer(doc, tpl, values, globals);
       const laid = new Map(areas.map((a, k) => [k, a.master ? layoutPage(a.master, measure, []) : new Map()]));
 
       let compared = 0;
@@ -90,7 +91,8 @@ describe('dynamic DD bodies end to end (bkdi)', () => {
     const datasets = set.packets.get('datasets');
     const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(datasets));
     const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
-    const laid = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), []);
+    const globals = datasets ? parseXfaGlobals(datasets) : new Map<string, string | string[]>();
+    const laid = layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values, globals), []);
     expect(laid.pages.length).toBe(gold.pages);
 
     const areaOf = new Map<number, string>();

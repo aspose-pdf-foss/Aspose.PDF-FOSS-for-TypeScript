@@ -210,6 +210,17 @@ export function registerFontIn(doc: Document, fonts: PdfDict, font: AuthoringFon
   return key;
 }
 
+/** Register `font`'s VERTICAL Type0 dict (`/Identity-V` over the descendant
+ *  its horizontal one uses) in a /Font dict, returning its key. The codes are
+ *  the horizontal dict's -- two-byte glyph ids -- so `encode` serves both. */
+export function registerVerticalFontIn(doc: Document, fonts: PdfDict, font: EmbeddedFont): string {
+  if (font.verticalObjNum === undefined) font.verticalObjNum = doc.allocObject(new Map<string, PdfObject>()).num;
+  for (const [k, v] of fonts) if (isRef(v) && v.num === font.verticalObjNum) return k;
+  const key = freshKey(fonts, 'F');
+  fonts.set(key, ref(font.verticalObjNum));
+  return key;
+}
+
 function buildStampBody(
   bytes: Uint8Array, x: number, y: number, o: NormalizedOptions,
   fontKey: string, width: number, gsKey: string | undefined,

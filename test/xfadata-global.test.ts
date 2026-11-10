@@ -71,3 +71,25 @@ describe('bind match="global" (yy09)', () => {
     expect(bindFieldValue(global('top[0].X[0].ls[0]', 'ls'), v, g)).toEqual(['a', 'b']);
   });
 });
+
+describe('xfa:dataNode="dataGroup" and bind ref (b8h8)', () => {
+  const XFA = 'xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"';
+  it('reads an empty dataGroup as a group, not a blank value that shadows a real datum', () => {
+    const r = parseXml(new TextEncoder().encode(`<datasets ${XFA}><data><top><g xfa:dataNode="dataGroup"/><P><g>real</g></P></top></data></datasets>`));
+    expect(parseXfaDatasets(r).has('top[0].g[0]')).toBe(false);
+    expect(parseXfaGlobals(r).get('g')).toBe('real');
+  });
+
+  it('still reads an empty element with no dataNode as a blank value', () => {
+    const { v, g } = both('<top><g/><P><g>real</g></P></top>');
+    expect(v.get('top[0].g[0]')).toBe('');
+    expect(g.get('g')).toBe('');
+  });
+
+  it('consults a ref only under match="dataRef", so a global field still searches', () => {
+    const { v, g } = both('<top><who>Ada</who><P/></top>');
+    const f = global('top[0].P[0].who[0]', 'who', { bindRef: '$.nowhere' });
+    expect(bindFieldValue(f, v, g)).toBe('Ada');
+    expect(bindFieldValue({ ...f, bindMatch: 'dataRef' }, v, g)).toBeUndefined();
+  });
+});

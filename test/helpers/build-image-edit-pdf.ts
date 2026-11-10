@@ -95,3 +95,27 @@ export function buildGsWrappedImagePdf(): Uint8Array {
   objs[6] = `<< /Type /ExtGState /ca 0.5 /CA 0.5 >>`;
   return emitObjs(objs, 6);
 }
+
+/** Two pages drawing /F1 (Helvetica), image /Im0 (obj 6) and form /Fm0
+ *  (obj 7), which shows text in /F1. Resources are shared indirectly (obj 5)
+ *  by default (v9fp), direct on each leaf, or inherited from /Pages.
+ *  Reorder duplicates share the direct map too (f6bm). */
+export function buildSharedResourcesPdf(placement: 'indirect' | 'direct' | 'inherited' = 'indirect'): Uint8Array {
+  const raw = rgb2x2();
+  const form = enc('BT /F1 12 Tf 10 150 Td (SECRET) Tj ET');
+  const page = enc('BT /F1 12 Tf 10 100 Td (Hello) Tj ET q 20 0 0 20 10 10 cm /Im0 Do Q /Fm0 Do');
+  const resources = '<< /Font << /F1 10 0 R >> /XObject << /Im0 6 0 R /Fm0 7 0 R >> >>';
+  const own = placement === 'inherited' ? '' : ` /Resources ${placement === 'direct' ? resources : '5 0 R'}`;
+  const objs: Obj[] = [];
+  objs[1] = `<< /Type /Catalog /Pages 2 0 R >>`;
+  objs[2] = `<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /MediaBox [0 0 200 200]${placement === 'inherited' ? ' /Resources 5 0 R' : ''} >>`;
+  objs[3] = `<< /Type /Page /Parent 2 0 R${own} /Contents 8 0 R >>`;
+  objs[4] = `<< /Type /Page /Parent 2 0 R${own} /Contents 9 0 R >>`;
+  objs[5] = resources;
+  objs[6] = { dict: IMAGE_DICT(raw.length), raw };
+  objs[7] = { dict: `<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Length ${form.length} >>`, raw: form };
+  objs[8] = { dict: `<< /Length ${page.length} >>`, raw: page };
+  objs[9] = { dict: `<< /Length ${page.length} >>`, raw: page };
+  objs[10] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`;
+  return emitObjs(objs, 10);
+}

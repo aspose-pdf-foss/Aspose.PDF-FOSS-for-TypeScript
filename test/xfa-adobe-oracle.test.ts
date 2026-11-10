@@ -5,7 +5,7 @@ import { isDict, type PdfDict, type PdfObject } from '../src/types.js';
 import { decodeXfaPackets } from '../src/xfapacket.js';
 import { decodeStream } from '../src/filters.js';
 import { parseXfaTemplate } from '../src/xfatemplate.js';
-import { parseXfaDatasets, parseXfaDataGroups } from '../src/xfadata.js';
+import { parseXfaDatasets, parseXfaDataGroups, parseXfaGlobals } from '../src/xfadata.js';
 import { layoutPages, type XfaLayoutResult } from '../src/xfapage.js';
 import { xfaFieldLines, xfaMeasurer } from '../src/xfaconvert.js';
 import { ADOBE_PROBES, adobeGoldens, loadAdobeProbe, type AdobeFrag, type AdobeProbe } from './helpers/xfa-adobe.js';
@@ -70,9 +70,10 @@ function laidOut(name: string): XfaLayoutResult {
   const datasets = set.packets.get('datasets');
   const tpl = parseXfaTemplate(set.packets.get('template')!, parseXfaDataGroups(datasets));
   const values = datasets ? parseXfaDatasets(datasets) : new Map<string, string | string[]>();
+  const globals = datasets ? parseXfaGlobals(datasets) : new Map<string, string | string[]>();
   // As the converter lays it out, field-line counter included: without it no
   // field splits, and t82's trailer, which a split lays down, is not placed.
-  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values), [], xfaFieldLines(doc, tpl, values).grid);
+  return layoutPages(tpl.body!, xfaMeasurer(doc, tpl, values, globals), [], xfaFieldLines(doc, tpl, values, globals).grid);
 }
 
 for (const name of ADOBE_PROBES) {

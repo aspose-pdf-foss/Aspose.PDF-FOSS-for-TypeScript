@@ -233,6 +233,41 @@ export class SfntFont {
     return this.advances[i] ?? this.advances[this.advances.length - 1];
   }
 
+  /** @internal `vhea`/`vmtx`, parsed on first use: each long metric's
+   *  advance height and top side bearing, and the bearings after them. `null`
+   *  when the face states no vertical metrics or they will not parse. */
+  private _vmtx?: { advances: number[]; tsbs: number[] } | null;
+
+  /** Vertical metrics of `gid` in font units -- its advance height and top
+   *  side bearing (OpenType `vmtx`, the monospace tail rule as for `hmtx`) --
+   *  or `undefined` when the face has no `vhea`/`vmtx` (g0ky.10). */
+  verticalMetrics(gid: number): { advance: number; tsb: number } | undefined {
+    if (this._vmtx === undefined) {
+      this._vmtx = null;
+      const vhea = this.table('vhea', false), vmtx = this.table('vmtx', false);
+      if (vhea && vmtx && vhea.length >= 36) {
+        const n = new DataView(vhea.buffer, vhea.byteOffset, vhea.byteLength).getUint16(34);
+        const v = new DataView(vmtx.buffer, vmtx.byteOffset, vmtx.byteLength);
+        if (n > 0 && n * 4 <= vmtx.length) {
+          const advances: number[] = [], tsbs: number[] = [];
+          for (let i = 0; i < n; i++) { advances.push(v.getUint16(i * 4)); tsbs.push(v.getInt16(i * 4 + 2)); }
+          for (let off = n * 4; off + 2 <= vmtx.length; off += 2) tsbs.push(v.getInt16(off));
+          this._vmtx = { advances, tsbs };
+        }
+      }
+    }
+    const m = this._vmtx;
+    if (!m || gid < 0) return undefined;
+    return { advance: m.advances[Math.min(gid, m.advances.length - 1)], tsb: m.tsbs[Math.min(gid, m.tsbs.length - 1)] ?? 0 };
+  }
+
+  /** The top of `gid`'s bounding box (`yMax` of its `glyf` header), or
+   *  `undefined` for an empty glyph or a CFF face. */
+  glyphYMax(gid: number): number | undefined {
+    const g = this.glyphData(gid);
+    return g.length >= 10 ? new DataView(g.buffer, g.byteOffset, g.byteLength).getInt16(8) : undefined;
+  }
+
   /** @internal Lazily-parsed & cached OpenType layout tables (GDEF/GSUB/GPOS),
    *  or `undefined` if the font carries none. */
   private _otLayout?: OtLayout | null;

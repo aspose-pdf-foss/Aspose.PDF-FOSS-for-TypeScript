@@ -9,13 +9,14 @@
 
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { isDict, isName, isRef, isStream, type PdfDict } from './types.js';
+import { isDict, isName, isStream, type PdfDict } from './types.js';
 import { EditableContent, type ContentAddr } from './editcontent.js';
 import { parseContentStream, type ContentOp } from './content.js';
 import { inflateStream } from './flate.js';
 import { budgetFor } from './decodebudget.js';
 import { referencedNames, pruneCandidates, mergeRefs } from './resprune.js';
 import { rethrowLimit } from './errors.js';
+import { unshareResources } from './pagecontent.js';
 
 type Refs = Map<string, Set<string>>;
 
@@ -78,7 +79,7 @@ export function removeArtifactSpans(doc: Document, page: Page, addrs: readonly C
  *
  *  `plan` is handed a scope accessor and marks flat op indices in each scope's
  *  `cut`; it may throw, and since nothing has been edited by then a refusal
- *  leaves the page as it was -- except that an indirect /Resources has been
+ *  leaves the page as it was -- except that its own /Resources has been
  *  copied to the page, which changes no appearance. Returns what `plan`
  *  returns. One `EditableContent` serves the whole call, so cuts in one
  *  stream cannot shift each other's indices. */
@@ -88,11 +89,7 @@ export function cutAndPrune(
   // A shared /Resources must become this page's own BEFORE the edit: the
   // copy-on-write repoints an /XObject entry, and pruning deletes names, and
   // either done to a dict another page holds changes that page too.
-  const own = page.Dict.get('Resources');
-  if (isRef(own)) {
-    const d = doc.resolve(own);
-    if (isDict(d)) page.Dict.set('Resources', new Map(d));
-  }
+  unshareResources(doc, page);
 
   const ec = new EditableContent(doc, page);
   const scopes = new Map<string, Scope>();
@@ -167,7 +164,7 @@ function ownResources(doc: Document, page: Page): PdfDict {
  *  `maxNestingDepth` and by a seen set against a form that draws itself. A
  *  form that will not parse contributes nothing, since nothing it names is
  *  then provably needed by it. */
-function inheritedRefs(doc: Document, resources: PdfDict, refs: Refs, depth: number, seen: Set<object>): void {
+export function inheritedRefs(doc: Document, resources: PdfDict, refs: Refs, depth: number, seen: Set<object>): void {
   doc.loadLimits.enforce('maxNestingDepth', depth + 1, 'inherited form resources');
   const xobjs = doc.resolve(resources.get('XObject'));
   if (!isDict(xobjs)) return;
