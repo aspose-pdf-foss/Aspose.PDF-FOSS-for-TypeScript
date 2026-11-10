@@ -79,3 +79,16 @@ export function buildManyPagesPdf(count: number, wrongCount = false, nullChild =
   for (let i = 0; i < count; i++) objects.push(`<< /Type /Page /Parent 2 0 R /Sequence ${i} >>`);
   return buildRawPdf(objects);
 }
+
+/** A blank page with raw attributes at three levels, for omitted/malformed
+ *  attribute fallback tests. Values are intentionally not authored via setters. */
+export function buildDefaultedPagePdf(attributes: {
+  root?: string; ancestor?: string; page?: string; objects?: string[];
+} = {}): Uint8Array {
+  return buildRawPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [3 0 R] /Count 1 ${attributes.root ?? '/MediaBox [0 0 200 300]'} >>`,
+    `<< /Type /Pages /Parent 2 0 R /Kids [4 0 R] /Count 1 ${attributes.ancestor ?? ''} >>`,
+    `<< /Type /Page /Parent 3 0 R ${attributes.page ?? ''} >>`,
+  ].concat(attributes.objects ?? []));
+}

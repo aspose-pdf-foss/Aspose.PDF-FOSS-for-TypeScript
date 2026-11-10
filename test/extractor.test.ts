@@ -4,9 +4,20 @@ import { buildPages } from '../src/pagetree.js';
 import { extractPage, defaultPrunePolicy } from '../src/extractor.js';
 import { buildClassicPdf } from './helpers/build-pdf.js';
 import { isDict, name } from '../src/types.js';
-import { buildInheritedPageCopyPdf } from './helpers/build-page-tree-pdf.js';
+import { buildDefaultedPagePdf, buildInheritedPageCopyPdf } from './helpers/build-page-tree-pdf.js';
 
 describe('extractPage', () => {
+  it('keeps explicit prune exclusions authoritative over materialized defaults', () => {
+    const doc = Document.Open(buildDefaultedPagePdf({ root: '' }));
+    const policy = defaultPrunePolicy();
+    const keys = ['MediaBox', 'CropBox', 'Rotate', 'Resources'];
+    for (const key of keys) policy.dropPageKeys.add(key);
+    const { objects, pageNum } = extractPage(doc, doc.Pages[0].Dict, policy);
+    const page = objects.get(pageNum);
+    if (!isDict(page)) throw new Error('missing extracted page');
+    for (const key of keys) expect(page.has(key)).toBe(false);
+  });
+
   it('applies an explicit prune policy after materializing inherited attributes', () => {
     const doc = Document.Open(buildInheritedPageCopyPdf('nested'));
     const policy = defaultPrunePolicy();

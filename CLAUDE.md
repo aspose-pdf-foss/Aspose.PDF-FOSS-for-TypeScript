@@ -461,11 +461,18 @@ Source (`src/`):
   `CropBox`, `Resources` and `Rotate` BEFORE `/Parent` is dropped or changed.
   `extractPage` (Split and single-page imports) and `importPages` share it;
   otherwise only the bulk copy preserves a page's size, orientation and fonts.
-  The nearest ancestor wins, a leaf's own value stays, and raw references are
+  The nearest ancestor wins, a leaf's valid own value stays, and raw references are
   copied through the same graph walk as page-owned values, never installed as
   foreign references. Pruning runs AFTER materialization so explicit policy
   exclusions still apply. Copying and editing the output leave the source
   unchanged, including its inherited arrays and resource objects.
+  **Invariant (`s4xe`):** a copied page also states its effective source defaults,
+  so a new parent's values cannot leak in: US Letter for an unusable/missing
+  MediaBox, the effective MediaBox for CropBox, zero rotation and empty resources.
+  Usability follows the existing `Page` getters, including null/malformed/dead
+  values; a nearest null blocks a farther ancestor before falling back. Valid
+  raw values stay raw for reference remapping. Default materialization precedes
+  pruning too, so explicit `PrunePolicy` exclusions remain authoritative.
   **Invariant (`daqd`):** extraction and import queues advance by a cursor,
   checking the growing queue length as references are discovered. Repeated
   `shift()` made a wide graph quadratic even after the argument-limit crash

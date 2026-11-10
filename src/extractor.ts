@@ -1,4 +1,5 @@
 import type { Document } from './document.js';
+import { PageFormat } from './pageformat.js';
 import {
   PdfObject, PdfDict, PdfArray, isRef, isDict, isArray, isStream, isName, PdfRef,
 } from './types.js';
@@ -39,8 +40,9 @@ export interface Extraction { objects: Map<number, PdfObject>; pageNum: number; 
 export const INHERITABLE_PAGE_KEYS = ['MediaBox', 'CropBox', 'Resources', 'Rotate'] as const;
 
 /** First ancestor value, raw so the copying walk can remap any references.
- *  Null if absent. Cycle-guarded; does not read the leaf itself. */
-function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject {
+ *  Undefined if absent; a stated null stops inheritance just as Page's getters
+ *  do. Cycle-guarded; does not read the leaf itself. */
+function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject | undefined {
   let node: PdfObject = doc.resolve(src.get('Parent'));
   const seen = new Set<PdfDict>();
   while (isDict(node)) {
@@ -49,20 +51,36 @@ function inheritedValue(doc: Document, src: PdfDict, key: string): PdfObject {
     if (node.has(key)) return node.get(key)!;
     node = doc.resolve(node.get('Parent'));
   }
-  return null;
+  return undefined;
+}
+
+/** The same usable box shape that Page.box reads, without resolving away the
+ *  raw references the graph-copy walk still needs to remap. */
+function isPageBox(doc: Document, value: PdfObject | undefined): boolean {
+  const box = doc.resolve(value);
+  if (!isArray(box) || box.length !== 4) return false;
+  for (const item of box) if (typeof doc.resolve(item) !== 'number') return false;
+  return true;
 }
 
 /** @internal Shallow-copy a leaf and materialize its inherited attributes
- *  before callers drop /Parent. Values still belong to the source graph;
- *  rewriteRefs and the caller's object-copy walk make them independent. */
+ *  and effective defaults before callers drop /Parent. Valid raw values still
+ *  belong to the source graph; rewriteRefs and the caller's object-copy walk
+ *  make them independent. */
 export function clonePageDict(doc: Document, src: PdfDict): PdfDict {
   const page = new Map(src);
   for (const key of INHERITABLE_PAGE_KEYS) {
     if (!page.has(key)) {
       const v = inheritedValue(doc, src, key);
-      if (v !== null) page.set(key, v);
+      if (v !== undefined) page.set(key, v);
     }
   }
+  // An omitted or unusable attribute must not pick up the NEW parent's value.
+  // Match Page's existing fallbacks while leaving valid source values intact.
+  if (!isPageBox(doc, page.get('MediaBox'))) page.set('MediaBox', PageFormat.Letter.mediaBox());
+  if (!isPageBox(doc, page.get('CropBox'))) page.set('CropBox', page.get('MediaBox')!);
+  if (typeof doc.resolve(page.get('Rotate')) !== 'number') page.set('Rotate', 0);
+  if (!isDict(doc.resolve(page.get('Resources')))) page.set('Resources', new Map());
   return page;
 }
 
