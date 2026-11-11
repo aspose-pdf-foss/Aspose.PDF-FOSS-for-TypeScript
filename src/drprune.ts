@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { ContentOp, parseContentStream } from './content.js';
 import {
@@ -232,6 +233,11 @@ function chargeKeptDrStreams(doc: Document, dr: PdfDict, refs: Set<string>, memo
  * beforehand is left to `Save()`.
  */
 export function pruneDefaultResources(doc: Document): DrPruneResult {
+  return runOperation('pruneDefaultResources', undefined, (context) => pruneDefaultResourcesSteps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* pruneDefaultResourcesSteps(doc: Document, context: OperationContext): OperationSteps<DrPruneResult> {
   const acro = doc.resolve(doc.catalog().get('AcroForm'));
   if (!isDict(acro)) return { removed: [], bytesSaved: 0 };
   // An XFA packet names /DR faces and txgg documented that we never read it. A

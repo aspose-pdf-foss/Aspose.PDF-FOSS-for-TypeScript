@@ -1,7 +1,9 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import {
-  buildDocModel, styledChildren,
+  buildDocModelSteps, styledChildren,
   type DocFigure, type DocList, type DocListItem, type DocNode,
 } from './docmodel.js';
 import type { PdfStream } from './types.js';
@@ -17,7 +19,7 @@ export { escapeMarkdown } from './mdescape.js';
  *  direction — and for the same reason the result type below is
  *  `MarkdownExportResult`, since `mdflow.ts` already owns `MarkdownResult` for
  *  Markdown→PDF. Two directions, two vocabularies, no shared names. */
-export interface MarkdownExportOptions {
+export interface MarkdownExportOptions extends OperationControlOptions {
   /** `'inline'` (default) embeds every image as a `data:` URI. `'external'`
    *  references a file per image and returns the bytes — use
    *  {@link Document.ToMarkdownAssets}, since `ToMarkdown` has nowhere to put
@@ -238,19 +240,27 @@ function nodeBlocks(doc: Document, ctx: ImageCtx, node: DocNode, out: string[]):
   for (const child of node.children) nodeBlocks(doc, ctx, child, out);
 }
 
-function render(doc: Document, pages: Page[], opts: MarkdownExportOptions): MarkdownExportResult {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderSteps(doc: Document, pages: Page[], opts: MarkdownExportOptions, context: OperationContext): OperationSteps<MarkdownExportResult> {
   const ctx = imageCtx(opts);
   const blocks: string[] = [];
   try {
-    for (const node of buildDocModel(doc, pages)) nodeBlocks(doc, ctx, node, blocks);
+    const nodes = yield* buildDocModelSteps(doc, pages, context);
+    let completed = 0;
+    for (const node of nodes) {
+      nodeBlocks(doc, ctx, node, blocks);
+      yield context.progress('blocks', ++completed, nodes.length);
+    }
   } catch (caught) { rethrowLimit(caught);
     // Degrade: emit whatever was produced. Matches ToHtml and renderPageToSvg,
     // neither of which throws on a document we could not fully reconstruct.
   }
-  return {
+  const result = {
     markdown: blocks.length ? `${blocks.join('\n\n')}\n` : '',
     images: ctx.assets,
   };
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
 /** Reject the one option combination that can only produce a broken document.
@@ -265,30 +275,62 @@ function rejectExternal(opts: MarkdownExportOptions): void {
       "images: 'external' returns image bytes — use ToMarkdownAssets, which returns them");
 }
 
-/** Render one page to GFM Markdown. Never throws, except on an option that
+/** Render one page to GFM Markdown. Caller cancellation/errors propagate. Refuses an option that
  *  cannot be honoured (see `rejectExternal`). */
-export function renderPageToMarkdown(
-  doc: Document, page: Page, opts: MarkdownExportOptions = {}): string {
-  rejectExternal(opts);
-  return render(doc, [page], opts).markdown;
+export function renderPageToMarkdown(doc: Document, page: Page, opts: MarkdownExportOptions = {}): string {
+  return runOperation('ToMarkdown', opts, (context) => renderPageToMarkdownSteps(doc, page, opts, context));
 }
 
-/** Render every page to one Markdown document. Never throws, except on an
- *  option that cannot be honoured (see `rejectExternal`). */
-export function renderDocumentToMarkdown(
-  doc: Document, opts: MarkdownExportOptions = {}): string {
+export function renderPageToMarkdownAsync(doc: Document, page: Page, opts: MarkdownExportOptions = {}): Promise<string> {
+  return runOperationAsync('ToMarkdown', opts, (context) => renderPageToMarkdownSteps(doc, page, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderPageToMarkdownSteps(doc: Document, page: Page, opts: MarkdownExportOptions, context: OperationContext): OperationSteps<string> {
   rejectExternal(opts);
-  return render(doc, doc.Pages, opts).markdown;
+  return (yield* renderSteps(doc, [page], opts, context)).markdown;
+}
+
+/** Render every page to one Markdown document. Caller cancellation/errors
+ *  propagate. Refuses an option that cannot be honoured (see `rejectExternal`). */
+export function renderDocumentToMarkdown(doc: Document, opts: MarkdownExportOptions = {}): string {
+  return runOperation('ToMarkdown', opts, (context) => renderDocumentToMarkdownSteps(doc, opts, context));
+}
+
+export function renderDocumentToMarkdownAsync(doc: Document, opts: MarkdownExportOptions = {}): Promise<string> {
+  return runOperationAsync('ToMarkdown', opts, (context) => renderDocumentToMarkdownSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderDocumentToMarkdownSteps(doc: Document, opts: MarkdownExportOptions, context: OperationContext): OperationSteps<string> {
+  rejectExternal(opts);
+  return (yield* renderSteps(doc, doc.Pages, opts, context)).markdown;
 }
 
 /** Render one page to Markdown plus the image files it references. */
-export function renderPageToMarkdownAssets(
-  doc: Document, page: Page, opts: MarkdownExportOptions = {}): MarkdownExportResult {
-  return render(doc, [page], opts);
+export function renderPageToMarkdownAssets(doc: Document, page: Page, opts: MarkdownExportOptions = {}): MarkdownExportResult {
+  return runOperation('ToMarkdownAssets', opts, (context) => renderPageToMarkdownAssetsSteps(doc, page, opts, context));
+}
+
+export function renderPageToMarkdownAssetsAsync(doc: Document, page: Page, opts: MarkdownExportOptions = {}): Promise<MarkdownExportResult> {
+  return runOperationAsync('ToMarkdownAssets', opts, (context) => renderPageToMarkdownAssetsSteps(doc, page, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderPageToMarkdownAssetsSteps(doc: Document, page: Page, opts: MarkdownExportOptions, context: OperationContext): OperationSteps<MarkdownExportResult> {
+  return yield* renderSteps(doc, [page], opts, context);
 }
 
 /** Render every page to Markdown plus the image files it references. */
-export function renderDocumentToMarkdownAssets(
-  doc: Document, opts: MarkdownExportOptions = {}): MarkdownExportResult {
-  return render(doc, doc.Pages, opts);
+export function renderDocumentToMarkdownAssets(doc: Document, opts: MarkdownExportOptions = {}): MarkdownExportResult {
+  return runOperation('ToMarkdownAssets', opts, (context) => renderDocumentToMarkdownAssetsSteps(doc, opts, context));
+}
+
+export function renderDocumentToMarkdownAssetsAsync(doc: Document, opts: MarkdownExportOptions = {}): Promise<MarkdownExportResult> {
+  return runOperationAsync('ToMarkdownAssets', opts, (context) => renderDocumentToMarkdownAssetsSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderDocumentToMarkdownAssetsSteps(doc: Document, opts: MarkdownExportOptions, context: OperationContext): OperationSteps<MarkdownExportResult> {
+  return yield* renderSteps(doc, doc.Pages, opts, context);
 }

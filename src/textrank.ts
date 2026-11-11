@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { TextBlock, TextFragment } from './text.js';
 
@@ -25,12 +26,21 @@ export function dominantSize(block: TextBlock): number {
  *  across the document: the size with the most characters is body text; larger
  *  distinct sizes become headings. */
 export function headingRanks(doc: Document): Map<number, number> {
+  return runOperation('headingRanks', undefined, (context) => headingRanksSteps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* headingRanksSteps(doc: Document, context: OperationContext): OperationSteps<Map<number, number>> {
   const chars = new Map<number, number>();
-  for (const page of doc.Pages) for (const block of page.GetStructuredText()) {
-    for (const line of block.lines) for (const f of line.fragments) {
-      const sz = roundSize(f.fontSize);
-      chars.set(sz, (chars.get(sz) ?? 0) + f.text.length);
+  let completed = 0;
+  for (const page of doc.Pages) {
+    for (const block of page.GetStructuredText()) {
+      for (const line of block.lines) for (const f of line.fragments) {
+        const sz = roundSize(f.fontSize);
+        chars.set(sz, (chars.get(sz) ?? 0) + f.text.length);
+      }
     }
+    yield context.progress('headings', ++completed, doc.Pages.length, page.Number);
   }
   let bodySize = 0, bodyChars = -1;
   for (const [sz, c] of chars) if (c > bodyChars) { bodyChars = c; bodySize = sz; }

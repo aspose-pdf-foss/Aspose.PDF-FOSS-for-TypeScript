@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 /** The Markdown AST to a flat list of Flow elements.
  *
  *  This module owns the MAPPING and nothing else: it knows about columns,
@@ -35,7 +37,7 @@ import { rethrowLimit } from './errors.js';
 
 /** Options for the Markdown entry points. Extends {@link MarkdownOptions}, so
  *  `{ gfm: true }` reaches the parser unchanged. */
-export interface MarkdownFlowOptions extends MarkdownOptions {
+export interface MarkdownFlowOptions extends MarkdownOptions, OperationControlOptions {
   /** How it renders. Every field optional; see {@link MarkdownStyle}. */
   style?: MarkdownStyle;
   /** Supply the bytes for an image destination. `data:` URIs are decoded
@@ -454,12 +456,19 @@ function blockToElements(n: MdBlock, c: Ctx, extraBefore: number): FlowElement[]
  *
  *  NOT exported: its `Ctx` parameter is module-private, and an exported function
  *  naming a private type fails `.d.ts` emit (`npm run build`). @internal */
-function blockElements(
-  blocks: MdBlock[], c: Ctx, spaceBeforeFirst: number,
-): FlowElement[] {
+function blockElements(blocks: MdBlock[], c: Ctx, spaceBeforeFirst: number): FlowElement[] {
+  return runOperation('blockElements', undefined, (context) => blockElementsSteps(blocks, c, spaceBeforeFirst, context));
+}
+
+function* blockElementsSteps(blocks: MdBlock[], c: Ctx, spaceBeforeFirst: number, context: OperationContext): OperationSteps<FlowElement[]> {
   const out: FlowElement[] = [];
+  let completedlower = 0;
   for (const b of blocks) {
+    operationUnit: {
     out.push(...blockToElements(b, c, out.length === 0 ? spaceBeforeFirst : 0));
+
+    }
+    yield context.progress('lower', ++completedlower, blocks.length, undefined);
   }
   return out;
 }
@@ -469,9 +478,12 @@ function blockElements(
  *  `src` may be source text (parsed here, with `options` forwarded to
  *  `parseMarkdown`) or an already parsed tree, so a caller that wants to inspect
  *  or rewrite the AST first is not forced to re-parse. */
-export function markdownElements(
-  src: string | MdDocument, options: MarkdownFlowOptions = {},
-): MarkdownElements {
+export function markdownElements(src: string | MdDocument, options: MarkdownFlowOptions = {}): MarkdownElements {
+  return runOperation('markdownElements', options, (context) => markdownElementsSteps(src, options, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* markdownElementsSteps(src: string | MdDocument, options: MarkdownFlowOptions, context: OperationContext): OperationSteps<MarkdownElements> {
   if (options.resolveImage !== undefined && typeof options.resolveImage !== 'function')
     throw new TypeError('resolveImage must be a function');
   checkOnSkipped(options);
@@ -483,6 +495,7 @@ export function markdownElements(
   if (fp !== undefined && fp !== 'foot' && fp !== 'end')
     throw new TypeError("footnotePlacement must be 'foot' or 'end'");
   const doc = typeof src === 'string' ? parseMarkdown(src, options) : src;
+  yield context.progress('parse', 1, 1);
   const c: Ctx = { st, opts: options, skipped: [] };
   const bodies: { index: number; elements: FlowElement[]; skipped: string[] }[] = [];
   if (doc.footnotes !== undefined) {
@@ -500,7 +513,7 @@ export function markdownElements(
     c.notes = new Map(bodies.map((b) => [b.index, { content: b.elements }]));
     c.usedNotes = new Set();
   }
-  const elements = blockElements(doc.children, c, 0);
+  const elements = yield* blockElementsSteps(doc.children, c, 0, context);
   const drawn = bodies.filter((b) => c.usedNotes!.has(b.index));
   for (const b of drawn) c.skipped.push(...b.skipped);
   if (options.onSkipped !== undefined) {

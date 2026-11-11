@@ -8,6 +8,7 @@ export {
 } from './node.js';
 export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions } from './node.js';
 export { Document } from './document.js';
+export type { OperationProgress, OperationControlOptions } from './checkpoint.js';
 export type {
   SplitOptions, ExtractPagesOptions, InsertPagesOptions, OpenOptions, SaveOptions,
   PubSecRecipient, RecoveryReport, TrailerChoice,

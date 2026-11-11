@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 /** A resolved WordprocessingML document (`readDocx`) to flow elements
  *  (`m2fp.5`) — the one implementation behind `flow.AddDocx`, `page.AddDocx` and
  *  `doc.AddDocx`. This module owns the MAPPING and nothing else: no columns,
@@ -412,16 +413,22 @@ const isListItem = (b: WmlBlock): boolean => b.kind === 'paragraph' && b.list !=
   && b.heading === undefined && !b.inlines.some((i) => i.kind === 'break' && i.type !== 'line');
 
 function blockElements(blocks: WmlBlock[], c: Ctx): void {
+  return runOperation('blockElements', undefined, (context) => blockElementsSteps(blocks, c, context));
+}
+
+function* blockElementsSteps(blocks: WmlBlock[], c: Ctx, context: OperationContext): OperationSteps<void> {
+  let completedlower = 0;
   for (let n = 0; n < blocks.length; n++) {
+    operationUnit: {
     const b = blocks[n];
     if (isListItem(b)) {
       const run: WmlParagraph[] = [];
       while (n < blocks.length && isListItem(blocks[n])) run.push(blocks[n++] as WmlParagraph);
       n--;
       listElements(run, c);
-      continue;
+      break operationUnit;
     }
-    if (b.kind === 'table') { tableElements(b, c); continue; }
+    if (b.kind === 'table') { tableElements(b, c); break operationUnit; }
     if (b.kind === 'paragraph') {
       const parts = splitAtBreaks(b.inlines);
       parts.forEach((inl, k) => {
@@ -434,12 +441,22 @@ function blockElements(blocks: WmlBlock[], c: Ctx): void {
         for (const k of kinds) cur(c).push(noteRestart(k));
       }
     }
+
+    }
+    yield context.progress('lower', ++completedlower, undefined, undefined);
   }
 }
 
 export function wmlElements(doc: WmlDocument, width: number, env: WmlFlowEnv): {
   segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean;
 } {
+  return runOperation('wmlElements', undefined, (context) => wmlElementsSteps(doc, width, env, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* wmlElementsSteps(doc: WmlDocument, width: number, env: WmlFlowEnv, context: OperationContext): OperationSteps<{
+  segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean;
+}> {
   const log = new SkipLog();
   for (const u of doc.unsupported) log.add(u.name, kindOf(u.name), u.count);
   const notes = docxNoteOptions(doc);
@@ -464,7 +481,7 @@ export function wmlElements(doc: WmlDocument, width: number, env: WmlFlowEnv): {
     cited = true;
     return { kind: ref.note, note };
   };
-  blockElements(doc.blocks, c);
+  yield* blockElementsSteps(doc.blocks, c, context);
   return { segments: c.segments, skipped: log.list(), notes, cited };
 }
 

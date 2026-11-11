@@ -1,14 +1,16 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { PdfObject, PdfDict, PdfRef, isName, isDict, isArray, isRef, isStream, name } from './types.js';
 import type { Page } from './page.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
 import type { ConvertCategory } from './pdfaconvert.js';
-import { validatePdfX, xVersionString, isLegacy, type PdfXLevel } from './pdfxvalidate.js';
+import { validatePdfX, validatePdfXSteps, xVersionString, isLegacy, type PdfXLevel } from './pdfxvalidate.js';
 import { rewriteRgbToCmyk } from './pdfxcolor.js';
 import { describeXmpPackets } from './pdfaextfix.js';
 
-export interface PdfXConvertOptions {
+export interface PdfXConvertOptions extends OperationControlOptions {
   /** Output-intent ICC profile to embed. Omitted → a registered-name intent. */
   iccProfile?: { bytes: Uint8Array; n: 1 | 3 | 4; identifier?: string };
   /** Registered characterization name used when no profile is embedded. */
@@ -40,18 +42,30 @@ const DEFAULT_CONDITION = 'CGATS TR 001';
 
 /** Remediate `doc` toward PDF/X `level`, then re-validate. The facade supplies
  *  the catalog (mirrors convertToPdfA). Mutates the live model in place. */
-export function convertToPdfX(
-  doc: Document, catalog: PdfDict, level: PdfXLevel, opts: PdfXConvertOptions = {},
-): ConversionReport {
+export function convertToPdfX(doc: Document, catalog: PdfDict, level: PdfXLevel, opts: PdfXConvertOptions = {}): ConversionReport {
+  return runOperation('ConvertToPdfX', opts, (context) => convertToPdfXSteps(doc, catalog, level, opts, context));
+}
+
+export function convertToPdfXAsync(doc: Document, catalog: PdfDict, level: PdfXLevel, opts: PdfXConvertOptions = {}): Promise<ConversionReport> {
+  return runOperationAsync('ConvertToPdfX', opts, (context) => convertToPdfXSteps(doc, catalog, level, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertToPdfXSteps(doc: Document, catalog: PdfDict, level: PdfXLevel, opts: PdfXConvertOptions, context: OperationContext): OperationSteps<ConversionReport> {
   const ctx: XCctx = {
     doc, catalog, level, opts,
     preserve: new Set(opts.preserve ?? []),
     condition: opts.outputCondition ?? DEFAULT_CONDITION,
     R: (o) => doc.resolve(o),
   };
+  doc.markModified();
   const applied: ConvertAction[] = [];
-  for (const pass of PASSES) applied.push(...pass(ctx));
-  const unresolved = validatePdfX(doc, catalog, level).Errors;
+  let completed = 0;
+  for (const pass of PASSES) {
+    applied.push(...pass(ctx));
+    yield context.progress('passes', ++completed, PASSES.length);
+  }
+  const unresolved = (yield* validatePdfXSteps(doc, catalog, level, context.scope('validate'))).Errors;
   return { applied, unresolved, passed: unresolved.length === 0 };
 }
 

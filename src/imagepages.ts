@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 /**
  * Expand an image file into PAGES — one per frame — behind
  * `doc.AddImagePages()`.
@@ -32,7 +34,7 @@ import { PageFormat } from './pageformat.js';
 import { buildImageXObject, drawBuiltImage, imageFrameCount } from './imageembed.js';
 import { rethrowLimit } from './errors.js';
 
-export interface AddImagePagesOptions {
+export interface AddImagePagesOptions extends OperationControlOptions {
   /** Which frames, 0-based. Default every frame. Normalized ascending and
    *  deduped. */
   frames?: number[];
@@ -75,9 +77,16 @@ const dimOf = (dict: Map<string, unknown>, key: string): number => {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
 };
 
-export function addImagePages(
-  doc: Document, data: Uint8Array, opts: AddImagePagesOptions = {},
-): AddImagePagesResult {
+export function addImagePages(doc: Document, data: Uint8Array, opts: AddImagePagesOptions = {}): AddImagePagesResult {
+  return runOperation('AddImagePages', opts, (context) => addImagePagesSteps(doc, data, opts, context));
+}
+
+export function addImagePagesAsync(doc: Document, data: Uint8Array, opts: AddImagePagesOptions = {}): Promise<AddImagePagesResult> {
+  return runOperationAsync('AddImagePages', opts, (context) => addImagePagesSteps(doc, data, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* addImagePagesSteps(doc: Document, data: Uint8Array, opts: AddImagePagesOptions, context: OperationContext): OperationSteps<AddImagePagesResult> {
   const dpi = opts.dpi ?? 72;
   if (!Number.isFinite(dpi) || dpi <= 0)
     throw new TypeError('AddImagePages: dpi must be a positive number');
@@ -88,25 +97,30 @@ export function addImagePages(
   const pages: Page[] = [];
   const skipped: SkippedFrame[] = [];
 
+  let completedframes = 0;
   for (const frame of wanted) {
+    operationUnit: {
     let built;
     try {
       built = buildImageXObject(data, opts.format, frame, doc.loadLimits);
     } catch (e) { rethrowLimit(e);
       skipped.push({ frame, reason: e instanceof Error ? e.message : String(e) });
-      continue;
+      break operationUnit;
     }
     const px = dimOf(built.stream.dict, 'Width');
     const py = dimOf(built.stream.dict, 'Height');
     if (px === 0 || py === 0) {
       skipped.push({ frame, reason: 'image has no usable /Width or /Height' });
-      continue;
+      break operationUnit;
     }
     const w = (px * 72) / dpi;
     const h = (py * 72) / dpi;
     const { page } = doc.AddPage(PageFormat.custom(w, h));
     drawBuiltImage(doc, page, built, [0, 0, w, h]);
     pages.push(page);
+
+    }
+    yield context.progress('frames', ++completedframes, wanted.length, undefined);
   }
 
   if (pages.length === 0) {

@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import {
@@ -464,8 +465,17 @@ function walkType3(ctx: Ctx, fonts: PdfDict | undefined, seen: Set<PdfDict>): vo
 
 /** Scan every site that can show a glyph and return per-font used GIDs. */
 export function collectGlyphUsage(doc: Document): UsageMap {
+  return runOperation('collectGlyphUsage', undefined, (context) => collectGlyphUsageSteps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* collectGlyphUsageSteps(doc: Document, context: OperationContext): OperationSteps<UsageMap> {
   const ctx: Ctx = { doc, usage: new Map(), mappers: new Map(), tokens: { tokens: 0 } };
-  for (const page of doc.Pages) walkPage(ctx, page);
+  let completed = 0;
+  for (const page of doc.Pages) {
+    walkPage(ctx, page);
+    yield context.progress('glyph-pages', ++completed, doc.Pages.length, page.Number);
+  }
 
   // Safety net: any font dict in the object graph that no walked scope reached
   // may be used somewhere this scan does not model. Never blank its glyphs.

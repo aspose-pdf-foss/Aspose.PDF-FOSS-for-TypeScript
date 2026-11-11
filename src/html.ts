@@ -1,12 +1,14 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { semanticBody } from './htmlsemantic.js';
-import { buildDocModel } from './docmodel.js';
-import { fixedBody } from './htmlfixed.js';
+import { semanticBodySteps } from './htmlsemantic.js';
+import { buildDocModelSteps } from './docmodel.js';
+import { fixedBodySteps } from './htmlfixed.js';
 import { rethrowLimit } from './errors.js';
 
 /** Options for {@link Page.ToHtml} and {@link Document.ToHtml}. */
-export interface HtmlOptions {
+export interface HtmlOptions extends OperationControlOptions {
   /** Reflowable semantic markup, or positioned page reproduction.
    *  Default 'semantic'. */
   mode?: 'semantic' | 'fixed';
@@ -88,12 +90,14 @@ function shell(doc: Document, body: string, opts: HtmlOptions, css: string): str
 }
 
 /** The body markup for `pages`. */
-function bodyFor(doc: Document, pages: Page[], opts: HtmlOptions): string {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* bodyForSteps(doc: Document, pages: Page[], opts: HtmlOptions, context: OperationContext): OperationSteps<string> {
   void opts;
-  return semanticBody(doc, buildDocModel(doc, pages));
+  return yield* semanticBodySteps(doc, yield* buildDocModelSteps(doc, pages, context), undefined, context);
 }
 
-function render(doc: Document, pages: Page[], opts: HtmlOptions): string {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderSteps(doc: Document, pages: Page[], opts: HtmlOptions, context: OperationContext): OperationSteps<string> {
   const mode = opts.mode ?? 'semantic';
   // Refused rather than ignored: reflowable output has no widget geometry to
   // place a control at, and silently dropping one of two explicitly requested
@@ -103,28 +107,50 @@ function render(doc: Document, pages: Page[], opts: HtmlOptions): string {
   if (mode === 'fixed') {
     let out = { body: '', css: '' };
     try {
-      out = fixedBody(doc, pages, opts);
+      out = yield* fixedBodySteps(doc, pages, opts, context);
     } catch (caught) { rethrowLimit(caught);
       // Degrade: emit a well-formed shell around whatever was produced.
     }
-    return opts.fragment ? out.body : shell(doc, out.body, opts, FIXED_CSS + out.css);
+    const result = opts.fragment ? out.body : shell(doc, out.body, opts, FIXED_CSS + out.css);
+    yield context.progress('assemble', 1, 1);
+    return result;
   }
   let body = '';
   try {
-    body = bodyFor(doc, pages, opts);
+    body = yield* bodyForSteps(doc, pages, opts, context);
   } catch (caught) { rethrowLimit(caught);
     // Degrade: emit a well-formed shell around whatever was produced. Matches
     // renderPageToSvg, which never throws.
   }
-  return opts.fragment ? body : shell(doc, body, opts, CSS);
+  const result = opts.fragment ? body : shell(doc, body, opts, CSS);
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
-/** Render one page to HTML. Never throws. */
+/** Render one page to HTML. Recovers damaged content; caller cancellation/errors propagate. */
 export function renderPageToHtml(doc: Document, page: Page, opts: HtmlOptions = {}): string {
-  return render(doc, [page], opts);
+  return runOperation('ToHtml', opts, (context) => renderPageToHtmlSteps(doc, page, opts, context));
 }
 
-/** Render every page to one HTML document. Never throws. */
+export function renderPageToHtmlAsync(doc: Document, page: Page, opts: HtmlOptions = {}): Promise<string> {
+  return runOperationAsync('ToHtml', opts, (context) => renderPageToHtmlSteps(doc, page, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderPageToHtmlSteps(doc: Document, page: Page, opts: HtmlOptions, context: OperationContext): OperationSteps<string> {
+  return yield* renderSteps(doc, [page], opts, context);
+}
+
+/** Render every page to one HTML document. Recovers damaged content; caller cancellation/errors propagate. */
 export function renderDocumentToHtml(doc: Document, opts: HtmlOptions = {}): string {
-  return render(doc, doc.Pages, opts);
+  return runOperation('ToHtml', opts, (context) => renderDocumentToHtmlSteps(doc, opts, context));
+}
+
+export function renderDocumentToHtmlAsync(doc: Document, opts: HtmlOptions = {}): Promise<string> {
+  return runOperationAsync('ToHtml', opts, (context) => renderDocumentToHtmlSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderDocumentToHtmlSteps(doc: Document, opts: HtmlOptions, context: OperationContext): OperationSteps<string> {
+  return yield* renderSteps(doc, doc.Pages, opts, context);
 }

@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 /**
  * XFA to a real `/AcroForm` field tree.
  *
@@ -54,7 +56,7 @@ import { faceLookup } from './xfafont.js';
 import { widgetStyleOf } from './xfaborder.js';
 import type { WidgetStyle } from './fieldstyle.js';
 
-export interface XfaConvertOptions {
+export interface XfaConvertOptions extends OperationControlOptions {
   /** Remove `/AcroForm /XFA` and the catalog's `/NeedsRendering` once something
    *  has converted. Default `true`. Removal is one-way and discards the only
    *  description of everything refused, so a caller may decline it. */
@@ -894,9 +896,16 @@ function applyGroup(doc: Document, g: GroupPlan, report: XfaConvertReport): bool
  * signature silently fails. It runs BEFORE the plan is built, so a rejected
  * call does no work at all.
  */
-export function convertXfaToAcroForm(
-  doc: Document, opts: XfaConvertOptions = {},
-): XfaConvertReport {
+export function convertXfaToAcroForm(doc: Document, opts: XfaConvertOptions = {}): XfaConvertReport {
+  return runOperation('ConvertXfaToAcroForm', opts, (context) => convertXfaToAcroFormSteps(doc, opts, context));
+}
+
+export function convertXfaToAcroFormAsync(doc: Document, opts: XfaConvertOptions = {}): Promise<XfaConvertReport> {
+  return runOperationAsync('ConvertXfaToAcroForm', opts, (context) => convertXfaToAcroFormSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertXfaToAcroFormSteps(doc: Document, opts: XfaConvertOptions, context: OperationContext): OperationSteps<XfaConvertReport> {
   if (hasSignatureField(doc)) {
     throw new UnsupportedFeatureError(
       'ConvertXfaToAcroForm: the document is signed; adding fields would '
@@ -904,6 +913,7 @@ export function convertXfaToAcroForm(
   }
 
   const plan = buildXfaPlan(doc, opts);
+  yield context.progress('plan', 1, 1);
   if (plan.entries.length === 0 && plan.groups.length === 0) return plan.report;
 
   // A dynamic document's placeholder pages give way to the laid-out ones, but
@@ -927,6 +937,7 @@ export function convertXfaToAcroForm(
       + `${String(plan.newPages.length)} page(s) the layout produced`);
   }
 
+  if (replaced) yield context.progress('pages', 1, 1);
   if (plan.newPages && !replaced) {
     // The document's pages are Designer's placeholder and no body content was
     // placed, so they stay -- and the master-page instances, which would sit on
@@ -952,17 +963,24 @@ export function convertXfaToAcroForm(
 
   const acro = ensureAcroForm(doc);
 
+  let completedreconcile = 0;
   for (const e of plan.entries) {
-    if (!e.reconcile) continue;
+    operationUnit: {
+    if (!e.reconcile) break operationUnit;
     const refused = applyReconcile(doc, e);
     if (refused !== undefined) plan.report.skipped.push({ what: 'field', name: e.name, reason: refused });
+
+    }
+    yield context.progress('reconcile', ++completedreconcile, plan.entries.length, undefined);
   }
 
   let created = 0;
+  let completedfields = 0;
   for (const e of plan.entries) {
-    if (e.reconcile) continue;
+    operationUnit: {
+    if (e.reconcile) break operationUnit;
     const ok = e.rect !== undefined ? applyPositioned(doc, e) : applyBare(doc, acro, e);
-    if (ok) { created += 1; continue; }
+    if (ok) { created += 1; break operationUnit; }
     // A field that would not create costs ITSELF, never the run: if it was
     // positioned, try it bare before giving up on it entirely.
     //
@@ -990,16 +1008,24 @@ export function convertXfaToAcroForm(
         ? 'the widget could not be created, so the field carries no geometry'
         : 'the field name conflicts with the existing AcroForm tree',
     });
+
+    }
+    yield context.progress('fields', ++completedfields, plan.entries.length, undefined);
   }
 
+  let completedgroups = 0;
   for (const g of plan.groups) {
-    if (g.reconcile) continue;
-    if (applyGroup(doc, g, plan.report)) { created += 1; continue; }
+    operationUnit: {
+    if (g.reconcile) break operationUnit;
+    if (applyGroup(doc, g, plan.report)) { created += 1; break operationUnit; }
     const i = plan.report.fields.findIndex((f) => f.name === g.name);
     if (i >= 0) plan.report.fields.splice(i, 1);
     plan.report.skipped.push({
       what: 'field', name: g.name, reason: 'the radio group could not be created',
     });
+
+    }
+    yield context.progress('groups', ++completedgroups, plan.groups.length, undefined);
   }
 
   // Removal is ONE-WAY and discards the only description of everything refused,
@@ -1018,6 +1044,7 @@ export function convertXfaToAcroForm(
     && plan.report.fields.every((f) => f.route !== 'positioned');
 
   doc.markModified();
+  yield context.progress('finalize', 1, 1);
   return plan.report;
 }
 

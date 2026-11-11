@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 /** The three HTML entry points' one implementation.
  *
  *  This module owns the WIRING and nothing else: it parses when given a
@@ -40,12 +42,12 @@ import type { FlowElement } from './flowelement.js';
 import { parseHtml } from './htmltree.js';
 import { elementFloat } from './flowfloat.js';
 import { buildSvgForm } from './svgembed.js';
-import { lowerHtml } from './cssflow.js';
+import { lowerHtmlSteps } from './cssflow.js';
 import { documentFamilyResolver } from './cssfont.js';
 import { rethrowLimit } from './errors.js';
 
 /** Options shared by the three `AddHtml` entry points. */
-export interface HtmlFlowOptions {
+export interface HtmlFlowOptions extends OperationControlOptions {
   /** Override the font bridge. Default: the document's registered families
    *  first, then the Standard-14 generics — see cssfont.ts. */
   resolveFamily?: FamilyResolver;
@@ -101,16 +103,17 @@ export interface AddHtmlResult extends HtmlFlowResult {
 }
 
 /** Map an HTML document to flow elements against a containing width in POINTS. */
-export function htmlElements(
-  doc: Document,
-  src: string | HtmlDocument,
-  width: number,
-  options: HtmlFlowOptions = {},
-): HtmlElements {
+export function htmlElements(doc: Document, src: string | HtmlDocument, width: number, options: HtmlFlowOptions = {}): HtmlElements {
+  return runOperation('htmlElements', options, (context) => htmlElementsSteps(doc, src, width, options, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* htmlElementsSteps(doc: Document, src: string | HtmlDocument, width: number, options: HtmlFlowOptions, context: OperationContext): OperationSteps<HtmlElements> {
   if (options.resolveImage !== undefined && typeof options.resolveImage !== 'function')
     throw new TypeError('resolveImage must be a function');
   const root = typeof src === 'string' ? parseHtml(src) : src;
-  return lowerHtml(root, {
+  yield context.progress('parse', 1, 1);
+  return yield* lowerHtmlSteps(root, {
     width,
     limits: doc.loadLimits,
     resolveFamily: options.resolveFamily ?? documentFamilyResolver(doc),
@@ -133,7 +136,7 @@ export function htmlElements(
         return undefined;
       }
     },
-  });
+  }, context);
 }
 
 /** The first HTML child element of `nodes` with this tag name. */

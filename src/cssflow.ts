@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 /** The styled box tree to a flat list of Flow elements.
  *
  *  This module owns the MAPPING and nothing else: it knows about columns,
@@ -738,6 +739,10 @@ function measureBox(box: BoxNode): { min: number; max: number } {
 /** Map a sibling list, resolved against their shared containing width (in px)
  *  and with the collapsed gaps spent as spaceBefore. */
 function mapSiblings(boxes: BoxNode[], widthPx: number, c: Ctx): FlowElement[] {
+  return runOperation('mapSiblings', undefined, (context) => mapSiblingsSteps(boxes, widthPx, c, context));
+}
+
+function* mapSiblingsSteps(boxes: BoxNode[], widthPx: number, c: Ctx, context: OperationContext): OperationSteps<FlowElement[]> {
   if (boxes.length === 0) return [];
   const resolved = resolveBoxes(boxes, widthPx, measureBox);
   const gaps = collapseMargins(resolved);
@@ -747,7 +752,9 @@ function mapSiblings(boxes: BoxNode[], widthPx: number, c: Ctx): FlowElement[] {
   // Its gap must land on the NEXT box that does, or the space disappears.
   let carry = 0;
   let i = 0;
+  let completedlower = 0;
   while (i < resolved.length) {
+    operationUnit: {
     carry += gaps[i];
     let els: FlowElement[];
     if (resolved[i].box.kind === 'list-item') {
@@ -760,9 +767,12 @@ function mapSiblings(boxes: BoxNode[], widthPx: number, c: Ctx): FlowElement[] {
       els = mapBox(resolved[i], pt(carry), c);
       i += 1;
     }
-    if (els.length === 0) continue;
+    if (els.length === 0) break operationUnit;
     out.push(...els);
     carry = 0;
+
+    }
+    yield context.progress('lower', ++completedlower, undefined, undefined);
   }
   return out;
 }
@@ -773,9 +783,12 @@ function mapSiblings(boxes: BoxNode[], widthPx: number, c: Ctx): FlowElement[] {
  *  exports the PUBLIC `htmlElements`, which wraps this one with a Document and
  *  a real font resolver. Two names one word apart, over the same argument and
  *  return types, is a call the compiler cannot correct. */
-export function lowerHtml(
-  root: HtmlDocument, options: CssFlowOptions,
-): CssFlowResult {
+export function lowerHtml(root: HtmlDocument, options: CssFlowOptions): CssFlowResult {
+  return runOperation('lowerHtml', undefined, (context) => lowerHtmlSteps(root, options, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* lowerHtmlSteps(root: HtmlDocument, options: CssFlowOptions, context: OperationContext): OperationSteps<CssFlowResult> {
   if (!Number.isFinite(options?.width) || options.width <= 0)
     throw new TypeError('width must be a positive finite number');
   if (typeof options.resolveFamily !== 'function')
@@ -798,6 +811,6 @@ export function lowerHtml(
     makeFloat: options.makeFloat, renderSvg: options.renderSvg,
     onNotRendered: options.onNotRendered, containingWidthPx,
   };
-  const elements = mapSiblings(boxes, containingWidthPx, c);
+  const elements = yield* mapSiblingsSteps(boxes, containingWidthPx, c, context);
   return { elements, skipped: c.skipped, unsupported };
 }

@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { PdfObject, PdfDict, isDict, isName, isArray, isStream, isString } from './types.js';
 import { ValidationReport, type ValidationIssue } from './validation.js';
@@ -41,10 +43,23 @@ export function isLegacy(level: PdfXLevel): boolean {
 }
 
 /** Entry point. The facade supplies the catalog (mirrors validatePdfA). */
-export function validatePdfX(doc: Document, catalog: PdfDict, level: PdfXLevel): ValidationReport {
+export function validatePdfX(doc: Document, catalog: PdfDict, level: PdfXLevel, options: OperationControlOptions = {}): ValidationReport {
+  return runOperation('ValidatePdfX', options, (context) => validatePdfXSteps(doc, catalog, level, context));
+}
+
+export function validatePdfXAsync(doc: Document, catalog: PdfDict, level: PdfXLevel, options: OperationControlOptions = {}): Promise<ValidationReport> {
+  return runOperationAsync('ValidatePdfX', options, (context) => validatePdfXSteps(doc, catalog, level, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* validatePdfXSteps(doc: Document, catalog: PdfDict, level: PdfXLevel, context: OperationContext): OperationSteps<ValidationReport> {
   const ctx: XCtx = { doc, catalog, level, R: (o) => doc.resolve(o), cache: new Map() };
   const issues: ValidationIssue[] = [];
-  for (const rule of RULES) issues.push(...rule(ctx));
+  let completed = 0;
+  for (const rule of RULES) {
+    issues.push(...rule(ctx));
+    yield context.progress('rules', ++completed, RULES.length);
+  }
   return new ValidationReport(issues);
 }
 

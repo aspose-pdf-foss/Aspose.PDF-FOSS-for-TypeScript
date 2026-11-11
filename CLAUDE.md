@@ -13140,6 +13140,21 @@ Source (`src/`):
   and before the producer allocates. `jbig2halftone.ts` and `jbig2symbol.ts`
   keep their older `1 << 26` DAMAGE guards, which are `PdfParseError`s about a
   desynchronised stream rather than resource bounds, and fire first.
+- **bilevelopt.ts**, **jbig2encode.ts** — opt-in `Optimize({ jbig2: true })`
+  losslessly rewrites raw/byte-filtered 1-bit DeviceGray XObjects and stencils
+  only when a complete embedded JBIG2 stream is smaller. `jbig2encode.ts`
+  promotes the fixture encoder's MQ/template-0 generic coding, reads packed
+  samples directly (0 becomes JBIG2 black), and uses typical-row prediction.
+  Page information precedes an immediate-lossless region; no symbol matching,
+  pixel preprocessing, globals or standalone end markers. `bilevelopt.ts`
+  preserves every unrelated dictionary entry, including Decode and masks, and
+  replaces at the same object number. Existing image codecs, external streams,
+  TIFF predictor 2, other color spaces and PDF/A-1 are declined. PDF/A identity
+  is read by namespace, not by a particular XML prefix. TIFF's existing byte
+  predictor cannot reconstruct packed 1-bit components and must not be baked
+  into another codec. Reported under `report.jbig2`,
+  independently of JPEG and `report.lossy`; yields between images. Pixel limits
+  propagate, and an explicit catalog version below 1.4 is raised on replacement.
 - **optimize.ts**, **glyphusage.ts**, **fontshrink.ts**, **dedup.ts**,
   **recompress.ts**, **drprune.ts**, **imageopt.ts**, **imageusage.ts**, **resample.ts** —
   `doc.Optimize()`, which shrinks the live model in place so the next `Save()`
@@ -13724,6 +13739,32 @@ Source (`src/`):
   three nearest it in order of distance, but of a magnitude the affine
   fixture's Lab agreement does not account for.
 - **linearize.ts** — linearized (Fast Web View) output + `verifyLinearization`.
+- **checkpoint.ts** — cooperative operation controls (`u34c.1`). The public
+  `OperationControlOptions` and `OperationProgress` types are exported by `index.ts`;
+  the factory and checkpoint implementation remain internal.
+  `createOperationControl` captures an optional signal and synchronous progress
+  callback; `checkpoint` checks cancellation before and after emitting a fresh
+  progress snapshot. `checkpointAsync` also yields with Node's `setImmediate`
+  and checks again, even without progress or options. Abort reasons and callback
+  failures use `markCallerError` so recovery catches cannot swallow them;
+  primitive reasons are wrapped with `Error.cause`. Counters belong to the
+  calling loop; cancellation has no rollback guarantee. Document-operation
+  integration uses the runners in `operation.ts` (`u34c.2`).
+- **operation.ts** — shared sync/async generator runners (`u34c.2`). Each run
+  captures controls before building/advancing a pipeline, preserves its outer
+  operation name across scoped phase prefixes, and closes suspended delegates
+  on failure. Async runs yield before work and between units. Without a listener,
+  context progress calls return undefined checkpoint markers, allocating no
+  events. Pipeline cleanup in `finally` must never yield or invoke success hooks.
+  Rendering and export modules use these steps at page/model/block/encoding
+  boundaries. Tagged document models retain one traversal context across pages;
+  fixed HTML and DOCX keep shared font/image/form state throughout the run.
+  Save delegates font preparation, serializer/linearizer planning and emission,
+  filtering, and incremental diff/emission through the same context. Signing
+  continues using uncontrolled synchronous wrappers, preserving its byte layout.
+  Source conversion delegates lowering and Flow/one-rect placement steps without
+  per-page reconstruction. Flow and Page note links/IDs finalize in non-yielding
+  cleanup; started cancelled flows remain consumed, and onRendered is success-only.
 - **loadlimits.ts** — `LoadLimits`, the resource policy for untrusted input
   (`ibzo.1`), read back as `doc.loadLimits`, with `ResourceLimitError` in
   `errors.ts` beside it. Seventeen fields over four boundaries — parse

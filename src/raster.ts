@@ -1,4 +1,6 @@
 import type { Document } from './document.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
+import type { OperationControlOptions } from './checkpoint.js';
 import { Page } from './page.js';
 import { enc } from './serialize.js';
 import { name } from './types.js';
@@ -67,7 +69,7 @@ export const IMAGE_MODES = ['rgb', 'gray', 'bilevel'] as const;
  *  is not what was asked for. */
 export type ImageMode = (typeof IMAGE_MODES)[number];
 
-export interface ImageOptions {
+export interface ImageOptions extends OperationControlOptions {
   /** Output encoding. Default 'png'.
    *
    *  **Invariant:** an unrecognised value THROWS rather than falling back to
@@ -1822,10 +1824,20 @@ function renderCanvas(
 function renderPage(
   doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions,
 ): Uint8Array {
+  return runOperation('ToImage', opts, (context) => renderPageSteps(doc, page, opts, o, context));
+}
+
+function* renderPageSteps(
+  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions, context: OperationContext,
+): OperationSteps<Uint8Array> {
   // Before the render, so a refused call does no work.
   const format = resolveFormat(opts);
   const opaqueWhite = (opts.background ?? 'white') !== 'transparent';
-  return encodeCanvas(renderCanvas(doc, page, opts, o), opts, format, opaqueWhite);
+  const canvas = renderCanvas(doc, page, opts, o);
+  yield context.progress('render', 1, 1, page.Number);
+  const result = encodeCanvas(canvas, opts, format, opaqueWhite);
+  yield context.progress('encode', 1, 1, page.Number);
+  return result;
 }
 
 /** Options for {@link renderDocumentToTiff}. Every render option `ToImage`
@@ -1862,6 +1874,17 @@ function renderPageToTiffFrame(
 export function renderDocumentToTiff(
   doc: Document, opts: TiffExportOptions = {},
 ): Uint8Array {
+  return runOperation('ToTiff', opts, (context) => renderDocumentToTiffSteps(doc, opts, context));
+}
+
+export function renderDocumentToTiffAsync(doc: Document, opts: TiffExportOptions = {}): Promise<Uint8Array> {
+  return runOperationAsync('ToTiff', opts, (context) => renderDocumentToTiffSteps(doc, opts, context));
+}
+
+/** Shared selected-page pipeline; rendering/encoding within one frame is atomic. @internal */
+export function* renderDocumentToTiffSteps(
+  doc: Document, opts: TiffExportOptions, context: OperationContext,
+): OperationSteps<Uint8Array> {
   const pages = resolvePages(opts.pages, doc.Pages.length);
   // `resolvePages([])` is legally empty, and `encodeTiff` would then refuse in
   // terms of itself — an internal the caller never called. The mistake is a
@@ -1869,14 +1892,31 @@ export function renderDocumentToTiff(
   if (pages.length === 0)
     throw new TypeError('ToTiff: the page selection is empty; at least one page is required');
 
-  const frames = pages.map((n) => renderPageToTiffFrame(doc, doc.Pages[n - 1], opts));
-  return encodeTiff(frames, opts.compression != null ? { compression: opts.compression } : {});
+  const frames: TiffFrame[] = [];
+  for (const n of pages) {
+    frames.push(renderPageToTiffFrame(doc, doc.Pages[n - 1], opts));
+    yield context.progress('render', frames.length, pages.length, n);
+  }
+  const result = encodeTiff(frames, opts.compression != null ? { compression: opts.compression } : {});
+  yield context.progress('encode', 1, 1);
+  return result;
 }
 
 /** Render one page to a PNG. */
 export function renderPageToPng(
   doc: Document, page: Page, opts: ImageOptions = {}): Uint8Array {
   return renderPage(doc, page, opts, { skipGlyphs: false });
+}
+
+export function renderPageToPngAsync(doc: Document, page: Page, opts: ImageOptions = {}): Promise<Uint8Array> {
+  return runOperationAsync('ToImage', opts, (context) => renderPageToPngSteps(doc, page, opts, context));
+}
+
+/** @internal The format follows ImageOptions despite the historical PNG name. */
+export function* renderPageToPngSteps(
+  doc: Document, page: Page, opts: ImageOptions, context: OperationContext,
+): OperationSteps<Uint8Array> {
+  return yield* renderPageSteps(doc, page, opts, { skipGlyphs: false }, context);
 }
 
 /** The backdrop entry `htmlfixed.ts` uses for BOTH raster kinds — the one place

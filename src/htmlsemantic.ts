@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { escapeHtml } from './html.js';
 import { imageHref } from './imagehref.js';
@@ -104,8 +105,18 @@ function nodeHtml(doc: Document, node: DocNode, images?: HtmlImageSink): string 
 }
 
 /** Serialize a document model as reflowable semantic HTML. */
-export function semanticBody(
-  doc: Document, nodes: DocNode[], images?: HtmlImageSink,
-): string {
-  return nodes.map((n) => nodeHtml(doc, n, images)).filter((s) => s).join('\n');
+export function semanticBody(doc: Document, nodes: DocNode[], images?: HtmlImageSink): string {
+  return runOperation('semanticBody', undefined, (context) => semanticBodySteps(doc, nodes, images, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* semanticBodySteps(doc: Document, nodes: DocNode[], images: HtmlImageSink | undefined, context: OperationContext): OperationSteps<string> {
+  const parts: string[] = [];
+  let completed = 0;
+  for (const node of nodes) {
+    const part = nodeHtml(doc, node, images);
+    if (part) parts.push(part);
+    yield context.progress('blocks', ++completed, nodes.length);
+  }
+  return parts.join('\n');
 }

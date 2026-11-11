@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { Lexer } from './lexer.js';
 import { refreshBarcodeFields } from './paperbarcode.js';
 import type { FieldAppearanceOptions } from './formfield.js';
@@ -21,21 +23,21 @@ import type { AiModel } from './aimodel.js';
 import type { OcrEngine } from './ocr.js';
 import { Metadata, MetadataUpdate, readMetadata, applyUpdate, decodePdfText, encodePdfText } from './metadata.js';
 import { StructTreeRoot } from './struct.js';
-import { renderDocumentToHtml, HtmlOptions } from './html.js';
-import { renderDocumentToDocx, type DocxOptions } from './docxexport.js';
-import { renderEpub, type EpubOptions } from './epubexport.js';
-import { renderDocumentToTiff, type TiffExportOptions } from './raster.js';
-import { addImagePages, type AddImagePagesOptions, type AddImagePagesResult } from './imagepages.js';
+import { renderDocumentToHtml, renderDocumentToHtmlAsync, HtmlOptions } from './html.js';
+import { renderDocumentToDocx, renderDocumentToDocxAsync, type DocxOptions } from './docxexport.js';
+import { renderEpub, renderEpubAsync, type EpubOptions } from './epubexport.js';
+import { renderDocumentToTiff, renderDocumentToTiffAsync, type TiffExportOptions } from './raster.js';
+import { addImagePages, addImagePagesAsync, type AddImagePagesOptions, type AddImagePagesResult } from './imagepages.js';
 import {
-  renderDocumentToMarkdown, renderDocumentToMarkdownAssets,
+  renderDocumentToMarkdown, renderDocumentToMarkdownAsync, renderDocumentToMarkdownAssets, renderDocumentToMarkdownAssetsAsync,
   type MarkdownExportOptions, type MarkdownExportResult,
 } from './mdexport.js';
-import { validatePdfUa, ValidationReport, type PdfUaPart } from './structvalidate.js';
-import { validatePdfA, type PdfALevel } from './pdfavalidate.js';
-import { convertToPdfA, type ConvertOptions, type ConversionReport } from './pdfaconvert.js';
-import { convertToPdfUa, type PdfUaConvertOptions } from './pdfuaconvert.js';
-import { validatePdfX, type PdfXLevel } from './pdfxvalidate.js';
-import { convertToPdfX, type PdfXConvertOptions } from './pdfxconvert.js';
+import { validatePdfUaSteps, ValidationReport, type PdfUaPart } from './structvalidate.js';
+import { validatePdfASteps, type PdfALevel } from './pdfavalidate.js';
+import { convertToPdfASteps, type ConvertOptions, type ConversionReport } from './pdfaconvert.js';
+import { convertToPdfUaSteps, type PdfUaConvertOptions } from './pdfuaconvert.js';
+import { validatePdfXSteps, type PdfXLevel } from './pdfxvalidate.js';
+import { convertToPdfXSteps, type PdfXConvertOptions } from './pdfxconvert.js';
 import { ensureStructTree } from './structwrite.js';
 import { autoTag, type AutoTagOptions, type AutoTagReport } from './autotag.js';
 import { inflateStream } from './flate.js';
@@ -57,15 +59,15 @@ import { planSideBySide, renderSideBySide, type SideBySideOptions, type SideBySi
 import { compareRendering, type RenderingCompareOptions, type RenderingComparison } from './comparerendering.js';
 import type { ApplyRedactionsOptions, MarkRedactTextOptions } from './redactapply.js';
 import { flattenForm } from './flatten.js';
-import { optimizeDocument, OptimizeOptions, OptimizeReport } from './optimize.js';
+import { optimizeDocument, optimizeDocumentAsync, OptimizeOptions, OptimizeReport } from './optimize.js';
 import {
-  convertColors, convertToGrayscale,
+  convertColors, convertToGrayscale, convertColorsAsync, convertToGrayscaleAsync,
   ColorConvertOptions, ColorConvertReport, ConvertColorsOptions,
 } from './colorconvert.js';
 import { flattenLayers, type FlattenLayersReport } from './ocflatten.js';
 import { sanitizeDocument, type SanitizeOptions, type SanitizeReport } from './sanitize.js';
 import {
-  convertXfaToAcroForm,
+  convertXfaToAcroForm, convertXfaToAcroFormAsync,
   type XfaConvertOptions, type XfaConvertReport,
 } from './xfaconvert.js';
 import { Form } from './form.js';
@@ -80,7 +82,7 @@ import { readFormJson, writeFormJson } from './formjson.js';
 import { readFormXml, writeFormXml } from './formxml.js';
 import { OptionalContent } from './ocg.js';
 import { buildPages, PageTree } from './pagetree.js';
-import { checkPageTree } from './pagecheck.js';
+import { checkPageTree, checkPageTreeSteps } from './pagecheck.js';
 import type { ValidationIssue } from './validation.js';
 import {
   OutlineItem, PageDest, readOutlineTree, buildOutlineObjects, validateOutlineItems,
@@ -130,9 +132,9 @@ import { documentFonts, type DocumentFont } from './fontinventory.js';
 import { embedFonts, type EmbedFontsOptions, type EmbedFontsReport } from './embedfonts.js';
 import { replaceFont, type ReplaceFontOptions, type ReplaceFontReport } from './fontreplace.js';
 import type { AuthoringFont } from './stamp.js';
-import { serializeDocument, serializeSignedDocument, SerializeOptions } from './serializer.js';
-import { appendSignatureUpdate, appendIncrementalUpdate } from './incremental.js';
-import { diffObjects } from './incrementaldelta.js';
+import { serializeDocumentSteps, serializeSignedDocument, SerializeOptions } from './serializer.js';
+import { appendSignatureUpdate, appendIncrementalUpdate, appendIncrementalUpdateSteps } from './incremental.js';
+import { diffObjectsSteps } from './incrementaldelta.js';
 import { readSeedValue, planSeedValue, type SeedValue } from './sigseed.js';
 import { httpTimestampProvider } from './tsahttp.js';
 import {
@@ -1361,6 +1363,11 @@ export class Document {
     return renderDocumentToMarkdown(this, options);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToMarkdownAsync(options?: MarkdownExportOptions): Promise<string> {
+    return renderDocumentToMarkdownAsync(this, options);
+  }
+
   /** Render every page to Markdown plus the image files it references.
    *
    *  With the default `images: 'inline'` this is `ToMarkdown` with an empty
@@ -1371,9 +1378,19 @@ export class Document {
     return renderDocumentToMarkdownAssets(this, options);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToMarkdownAssetsAsync(options?: MarkdownExportOptions): Promise<MarkdownExportResult> {
+    return renderDocumentToMarkdownAssetsAsync(this, options);
+  }
+
   /** Render every page to one standalone HTML document. See `Page.ToHtml`. */
   ToHtml(options?: HtmlOptions): string {
     return renderDocumentToHtml(this, options);
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToHtmlAsync(options?: HtmlOptions): Promise<string> {
+    return renderDocumentToHtmlAsync(this, options);
   }
 
   /** Render every page to a `.docx` (Office Open XML).
@@ -1393,9 +1410,14 @@ export class Document {
    *  `backdrop: 'raster'`.
    *
    *  Images travel inside the package either way, so there is no assets variant
-   *  to call. Never throws. */
+   *  to call. Recovers damaged content; caller cancellation/errors propagate. */
   ToDocx(options?: DocxOptions): Uint8Array {
     return renderDocumentToDocx(this, options);
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToDocxAsync(options?: DocxOptions): Promise<Uint8Array> {
+    return renderDocumentToDocxAsync(this, options);
   }
 
   /** Render every page to one EPUB 3 archive.
@@ -1408,9 +1430,14 @@ export class Document {
    *  There is deliberately no `Page.ToEpub`: a book is a document, and a
    *  one-page EPUB is not a thing anyone wants.
    *
-   *  Never throws. */
+   *  Recovers damaged content; caller cancellation/errors propagate. */
   ToEpub(options?: EpubOptions): Uint8Array {
     return renderEpub(this, this.Pages, options ?? {});
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToEpubAsync(options?: EpubOptions): Promise<Uint8Array> {
+    return renderEpubAsync(this, this.Pages, options ?? {});
   }
 
   /** Rasterize a page selection into ONE multi-page TIFF.
@@ -1428,6 +1455,11 @@ export class Document {
     return renderDocumentToTiff(this, options ?? {});
   }
 
+  /** Yield between selected page renders and final TIFF encoding. */
+  ToTiffAsync(options?: TiffExportOptions): Promise<Uint8Array> {
+    return renderDocumentToTiffAsync(this, options ?? {});
+  }
+
   /** Append one page per frame of an image file, sized to each frame.
    *
    *  A multi-frame TIFF — how a scanned or faxed document arrives — becomes one
@@ -1441,6 +1473,11 @@ export class Document {
    *  Throws only when NO frame decoded. */
   AddImagePages(data: Uint8Array, options?: AddImagePagesOptions): AddImagePagesResult {
     return addImagePages(this, data, options ?? {});
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  AddImagePagesAsync(data: Uint8Array, options?: AddImagePagesOptions): Promise<AddImagePagesResult> {
+    return addImagePagesAsync(this, data, options ?? {});
   }
 
   /** The document's logical structure tree, or null when untagged. */
@@ -1491,14 +1528,24 @@ export class Document {
    *  PDF/UA (ISO 14289). `part` selects the standard: 1 (the default, ISO
    *  14289-1) or 2 (ISO 14289-2, the PDF 2.0 sibling). Read-only; never
    *  mutates. */
-  ValidatePdfUa(part: PdfUaPart = 1): ValidationReport {
-    return validatePdfUa(this, this.catalog(), part);
+  ValidatePdfUa(part: PdfUaPart = 1, options: OperationControlOptions = {}): ValidationReport {
+    return runOperation('ValidatePdfUa', options, (context) => validatePdfUaSteps(this, this.catalog(), part, context));
+  }
+
+  /** Yield between validation rules; each rule remains atomic. */
+  ValidatePdfUaAsync(part: PdfUaPart = 1, options: OperationControlOptions = {}): Promise<ValidationReport> {
+    return runOperationAsync('ValidatePdfUa', options, (context) => validatePdfUaSteps(this, this.catalog(), part, context));
   }
 
   /** Validate the document against a curated, machine-decidable subset of
    *  PDF/A (ISO 19005, parts 1-3, levels b/u/a). Read-only; never mutates. */
-  ValidatePdfA(level: PdfALevel): ValidationReport {
-    return validatePdfA(this, this.catalog(), level);
+  ValidatePdfA(level: PdfALevel, options: OperationControlOptions = {}): ValidationReport {
+    return runOperation('ValidatePdfA', options, (context) => validatePdfASteps(this, this.catalog(), level, context));
+  }
+
+  /** Yield between validation rules; each rule remains atomic. */
+  ValidatePdfAAsync(level: PdfALevel, options: OperationControlOptions = {}): Promise<ValidationReport> {
+    return runOperationAsync('ValidatePdfA', options, (context) => validatePdfASteps(this, this.catalog(), level, context));
   }
 
   /** Check the document's structural integrity (`dmin.4`): the catalog
@@ -1512,8 +1559,17 @@ export class Document {
    *  back-reference (`/Parent`, `/P`, `/Prev` — the format requires them),
    *  and a reference to an object the file does not have, which 7.3.10 makes
    *  null. Never throws on a broken structure; see {@link Repair}. */
-  Validate(): ValidationReport {
-    return new ValidationReport(checkPageTree(this, false));
+  Validate(options: OperationControlOptions = {}): ValidationReport {
+    return runOperation('Validate', options, (context) => this.validateSteps(context));
+  }
+
+  /** Yield between page-tree nodes. */
+  ValidateAsync(options: OperationControlOptions = {}): Promise<ValidationReport> {
+    return runOperationAsync('Validate', options, (context) => this.validateSteps(context));
+  }
+
+  private *validateSteps(context: OperationContext): OperationSteps<ValidationReport> {
+    return new ValidationReport(yield* checkPageTreeSteps(this, false, context));
   }
 
   /** Fix, in place, what {@link Validate} reports about the page tree
@@ -1541,15 +1597,24 @@ export class Document {
 
   /** Validate the document against a curated, machine-decidable subset of
    *  PDF/X (ISO 15930, levels 1a/3/4/4p). Read-only; never mutates. */
-  ValidatePdfX(level: PdfXLevel): ValidationReport {
-    return validatePdfX(this, this.catalog(), level);
+  ValidatePdfX(level: PdfXLevel, options: OperationControlOptions = {}): ValidationReport {
+    return runOperation('ValidatePdfX', options, (context) => validatePdfXSteps(this, this.catalog(), level, context));
+  }
+
+  /** Yield between validation rules; each rule remains atomic. */
+  ValidatePdfXAsync(level: PdfXLevel, options: OperationControlOptions = {}): Promise<ValidationReport> {
+    return runOperationAsync('ValidatePdfX', options, (context) => validatePdfXSteps(this, this.catalog(), level, context));
   }
 
   /** Remediate the document toward PDF/A `level` (b/u), then re-validate.
    *  Mutates the live model in place; the result is emitted by the next Save(). */
   ConvertToPdfA(level: PdfALevel, opts?: ConvertOptions): ConversionReport {
-    this.markModified();
-    return convertToPdfA(this, this.catalog(), level, opts);
+    return runOperation('ConvertToPdfA', opts, (context) => convertToPdfASteps(this, this.catalog(), level, opts ?? {}, context));
+  }
+
+  /** Yield between remediation passes and re-validation rules. */
+  ConvertToPdfAAsync(level: PdfALevel, opts?: ConvertOptions): Promise<ConversionReport> {
+    return runOperationAsync('ConvertToPdfA', opts, (context) => convertToPdfASteps(this, this.catalog(), level, opts ?? {}, context));
   }
 
   /** Remediate the document toward PDF/X `level`, then re-validate. Mutates the
@@ -1557,16 +1622,24 @@ export class Document {
    *  cannot be fixed mechanically (live transparency, non-embeddable fonts, RGB
    *  raster images) are reported in `unresolved`, not silently altered. */
   ConvertToPdfX(level: PdfXLevel, opts?: PdfXConvertOptions): ConversionReport {
-    this.markModified();
-    return convertToPdfX(this, this.catalog(), level, opts);
+    return runOperation('ConvertToPdfX', opts, (context) => convertToPdfXSteps(this, this.catalog(), level, opts ?? {}, context));
+  }
+
+  /** Yield between remediation passes and re-validation rules. */
+  ConvertToPdfXAsync(level: PdfXLevel, opts?: PdfXConvertOptions): Promise<ConversionReport> {
+    return runOperationAsync('ConvertToPdfX', opts, (context) => convertToPdfXSteps(this, this.catalog(), level, opts ?? {}, context));
   }
 
   /** Remediate the document toward PDF/UA-1 (mechanical fixes only), then
    *  re-validate. Mutates the live model in place; defects requiring human
    *  authoring (alt text, structure, untagged content) are reported, not fixed. */
   ConvertToPdfUa(opts?: PdfUaConvertOptions): ConversionReport {
-    this.markModified();
-    return convertToPdfUa(this, this.catalog(), opts);
+    return runOperation('ConvertToPdfUa', opts, (context) => convertToPdfUaSteps(this, this.catalog(), opts ?? {}, context));
+  }
+
+  /** Yield between remediation passes and re-validation rules. */
+  ConvertToPdfUaAsync(opts?: PdfUaConvertOptions): Promise<ConversionReport> {
+    return runOperationAsync('ConvertToPdfUa', opts, (context) => convertToPdfUaSteps(this, this.catalog(), opts ?? {}, context));
   }
 
   /** @internal Every indirect object with a gen-0 ref. For validators that must
@@ -2041,6 +2114,11 @@ export class Document {
     return optimizeDocument(this, opts);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  OptimizeAsync(opts: OptimizeOptions = {}): Promise<OptimizeReport> {
+    return optimizeDocumentAsync(this, opts);
+  }
+
   /** Convert the document's colour to `opts.to` in place — `'gray'`, `'rgb'`
    *  or `'cmyk'` — across page content, form XObjects, tiling patterns, Type 3
    *  glyph procedures, image XObjects, inline images, shadings and
@@ -2061,6 +2139,12 @@ export class Document {
     return convertColors(this, to, rest);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ConvertColorsAsync(opts: ConvertColorsOptions): Promise<ColorConvertReport> {
+    const { to, ...rest } = opts ?? ({} as ConvertColorsOptions);
+    return convertColorsAsync(this, to, rest);
+  }
+
   /** Convert the document's colour to DeviceGray in place: page content, form
    *  XObjects, tiling patterns, Type 3 glyph procedures, image XObjects,
    *  shadings and annotations. The named shorthand for
@@ -2070,6 +2154,11 @@ export class Document {
    *  signed document, which converting would invalidate. */
   ConvertToGrayscale(opts: ColorConvertOptions = {}): ColorConvertReport {
     return convertToGrayscale(this, opts);
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ConvertToGrayscaleAsync(opts: ColorConvertOptions = {}): Promise<ColorConvertReport> {
+    return convertToGrayscaleAsync(this, opts);
   }
 
   /** Flatten optional content in place: keep only what the default
@@ -2146,18 +2235,39 @@ export class Document {
     return convertXfaToAcroForm(this, opts);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ConvertXfaToAcroFormAsync(opts: XfaConvertOptions = {}): Promise<XfaConvertReport> {
+    return convertXfaToAcroFormAsync(this, opts);
+  }
+
   /** Serialize the live document to PDF bytes (mark-sweep from /Root, renumbered).
    *  Pass `{ compressed: true }` for cross-reference-stream + ObjStm output. */
   Save(options: SaveOptions = {}): Uint8Array {
+    return runOperation('Save', options, (context) => this.saveSteps(options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link Save}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  SaveAsync(options: SaveOptions = {}): Promise<Uint8Array> {
+    return runOperationAsync('Save', options, (context) => this.saveSteps(options, context));
+  }
+
+  private *saveSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
     // Incremental goes first so it can REFUSE a document signed in this
     // session, which the verbatim return below would otherwise hide.
-    if (options.incremental) return this.saveIncremental(options);
+    if (options.incremental) return yield* this.saveIncrementalSteps(options, context);
     // A completed signature fixes the exact bytes; return them verbatim so the
     // signed byte image is never re-serialized (which would break the digest).
-    if (this.pendingSignedBytes) return this.pendingSignedBytes;
+    if (this.pendingSignedBytes) {
+      const signed = this.pendingSignedBytes;
+      yield context.progress('prepare', 1, 1);
+      return signed;
+    }
     // Paper barcodes first: a refresh draws appearances, which may need fonts.
     refreshBarcodeFields(this);
-    this.finalizeEmbeddedFonts();
+    yield context.progress('prepare', 1, 2);
+    yield* this.finalizeEmbeddedFontsSteps(context);
+    yield context.progress('prepare', 2, 2);
     // A retained key for R<=4 hashes /ID[0], so it is valid only against the
     // SAME /ID -- and resolveIds invents a fresh random one when the trailer
     // names none, which would yield a file nothing can decrypt, us included.
@@ -2166,7 +2276,7 @@ export class Document {
         'cannot preserve encryption: the trailer names no /ID, which the file key '
         + 'is derived from. Pass `encrypt` to re-encrypt with stated credentials, '
         + 'or `encrypt: false` to write plaintext.');
-    return serializeDocument(this.objects, this.trailer, options, this.preservedEncryptor);
+    return yield* serializeDocumentSteps(this.objects, this.trailer, options, this.preservedEncryptor, context);
   }
 
   /** Append an incremental update carrying only what changed since `Open`.
@@ -2176,7 +2286,7 @@ export class Document {
    *  not it is still reachable from `/Root`, because earlier revisions still
    *  point at the object it supersedes. Garbage-collecting here corrupts the
    *  revision history this feature exists to provide. */
-  private saveIncremental(options: SaveOptions): Uint8Array {
+  private *saveIncrementalSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
     // The live model is BEHIND the signed bytes for the signature object:
     // `fillSignature` patches bytes and never the model, so the live `/Sig`
     // carries a `/Contents` of length 0 while the signed bytes carry the real
@@ -2214,22 +2324,24 @@ export class Document {
     // first, every font added since Open is missing from the revision. The
     // paper-barcode refresh goes first for the same reason.
     refreshBarcodeFields(this);
-    this.finalizeEmbeddedFonts();
+    yield context.progress('prepare', 1, 2);
+    yield* this.finalizeEmbeddedFontsSteps(context);
+    yield context.progress('prepare', 2, 2);
 
-    const delta = diffObjects(this.baselineObjects(), this.objects);
+    const delta = yield* diffObjectsSteps(this.baselineObjects(), this.objects, context);
     const objects = new Map<number, PdfObject>();
     for (const n of delta.replaced) objects.set(n, this.objects.get(n)!);
     for (const n of delta.added) objects.set(n, this.objects.get(n)!);
 
     const rootRef = this.trailer.get('Root');
     const infoRef = this.trailer.get('Info');
-    return appendIncrementalUpdate(this.originalBytes, {
+    return yield* appendIncrementalUpdateSteps(this.originalBytes, {
       objects,
       freed: delta.freed,
       encryptor: this.preservedEncryptor,
       rootNum: isRef(rootRef) ? rootRef.num : undefined,
       infoNum: isRef(infoRef) ? infoRef.num : undefined,
-    });
+    }, context);
   }
 
   /** Parse and register a font program (TrueType/OpenType sfnt bytes), returning
@@ -2449,7 +2561,7 @@ export class Document {
    *
    * This is where the cost is: indexing is partial reads, but a chosen face is
    * read whole, and a CJK font runs to tens of megabytes. Two font dicts
-   * resolving to one file share one parse. Never throws.
+   * resolving to one file share one parse. Recovers damaged content; caller cancellation/errors propagate.
    *
    * @internal
    */
@@ -2725,8 +2837,14 @@ export class Document {
    *  re-running on a later Save rebuilds cleanly (old graphs become unreachable
    *  and are swept by the renumbering serializer). */
   private finalizeEmbeddedFonts(): void {
-    for (const font of this.embeddedFonts) {
-      if (font.objNum === undefined && font.verticalObjNum === undefined) continue;
+    return runOperation('Save', undefined, (context) => this.finalizeEmbeddedFontsSteps(context));
+  }
+
+  private *finalizeEmbeddedFontsSteps(context: OperationContext): OperationSteps<void> {
+    let completedfonts = 0;
+  for (const font of this.embeddedFonts) {
+    operationUnit: {
+      if (font.objNum === undefined && font.verticalObjNum === undefined) break operationUnit;
       // A slot is reserved only when the font is NAMED in some /Resources, so
       // one that drew nothing -- `ReplaceFont`'s `to` around nothing but
       // fallback runs -- still needs a real font there, not an empty dict
@@ -2752,7 +2870,10 @@ export class Document {
         vertical.set('Encoding', name('Identity-V'));
         this.install(font.verticalObjNum, vertical);
       }
+
     }
+    yield context.progress('fonts', ++completedfonts, this.embeddedFonts.length, undefined);
+  }
   }
 
   // --- Digital signatures (sign side) ------------------------------------
@@ -3672,13 +3793,26 @@ export class Document {
    *  business. It writes `/Info /Title`, XMP `dc:title` and
    *  `/ViewerPreferences /DisplayDocTitle` together — a title without the flag
    *  satisfies neither PDF/UA nor the caller's intent. */
-  AddMarkdown(
-    src: string | MdDocument,
-    options: MarkdownFlowOptions & FlowOptions & {
+  AddMarkdown(src: string | MdDocument, options: MarkdownFlowOptions & FlowOptions & {
       /** Document title. Non-empty. Default: the document's title is untouched. */
       title?: string;
-    } = {},
-  ): { pages: Page[]; skipped: string[] } {
+    } = {}): { pages: Page[]; skipped: string[] } {
+    return runOperation('AddMarkdown', options, (context) => this.addMarkdownSteps(src, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddMarkdown}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddMarkdownAsync(src: string | MdDocument, options: MarkdownFlowOptions & FlowOptions & {
+      /** Document title. Non-empty. Default: the document's title is untouched. */
+      title?: string;
+    } = {}): Promise<{ pages: Page[]; skipped: string[] }> {
+    return runOperationAsync('AddMarkdown', options, (context) => this.addMarkdownSteps(src, options, context));
+  }
+
+  private *addMarkdownSteps(src: string | MdDocument, options: MarkdownFlowOptions & FlowOptions & {
+      /** Document title. Non-empty. Default: the document's title is untouched. */
+      title?: string;
+    }, context: OperationContext): OperationSteps<{ pages: Page[]; skipped: string[] }> {
     // Validated before anything is allocated, so a rejected call leaves the
     // document byte-identical — the rule every authoring entry point follows.
     const title = options.title;
@@ -3705,12 +3839,13 @@ export class Document {
     // handed back. A caller's own sink still fires.
     const late: string[] = [];
     const onSkipped = (s: string): void => { late.push(s); options.onSkipped?.(s); };
-    const { skipped } = flow.AddMarkdown(src, { ...options, onSkipped });
-    const pages = flow.Render();
+    const { skipped } = (yield* flow.addMarkdownSteps(src, { ...options, onSkipped }, context));
+    const pages = (yield* flow.renderSteps(context));
     if (title !== undefined) {
       this.SetMetadata({ title });   // mirrors to XMP dc:title on its own
       this.DisplayDocTitle = true;
     }
+    yield context.progress('metadata', 1, 1);
     return { pages, skipped: [...skipped, ...late] };
   }
 
@@ -3729,14 +3864,29 @@ export class Document {
    *
    *  That applies here and on neither of the other two entry points, which
    *  append to a document whose title is someone else's business. */
-  AddHtml(
-    src: string | HtmlDocument,
-    options: HtmlFlowOptions & FlowOptions & {
+  AddHtml(src: string | HtmlDocument, options: HtmlFlowOptions & FlowOptions & {
       /** Document title. Non-empty. Default: the source's `<title>`, else the
        *  document's title is untouched. */
       title?: string;
-    } = {},
-  ): { pages: Page[]; skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] } {
+    } = {}): { pages: Page[]; skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] } {
+    return runOperation('AddHtml', options, (context) => this.addHtmlSteps(src, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddHtml}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddHtmlAsync(src: string | HtmlDocument, options: HtmlFlowOptions & FlowOptions & {
+      /** Document title. Non-empty. Default: the source's `<title>`, else the
+       *  document's title is untouched. */
+      title?: string;
+    } = {}): Promise<{ pages: Page[]; skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] }> {
+    return runOperationAsync('AddHtml', options, (context) => this.addHtmlSteps(src, options, context));
+  }
+
+  private *addHtmlSteps(src: string | HtmlDocument, options: HtmlFlowOptions & FlowOptions & {
+      /** Document title. Non-empty. Default: the source's `<title>`, else the
+       *  document's title is untouched. */
+      title?: string;
+    }, context: OperationContext): OperationSteps<{ pages: Page[]; skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] }> {
     // Validated before anything is allocated, so a rejected call leaves the
     // document byte-identical — the rule every authoring entry point follows.
     const explicit = options.title;
@@ -3755,13 +3905,14 @@ export class Document {
       options.onNotRendered?.(r);
     };
     const { skipped, unsupported } =
-      flow.AddHtml(root, { ...options, onNotRendered: sink });
-    const pages = flow.Render();
+      (yield* flow.addHtmlSteps(root, { ...options, onNotRendered: sink }, context));
+    const pages = (yield* flow.renderSteps(context));
     const title = explicit ?? documentTitle(root);
     if (title !== undefined) {
       this.SetMetadata({ title });   // mirrors to XMP dc:title on its own
       this.DisplayDocTitle = true;
     }
+    yield context.progress('metadata', 1, 1);
     return { pages, skipped: [...skipped, ...late], unsupported };
   }
 
@@ -3770,10 +3921,17 @@ export class Document {
    *  and margins come from the document's last section unless `options` states
    *  them; the document's own core-properties title becomes the PDF title unless
    *  an explicit `title` is given (`AddHtml`'s rule for `<title>`). */
-  AddDocx(
-    bytes: Uint8Array,
-    options: DocxFlowOptions & FlowOptions & { title?: string } = {},
-  ): { pages: Page[]; skipped: DocxSkipped[] } {
+  AddDocx(bytes: Uint8Array, options: DocxFlowOptions & FlowOptions & { title?: string } = {}): { pages: Page[]; skipped: DocxSkipped[] } {
+    return runOperation('AddDocx', options, (context) => this.addDocxSteps(bytes, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddDocx}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddDocxAsync(bytes: Uint8Array, options: DocxFlowOptions & FlowOptions & { title?: string } = {}): Promise<{ pages: Page[]; skipped: DocxSkipped[] }> {
+    return runOperationAsync('AddDocx', options, (context) => this.addDocxSteps(bytes, options, context));
+  }
+
+  private *addDocxSteps(bytes: Uint8Array, options: DocxFlowOptions & FlowOptions & { title?: string }, context: OperationContext): OperationSteps<{ pages: Page[]; skipped: DocxSkipped[] }> {
     const explicit = options.title;
     if (explicit !== undefined && (typeof explicit !== 'string' || explicit === ''))
       throw new TypeError('title must be a non-empty string');
@@ -3810,13 +3968,14 @@ export class Document {
     }
     const flow = new Flow(this, flowOptions);
     const onSkipped = (s: DocxSkipped): void => { late.add(s.name, s.kind, s.count); options.onSkipped?.(s); };
-    const { skipped } = flow.AddDocx(src, { ...options, onSkipped });
-    const pages = flow.Render();
+    const { skipped } = (yield* flow.addDocxSteps(src, { ...options, onSkipped }, context));
+    const pages = (yield* flow.renderSteps(context));
     const title = explicit ?? src.opened.title;
     if (title !== undefined) {
       this.SetMetadata({ title });
       this.DisplayDocTitle = true;
     }
+    yield context.progress('metadata', 1, 1);
     return { pages, skipped: mergeSkipped(skipped, late.list()) };
   }
 

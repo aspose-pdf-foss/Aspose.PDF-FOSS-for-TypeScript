@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { deflateSync } from 'node:zlib';
 import { PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isArray, isStream, isString, isName, name, ref } from './types.js';
 import { enc, serializeObject, serializeValue, serializeDict } from './serialize.js';
@@ -9,10 +11,10 @@ import {
   DEFAULT_PLACEHOLDER_BYTES, SignatureLayout,
   buildSigDictPlaceholder, finalizePlaceholder,
 } from './sigplaceholder.js';
-import { serializeLinearized } from './linearize.js';
-import { applyStreamFilter, StreamFilterName } from './streamfilter.js';
+import { serializeLinearizedSteps } from './linearize.js';
+import { applyStreamFilterSteps, StreamFilterName } from './streamfilter.js';
 
-export interface SerializeOptions {
+export interface SerializeOptions extends OperationControlOptions {
   /** Emit a cross-reference stream + compressed object streams (ObjStm) instead
    *  of a classic xref table. Smaller for multi-object docs. Default: false. */
   compressed?: boolean;
@@ -72,6 +74,11 @@ export interface Plan {
 /** Mark reachable-from-/Root(+/Info), assign compact numbers 1..N (root first,
  *  then discovery order), and return the remapped object graph. */
 export function planDocument(objects: Map<number, PdfObject>, trailer: PdfDict): Plan {
+  return runOperation('planDocument', undefined, (context) => planDocumentSteps(objects, trailer, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* planDocumentSteps(objects: Map<number, PdfObject>, trailer: PdfDict, context: OperationContext): OperationSteps<Plan> {
   const rootRef = trailer.get('Root');
   if (!isRef(rootRef)) throw new PdfParseError('cannot serialize: /Root is not an indirect reference');
   const infoRef = trailer.get('Info');
@@ -87,15 +94,26 @@ export function planDocument(objects: Map<number, PdfObject>, trailer: PdfDict):
   };
   enqueue(rootRef.num);
   if (isRef(infoRef)) enqueue(infoRef.num);
+  let completedplan = 0;
   while (queue.length) {
+    operationUnit: {
     const obj = objects.get(queue.shift()!);
-    if (obj === undefined) continue;
+    if (obj === undefined) break operationUnit;
     const refs: PdfRef[] = [];
     refsIn(obj, refs);
     for (const r of refs) if (objects.has(r.num)) enqueue(r.num);
+
+    }
+    yield context.progress('plan', ++completedplan, undefined, undefined);
   }
 
-  const objs = order.map((old) => remap(objects.get(old)!, oldToNew));
+  const objs: PdfObject[] = [];
+  let completedremap = 0;
+  for (const old of order) {
+    operationUnit: { objs.push(remap(objects.get(old)!, oldToNew));
+    }
+    yield context.progress('remap', ++completedremap, order.length, undefined);
+  }
   return { rootRef, infoRef: infoRef ?? null, oldToNew, objs };
 }
 
@@ -110,22 +128,25 @@ function trailerExtras(plan: Plan, trailer: PdfDict, add: (key: string, value: s
 /** Serialize the live object map to bytes. Default emits a classic xref table;
  *  `{ compressed: true }` emits a cross-reference stream + object streams.
  *  Does not mutate `objects` or `trailer` (remapping produces copies). */
-export function serializeDocument(
-  objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions = {},
-  /** The document's own encryptor, when it was opened encrypted: used when no
-   *  explicit `encrypt` option is given, so encryption survives a rewrite
-   *  instead of the file being written silently in the clear. */
-  preserved?: Encryptor,
-): Uint8Array {
+export function serializeDocument(objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions = {}, preserved?: Encryptor): Uint8Array {
+  return runOperation('Save', options, (context) => serializeDocumentSteps(objects, trailer, options, preserved, context));
+}
+
+export function serializeDocumentAsync(objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions = {}, preserved?: Encryptor): Promise<Uint8Array> {
+  return runOperationAsync('Save', options, (context) => serializeDocumentSteps(objects, trailer, options, preserved, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* serializeDocumentSteps(objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions, preserved: Encryptor | undefined, context: OperationContext): OperationSteps<Uint8Array> {
   if (options.streamFilter && options.linearized)
     throw new UnsupportedFeatureError('streamFilter is not supported with linearized output');
   if (options.linearized) {
     if (options.compressed) throw new UnsupportedFeatureError('compressed linearization is not supported');
     if (options.encrypt) throw new UnsupportedFeatureError('encrypted linearization is not supported');
-    return serializeLinearized(objects, trailer, headerVersion(objects, trailer));
+    return yield* serializeLinearizedSteps(objects, trailer, headerVersion(objects, trailer), context);
   }
-  const plan = planDocument(objects, trailer);
-  if (options.streamFilter) applyStreamFilter(plan.objs, options.streamFilter);
+  const plan = yield* planDocumentSteps(objects, trailer, context);
+  if (options.streamFilter) yield* applyStreamFilterSteps(plan.objs, options.streamFilter, context);
   const ver = headerVersion(objects, trailer);
   // Precedence: an explicit `encrypt` wins; else the document's own retained
   // encryption; else plaintext. `encrypt: false` is how a caller asks for
@@ -139,11 +160,11 @@ export function serializeDocument(
         : buildEncryptor(options.encrypt, id0))
       : preserved;
   if (!chosen) {
-    return options.compressed ? serializeCompressed(plan, trailer, ver) : serializeClassic(plan, trailer, ver);
+    return options.compressed ? yield* serializeCompressedSteps(plan, trailer, ver, context) : yield* serializeClassicSteps(plan, trailer, ver, context);
   }
   return options.compressed
-    ? serializeCompressedEncrypted(plan, trailer, chosen, id0, id1, ver)
-    : serializeClassicEncrypted(plan, chosen, id0, id1, ver);
+    ? yield* serializeCompressedEncryptedSteps(plan, trailer, chosen, id0, id1, ver, context)
+    : yield* serializeClassicEncryptedSteps(plan, chosen, id0, id1, ver, context);
 }
 
 /** The header version to emit: catalog /Version when present, else 1.7. */
@@ -264,7 +285,8 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function serializeClassic(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* serializeClassicSteps(plan: Plan, trailer: PdfDict, ver: string, context: OperationContext): OperationSteps<Uint8Array> {
   const { rootRef, oldToNew, objs } = plan;
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -273,34 +295,45 @@ function serializeClassic(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Array
   push(enc(`%PDF-${ver}\n%âãÏÓ\n`));
   const n = objs.length;
   const offsets: number[] = new Array(n + 1).fill(0);
+  let completedobjects = 0;
   for (let i = 0; i < n; i++) {
+    operationUnit: {
     const newNum = i + 1;
     offsets[newNum] = length;
     push(enc(`${newNum} 0 obj\n`));
     push(serializeObject(objs[i]));
     push(enc('\nendobj\n'));
+
+    }
+    yield context.progress('objects', ++completedobjects, n, undefined);
   }
 
   const xrefStart = length;
   let xref = `xref\n0 ${n + 1}\n0000000000 65535 f \n`;
   for (let i = 1; i <= n; i++) xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
   push(enc(xref));
+  yield context.progress('xref', 1, 1);
 
   let tr = `trailer\n<< /Size ${n + 1} /Root ${oldToNew.get(rootRef.num)} 0 R`;
   trailerExtras(plan, trailer, (k, v) => { tr += ` /${k} ${v}`; });
   tr += ` >>\nstartxref\n${xrefStart}\n%%EOF\n`;
   push(enc(tr));
 
-  return concat(chunks);
+  const result = concat(chunks);
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
-function serializeClassicEncrypted(
-  plan: Plan, encryptor: Encryptor, id0: Uint8Array, id1: Uint8Array, ver = '1.7',
-): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* serializeClassicEncryptedSteps(plan: Plan, encryptor: Encryptor, id0: Uint8Array, id1: Uint8Array, ver: string, context: OperationContext): OperationSteps<Uint8Array> {
   const { rootRef, oldToNew, objs } = plan;
   const n = objs.length;
   const encNum = n + 1;
-  const encObjs = objs.map((o, i) => encryptor.encryptObject(o, i + 1, 0));
+  const encObjs: PdfObject[] = [];
+  for (let i = 0; i < objs.length; i++) {
+    encObjs.push(encryptor.encryptObject(objs[i], i + 1, 0));
+    yield context.progress('encrypt', i + 1, objs.length);
+  }
 
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -308,12 +341,17 @@ function serializeClassicEncrypted(
 
   push(enc(`%PDF-${ver}\n%âãÏÓ\n`));
   const offsets = new Array(encNum + 1).fill(0);
+  let completedobjects = 0;
   for (let i = 0; i < n; i++) {
+    operationUnit: {
     const num = i + 1;
     offsets[num] = length;
     push(enc(`${num} 0 obj\n`));
     push(serializeObject(encObjs[i]));
     push(enc('\nendobj\n'));
+
+    }
+    yield context.progress('objects', ++completedobjects, n, undefined);
   }
   // /Encrypt dict — written verbatim, never encrypted
   offsets[encNum] = length;
@@ -325,6 +363,7 @@ function serializeClassicEncrypted(
   let xref = `xref\n0 ${encNum + 1}\n0000000000 65535 f \n`;
   for (let i = 1; i <= encNum; i++) xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
   push(enc(xref));
+  yield context.progress('xref', 1, 1);
 
   let tr = `trailer\n<< /Size ${encNum + 1} /Root ${oldToNew.get(rootRef.num)} 0 R`;
   tr += ` /Encrypt ${encNum} 0 R /ID ${serializeValue([pdfStr(id0), pdfStr(id1)])}`;
@@ -333,12 +372,13 @@ function serializeClassicEncrypted(
   tr += ` >>\nstartxref\n${xrefStart}\n%%EOF\n`;
   push(enc(tr));
 
-  return concat(chunks);
+  const result = concat(chunks);
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
-function serializeCompressedEncrypted(
-  plan: Plan, _trailer: PdfDict, encryptor: Encryptor, id0: Uint8Array, id1: Uint8Array, ver = '1.7',
-): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* serializeCompressedEncryptedSteps(plan: Plan, _trailer: PdfDict, encryptor: Encryptor, id0: Uint8Array, id1: Uint8Array, ver: string, context: OperationContext): OperationSteps<Uint8Array> {
   const { rootRef, oldToNew, objs } = plan;
   const n = objs.length;
   const objStmNum = n + 1;
@@ -356,12 +396,14 @@ function serializeCompressedEncrypted(
   let header = '';
   const bodies: string[] = [];
   let bodyLen = 0;
-  compressedNums.forEach((num, idx) => {
+  for (let idx = 0; idx < compressedNums.length; idx++) {
+    const num = compressedNums[idx];
     header += `${num} ${bodyLen} `;
     const body = serializeValue(objs[num - 1]) + (idx === compressedNums.length - 1 ? '' : '\n');
     bodies.push(body);
     bodyLen += enc(body).length;
-  });
+    yield context.progress('groups', idx + 1, compressedNums.length);
+  }
   const headerBytes = enc(header);
   const objStmPlain = concat([headerBytes, enc(bodies.join(''))]);
   // Deflate THEN encrypt the whole ObjStm stream by its own object number.
@@ -385,12 +427,17 @@ function serializeCompressedEncrypted(
   const offsets = new Map<number, number>();
 
   push(enc(`%PDF-${ver}\n%âãÏÓ\n`));
+  let completedobjects = 0;
   for (const num of directNums) {
+    operationUnit: {
     offsets.set(num, length);
     const encObj = encryptor.encryptObject(objs[num - 1], num, 0); // stream: dict strings + raw
     push(enc(`${num} 0 obj\n`));
     push(serializeObject(encObj));
     push(enc('\nendobj\n'));
+
+    }
+    yield context.progress('objects', ++completedobjects, directNums.length, undefined);
   }
   const objStmOffset = length;
   push(enc(`${objStmNum} 0 obj\n`));
@@ -429,6 +476,7 @@ function serializeCompressedEncrypted(
     tp = putBE(table, tp, f1, w[1]);
     tp = putBE(table, tp, f2, w[2]);
   }
+  yield context.progress('xref', 1, 1);
   const xrefRaw = new Uint8Array(deflateSync(Buffer.from(table))); // XRef stream never encrypted
 
   const xrefDict: PdfDict = new Map<string, PdfObject>();
@@ -449,7 +497,9 @@ function serializeCompressedEncrypted(
   push(enc('\nendstream\nendobj\n'));
   push(enc(`startxref\n${xrefOffset}\n%%EOF\n`));
 
-  return concat(chunks);
+  const result = concat(chunks);
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
 /** Bytes needed to hold `max` big-endian (at least 1). */
@@ -465,7 +515,8 @@ function putBE(out: Uint8Array, p: number, value: number, width: number): number
   return p + width;
 }
 
-function serializeCompressed(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* serializeCompressedSteps(plan: Plan, trailer: PdfDict, ver: string, context: OperationContext): OperationSteps<Uint8Array> {
   const { rootRef, oldToNew, objs } = plan;
   const n = objs.length;
   const objStmNum = n + 1;
@@ -483,12 +534,14 @@ function serializeCompressed(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Ar
   let header = '';
   const bodies: string[] = [];
   let bodyLen = 0;
-  compressedNums.forEach((num, idx) => {
+  for (let idx = 0; idx < compressedNums.length; idx++) {
+    const num = compressedNums[idx];
     header += `${num} ${bodyLen} `;
     const body = serializeValue(objs[num - 1]) + (idx === compressedNums.length - 1 ? '' : '\n');
     bodies.push(body);
     bodyLen += enc(body).length;
-  });
+    yield context.progress('groups', idx + 1, compressedNums.length);
+  }
   const headerBytes = enc(header);
   const objStmPlain = concat([headerBytes, enc(bodies.join(''))]);
   const objStmRaw = new Uint8Array(deflateSync(Buffer.from(objStmPlain)));
@@ -511,11 +564,16 @@ function serializeCompressed(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Ar
   const offsets = new Map<number, number>(); // newNum -> file offset (direct objects only)
 
   push(enc(`%PDF-${ver}\n%âãÏÓ\n`));
+  let completedobjects = 0;
   for (const num of directNums) {
+    operationUnit: {
     offsets.set(num, length);
     push(enc(`${num} 0 obj\n`));
     push(serializeObject(objs[num - 1]));
     push(enc('\nendobj\n'));
+
+    }
+    yield context.progress('objects', ++completedobjects, directNums.length, undefined);
   }
   const objStmOffset = length;
   push(enc(`${objStmNum} 0 obj\n`));
@@ -548,6 +606,7 @@ function serializeCompressed(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Ar
     tp = putBE(table, tp, f1, w[1]);
     tp = putBE(table, tp, f2, w[2]);
   }
+  yield context.progress('xref', 1, 1);
   const xrefRaw = new Uint8Array(deflateSync(Buffer.from(table)));
 
   const xrefDict: PdfDict = new Map<string, PdfObject>();
@@ -568,5 +627,7 @@ function serializeCompressed(plan: Plan, trailer: PdfDict, ver = '1.7'): Uint8Ar
   push(enc('\nendstream\nendobj\n'));
   push(enc(`startxref\n${xrefOffset}\n%%EOF\n`));
 
-  return concat(chunks);
+  const result = concat(chunks);
+  yield context.progress('assemble', 1, 1);
+  return result;
 }

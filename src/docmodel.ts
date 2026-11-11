@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { mapRegions, visitContent, type Rect, type TextBlock, type TextLine } from './text.js';
@@ -11,7 +12,7 @@ const SHOWN = { skipHidden: true } as const;
 import { isDict, type PdfStream } from './types.js';
 import { parseAction } from './actions.js';
 import type { Table } from './tablemodel.js';
-import { dominantFragmentSize, headingRanks } from './textrank.js';
+import { dominantFragmentSize, headingRanksSteps } from './textrank.js';
 import { StructElement, StructTreeRoot, type StructNode, type StructTextNode } from './struct.js';
 import { tableFromStruct } from './tablestruct.js';
 import { FigureContent, type PlacedImage } from './figurecontent.js';
@@ -228,6 +229,8 @@ interface Ctx {
   doc: Document;
   only: Page | undefined;
   figures: FigureContent;
+  control: OperationContext;
+  completed: number;
 }
 
 /** True when this element contributes any content on `only` (or `only` is undefined). */
@@ -243,7 +246,7 @@ function onPage(el: StructElement, only: Page | undefined): boolean {
  *  Text runs directly under the body become a P, because DocListItem.blocks is
  *  block level: a bare DocText there would leave each serializer to decide what
  *  wraps it, which is the disagreement this model exists to prevent. */
-function itemBlocks(ctx: Ctx, el: StructElement): DocNode[] {
+function* itemBlocks(ctx: Ctx, el: StructElement): OperationSteps<DocNode[]> {
   const out: DocNode[] = [];
   let texts: DocText[] = [];
   const flush = (): void => {
@@ -266,7 +269,7 @@ function itemBlocks(ctx: Ctx, el: StructElement): DocNode[] {
       if (n.text !== '') texts.push(docText(n.text, n));
     } else {
       flush();
-      const child = elementNode(ctx, n);
+      const child = yield* elementNode(ctx, n);
       if (child) out.push(child);
     }
   }
@@ -275,9 +278,9 @@ function itemBlocks(ctx: Ctx, el: StructElement): DocNode[] {
 }
 
 /** One /LI: its /Lbl read for evidence, its /LBody read for content. */
-function listItemNode(
+function* listItemNode(
   ctx: Ctx, el: StructElement,
-): { item: DocListItem; marker?: Marker } | undefined {
+): OperationSteps<{ item: DocListItem; marker?: Marker } | undefined> {
   if (!onPage(el, ctx.only)) return undefined;
   const children = el.Children;
   const lbl = children.find((c) => c.StandardType === 'Lbl');
@@ -286,7 +289,7 @@ function listItemNode(
   // bullet as vector geometry and there is no text to extract.
   const label = lbl ? (lbl.ActualText ?? lbl.GetText()).trim() : '';
   const marker = label ? parseMarkerText(label)?.marker : undefined;
-  const blocks = body ? itemBlocks(ctx, body) : itemBlocks(ctx, el);
+  const blocks = yield* itemBlocks(ctx, body ?? el);
   if (!blocks.length) return undefined;
   const item: DocListItem = { kind: 'listItem', blocks };
   if (marker?.checked !== undefined) item.checked = marker.checked;
@@ -296,18 +299,18 @@ function listItemNode(
 /** An /L. Ordered-ness comes from /ListNumbering when the producer set one, and
  *  from the labels otherwise — which is the path our own authoring takes, since
  *  flow.ts appends a bare /L with no attributes. */
-function listNode(ctx: Ctx, el: StructElement): DocNode[] {
+function* listNode(ctx: Ctx, el: StructElement): OperationSteps<DocNode[]> {
   const items: DocListItem[] = [];
   const extra: DocNode[] = [];
   let labelled: Marker | undefined;
   let start: number | undefined;
   for (const child of el.Children) {
     if (child.StandardType !== 'LI') {
-      const n = elementNode(ctx, child);      // a non-/LI kid stays a sibling block
+      const n = yield* elementNode(ctx, child);      // a non-/LI kid stays a sibling block
       if (n) extra.push(n);
       continue;
     }
-    const built = listItemNode(ctx, child);
+    const built = yield* listItemNode(ctx, child);
     if (!built) continue;
     items.push(built.item);
     if (built.marker && !labelled) {
@@ -381,7 +384,13 @@ function linkHref(ctx: Ctx, el: StructElement): string | undefined {
  *  Page filtering and empty-node pruning live HERE, not in a serializer: two
  *  serializers deciding independently whether a node is empty is how the HTML
  *  and Markdown exports come to disagree about a document. */
-function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
+function* elementNode(ctx: Ctx, el: StructElement): OperationSteps<DocNode | undefined> {
+  const result = yield* elementNodeBody(ctx, el);
+  yield ctx.control.progress('model', ++ctx.completed, undefined, el.Page?.Number);
+  return result;
+}
+
+function* elementNodeBody(ctx: Ctx, el: StructElement): OperationSteps<DocNode | undefined> {
   if (!onPage(el, ctx.only)) return undefined;
   const type = el.StandardType;
 
@@ -401,7 +410,7 @@ function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
     };
   }
   if (type === 'L') {
-    const nodes = listNode(ctx, el);
+    const nodes = yield* listNode(ctx, el);
     // A single node returns itself; several mean the /L had non-/LI kids, which
     // the transparency rule keeps as siblings — wrap them so one node comes back.
     if (!nodes.length) return undefined;
@@ -431,7 +440,7 @@ function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
         if (ctx.only && n.page !== ctx.only) continue;
         if (n.text !== '') children.push(docText(n.text, n));
       } else {
-        const child = elementNode(ctx, n);
+        const child = yield* elementNode(ctx, n);
         if (child) children.push(child);
       }
     }
@@ -448,11 +457,12 @@ function elementNode(ctx: Ctx, el: StructElement): DocNode | undefined {
   return node;
 }
 
-function taggedModel(doc: Document, root: StructTreeRoot, only: Page | undefined): DocNode[] {
-  const ctx: Ctx = { doc, only, figures: new FigureContent(doc, only) };
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* taggedModelSteps(doc: Document, root: StructTreeRoot, only: Page | undefined, context: OperationContext): OperationSteps<DocNode[]> {
+  const ctx: Ctx = { doc, only, figures: new FigureContent(doc, only), control: context, completed: 0 };
   const out: DocNode[] = [];
   for (const child of root.Children) {
-    const node = elementNode(ctx, child);
+    const node = yield* elementNode(ctx, child);
     if (node) out.push(node);
   }
   return out;
@@ -658,8 +668,10 @@ function mergeLists(nodes: DocNode[]): DocNode[] {
   return out;
 }
 
-function untaggedModel(doc: Document, pages: Page[], ranks: Map<number, number>): DocNode[] {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* untaggedModelSteps(doc: Document, pages: Page[], ranks: Map<number, number>, context: OperationContext): OperationSteps<DocNode[]> {
   const out: DocNode[] = [];
+  let completed = 0;
   for (const page of pages) {
     const tables: Table[] = page.GetTables();
     // Table-absorbed blocks are emitted as part of their table, not twice — and
@@ -702,6 +714,7 @@ function untaggedModel(doc: Document, pages: Page[], ranks: Map<number, number>)
         sizes: [drawn.get(img.Stream) ?? { width: 0, height: 0 }], tagged: false,
       });
     }
+    yield context.progress('model', ++completed, pages.length, page.Number);
   }
   return out;
 }
@@ -710,13 +723,19 @@ function untaggedModel(doc: Document, pages: Page[], ranks: Map<number, number>)
  *  the document has one, and from geometry plus font-size ranking when it does
  *  not. The single walk behind every document exporter. */
 export function buildDocModel(doc: Document, pages: Page[]): DocNode[] {
+  return runOperation('buildDocModel', undefined, (context) => buildDocModelSteps(doc, pages, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* buildDocModelSteps(doc: Document, pages: Page[], context: OperationContext): OperationSteps<DocNode[]> {
   const root = doc.GetStructTree();
   if (root) {
     // The tree spans pages: walk it once, restricted to a single page when that
     // is all that was asked for, so an element crossing a page break stays one
     // element.
     const only = pages.length === 1 && doc.Pages.length > 1 ? pages[0] : undefined;
-    return taggedModel(doc, root, only);
+    return yield* taggedModelSteps(doc, root, only, context);
   }
-  return untaggedModel(doc, pages, headingRanks(doc));
+  const ranks = yield* headingRanksSteps(doc, context);
+  return yield* untaggedModelSteps(doc, pages, ranks, context);
 }

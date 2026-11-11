@@ -21,6 +21,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lossless JBIG2 image optimization.** `Optimize({ jbig2: true })` and
+  `OptimizeAsync` encode raw and byte-filtered 1-bit DeviceGray image XObjects
+  and stencils using generic-region arithmetic coding, without resizing or
+  substituting symbols. A stream is replaced only when its complete JBIG2
+  payload is smaller; Decode, masks and shared references survive. The separate
+  `report.jbig2` lists savings and declines without setting `lossy`. Existing
+  image codecs and PDF/A-1 documents are left alone. (nh1t.1)
+
+- **Cooperative cancellation and progress for long operations.** Raster, SVG, TIFF,
+  HTML, Markdown/assets, DOCX, and EPUB exports accept `signal` and `onProgress`, and gain
+  yielding `Async` counterparts. Synchronous return values stay unchanged;
+  async rendering yields between pages and encoding stages while individual
+  renders/codecs remain atomic. `OperationControlOptions` and `OperationProgress`
+  provide a shared vocabulary with phase-local counts and one-based page numbers.
+  Structural and PDF/A, PDF/UA, and PDF/X validators use the same controls and
+  async forms, yielding between nodes/rules without changing report ordering.
+  Colour and PDF/A, PDF/UA, and PDF/X transformations also support both forms;
+  completed in-place edits remain on cancellation, while pre-aborted calls leave
+  the document untouched. Nested validation retains the outer operation identity.
+  Optimization yields between scan/page/image/font/stream units and atomic
+  dedup iterations, keeping completed partial edits serializable.
+  Save supports the same controls in every output mode and gains `SaveAsync`;
+  it yields during planning, remapping, packing, object emission, and incremental
+  diffing, plus linearization iterations. Cancellation returns no bytes and
+  preserves retryable preparation work and signed-byte invariants.
+  HTML/Markdown/DOCX input on documents, pages, and flows, image-page imports,
+  and Flow rendering also have controlled async forms. Layout cancellation
+  preserves completed pages and finalizes note links/IDs without invoking
+  success callbacks; an untouched pre-aborted Flow remains reusable.
+  XFA conversion yields between plan/apply units while keeping placeholder-page
+  replacement atomic. The five conversion file helpers forward controls and
+  await yielding conversion before writing outputs.
+  (aspose-pdf-foss-for-ts-u34c.2)
+
 - **`doc.ReplaceFont` draws vertical text in the new face's vertical forms and metrics.** Vertical text replaced into an embedded font was re-encoded through the face's ordinary character map, so the vertical alternates a `-V` CMap selects came out in their horizontal shapes — a long-vowel mark `ー` as a horizontal bar down a column, brackets and the ideographic comma unrotated — and every glyph was placed by a stated default rather than by the face. Each glyph now goes through the face's `vrt2` feature, or its `vert` feature when it has no `vrt2`, from whichever script lists it, since a CJK face commonly lists it under `hani` or `kana` and not under the default script; the substituted glyph keeps the character it stands for in the text layer. Where the face has vertical metrics (`vhea`/`vmtx`), the vertical font dictionary states them as `/W2` — each glyph's advance height and its vertical origin at the top of the glyph plus its top side bearing — and the kern keeping pen positions uses those advances, so the ink sits where the face designs it. A face without vertical metrics keeps the 1 em default. (aspose-pdf-foss-for-ts-g0ky.10)
 - **`doc.ReplaceFont` replaces vertical text.** A font writing vertically (`/WMode 1`, the `-V` CMaps) was refused outright, page and all, because the new font had no vertical form. An embedded `to` — or fallback — now gets one: the same subset program under the `Identity-V` encoding, stating the standard default of a 1 em downward advance, so a document using one face both ways ends up with a horizontal and a vertical font dictionary over a single embedded program. Every `Tf`, ExtGState font and fallback run picks the form matching the text it replaces, and by default a kern after each glyph makes up the difference from the old font's vertical advance, so every glyph's pen position stays exactly where it was; `positions: 'natural'` lets the 1 em advances stand. A Standard-14 face has no vertical form, so vertical text given one is still left untouched and reported as `vertical`. (aspose-pdf-foss-for-ts-g0ky.8)
 - **`doc.ReplaceFont` rewrites the text tiling patterns and Type 3 fonts draw.** A tiling pattern's cell and a Type 3 font's glyph procedures are content streams of their own, which the page walk never entered, so text drawn in the old font inside one was left behind — reported in `refused`, but the old font stayed in the file and a fully replaced font did not leave it. Each is now renamed exactly as page content and annotation appearances are, found through the resource graph wherever it hangs: on the page, inside a form, inside another pattern, or in a Type 3 font's own resources. A Type 3 font's glyph procedures are handled together, since they all read the font's one `/Resources` and pruning the old font there after one procedure would leave its sibling naming nothing; and a pattern or Type 3 font is rewritten before the content that paints with it, because a pattern often shares the page's own `/Resources`, and the page's clean-up would otherwise pull the old font's name out from under it. A pattern or Type 3 font shared by several pages is rewritten once. The report gains `patterns` and `glyphProcedures`. A Type 3 font that states no `/Resources` borrows those of whatever shows it, which may differ page to page, so there is no single place to name the new font: it is still reported, now as `type3-glyph` with `part: 'type3-glyph'`. (aspose-pdf-foss-for-ts-g0ky.8)

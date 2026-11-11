@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import { escapeXml } from './xml.js';
 import { rgbHex, type Rgb } from './colorspace.js';
 import type { DocListItem, DocNode } from './docmodel.js';
@@ -311,11 +312,18 @@ function listItemBlocks(
  *  saying that it did. `numbering.xml` needs one `w:num` per list with that
  *  list's kind and start override, and the mapper is the only thing that knows
  *  how many ids it allocated and what each meant. */
-export function docxBody(
-  nodes: DocNode[], images: DocxImageSink, links: DocxLinkSink,
-): { xml: string; nums: DocxNumbering[] } {
+export function docxBody(nodes: DocNode[], images: DocxImageSink, links: DocxLinkSink): { xml: string; nums: DocxNumbering[] } {
+  return runOperation('docxBody', undefined, (context) => docxBodySteps(nodes, images, links, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* docxBodySteps(nodes: DocNode[], images: DocxImageSink, links: DocxLinkSink, context: OperationContext): OperationSteps<{ xml: string; nums: DocxNumbering[] }> {
   const ctx: Ctx = { images, links, nums: [], depth: 0, drawingId: 0 };
   const out: string[] = [];
-  for (const n of nodes) nodeBlocks(n, ctx, out);
+  let completed = 0;
+  for (const n of nodes) {
+    nodeBlocks(n, ctx, out);
+    yield context.progress('blocks', ++completed, nodes.length);
+  }
   return { xml: out.join(''), nums: ctx.nums };
 }

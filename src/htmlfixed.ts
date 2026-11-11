@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { Matrix, mul, translate } from './text.js';
@@ -164,9 +165,12 @@ class HtmlSink implements RenderSink {
 /** Build the fixed-mode body — one `<div class="pg">` per page — plus the
  *  document-wide font-class CSS. Never throws per page: a page that fails
  *  mid-walk contributes whatever was emitted, matching renderPageToSvg. */
-export function fixedBody(
-  doc: Document, pages: Page[], opts: HtmlOptions,
-): { body: string; css: string } {
+export function fixedBody(doc: Document, pages: Page[], opts: HtmlOptions): { body: string; css: string } {
+  return runOperation('fixedBody', undefined, (context) => fixedBodySteps(doc, pages, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* fixedBodySteps(doc: Document, pages: Page[], opts: HtmlOptions, context: OperationContext): OperationSteps<{ body: string; css: string }> {
   const box = opts.box ?? 'crop';
   const fonts = new FontRegistry();
   const embed = opts.fonts && opts.fonts !== 'map'
@@ -178,6 +182,7 @@ export function fixedBody(
   let tabIndex = 0;
   const nextTabIndex = () => ++tabIndex;
   let anySubmit = false;
+  let completed = 0;
   for (const page of pages) {
     const { matrix, width, height } = baseMatrix(page, box);
     const sink = new HtmlSink(doc, fonts, embed);
@@ -224,6 +229,7 @@ export function fixedBody(
       // Controls last, so they stack above the backdrop and the text and can
       // actually be clicked.
       + (fc?.html ?? '') + `</div>`);
+    yield context.progress('render', ++completed, pages.length, page.Number);
   }
   let body = divs.join('\n');
   if (opts.forms && anySubmit) {

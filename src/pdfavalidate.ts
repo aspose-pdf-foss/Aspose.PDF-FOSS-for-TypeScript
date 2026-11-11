@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { budgetFor } from './decodebudget.js';
 import type { Document } from './document.js';
 import {
@@ -6,7 +8,7 @@ import {
 import { ValidationReport, type ValidationIssue, type Severity } from './validation.js';
 import { inflateStream } from './flate.js';
 import { parseIccProfile } from './icc.js';
-import { validatePdfUa } from './structvalidate.js';
+import { validatePdfUaSteps } from './structvalidate.js';
 import { parseCMap } from './cmap.js';
 import type { Page } from './page.js';
 import {
@@ -53,7 +55,16 @@ type Rule = (ctx: Ctx) => ValidationIssue[];
 
 /** Entry point. The facade supplies the catalog so catalog-only rules need no
  *  new public accessor (mirrors validatePdfUa). */
-export function validatePdfA(doc: Document, catalog: PdfDict, level: PdfALevel): ValidationReport {
+export function validatePdfA(doc: Document, catalog: PdfDict, level: PdfALevel, options: OperationControlOptions = {}): ValidationReport {
+  return runOperation('ValidatePdfA', options, (context) => validatePdfASteps(doc, catalog, level, context));
+}
+
+export function validatePdfAAsync(doc: Document, catalog: PdfDict, level: PdfALevel, options: OperationControlOptions = {}): Promise<ValidationReport> {
+  return runOperationAsync('ValidatePdfA', options, (context) => validatePdfASteps(doc, catalog, level, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* validatePdfASteps(doc: Document, catalog: PdfDict, level: PdfALevel, context: OperationContext): OperationSteps<ValidationReport> {
   const { part, level: lvl } = parseLevel(level);
   const ctx: Ctx = {
     doc, catalog, part, level: lvl,
@@ -61,9 +72,13 @@ export function validatePdfA(doc: Document, catalog: PdfDict, level: PdfALevel):
     cache: new Map(),
   };
   const issues: ValidationIssue[] = [];
-  for (const rule of RULES) issues.push(...rule(ctx));
+  let completed = 0;
+  for (const rule of RULES) {
+    issues.push(...rule(ctx));
+    yield context.progress('rules', ++completed, RULES.length);
+  }
   if (lvl === 'a') {
-    for (const ua of validatePdfUa(doc, catalog).Issues) {
+    for (const ua of (yield* validatePdfUaSteps(doc, catalog, 1, context.scope('tagging'))).Issues) {
       // PDF/UA IDENTIFICATION is excluded, and that is not tidiness. ISO 19005
       // level 'a' requires PDF/UA-1 TAGGING; it does not require the document
       // to make a PDF/UA CONFORMANCE CLAIM. A PDF/A-2a file identifies itself

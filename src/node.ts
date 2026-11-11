@@ -1,3 +1,4 @@
+import { createOperationControl, type OperationControlOptions } from './checkpoint.js';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -16,6 +17,13 @@ import type { FlowOptions } from './flow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { UnsupportedDeclaration } from './cssprop.js';
 import { rethrowLimit } from './errors.js';
+
+function captureFileControl(options?: OperationControlOptions) {
+  const captured = { signal: options?.signal, onProgress: options?.onProgress };
+  const control = createOperationControl(captured);
+  control.checkpoint();
+  return { captured, control };
+}
 
 /** Read a PDF for one of the wrappers below, refusing an oversized file from
  *  its SIZE before reading it — `Document.OpenFile`'s rule, for the same
@@ -49,9 +57,15 @@ export async function savePageImageFile(
   outPath: string,
   options?: ImageOptions,
 ): Promise<void> {
+  const { captured, control } = captureFileControl(options);
+  options = { ...options, ...captured };
+
   const input = await readPdfFile(inputPath);
+  control.checkpoint();
   const doc = Document.Open(input);
-  const png = doc.Pages[pageIndex].ToImage(options);
+  const png = await doc.Pages[pageIndex].ToImageAsync(options);
+  control.checkpoint();
+  control.checkpoint();
   await writeFile(outPath, png);
 }
 
@@ -142,15 +156,21 @@ export async function saveMarkdownFile(
   outPath: string,
   options?: MarkdownExportOptions,
 ): Promise<string[]> {
+  const { captured, control } = captureFileControl(options);
+  options = { ...options, ...captured };
+
   const input = await readPdfFile(inputPath);
-  const { markdown, images } = Document.Open(input).ToMarkdownAssets(options);
+  control.checkpoint();
+  const { markdown, images } = await Document.Open(input).ToMarkdownAssetsAsync(options);
   const base = dirname(outPath);
   await mkdir(base, { recursive: true });
+  control.checkpoint();
   await writeFile(outPath, markdown);
   const written = [outPath];
   for (const img of images) {
     const p = join(base, img.path);
     await mkdir(dirname(p), { recursive: true });
+    control.checkpoint();
     await writeFile(p, img.bytes);
     written.push(p);
   }
@@ -164,9 +184,16 @@ export async function saveMarkdownFile(
 export async function saveDocxFile(
   inputPath: string, outPath: string, options?: DocxOptions,
 ): Promise<void> {
+  const { captured, control } = captureFileControl(options);
+  options = { ...options, ...captured };
+
   const input = await readPdfFile(inputPath);
+  control.checkpoint();
+  const output = await Document.Open(input).ToDocxAsync(options);
+  control.checkpoint();
   await mkdir(dirname(outPath), { recursive: true });
-  await writeFile(outPath, Document.Open(input).ToDocx(options));
+  control.checkpoint();
+  await writeFile(outPath, output);
 }
 
 /** Read a PDF from disk and return its document metadata (/Info). */
@@ -334,20 +361,27 @@ export async function htmlFileToPdf(
   outPath: string,
   options: HtmlFileOptions = {},
 ): Promise<{ skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] }> {
+  const { captured, control } = captureFileControl(options);
+  options = { ...options, ...captured };
+
   // `encoding` is ours and `resolveImage` gets a default, so both are taken
   // out before the rest is forwarded — the destructure-it-out rule textedit.ts
   // already follows for `region`, so a key we own cannot reach a consumer that
   // would silently accept it.
   const { encoding, resolveImage, ...flow } = options;
   const bytes = new Uint8Array(await readFile(inputPath));
+  control.checkpoint();
   const tree = parseHtmlBytes(bytes, { encoding });
   const doc = Document.New();
-  const { skipped, unsupported } = doc.AddHtml(tree, {
+  const { skipped, unsupported } = await doc.AddHtmlAsync(tree, {
     ...flow,
     resolveImage: resolveImage ?? siblingImages(dirname(resolve(inputPath))),
   });
+  const output = await doc.SaveAsync(captured);
+  control.checkpoint();
   await mkdir(dirname(resolve(outPath)), { recursive: true });
-  await writeFile(outPath, doc.Save());
+  control.checkpoint();
+  await writeFile(outPath, output);
   return { skipped, unsupported };
 }
 
@@ -405,10 +439,17 @@ export interface DocxFileOptions extends DocxFlowOptions, FlowOptions {
 export async function docxFileToPdf(
   inputPath: string, outPath: string, options: DocxFileOptions = {},
 ): Promise<{ skipped: DocxSkipped[] }> {
+  const { captured, control } = captureFileControl(options);
+  options = { ...options, ...captured };
+
   const bytes = new Uint8Array(await readFile(inputPath));
+  control.checkpoint();
   const doc = Document.New();
-  const { skipped } = doc.AddDocx(bytes, options);
+  const { skipped } = await doc.AddDocxAsync(bytes, options);
+  const output = await doc.SaveAsync(captured);
+  control.checkpoint();
   await mkdir(dirname(resolve(outPath)), { recursive: true });
-  await writeFile(outPath, doc.Save());
+  control.checkpoint();
+  await writeFile(outPath, output);
   return { skipped };
 }

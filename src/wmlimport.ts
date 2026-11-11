@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 /** The three `AddDocx` entry points' one implementation (`m2fp.5`) — the wiring
  *  and nothing else, `htmlflow.ts`'s shape: open the package, supply fonts and
  *  image bytes, hand the width down. The only module of the DOCX import that
@@ -12,12 +14,12 @@ import type { Document } from './document.js';
 import type { FamilyResolver } from './cssinline.js';
 import type { FlowElement, Compromise } from './flowelement.js';
 import { openDocx, type OpenedDocx } from './wmlread.js';
-import { wmlElements, type DocxSkipped, type DocxNoteOptions, type WmlFlowEnv } from './wmlflow.js';
+import { wmlElementsSteps, type DocxSkipped, type DocxNoteOptions, type WmlFlowEnv } from './wmlflow.js';
 import { documentFamilyResolver } from './cssfont.js';
 
 export type { DocxSkipped } from './wmlflow.js';
 
-export interface DocxFlowOptions {
+export interface DocxFlowOptions extends OperationControlOptions {
   /** Override the font bridge. Default: the document's registered families,
    *  then a generic chosen by the DOCX font table's w:family. */
   resolveFamily?: FamilyResolver;
@@ -44,9 +46,12 @@ export function openDocxSource(doc: Document, bytes: Uint8Array): OpenedDocxSour
   return { opened: openDocx(bytes, doc.loadLimits) };
 }
 
-export function docxElements(
-  doc: Document, src: Uint8Array | OpenedDocxSource, width: number, options: DocxFlowOptions = {},
-): { segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean } {
+export function docxElements(doc: Document, src: Uint8Array | OpenedDocxSource, width: number, options: DocxFlowOptions = {}): { segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean } {
+  return runOperation('docxElements', options, (context) => docxElementsSteps(doc, src, width, options, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* docxElementsSteps(doc: Document, src: Uint8Array | OpenedDocxSource, width: number, options: DocxFlowOptions, context: OperationContext): OperationSteps<{ segments: FlowElement[][]; skipped: DocxSkipped[]; notes: DocxNoteOptions; cited: boolean }> {
   checkDocxOptions(options);
   const { opened } = src instanceof Uint8Array ? openDocxSource(doc, src) : src;
   const resolver = options.resolveFamily ?? documentFamilyResolver(doc);
@@ -58,7 +63,8 @@ export function docxElements(
     },
     image: (part) => opened.readPart(part),
   };
-  const out = wmlElements(opened.doc, width, env);
+  yield context.progress('parse', 1, 1);
+  const out = yield* wmlElementsSteps(opened.doc, width, env, context);
   if (options.onSkipped !== undefined) reportCompromises(out.segments.flat(), options.onSkipped);
   return out;
 }

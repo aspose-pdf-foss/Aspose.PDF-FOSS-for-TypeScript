@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfObject, PdfStream, isDict, isName, isStream, isArray } from './types.js';
@@ -319,8 +320,17 @@ function walkType3(ctx: Ctx, fonts: PdfDict | undefined, seen: Set<PdfDict>): vo
  * image and never drawn by a `Do`.
  */
 export function collectImageUsage(doc: Document): ImageUsageMap {
+  return runOperation('collectImageUsage', undefined, (context) => collectImageUsageSteps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* collectImageUsageSteps(doc: Document, context: OperationContext): OperationSteps<ImageUsageMap> {
   const ctx: Ctx = { doc, usage: new Map(), tokens: { tokens: 0 } };
-  for (const page of doc.Pages) walkPage(ctx, page);
+  let completed = 0;
+  for (const page of doc.Pages) {
+    walkPage(ctx, page);
+    yield context.progress('image-pages', ++completed, doc.Pages.length, page.Number);
+  }
 
   for (const [, obj] of doc.objectEntries()) {
     if (!isStream(obj)) continue;

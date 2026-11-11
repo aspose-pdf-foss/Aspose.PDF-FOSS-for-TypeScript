@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import { PdfObject } from './types.js';
 import { serializeObject } from './serialize.js';
 
@@ -19,17 +20,24 @@ export interface ObjectDelta {
  *  nothing -- and it fails in the safe direction: a document that merely
  *  reordered a dict's keys is reported changed and written again, where a
  *  missed change would be silently dropped from the revision. */
-export function diffObjects(
-  baseline: Map<number, PdfObject>,
-  live: Map<number, PdfObject>,
-): ObjectDelta {
+export function diffObjects(baseline: Map<number, PdfObject>, live: Map<number, PdfObject>): ObjectDelta {
+  return runOperation('diffObjects', undefined, (context) => diffObjectsSteps(baseline, live, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* diffObjectsSteps(baseline: Map<number, PdfObject>, live: Map<number, PdfObject>, context: OperationContext): OperationSteps<ObjectDelta> {
   const replaced = new Set<number>();
   const added = new Set<number>();
   const freed = new Set<number>();
 
+  let completeddiff = 0;
   for (const [num, obj] of live) {
-    if (!baseline.has(num)) { added.add(num); continue; }
+    operationUnit: {
+    if (!baseline.has(num)) { added.add(num); break operationUnit; }
     if (!sameBytes(serializeObject(baseline.get(num)!), serializeObject(obj))) replaced.add(num);
+
+    }
+    yield context.progress('diff', ++completeddiff, live.size, undefined);
   }
   for (const num of baseline.keys()) if (!live.has(num)) freed.add(num);
 

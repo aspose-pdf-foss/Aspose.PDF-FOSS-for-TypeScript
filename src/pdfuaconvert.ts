@@ -1,13 +1,15 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, PdfRef, isDict, isName, name } from './types.js';
-import { validatePdfUa, type PdfUaPart } from './structvalidate.js';
+import { validatePdfUa, validatePdfUaSteps, type PdfUaPart } from './structvalidate.js';
 import { STANDARD_STRUCTURE_TYPES } from './struct.js';
 import type { StructElement } from './struct.js';
 import { PDF20_NS } from './structns.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 import { describeXmpPackets } from './pdfaextfix.js';
 
-export interface PdfUaConvertOptions {
+export interface PdfUaConvertOptions extends OperationControlOptions {
   /** Which part of ISO 14289 to target: 1 (the default) or 2. */
   part?: PdfUaPart;
   /** Catalog /Lang (e.g. 'en-US'); resolves NaturalLanguage. Never fabricated. */
@@ -205,17 +207,29 @@ const PASSES: Pass[] = [
 
 /** Remediate `doc` toward PDF/UA-1, then re-validate. The facade supplies the
  *  catalog (mirrors validatePdfUa). Mutates the live model in place. */
-export function convertToPdfUa(
-  doc: Document, catalog: PdfDict, opts: PdfUaConvertOptions = {},
-): ConversionReport {
+export function convertToPdfUa(doc: Document, catalog: PdfDict, opts: PdfUaConvertOptions = {}): ConversionReport {
+  return runOperation('ConvertToPdfUa', opts, (context) => convertToPdfUaSteps(doc, catalog, opts, context));
+}
+
+export function convertToPdfUaAsync(doc: Document, catalog: PdfDict, opts: PdfUaConvertOptions = {}): Promise<ConversionReport> {
+  return runOperationAsync('ConvertToPdfUa', opts, (context) => convertToPdfUaSteps(doc, catalog, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertToPdfUaSteps(doc: Document, catalog: PdfDict, opts: PdfUaConvertOptions, context: OperationContext): OperationSteps<ConversionReport> {
   const part = opts.part ?? 1;
   const ctx: Uctx = { doc, catalog, part, opts, R: (o) => doc.resolve(o) };
+  doc.markModified();
   const applied: ConvertAction[] = [];
-  for (const pass of PASSES) applied.push(...pass(ctx));
+  let completed = 0;
+  for (const pass of PASSES) {
+    applied.push(...pass(ctx));
+    yield context.progress('passes', ++completed, PASSES.length);
+  }
   // **Invariant:** the re-validation part MUST match the conversion part.
   // Leaving it at the default reports a part-2 conversion as passing while the
   // part-2 rules were never asked — and convertToPdfUa's contract is that
   // `unresolved` mirrors the validator exactly.
-  const unresolved = validatePdfUa(doc, catalog, part).Errors;
+  const unresolved = (yield* validatePdfUaSteps(doc, catalog, part, context.scope('validate'))).Errors;
   return { applied, unresolved, passed: unresolved.length === 0 };
 }

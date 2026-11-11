@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import {
   PdfObject, PdfDict, PdfRef, isName, isDict, isArray, isRef, isStream, isString, name,
@@ -7,7 +9,7 @@ import { type ValidationIssue } from './validation.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
 import {
-  validatePdfA, parseLevel, destProfileRefExempt, widgetActionKeys, type PdfALevel,
+  validatePdfA, validatePdfASteps, parseLevel, destProfileRefExempt, widgetActionKeys, type PdfALevel,
   pdfaIntentColorSpace, pageScans,
 } from './pdfavalidate.js';
 import type { Ctx as ScanCtx } from './validatectx.js';
@@ -24,7 +26,7 @@ export type ConvertCategory =
   | 'postScript' | 'info' | 'formActions' | 'deviceColor' | 'transparency' | 'extensionSchemas'
   | 'xmpValueTypes' | 'fontEmbedding';
 
-export interface ConvertOptions {
+export interface ConvertOptions extends OperationControlOptions {
   /** Output-intent ICC profile. Defaults to a bundled sRGB profile. */
   iccProfile?: { bytes: Uint8Array; n: 1 | 3 | 4; identifier?: string };
   /** Destructive-removal categories to skip (then reported unresolved). */
@@ -46,9 +48,16 @@ type Pass = (ctx: Cctx) => ConvertAction[];
 
 /** Remediate `doc` toward PDF/A `level`, then re-validate. The facade supplies
  *  the catalog (mirrors validatePdfA). Mutates the live model in place. */
-export function convertToPdfA(
-  doc: Document, catalog: PdfDict, level: PdfALevel, opts: ConvertOptions = {},
-): ConversionReport {
+export function convertToPdfA(doc: Document, catalog: PdfDict, level: PdfALevel, opts: ConvertOptions = {}): ConversionReport {
+  return runOperation('ConvertToPdfA', opts, (context) => convertToPdfASteps(doc, catalog, level, opts, context));
+}
+
+export function convertToPdfAAsync(doc: Document, catalog: PdfDict, level: PdfALevel, opts: ConvertOptions = {}): Promise<ConversionReport> {
+  return runOperationAsync('ConvertToPdfA', opts, (context) => convertToPdfASteps(doc, catalog, level, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertToPdfASteps(doc: Document, catalog: PdfDict, level: PdfALevel, opts: ConvertOptions, context: OperationContext): OperationSteps<ConversionReport> {
   const { part, level: lvl } = parseLevel(level);
   const ic = opts.iccProfile ?? { bytes: srgbIcc(), n: SRGB_N as 3, identifier: 'sRGB' };
   const ctx: Cctx = {
@@ -57,9 +66,14 @@ export function convertToPdfA(
     icc: { bytes: ic.bytes, n: ic.n, identifier: ic.identifier ?? 'Custom' },
     R: (o) => doc.resolve(o),
   };
+  doc.markModified();
   const applied: ConvertAction[] = [];
-  for (const pass of PASSES) applied.push(...pass(ctx));
-  const unresolved = validatePdfA(doc, catalog, level).Errors;
+  let completed = 0;
+  for (const pass of PASSES) {
+    applied.push(...pass(ctx));
+    yield context.progress('passes', ++completed, PASSES.length);
+  }
+  const unresolved = (yield* validatePdfASteps(doc, catalog, level, context.scope('validate'))).Errors;
   return { applied, unresolved, passed: unresolved.length === 0 };
 }
 

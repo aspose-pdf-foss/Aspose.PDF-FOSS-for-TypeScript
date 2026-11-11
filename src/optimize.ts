@@ -1,23 +1,26 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import {
   PdfDict, PdfObject, PdfStream, isDict, isStream, isName, isArray,
 } from './types.js';
 import { UnsupportedFeatureError, rethrowLimit } from './errors.js';
-import { collectGlyphUsage, UsageMap } from './glyphusage.js';
+import { collectGlyphUsageSteps, UsageMap } from './glyphusage.js';
 import { shrinkGlyf, shrinkCff, shrinkNameKeyedCff, shrinkType1, shrinkCffSfnt, ShrinkResult } from './fontshrink.js';
 import { Type1Font } from './type1.js';
-import { dedupStreams } from './dedup.js';
-import { recompressStreams } from './recompress.js';
-import { optimizeImages, OptimizeImageOptions, ImageOptimization, SkippedImage } from './imageopt.js';
-import { pruneDefaultResources, DrPruneResult } from './drprune.js';
+import { dedupStreamsSteps } from './dedup.js';
+import { recompressStreamsSteps } from './recompress.js';
+import { optimizeImagesSteps, OptimizeImageOptions, ImageOptimization, SkippedImage } from './imageopt.js';
+import { optimizeBilevelImagesSteps, type BilevelOptimizationResult } from './bilevelopt.js';
+import { pruneDefaultResourcesSteps, DrPruneResult } from './drprune.js';
 import { parseSfnt } from './sfnt.js';
 import { hasSignatureField } from './signature.js';
-import { unembedStandard14, UnembeddedFont, UnembedSkip } from './unembed.js';
+import { unembedStandard14Steps, UnembeddedFont, UnembedSkip } from './unembed.js';
 import { decodeStream, encodeStream } from './filters.js';
 
 /** Which concerns to run. fonts/dedup/compress are lossless and default to true;
  *  `images` is LOSSY and runs only when supplied. */
-export interface OptimizeOptions {
+export interface OptimizeOptions extends OperationControlOptions {
   fonts?: boolean;
   dedup?: boolean;
   compress?: boolean;
@@ -33,6 +36,9 @@ export interface OptimizeOptions {
    *  `true` shorthand — it would mean "degrade my images at settings I did not
    *  choose". */
   images?: OptimizeImageOptions;
+  /** Losslessly encode 1-bit DeviceGray images and stencils as JBIG2 when
+   *  smaller. Off by default. Existing image codecs and PDF/A-1 are declined. */
+  jbig2?: boolean;
 }
 
 export type { OptimizeImageOptions, ImageOptimization, SkippedImage, DrPruneResult, UnembeddedFont, UnembedSkip };
@@ -64,6 +70,9 @@ export interface OptimizeReport {
   images: ImageOptimization[];
   /** Images left untouched, and why. */
   skippedImages: SkippedImage[];
+  /** Lossless bilevel image rewrites and declines. Empty unless jbig2 is set;
+   *  independent of the lossy JPEG images/skippedImages lists. */
+  jbig2: BilevelOptimizationResult;
   /** True when the images concern ran: output is no longer visually identical. */
   lossy: boolean;
   dedup: { merged: number; bytesSaved: number };
@@ -269,34 +278,40 @@ function groupByProgram(
   return [...groups.values()];
 }
 
-function optimizeFonts(doc: Document, report: OptimizeReport, unembedded: ReadonlySet<PdfDict>): void {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* optimizeFontsSteps(doc: Document, report: OptimizeReport, unembedded: ReadonlySet<PdfDict>, context: OperationContext): OperationSteps<void> {
   // Must precede every shrink: shrinkOne swaps in a new program stream, which
   // this answer must not depend on. See glyphNameDroppableFonts.
   const nameDroppable = glyphNameDroppableFonts(doc);
-  const usage: UsageMap = collectGlyphUsage(doc);
+  const usage: UsageMap = yield* collectGlyphUsageSteps(doc, context);
+  let completedfonts = 0;
   for (const g of groupByProgram(doc, usage, report, unembedded)) {
+    operationUnit: {
     // One program, one entry: reporting per dict would double-count the bytes a
     // single shrink saved.
     const baseFont = baseFontOf(doc, g.fonts[0]);
     if (g.incomplete !== undefined) {
       report.skipped.push({ baseFont, reason: g.incomplete });
-      continue;
+      break operationUnit;
     }
     // Names are droppable only when every dict reaching the program licenses it.
     const dropNames = g.fonts.every((f) => nameDroppable.has(f));
     const out = shrinkOne(doc, g.prog, g.gids, dropNames);
-    if ('reason' in out) { report.skipped.push({ baseFont, reason: out.reason }); continue; }
+    if ('reason' in out) { report.skipped.push({ baseFont, reason: out.reason }); break operationUnit; }
     report.fonts.push({
       baseFont,
       gidsKept: out.result.gidsKept,
       gidsDropped: out.result.gidsDropped,
       bytesSaved: out.bytesSaved,
     });
+
+    }
+    yield context.progress('fonts', ++completedfonts, undefined, undefined);
   }
 }
 
 /**
- * Shrink the live model. Passes run images -> fonts -> dedup -> compress: images
+ * Shrink the live model. Passes run images/JBIG2 -> fonts -> dedup -> compress: images
  * and fonts rewrite stream payloads, dedup then merges payloads those passes just
  * made identical, and compress re-deflates the rest.
  *
@@ -304,15 +319,28 @@ function optimizeFonts(doc: Document, report: OptimizeReport, unembedded: Readon
  * recompression pass; `report.lossy` records whether it ran.
  */
 export function optimizeDocument(doc: Document, opts: OptimizeOptions = {}): OptimizeReport {
+  return runOperation('Optimize', opts, (context) => optimizeDocumentSteps(doc, opts, context));
+}
+
+export function optimizeDocumentAsync(doc: Document, opts: OptimizeOptions = {}): Promise<OptimizeReport> {
+  return runOperationAsync('Optimize', opts, (context) => optimizeDocumentSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* optimizeDocumentSteps(doc: Document, opts: OptimizeOptions, context: OperationContext): OperationSteps<OptimizeReport> {
   if (hasSignatureField(doc)) {
     throw new UnsupportedFeatureError(
       'Optimize would invalidate an existing signature; optimize before signing',
     );
   }
+  doc.markModified();
+  const totalPasses = [opts.dr ?? true, !!opts.images, !!opts.jbig2, !!opts.unembedStandard14, opts.fonts ?? true, opts.dedup ?? true, opts.compress ?? true].filter(Boolean).length;
+  let completedPasses = 0;
   const report: OptimizeReport = {
     fonts: [], skipped: [],
     unembedded: [], unembedSkipped: [],
     images: [], skippedImages: [],
+    jbig2: { images: [], skippedImages: [], bytesSaved: 0 },
     lossy: false,
     dedup: { merged: 0, bytesSaved: 0 },
     compress: { streams: 0, bytesSaved: 0 },
@@ -324,7 +352,10 @@ export function optimizeDocument(doc: Document, opts: OptimizeOptions = {}): Opt
   // and running later means optimizeFonts shrinks that program and
   // recompressStreams re-deflates it — both reporting bytesSaved for bytes the
   // output file never contains.
-  if (opts.dr ?? true) report.dr = pruneDefaultResources(doc);
+  if (opts.dr ?? true) {
+    report.dr = yield* pruneDefaultResourcesSteps(doc, context);
+    yield context.progress('passes', ++completedPasses, totalPasses);
+  }
 
   // Images run first for the same reason fonts precede dedup: a pass that
   // rewrites stream payloads must run before dedup, so dedup can merge the
@@ -332,28 +363,44 @@ export function optimizeDocument(doc: Document, opts: OptimizeOptions = {}): Opt
   // recompresses to N identical streams). compress then skips the DCT streams
   // this wrote, since re-wrapping an image codec only grows it.
   if (opts.images) {
-    const r = optimizeImages(doc, opts.images);
+    const r = yield* optimizeImagesSteps(doc, opts.images, context);
     report.images = r.images;
     report.skippedImages = r.skippedImages;
     report.lossy = true;
+    yield context.progress('passes', ++completedPasses, totalPasses);
+  }
+  if (opts.jbig2) {
+    report.jbig2 = yield* optimizeBilevelImagesSteps(doc, context);
+    yield context.progress('passes', ++completedPasses, totalPasses);
   }
   // Before fonts: a program about to be removed must not be subset first, nor
   // counted twice in bytesSaved.
   let unembedded: ReadonlySet<PdfDict> = new Set();
   if (opts.unembedStandard14) {
-    const u = unembedStandard14(doc);
+    const u = yield* unembedStandard14Steps(doc, context);
     report.unembedded = u.unembedded;
     report.unembedSkipped = u.skipped;
     unembedded = u.fonts;
+    yield context.progress('passes', ++completedPasses, totalPasses);
   }
-  if (opts.fonts ?? true) optimizeFonts(doc, report, unembedded);
-  if (opts.dedup ?? true) report.dedup = dedupStreams(doc);
-  if (opts.compress ?? true) report.compress = recompressStreams(doc);
+  if (opts.fonts ?? true) {
+    yield* optimizeFontsSteps(doc, report, unembedded, context);
+    yield context.progress('passes', ++completedPasses, totalPasses);
+  }
+  if (opts.dedup ?? true) {
+    report.dedup = yield* dedupStreamsSteps(doc, context);
+    yield context.progress('passes', ++completedPasses, totalPasses);
+  }
+  if (opts.compress ?? true) {
+    report.compress = yield* recompressStreamsSteps(doc, context);
+    yield context.progress('passes', ++completedPasses, totalPasses);
+  }
 
   report.bytesSaved =
     report.fonts.reduce((n, f) => n + f.bytesSaved, 0) +
     report.unembedded.reduce((n, f) => n + f.bytesSaved, 0) +
     report.images.reduce((n, i) => n + i.bytesSaved, 0) +
+    report.jbig2.bytesSaved +
     report.dr.bytesSaved + report.dedup.bytesSaved + report.compress.bytesSaved;
   doc.markModified();
   return report;

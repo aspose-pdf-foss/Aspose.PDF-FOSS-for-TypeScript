@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import { createHash } from 'node:crypto';
 import type { Document } from './document.js';
 import {
@@ -134,9 +135,15 @@ const MAX_PASSES = 8;
  * merged.
  */
 export function dedupStreams(doc: Document): DedupResult {
+  return runOperation('dedupStreams', undefined, (context) => dedupStreamsSteps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* dedupStreamsSteps(doc: Document, context: OperationContext): OperationSteps<DedupResult> {
   const total: DedupResult = { merged: 0, bytesSaved: 0 };
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const r = dedupOnce(doc);
+    yield context.progress('dedup', pass + 1);
     if (r.merged === 0) break;
     total.merged += r.merged;
     total.bytesSaved += r.bytesSaved;

@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import { deflateSync, inflateSync } from 'node:zlib';
 import {
   PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isArray, isStream, isName, ref, name,
@@ -67,7 +68,8 @@ function nbits(v: number): number {
 
 /** Re-run the mark-sweep plan locally (no runtime import of serializer.ts, which
  *  imports this module). Mirrors `planDocument`. */
-function planLocal(objects: Map<number, PdfObject>, trailer: PdfDict): Plan {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* planLocalSteps(objects: Map<number, PdfObject>, trailer: PdfDict, context: OperationContext): OperationSteps<Plan> {
   const rootRef = trailer.get('Root');
   if (!isRef(rootRef)) throw new PdfParseError('cannot serialize: /Root is not an indirect reference');
   const infoRef = trailer.get('Info');
@@ -82,14 +84,25 @@ function planLocal(objects: Map<number, PdfObject>, trailer: PdfDict): Plan {
   };
   enqueue(rootRef.num);
   if (isRef(infoRef)) enqueue(infoRef.num);
+  let completedplan = 0;
   while (queue.length) {
+    operationUnit: {
     const obj = objects.get(queue.shift()!);
-    if (obj === undefined) continue;
+    if (obj === undefined) break operationUnit;
     const refs: PdfRef[] = [];
     refsIn(obj, refs);
     for (const r of refs) if (objects.has(r.num)) enqueue(r.num);
+
+    }
+    yield context.progress('plan', ++completedplan, undefined, undefined);
   }
-  const objs = order.map((old) => remap(objects.get(old)!, oldToNew));
+  const objs: PdfObject[] = [];
+  let completedremap = 0;
+  for (const old of order) {
+    operationUnit: { objs.push(remap(objects.get(old)!, oldToNew));
+    }
+    yield context.progress('remap', ++completedremap, order.length, undefined);
+  }
   return { rootRef, infoRef: isRef(infoRef) ? infoRef : null, oldToNew, objs };
 }
 
@@ -454,10 +467,13 @@ interface Resolved {
 /** Serialize the live object map as a linearized ("Fast Web View") PDF.
  *  Classic xref, plaintext, two cross-reference sections, fixed-width
  *  placeholder backfill per ISO 32000-1 Annex F. */
-export function serializeLinearized(
-  objects: Map<number, PdfObject>, trailer: PdfDict, ver = '1.7',
-): Uint8Array {
-  const plan = planLocal(objects, trailer);
+export function serializeLinearized(objects: Map<number, PdfObject>, trailer: PdfDict, ver = '1.7'): Uint8Array {
+  return runOperation('serializeLinearized', undefined, (context) => serializeLinearizedSteps(objects, trailer, ver, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* serializeLinearizedSteps(objects: Map<number, PdfObject>, trailer: PdfDict, ver: string, context: OperationContext): OperationSteps<Uint8Array> {
+  const plan = yield* planLocalSteps(objects, trailer, context);
   const layout = computeLinearLayout(plan);
 
   // Linearized layout order:
@@ -723,10 +739,12 @@ export function serializeLinearized(
   for (let iter = 0; ; iter++) {
     maxData = 0;
     const { measured } = emit(zero);           // pass 1: measure
-    bytes = emit(measured).bytes;              // pass 2: backfill
+    bytes = emit(measured).bytes;
+    yield context.progress('linearize', iter + 1);              // pass 2: backfill
     if (!compress || maxData <= padTo || iter >= 8) break;
     padTo = maxData;                           // grow to cover both passes; retry
   }
+  yield context.progress('assemble', 1, 1);
   return bytes;
 }
 

@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { resolveHyphenation, type HyphenationOptions } from './hyphenate.js';
 import { resolveTabStops, type TabStop } from './tabstops.js';
 import type { Document } from './document.js';
@@ -43,9 +45,9 @@ import {
 } from './flowblock.js';
 import { table, type FlowTableOptions } from './flowtable.js';
 import type { TableBuilder } from './tableauthor.js';
-import { markdownElements, type MarkdownFlowOptions, type MarkdownResult } from './mdflow.js';
-import { htmlElements, type HtmlFlowOptions, type HtmlFlowResult } from './htmlflow.js';
-import { docxElements, type DocxFlowOptions, type DocxFlowResult, type DocxSkipped, type OpenedDocxSource } from './wmlimport.js';
+import { markdownElementsSteps, type MarkdownFlowOptions, type MarkdownResult } from './mdflow.js';
+import { htmlElementsSteps, type HtmlFlowOptions, type HtmlFlowResult } from './htmlflow.js';
+import { docxElementsSteps, type DocxFlowOptions, type DocxFlowResult, type DocxSkipped, type OpenedDocxSource } from './wmlimport.js';
 import type { HtmlDocument } from './htmldom.js';
 import type { MdDocument } from './mdast.js';
 
@@ -1672,6 +1674,17 @@ export class Flow {
    *  image whose destination could not be resolved), and without it a caller
    *  cannot tell a dropped table from an empty document. */
   AddMarkdown(src: string | MdDocument, options: MarkdownFlowOptions = {}): MarkdownResult {
+    return runOperation('AddMarkdown', options, (context) => this.addMarkdownSteps(src, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddMarkdown}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddMarkdownAsync(src: string | MdDocument, options: MarkdownFlowOptions = {}): Promise<MarkdownResult> {
+    return runOperationAsync('AddMarkdown', options, (context) => this.addMarkdownSteps(src, options, context));
+  }
+
+  /** @internal Delegate in the parent operation's captured control context. */
+  *addMarkdownSteps(src: string | MdDocument, options: MarkdownFlowOptions, context: OperationContext): OperationSteps<MarkdownResult> {
     // (v9j3.2) The flow's hyphenation default reaches Markdown it adds.
     // The same rule as AddParagraph and AddList: its own value wins, false
     // included, and one without a lang takes the flow's (v9j3.2 review).
@@ -1680,7 +1693,7 @@ export class Flow {
     // states one, so the gutter mark the engine draws matches it (v9j3.3.1).
     const own = (h.footnotePlacement === 'end' ? this.endOpts : this.footOpts).fontSize;
     const o = h.style?.footnoteSize !== undefined ? h : { ...h, style: { ...h.style, footnoteSize: own } };
-    const { elements, skipped } = markdownElements(src, o);
+    const { elements, skipped } = (yield* markdownElementsSteps(src, o, context));
     this.items.push(...elements);
     return { skipped };
   }
@@ -1699,8 +1712,19 @@ export class Flow {
    *  float), and without it a caller cannot tell a dropped table from an empty
    *  document. */
   AddHtml(src: string | HtmlDocument, options: HtmlFlowOptions = {}): HtmlFlowResult {
+    return runOperation('AddHtml', options, (context) => this.addHtmlSteps(src, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddHtml}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddHtmlAsync(src: string | HtmlDocument, options: HtmlFlowOptions = {}): Promise<HtmlFlowResult> {
+    return runOperationAsync('AddHtml', options, (context) => this.addHtmlSteps(src, options, context));
+  }
+
+  /** @internal Delegate in the parent operation's captured control context. */
+  *addHtmlSteps(src: string | HtmlDocument, options: HtmlFlowOptions, context: OperationContext): OperationSteps<HtmlFlowResult> {
     const { elements, skipped, unsupported } =
-      htmlElements(this.doc, src, this.geometry.columnWidth, options);
+      (yield* htmlElementsSteps(this.doc, src, this.geometry.columnWidth, options, context));
     this.items.push(...elements);
     return { skipped, unsupported };
   }
@@ -1709,7 +1733,18 @@ export class Flow {
    *  headings, lists, tables, images and links — reporting everything else in
    *  `skipped` (`m2fp.5`). A page or column break becomes a column break. */
   AddDocx(src: Uint8Array | OpenedDocxSource, options: DocxFlowOptions = {}): DocxFlowResult {
-    const { segments, skipped, notes, cited } = docxElements(this.doc, src, this.geometry.columnWidth, options);
+    return runOperation('AddDocx', options, (context) => this.addDocxSteps(src, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddDocx}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddDocxAsync(src: Uint8Array | OpenedDocxSource, options: DocxFlowOptions = {}): Promise<DocxFlowResult> {
+    return runOperationAsync('AddDocx', options, (context) => this.addDocxSteps(src, options, context));
+  }
+
+  /** @internal Delegate in the parent operation's captured control context. */
+  *addDocxSteps(src: Uint8Array | OpenedDocxSource, options: DocxFlowOptions, context: OperationContext): OperationSteps<DocxFlowResult> {
+    const { segments, skipped, notes, cited } = (yield* docxElementsSteps(this.doc, src, this.geometry.columnWidth, options, context));
     segments.forEach((els, k) => {
       if (k > 0) this.AddColumnBreak();
       this.items.push(...els);
@@ -1773,7 +1808,18 @@ export class Flow {
   /** Lay out the queued content, appending fresh pages at the end of the
    *  document, and return those pages in order. Single-shot: a second call
    *  throws. */
-  Render(): Page[] {
+  Render(options: OperationControlOptions = {}): Page[] {
+    return runOperation('Render', options, (context) => this.renderSteps(context));
+  }
+
+  /** Cooperatively yield between work units of {@link Render}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  RenderAsync(options: OperationControlOptions = {}): Promise<Page[]> {
+    return runOperationAsync('Render', options, (context) => this.renderSteps(context));
+  }
+
+  /** @internal Delegate within a parent operation without creating new controls. */
+  *renderSteps(context: OperationContext): OperationSteps<Page[]> {
     if (this.rendered) throw new Error('Flow already rendered');
     this.rendered = true;
     const g = this.geometry;
@@ -1823,6 +1869,7 @@ export class Flow {
     const noteLinks = new NoteLinks(this.doc);
     const numberer = new NoteNumberer(this.footOpts, this.endOpts,
       (t, fontSize) => paragraph(t, { fontSize }), noteLinks);
+    try {
     for (const it of queue) {
       if (isNoteRestart(it)) { numberer.restart(it.noteRestart); continue; }
       if (isBreak(it)) continue;
@@ -1911,14 +1958,16 @@ export class Flow {
     // which are ordinary flow content once queued (v9j3.3).
     let endnotesQueued = false;
     for (;;) {
-    while (queue.length > 0 || pending.length > 0) {
+    let completedlayout = 0;
+  while (queue.length > 0 || pending.length > 0) {
+    operationUnit: {
       // Only carried floats left: open the column they were deferred to. The
       // loop condition guarantees `pending` is non-empty here, so advanceColumn
       // always re-queues work and this cannot spin.
-      if (queue.length === 0) { advanceColumn(); continue; }
+      if (queue.length === 0) { advanceColumn(); break operationUnit; }
       const item = queue[0];
-      if (isBreak(item)) { queue.shift(); advanceColumn(); continue; }
-      if (isNoteRestart(item)) { queue.shift(); continue; }
+      if (isBreak(item)) { queue.shift(); advanceColumn(); break operationUnit; }
+      if (isNoteRestart(item)) { queue.shift(); break operationUnit; }
 
       // Clear the floats the pen has passed.
       floats = pruneFloats(floats, colTop);
@@ -1947,7 +1996,7 @@ export class Flow {
           // terminates.
           pending.push(item);
           queue.shift();
-          continue;
+          break operationUnit;
         } else {
           // Too tall even for an EMPTY column. Split if the content can
           // fragment (zch2.15); otherwise degrade, or throw. This is the ONLY
@@ -1981,7 +2030,7 @@ export class Flow {
             // when something was painted, so it is strictly shorter than what
             // produced it and the split terminates.
             if (splitTail !== undefined) pending.push(splitTail);
-            continue;
+            break operationUnit;
           }
           // splitPaint absent, or it painted nothing because the content
           // cannot fragment at all. Either way the call had no effect, so
@@ -2013,7 +2062,7 @@ export class Flow {
         atColumnStart = false;
         pendingSpaceAfter = 0;
         queue.shift();
-        continue;
+        break operationUnit;
       }
 
       // Past the float branch `item` is an ELEMENT. A FloatItem always
@@ -2053,14 +2102,14 @@ export class Flow {
       const availHeight = besideFloat ? Math.min(top - boundary, top - effBottom()) : top - effBottom();
 
       // Footnotes (or carry) fill what is left of this column: content waits.
-      if (notes !== undefined && top - effBottom() <= 0) { advanceColumn(); continue; }
+      if (notes !== undefined && top - effBottom() <= 0) { advanceColumn(); break operationUnit; }
 
       // A left and a right band can swallow the column between them: skip the pen
       // to where it reopens rather than placing into a negative-width region.
       if (elemWidth <= 0) {
         colTop = boundary;
         floats = pruneFloats(floats, colTop);
-        continue;
+        break operationUnit;
       }
 
       // Keep-with-next: an eligible heading that fully fits here but leaves no room
@@ -2093,7 +2142,7 @@ export class Flow {
             if (nextBudget <= 0
               || next.measure({ width: g.columnWidth, availHeight: nextBudget }).usedHeight <= 0) {
               advanceColumn();
-              continue;
+              break operationUnit;
             }
           }
         }
@@ -2110,7 +2159,7 @@ export class Flow {
           // The split fallback is for a column empty of content AND carry: one
           // only full of the previous note's carry is cured by advancing.
           atColumnStart && !notes.hasCarry);
-        if (settled === 'advance') { advanceColumn(); continue; }
+        if (settled === 'advance') { advanceColumn(); break operationUnit; }
         budget = settled.budget;
         placedRefs = settled.refs;
       }
@@ -2139,21 +2188,21 @@ export class Flow {
         } else {
           pendingSpaceAfter = item2.spaceAfter ?? 0;
         }
-        continue;
+        break operationUnit;
       }
       // Nothing painted.
-      if (res.remainder === null) { queue.shift(); continue; } // empty element
+      if (res.remainder === null) { queue.shift(); break operationUnit; } // empty element
       if (besideFloat) {
         // Could not fit even one line in this channel: skip to where it widens.
         colTop = boundary;
         floats = pruneFloats(floats, colTop);
-        continue;
+        break operationUnit;
       }
       // A column start holding the previous note's carry is not EMPTY: what
       // did not fit is cured by advancing, since the carry drains — and the
       // shrink/overflow paths below would place the element past a sliver of
       // room without committing its notes.
-      if (atColumnStart && notes !== undefined && notes.hasCarry) { advanceColumn(); continue; }
+      if (atColumnStart && notes !== undefined && notes.hasCarry) { advanceColumn(); break operationUnit; }
       if (atColumnStart) {
         // Last resort before refusing the document (zch2.16). Asked ONLY here,
         // where availHeight is the whole column: a tall image near a column
@@ -2167,7 +2216,7 @@ export class Flow {
           && shrunk.measure?.({ width: elemWidth, availHeight })?.fits === true) {
           item2.onCompromise?.('scaled');
           queue[0] = shrunk;
-          continue;
+          break operationUnit;
         }
         // Cannot be scaled: draw it at its natural size, overflowing the
         // column, rather than refusing the whole document. Only UNSPLITTABLE
@@ -2194,10 +2243,13 @@ export class Flow {
           atColumnStart = false;
           pendingSpaceAfter = item2.spaceAfter ?? 0;
         }
-        continue;
+        break operationUnit;
       }
       advanceColumn();
+
     }
+    yield context.progress('layout', ++completedlayout, undefined, pages.at(-1)?.Number);
+  }
 
       if (endnotesQueued || endnoteRefs.length === 0) break;
       endnotesQueued = true;
@@ -2219,17 +2271,25 @@ export class Flow {
     closeColumn();
     // Carry left after the last element: keep opening columns until it drains.
     // Every column paints some carry (NoteColumn.paint's overflow rule), so this ends.
-    while (notes !== undefined && !notes.empty) {
+    let completedlayout = 0;
+  while (notes !== undefined && !notes.empty) {
+    operationUnit: {
       col++;
       if (col >= g.columns) { col = 0; pageIdx++; }
       colTop = g.contentTop;
       atColumnStart = true;
       closeColumn();
+
     }
+    yield context.progress('layout', ++completedlayout, undefined, pages.at(-1)?.Number);
+  }
     if (pages.length === 0) ensurePage(0); // always produce at least one page
     // Every note and every citation is placed: write the links (v9j3.3.4).
-    noteLinks.finish();
-    if (structRoot !== undefined) registerStructIds(this.doc, structRoot.Dict, noteIdEntries);
+    } finally {
+      noteLinks.finish();
+      if (structRoot !== undefined) registerStructIds(this.doc, structRoot.Dict, noteIdEntries);
+    }
+    yield context.progress('finalize', 1, 1);
     if (this.onRendered !== undefined) {
       const cb = this.onRendered;
       this.decorate(() => cb(pages));

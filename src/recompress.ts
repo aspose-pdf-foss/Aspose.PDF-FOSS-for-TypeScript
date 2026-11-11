@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import { deflateSync, inflateSync } from 'node:zlib';
 import type { Document } from './document.js';
 import { PdfDict, PdfStream, isStream, isName, name } from './types.js';
@@ -60,15 +61,26 @@ function recompressOne(s: PdfStream): PdfStream | undefined {
 /** Flate every unfiltered stream and re-deflate every [FlateDecode] stream at
  *  maximum level, replacing a stream only when the result is strictly smaller. */
 export function recompressStreams(doc: Document): RecompressResult {
+  return runOperation('recompressStreams', undefined, (context) => recompressStreamsSteps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* recompressStreamsSteps(doc: Document, context: OperationContext): OperationSteps<RecompressResult> {
   let streams = 0;
   let bytesSaved = 0;
-  for (const [r, obj] of [...doc.objectEntries()]) {
-    if (!isStream(obj)) continue;
+  const candidates = [...doc.objectEntries()].filter(([, obj]) => isStream(obj));
+  let completedstreams = 0;
+  for (const [r, obj] of candidates) {
+    operationUnit: {
+    if (!isStream(obj)) break operationUnit;
     const out = recompressOne(obj);
-    if (!out) continue;
+    if (!out) break operationUnit;
     bytesSaved += obj.raw.length - out.raw.length;
     streams++;
     doc.replaceObject(r.num, out);
+
+    }
+    yield context.progress('streams', ++completedstreams, candidates.length, undefined);
   }
   return { streams, bytesSaved };
 }

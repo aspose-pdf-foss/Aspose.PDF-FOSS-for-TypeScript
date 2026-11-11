@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import {
   PdfObject, PdfDict, PdfStream, isStream, isName, name,
 } from './types.js';
@@ -75,15 +76,25 @@ function armor(
 /** Re-encode every eligible stream in `objs` (remapped write-plan copies) with
  *  `filter`, replacing the array slot. Never mutates a stream's shared `raw`. */
 export function applyStreamFilter(objs: PdfObject[], filter: StreamFilterName): void {
+  return runOperation('applyStreamFilter', undefined, (context) => applyStreamFilterSteps(objs, filter, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* applyStreamFilterSteps(objs: PdfObject[], filter: StreamFilterName, context: OperationContext): OperationSteps<void> {
   if (!VALID.has(filter)) throw new UnsupportedFeatureError(`unsupported streamFilter: ${filter}`);
+  let completedfilter = 0;
   for (let i = 0; i < objs.length; i++) {
+    operationUnit: {
     const s = objs[i];
-    if (!isStream(s)) continue;
+    if (!isStream(s)) break operationUnit;
     const { names, parms } = filterList(s);
-    if (!isEligible(s, names)) continue;
+    if (!isEligible(s, names)) break operationUnit;
     const out = ARMOR.has(filter)
       ? armor(s, names, parms, filter)
       : replace(s, names, filter);
     if (out) objs[i] = out;
+
+    }
+    yield context.progress('filter', ++completedfilter, objs.length, undefined);
   }
 }

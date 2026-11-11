@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import {
   PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isRef, isStream, isString, name,
@@ -33,7 +35,7 @@ import { budgetFor } from './decodebudget.js';
  * because a `[/Pattern base]` array is referenced by nothing but `cs` + `scn`.
  */
 
-export interface ColorConvertOptions {
+export interface ColorConvertOptions extends OperationControlOptions {
   /** IJG quality for re-encoded DCT images, 1..100. Default 90. */
   quality?: number;
 }
@@ -275,7 +277,8 @@ interface Scope { objNum: number; stream: PdfStream; resources: PdfDict | undefi
  * would otherwise be rewritten twice, the second time from the first write's
  * output.
  */
-function collectScopes(doc: Document): Scope[] {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* collectScopesSteps(doc: Document, context: OperationContext): OperationSteps<Scope[]> {
   const out: Scope[] = [];
   const seen = new Set<number>();
 
@@ -332,7 +335,9 @@ function collectScopes(doc: Document): Scope[] {
     }
   };
 
+  let completedscopes = 0;
   for (const page of doc.Pages) {
+    operationUnit: {
     // `page.Resources`, NOT `page.Dict.get('Resources')`: /Resources is an
     // INHERITABLE page attribute (32000-1 7.7.3.4), and the raw read misses one
     // held on the /Pages node -- which is where Ghostscript, Word and others put
@@ -361,6 +366,9 @@ function collectScopes(doc: Document): Scope[] {
         }
       }
     }
+
+    }
+    yield context.progress('scopes', ++completedscopes, doc.Pages.length, page.Number);
   }
   return out;
 }
@@ -412,11 +420,11 @@ function repointSpotSpaces(
 }
 
 /** Rewrite every content stream. */
-function convertContent(
-  doc: Document, report: ColorConvertReport, to: TargetSpace,
-  toCmyk?: CmykTransform, preserveSpot = false,
-): void {
-  for (const scope of collectScopes(doc)) {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertContentSteps(doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk: CmykTransform | undefined, preserveSpot: boolean, context: OperationContext): OperationSteps<void> {
+  let completedcontent = 0;
+  for (const scope of (yield* collectScopesSteps(doc, context))) {
+    operationUnit: {
     let ops;
     try {
       ops = parseContentStream(inflateStream(scope.stream), budgetFor(scope.stream).limits);
@@ -425,7 +433,7 @@ function convertContent(
         objNum: scope.objNum, what: 'content',
         reason: `content stream would not parse: ${(e as Error).message}`,
       });
-      continue;
+      break operationUnit;
     }
     const r = colorOps(ops, spaceLookup(doc, scope.resources), to, toCmyk, preserveSpot);
     retargetPatternSpaces(doc, scope.resources, r.patternSpaces, to);
@@ -450,7 +458,7 @@ function convertContent(
           + 'its colour operators were left unconverted',
       });
     }
-    if (r.changed === 0) continue;
+    if (r.changed === 0) break operationUnit;
 
     const raw = serializeContentStream(r.ops);
     const dict: PdfDict = new Map(scope.stream.dict);
@@ -463,6 +471,9 @@ function convertContent(
     report.streams++;
     report.operators += r.changed;
     report.bytesDelta += raw.length - scope.stream.raw.length;
+
+    }
+    yield context.progress('content', ++completedcontent, undefined, undefined);
   }
 }
 
@@ -492,10 +503,8 @@ function convertMatte(
  * must convert once. `replaceObject` installs at the same number so every
  * referrer follows untouched -- `imageopt.ts`'s rule.
  */
-function convertImages(
-  doc: Document, report: ColorConvertReport, to: TargetSpace,
-  opts: ColorConvertOptions & { toCmyk?: CmykTransform },
-): void {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertImagesSteps(doc: Document, report: ColorConvertReport, to: TargetSpace, opts: ColorConvertOptions & { toCmyk?: CmykTransform }, context: OperationContext): OperationSteps<void> {
   const resolve = (o: PdfObject | undefined): PdfObject => doc.resolve(o);
   // Codec-aware, not plain inflation: ImageInfo.Decode() is a passthrough for
   // DCTDecode (which is what decodeJpeg wants) and handles CCITT, JPX and
@@ -509,13 +518,15 @@ function convertImages(
     if (nameOf(doc, obj.dict.get('Subtype')) === 'Image') targets.push([ref.num, obj]);
   }
 
+  let completedimages = 0;
   for (const [objNum, stream] of targets) {
+    operationUnit: {
     const r = convertImageSpace(stream, resolve, inflate, to,
       { quality: opts.quality, toCmyk: opts.toCmyk });
-    if (r.kind === 'none') continue;
+    if (r.kind === 'none') break operationUnit;
     if (r.kind === 'skip') {
       report.skipped.push({ objNum, what: 'image', reason: r.reason });
-      continue;
+      break operationUnit;
     }
     convertMatte(doc, stream, to, opts.toCmyk);          // the ORIGINAL space, not the new one
     // A colour-key /Mask became a stencil, which needs an object of its own.
@@ -527,6 +538,9 @@ function convertImages(
     report.images.push({ objNum, from: r.from, route: r.route, bytesDelta });
     report.bytesDelta += bytesDelta;
     if (r.route === 'jpeg') report.lossy = true;
+
+    }
+    yield context.progress('images', ++completedimages, targets.length, undefined);
   }
 }
 
@@ -539,12 +553,12 @@ function convertImages(
  * dict is written back through its holder; an indirect one is replaced at its
  * own number so every referrer follows.
  */
-function convertShadings(
-  doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk?: CmykTransform,
-): void {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertShadingsSteps(doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk: CmykTransform | undefined, context: OperationContext): OperationSteps<void> {
   const resolve = (o: PdfObject | undefined): PdfObject => doc.resolve(o);
   const inflate = (s: PdfStream): Uint8Array => inflateStream(s);
   const seen = new Set<PdfDict>();
+  let completed = 0;
 
   const convert = (holder: PdfDict, key: string): void => {
     const entry = holder.get(key);
@@ -581,17 +595,23 @@ function convertShadings(
   // silently miss every `sh`.
   for (const [, obj] of doc.objectEntries()) {
     const dict = isStream(obj) ? obj.dict : isDict(obj) ? obj : undefined;
-    if (dict && doc.resolve(dict.get('PatternType')) === 2) convert(dict, 'Shading');
+    if (dict && doc.resolve(dict.get('PatternType')) === 2) {
+      convert(dict, 'Shading');
+      yield context.progress('shadings', ++completed);
+    }
   }
   const resources = new Set<PdfDict>();
   for (const page of doc.Pages) {
     const r = page.Resources;          // inherited; see collectScopes
     if (r) resources.add(r);
   }
-  for (const scope of collectScopes(doc)) if (scope.resources) resources.add(scope.resources);
+  for (const scope of (yield* collectScopesSteps(doc, context))) if (scope.resources) resources.add(scope.resources);
   for (const res of resources) {
     const shDict = dictOf(doc, res.get('Shading'));
-    if (shDict) for (const [k] of shDict) convert(shDict, k);
+    if (shDict) for (const [k] of shDict) {
+      convert(shDict, k);
+      yield context.progress('shadings', ++completed);
+    }
   }
 }
 
@@ -659,12 +679,13 @@ function greyDA(
 /** Every annotation's own colour: /C, /IC, /MK /BG and /BC, and /DA.
  *  Appearance streams are already in the content enumeration, so a widget's
  *  drawn colour and its /MK cannot end up disagreeing. */
-function convertAnnotations(
-  doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk?: CmykTransform,
-): void {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertAnnotationsSteps(doc: Document, report: ColorConvertReport, to: TargetSpace, toCmyk: CmykTransform | undefined, context: OperationContext): OperationSteps<void> {
+  let completedannotations = 0;
   for (const page of doc.Pages) {
+    operationUnit: {
     const annots = doc.resolve(page.Dict.get('Annots'));
-    if (!isArray(annots)) continue;
+    if (!isArray(annots)) break operationUnit;
     for (const a of annots) {
       const ad = dictOf(doc, a);
       if (!ad) continue;
@@ -691,6 +712,9 @@ function convertAnnotations(
       }
       if (touched) report.annotations++;
     }
+
+    }
+    yield context.progress('annotations', ++completedannotations, doc.Pages.length, page.Number);
   }
 
   // The form-wide default appearance gets the same treatment.
@@ -705,9 +729,16 @@ function convertAnnotations(
  * byte-identical -- the rule `formcreate.ts` and `imageedit.ts`'s `Replace`
  * already follow.
  */
-export function convertColors(
-  doc: Document, to: TargetSpace, opts: Omit<ConvertColorsOptions, 'to'> = {},
-): ColorConvertReport {
+export function convertColors(doc: Document, to: TargetSpace, opts: Omit<ConvertColorsOptions, 'to'> = {}): ColorConvertReport {
+  return runOperation('ConvertColors', opts, (context) => convertColorsSteps(doc, to, opts, context));
+}
+
+export function convertColorsAsync(doc: Document, to: TargetSpace, opts: Omit<ConvertColorsOptions, 'to'> = {}): Promise<ColorConvertReport> {
+  return runOperationAsync('ConvertColors', opts, (context) => convertColorsSteps(doc, to, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertColorsSteps(doc: Document, to: TargetSpace, opts: Omit<ConvertColorsOptions, 'to'>, context: OperationContext): OperationSteps<ColorConvertReport> {
   checkTarget(to);
   // Both checks run BEFORE any conversion, so a rejected call leaves the
   // document byte-identical.
@@ -718,6 +749,7 @@ export function convertColors(
       `ConvertColors: the document is signed; converting it to ${targetName(to)} `
       + 'would invalidate the signature and Save() would discard the change');
   }
+  doc.markModified();
   const report: ColorConvertReport = {
     streams: 0, operators: 0, images: [], shadings: 0, annotations: 0,
     skipped: [], lossy: false, bytesDelta: 0, spotSpaces: [],
@@ -725,23 +757,30 @@ export function convertColors(
       ? { cmykTransform: toCmyk ? ('supplied' as const) : ('naive' as const) }
       : {}),
   };
-  convertImages(doc, report, to, { ...opts, toCmyk });
-  convertShadings(doc, report, to, toCmyk);
-  convertContent(doc, report, to, toCmyk, opts.preserveSpotColors === true);
-  convertAnnotations(doc, report, to, toCmyk);
+  yield* convertImagesSteps(doc, report, to, { ...opts, toCmyk }, context);
+  yield* convertShadingsSteps(doc, report, to, toCmyk, context);
+  yield* convertContentSteps(doc, report, to, toCmyk, opts.preserveSpotColors === true, context);
+  yield* convertAnnotationsSteps(doc, report, to, toCmyk, context);
   return report;
 }
 
 /** Convert a document's colour to DeviceGray -- the specialization behind
  *  `Document.ConvertToGrayscale`, and the name every existing caller uses. */
-export function convertToGrayscale(
-  doc: Document, opts: ColorConvertOptions = {},
-): ColorConvertReport {
+export function convertToGrayscale(doc: Document, opts: ColorConvertOptions = {}): ColorConvertReport {
+  return runOperation('ConvertToGrayscale', opts, (context) => convertToGrayscaleSteps(doc, opts, context));
+}
+
+export function convertToGrayscaleAsync(doc: Document, opts: ColorConvertOptions = {}): Promise<ColorConvertReport> {
+  return runOperationAsync('ConvertToGrayscale', opts, (context) => convertToGrayscaleSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* convertToGrayscaleSteps(doc: Document, opts: ColorConvertOptions, context: OperationContext): OperationSteps<ColorConvertReport> {
   if (hasSignatureField(doc)) {
     // Worded for the entry point the caller actually used.
     throw new UnsupportedFeatureError(
       'ConvertToGrayscale: the document is signed; converting it would '
       + 'invalidate the signature and Save() would discard the change');
   }
-  return convertColors(doc, 'gray', opts);
+  return yield* convertColorsSteps(doc, 'gray', opts, context);
 }

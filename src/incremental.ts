@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import { PdfObject, PdfDict, isRef, isArray } from './types.js';
 import { enc, serializeObject } from './serialize.js';
 import { Encryptor } from './encrypt.js';
@@ -47,7 +48,12 @@ export interface IncrementalUpdateOptions {
 
 /** Append an incremental update and return the full `original ++ appended` image. */
 export function appendIncrementalUpdate(original: Uint8Array, opts: IncrementalUpdateOptions): Uint8Array {
-  return layout(original, opts).bytes;
+  return runOperation('appendIncrementalUpdate', undefined, (context) => appendIncrementalUpdateSteps(original, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* appendIncrementalUpdateSteps(original: Uint8Array, opts: IncrementalUpdateOptions, context: OperationContext): OperationSteps<Uint8Array> {
+  return (yield* layoutSteps(original, opts, undefined, context)).bytes;
 }
 
 export interface SignatureUpdateOptions {
@@ -110,11 +116,12 @@ interface LayoutResult {
 
 /** Core append: concatenate `original`, the new objects (and optional raw
  *  signature-object text), a classic xref section, and a `/Prev`-chained trailer. */
-function layout(
-  original: Uint8Array,
-  opts: IncrementalUpdateOptions,
-  sigObject?: { num: number; text: string },
-): LayoutResult {
+function layout(original: Uint8Array, opts: IncrementalUpdateOptions, sigObject?: { num: number; text: string }): LayoutResult {
+  return runOperation('layout', undefined, (context) => layoutSteps(original, opts, sigObject, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* layoutSteps(original: Uint8Array, opts: IncrementalUpdateOptions, sigObject: { num: number; text: string } | undefined, context: OperationContext): OperationSteps<LayoutResult> {
   const prev = readXref(original);
   const prevStartxref = findPrevStartxref(original);
 
@@ -126,13 +133,18 @@ function layout(
 
   // Gather the appended objects in ascending number order for tidy xref runs.
   const items: Array<{ num: number; body: Uint8Array }> = [];
+  let completedobjects = 0;
   for (const [num, obj] of opts.objects) {
+    operationUnit: {
     // Encrypt under the object's OWN number and generation, which is what the
     // per-object key derivation hashes — the same numbers the xref rows below
     // record, since an append never renumbers.
     const gen = prevGen(prev.entries, num);
     const body = serializeObject(opts.encryptor ? opts.encryptor.encryptObject(obj, num, gen) : obj);
     items.push({ num, body });
+
+    }
+    yield context.progress('objects', ++completedobjects, opts.objects.size, undefined);
   }
   if (sigObject) items.push({ num: sigObject.num, body: enc(sigObject.text) });
   items.sort((a, b) => a.num - b.num);
@@ -168,6 +180,7 @@ function layout(
 
   const xrefOffset = len;
   push(enc(buildXrefSection(rows)));
+  yield context.progress('xref', 1, 1);
 
   let maxNum = 0;
   for (const i of items) if (i.num > maxNum) maxNum = i.num;
@@ -186,7 +199,9 @@ function layout(
   tr += ` >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   push(enc(tr));
 
-  return { bytes: concat(original, chunks), sigStart };
+  const bytes = concat(original, chunks);
+  yield context.progress('assemble', 1, 1);
+  return { bytes, sigStart };
 }
 
 interface XrefRow { num: number; kind: 'n' | 'f'; offset: number; gen: number }

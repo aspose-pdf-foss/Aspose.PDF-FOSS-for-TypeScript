@@ -1,10 +1,12 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { buildDocModel } from './docmodel.js';
+import { buildDocModelSteps } from './docmodel.js';
 import { encodeImage, imageExtension, imageKey } from './imagehref.js';
 import { ImageInfo } from './image.js';
 import type { PdfStream } from './types.js';
-import { docxBody, type DocxImage } from './docxflow.js';
+import { docxBodySteps, type DocxImage } from './docxflow.js';
 import { docxNumberingXml, docxStylesXml, TWIPS_PER_PT, type DocxNumbering } from './docxstyles.js';
 import { writeDocx } from './docxpackage.js';
 import type { OoxmlPart, OoxmlRelationship } from './ooxml.js';
@@ -18,7 +20,7 @@ import { rethrowLimit } from './errors.js';
  *
  *  Mirrors `HtmlOptions` deliberately: a caller who knows
  *  `ToHtml({ mode: 'fixed' })` should not have to learn a second idiom. */
-export interface DocxOptions {
+export interface DocxOptions extends OperationControlOptions {
   /** Reflowable, or positioned page reproduction. Default 'flow'. */
   mode?: 'flow' | 'textbox';
   /** A raster of the page's GRAPHICS behind the frames, in `textbox` mode,
@@ -119,7 +121,8 @@ function imageRegistry(
   };
 }
 
-function renderFlow(doc: Document, pages: Page[]): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderFlowSteps(doc: Document, pages: Page[], context: OperationContext): OperationSteps<Uint8Array> {
   const parts: OoxmlPart[] = [];
   const rels: OoxmlRelationship[] = [];
   let nextRel = 2;                     // rId1 is the package root -> document
@@ -141,7 +144,8 @@ function renderFlow(doc: Document, pages: Page[]): Uint8Array {
   let xml = '';
   let nums: DocxNumbering[] = [];
   try {
-    ({ xml, nums } = docxBody(buildDocModel(doc, pages), images, links));
+    const nodes = yield* buildDocModelSteps(doc, pages, context);
+    ({ xml, nums } = yield* docxBodySteps(nodes, images, links, context));
   } catch (caught) { rethrowLimit(caught);
     // Degrade: emit whatever was produced. Matches mdexport.ts's render and
     // renderPageToSvg, neither of which throws on a document we could not
@@ -168,7 +172,9 @@ function renderFlow(doc: Document, pages: Page[]): Uint8Array {
     });
   }
 
-  return writeDocx(xml + sectPr(pages[0]), { parts, rels });
+  const result = writeDocx(xml + sectPr(pages[0]), { parts, rels });
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
 /** Collect one page's positioned content.
@@ -230,7 +236,8 @@ function collectPage(
  *  No `styles.xml` and no `numbering.xml` — this mode names no style id and
  *  allocates no list, and a part defining styles nobody uses is the same
  *  nothing as a relationships part with no relationships. */
-function renderTextbox(doc: Document, pages: Page[], opts: DocxOptions): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderTextboxSteps(doc: Document, pages: Page[], opts: DocxOptions, context: OperationContext): OperationSteps<Uint8Array> {
   const parts: OoxmlPart[] = [];
   const rels: OoxmlRelationship[] = [];
   let nextRel = 2;                     // rId1 is the package root -> document
@@ -239,29 +246,55 @@ function renderTextbox(doc: Document, pages: Page[], opts: DocxOptions): Uint8Ar
 
   let xml = '';
   try {
-    xml = docxTextboxBody(pages.map((p) => collectPage(doc, p, opts, images)));
+    const collected: TextboxPage[] = [];
+    for (const page of pages) {
+      collected.push(collectPage(doc, page, opts, images));
+      yield context.progress('render', collected.length, pages.length, page.Number);
+    }
+    xml = docxTextboxBody(collected);
   } catch (caught) { rethrowLimit(caught);
     // Degrade: emit whatever was produced. Matches renderFlow and
     // renderPageToSvg, neither of which throws on a page we could not walk.
   }
-  return writeDocx(xml, { parts, rels });
+  const result = writeDocx(xml, { parts, rels });
+  yield context.progress('assemble', 1, 1);
+  return result;
 }
 
 /** **Invariant:** the mode is branched on ONCE, here. `docxflow.ts` never
  *  learns that a second mode exists — it gained optional vocabulary that emits
  *  nothing when unset, which is what keeps flow mode's bytes frozen. */
-function render(doc: Document, pages: Page[], opts: DocxOptions): Uint8Array {
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderSteps(doc: Document, pages: Page[], opts: DocxOptions, context: OperationContext): OperationSteps<Uint8Array> {
   return (opts.mode ?? 'flow') === 'textbox'
-    ? renderTextbox(doc, pages, opts)
-    : renderFlow(doc, pages);
+    ? yield* renderTextboxSteps(doc, pages, opts, context)
+    : yield* renderFlowSteps(doc, pages, context);
 }
 
-/** Render every page to one `.docx`. Never throws. */
+/** Render every page to one `.docx`. Recovers damaged content; caller cancellation/errors propagate. */
 export function renderDocumentToDocx(doc: Document, opts: DocxOptions = {}): Uint8Array {
-  return render(doc, doc.Pages, opts);
+  return runOperation('ToDocx', opts, (context) => renderDocumentToDocxSteps(doc, opts, context));
 }
 
-/** Render one page to a `.docx`. Never throws. */
+export function renderDocumentToDocxAsync(doc: Document, opts: DocxOptions = {}): Promise<Uint8Array> {
+  return runOperationAsync('ToDocx', opts, (context) => renderDocumentToDocxSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderDocumentToDocxSteps(doc: Document, opts: DocxOptions, context: OperationContext): OperationSteps<Uint8Array> {
+  return yield* renderSteps(doc, doc.Pages, opts, context);
+}
+
+/** Render one page to a `.docx`. Recovers damaged content; caller cancellation/errors propagate. */
 export function renderPageToDocx(doc: Document, page: Page, opts: DocxOptions = {}): Uint8Array {
-  return render(doc, [page], opts);
+  return runOperation('ToDocx', opts, (context) => renderPageToDocxSteps(doc, page, opts, context));
+}
+
+export function renderPageToDocxAsync(doc: Document, page: Page, opts: DocxOptions = {}): Promise<Uint8Array> {
+  return runOperationAsync('ToDocx', opts, (context) => renderPageToDocxSteps(doc, page, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderPageToDocxSteps(doc: Document, page: Page, opts: DocxOptions, context: OperationContext): OperationSteps<Uint8Array> {
+  return yield* renderSteps(doc, [page], opts, context);
 }

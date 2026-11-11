@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { ValidationIssue } from './validation.js';
@@ -19,6 +20,8 @@ interface Walk {
   counts: Map<PdfDict, number>;
   /** Live Page handle per page dict, for ValidationIssue.page. */
   pageOf: Map<PdfDict, Page>;
+  control: OperationContext;
+  completed: number;
 }
 
 /** The page-tree structure check behind `doc.Validate()` (`fix` false) and
@@ -34,6 +37,11 @@ interface Walk {
  *  Leaf versus intermediate is decided exactly as `pagetree.ts`'s `buildPages`
  *  decides it, so this and `doc.Pages` agree about which nodes are pages. */
 export function checkPageTree(doc: Document, fix: boolean): ValidationIssue[] {
+  return runOperation('checkPageTree', undefined, (context) => checkPageTreeSteps(doc, fix, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* checkPageTreeSteps(doc: Document, fix: boolean, context: OperationContext): OperationSteps<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
   let catalog: PdfDict;
   try {
@@ -56,17 +64,17 @@ export function checkPageTree(doc: Document, fix: boolean): ValidationIssue[] {
   }
   const w: Walk = {
     doc, fix, issues, seen: new Set(), counts: new Map(),
-    pageOf: new Map(doc.Pages.map((p) => [p.Dict, p])),
+    pageOf: new Map(doc.Pages.map((p) => [p.Dict, p])), control: context, completed: 0,
   };
-  visit(w, root, isRef(rootRaw) ? rootRaw : undefined, new Set(), false, 1);
+  yield* visit(w, root, isRef(rootRaw) ? rootRaw : undefined, new Set(), false, 1);
   return issues;
 }
 
 /** Visit an intermediate node; returns the number of pages found under it. */
-function visit(
+function* visit(
   w: Walk, node: PdfDict, nodeRef: PdfRef | undefined,
   ancestors: Set<PdfDict>, boxAbove: boolean, depth: number,
-): number {
+): OperationSteps<number> {
   // Same bound, same unit, as buildPages: levels of intermediate nodes.
   w.doc.loadLimits.enforce('maxNestingDepth', depth, 'page tree');
   w.seen.add(node);
@@ -121,8 +129,9 @@ function visit(
         if (w.fix) child.set('MediaBox', [...LETTER_MEDIABOX]);
       }
     } else {
-      pages += visit(w, child, isRef(childRaw) ? childRaw : undefined, ancestors, boxHere, depth + 1);
+      pages += yield* visit(w, child, isRef(childRaw) ? childRaw : undefined, ancestors, boxHere, depth + 1);
     }
+    if (isLeaf(w.doc, child)) yield w.control.progress('nodes', ++w.completed, undefined, w.pageOf.get(child)?.Number);
     kept.push(childRaw);
   }
   ancestors.delete(node);
@@ -140,6 +149,7 @@ function visit(
   }
   if (w.fix && changed) node.set('Kids', kept);
   w.counts.set(node, pages);
+  yield w.control.progress('nodes', ++w.completed);
   return pages;
 }
 

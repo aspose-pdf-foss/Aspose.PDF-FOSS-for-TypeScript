@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import {
   PdfDict, PdfObject, PdfStream, isName, isArray, isStream, name,
@@ -6,7 +7,7 @@ import { ImageInfo } from './image.js';
 import { decodeJpeg } from './jpeg.js';
 import { encodeJpeg, JpegKind } from './jpegencode.js';
 import { resampleBox } from './resample.js';
-import { collectImageUsage } from './imageusage.js';
+import { collectImageUsageSteps } from './imageusage.js';
 import { rethrowLimit } from './errors.js';
 
 /** Target for the lossy image pass. Presence in OptimizeOptions is the opt-in.
@@ -164,38 +165,43 @@ function rebuild(original: PdfStream, jpeg: Uint8Array, w: number, h: number): P
  *
  * LOSSY. Only reached when the caller passes `images` to Optimize.
  */
-export function optimizeImages(
-  doc: Document, opts: OptimizeImageOptions,
-): { images: ImageOptimization[]; skippedImages: SkippedImage[] } {
+export function optimizeImages(doc: Document, opts: OptimizeImageOptions): { images: ImageOptimization[]; skippedImages: SkippedImage[] } {
+  return runOperation('optimizeImages', undefined, (context) => optimizeImagesSteps(doc, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* optimizeImagesSteps(doc: Document, opts: OptimizeImageOptions, context: OperationContext): OperationSteps<{ images: ImageOptimization[]; skippedImages: SkippedImage[] }> {
   const images: ImageOptimization[] = [];
   const skippedImages: SkippedImage[] = [];
   const quality = opts.quality ?? 75;
 
-  const usage = collectImageUsage(doc);
+  const usage = yield* collectImageUsageSteps(doc, context);
   const objNums = new Map<PdfStream, number>();
   for (const [r, obj] of doc.objectEntries()) if (isStream(obj)) objNums.set(obj, r.num);
 
+  let completedimages = 0;
   for (const [stream, u] of usage) {
+    operationUnit: {
     const objNum = objNums.get(stream);
-    if (objNum === undefined) continue; // a direct stream has no referrers to fix
+    if (objNum === undefined) break operationUnit; // a direct stream has no referrers to fix
     const skip = (reason: string) => skippedImages.push({ objNum, name: u.name, reason });
 
-    if (!u.complete) { skip(u.reason ?? 'usage could not be determined'); continue; }
+    if (!u.complete) { skip(u.reason ?? 'usage could not be determined'); break operationUnit; }
 
     const g = guard(doc, stream.dict);
-    if (g) { skip(g); continue; }
+    if (g) { skip(g); break operationUnit; }
 
     const kind = kindOf(doc, stream.dict.get('ColorSpace'));
-    if (typeof kind !== 'string') { skip(kind.reason); continue; }
+    if (typeof kind !== 'string') { skip(kind.reason); break operationUnit; }
 
     const w = doc.resolve(stream.dict.get('Width'));
     const h = doc.resolve(stream.dict.get('Height'));
     if (typeof w !== 'number' || typeof h !== 'number' || w < 1 || h < 1) {
-      skip('missing or invalid /Width or /Height'); continue;
+      skip('missing or invalid /Width or /Height'); break operationUnit;
     }
 
     const src = samplesOf(doc, new ImageInfo(doc, u.name ?? '', stream), kind, w, h);
-    if (!(src instanceof Uint8Array)) { skip(src.reason); continue; }
+    if (!(src instanceof Uint8Array)) { skip(src.reason); break operationUnit; }
 
     // min(1, ...) is what makes "never upsample" true: an image already coarser
     // than the target is recompressed at quality but not resized.
@@ -209,11 +215,11 @@ export function optimizeImages(
       const resized = resampleBox(src, w, h, CHANNELS[kind], dw, dh);
       jpeg = encodeJpeg(dw, dh, resized, kind, { quality, progressive: opts.progressive });
     } catch (e) { rethrowLimit(e);
-      skip(`re-encode failed: ${(e as Error).message}`); continue;
+      skip(`re-encode failed: ${(e as Error).message}`); break operationUnit;
     }
 
     const bytesSaved = stream.raw.length - jpeg.length;
-    if (bytesSaved <= 0) { skip('re-encoded image would not be smaller'); continue; }
+    if (bytesSaved <= 0) { skip('re-encoded image would not be smaller'); break operationUnit; }
 
     // Install at the SAME object number: every /XObject resource dict points at
     // the image by ref, and PdfStream.raw is readonly, so this is the only way
@@ -224,6 +230,9 @@ export function optimizeImages(
       width: dw, height: dh, originalWidth: w, originalHeight: h,
       bytesSaved,
     });
+
+    }
+    yield context.progress('images', ++completedimages, usage.size, undefined);
   }
   return { images, skippedImages };
 }

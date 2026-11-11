@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isRef, isStream } from './types.js';
 import { matchStd14 } from './metrics.js';
@@ -131,6 +132,11 @@ function refCounts(doc: Document): Map<number, number> {
  * the conformance `ConvertToPdfA` established.
  */
 export function unembedStandard14(doc: Document): UnembedResult {
+  return runOperation('unembedStandard14', undefined, (context) => unembedStandard14Steps(doc, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* unembedStandard14Steps(doc: Document, context: OperationContext): OperationSteps<UnembedResult> {
   const result: UnembedResult = { unembedded: [], skipped: [], fonts: new Set() };
 
   // Group every font dict by the descriptor it reaches: the key is removed from
@@ -151,12 +157,14 @@ export function unembedStandard14(doc: Document): UnembedResult {
   const pdfa = doc.GetXmp().pdfaPart;
   let counts: Map<number, number> | undefined;
 
+  let completedfonts = 0;
   for (const [fd, g] of groups) {
-    if (g.std.length === 0) continue;                    // a custom face: silently untouched
+    operationUnit: {
+    if (g.std.length === 0) break operationUnit;                    // a custom face: silently untouched
     const baseFont = nameOf(doc, g.std[0].get('BaseFont')) ?? '(unnamed)';
     const skip = (reason: string): void => { result.skipped.push({ baseFont, reason }); };
-    if (pdfa !== undefined) { skip(`document declares PDF/A-${pdfa}, which requires embedded fonts`); continue; }
-    if (g.veto) { skip(g.veto); continue; }
+    if (pdfa !== undefined) { skip(`document declares PDF/A-${pdfa}, which requires embedded fonts`); break operationUnit; }
+    if (g.veto) { skip(g.veto); break operationUnit; }
 
     const key = PROGRAM_KEYS.find((k) => isStream(doc.resolve(fd.get(k))))!;
     const program = doc.resolve(fd.get(key)) as PdfStream;
@@ -168,7 +176,7 @@ export function unembedStandard14(doc: Document): UnembedResult {
       why = encodingSurvives(doc, font, program, key);
       if (why) break;
     }
-    if (why) { skip(why); continue; }
+    if (why) { skip(why); break operationUnit; }
 
     counts ??= refCounts(doc);
     const raw = fd.get(key);
@@ -178,6 +186,9 @@ export function unembedStandard14(doc: Document): UnembedResult {
     if (isRef(raw)) counts.set(raw.num, (counts.get(raw.num) ?? 1) - 1);
     result.unembedded.push({ baseFont, bytesSaved: saved });
     for (const f of g.fonts) result.fonts.add(f);
+
+    }
+    yield context.progress('fonts', ++completedfonts, groups.size, undefined);
   }
   return result;
 }

@@ -1,3 +1,5 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import type { StructElement, StructTreeRoot } from './struct.js';
 import { visitContent } from './text.js';
@@ -28,9 +30,16 @@ export type { ValidationIssue, Severity, PdfUaPart, UaCtx, Rule };
  *  `ValidationReport.Issues` and no pre-existing assertion checks sequence, only
  *  membership — `test/pdfua-part1-identity.test.ts` is the only thing in the
  *  suite that can see a reordering, and it was committed BEFORE this refactor. */
-export function validatePdfUa(
-  doc: Document, catalog: PdfDict, part: PdfUaPart = 1,
-): ValidationReport {
+export function validatePdfUa(doc: Document, catalog: PdfDict, part: PdfUaPart = 1, options: OperationControlOptions = {}): ValidationReport {
+  return runOperation('ValidatePdfUa', options, (context) => validatePdfUaSteps(doc, catalog, part, context));
+}
+
+export function validatePdfUaAsync(doc: Document, catalog: PdfDict, part: PdfUaPart = 1, options: OperationControlOptions = {}): Promise<ValidationReport> {
+  return runOperationAsync('ValidatePdfUa', options, (context) => validatePdfUaSteps(doc, catalog, part, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* validatePdfUaSteps(doc: Document, catalog: PdfDict, part: PdfUaPart, context: OperationContext): OperationSteps<ValidationReport> {
   const tree = doc.GetStructTree();
   if (!tree) {
     return new ValidationReport([{
@@ -40,7 +49,11 @@ export function validatePdfUa(
   }
   const ctx: UaCtx = { doc, catalog, part, tree, nodes: walkTree(tree) };
   const issues: ValidationIssue[] = [];
-  for (const rule of RULES) issues.push(...rule(ctx));
+  let completed = 0;
+  for (const rule of RULES) {
+    issues.push(...rule(ctx));
+    yield context.progress('rules', ++completed, RULES.length);
+  }
   return new ValidationReport(issues);
 }
 

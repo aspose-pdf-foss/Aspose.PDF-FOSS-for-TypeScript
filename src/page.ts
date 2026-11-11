@@ -1,3 +1,4 @@
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream, type PdfRef } from './types.js';
 import { inflateStream } from './flate.js';
@@ -15,14 +16,14 @@ import { PageFormat } from './pageformat.js';
 import {
   readTransition, readDuration, setTransition, setDuration, type PageTransition,
 } from './pagetransition.js';
-import { renderPageToSvg, SvgOptions } from './svgrender.js';
-import { renderPageToHtml, HtmlOptions } from './html.js';
-import { renderPageToDocx, type DocxOptions } from './docxexport.js';
+import { renderPageToSvg, renderPageToSvgAsync, SvgOptions } from './svgrender.js';
+import { renderPageToHtml, renderPageToHtmlAsync, HtmlOptions } from './html.js';
+import { renderPageToDocx, renderPageToDocxAsync, type DocxOptions } from './docxexport.js';
 import {
-  renderPageToMarkdown, renderPageToMarkdownAssets,
+  renderPageToMarkdown, renderPageToMarkdownAsync, renderPageToMarkdownAssets, renderPageToMarkdownAssetsAsync,
   type MarkdownExportOptions, type MarkdownExportResult,
 } from './mdexport.js';
-import { renderPageToPng, ImageOptions } from './raster.js';
+import { renderPageToPng, renderPageToPngAsync, ImageOptions } from './raster.js';
 import { addImage, AddImageOptions } from './imageembed.js';
 import { addBarcode, BarcodeSpec, AddBarcodeOptions } from './barcodeplace.js';
 import { addSvgObject, AddSVGOptions, AddSVGResult } from './svgembed.js';
@@ -61,13 +62,13 @@ import {
 import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
 import { addBarcodeField, type BarcodeFieldInit } from './paperbarcode.js';
 import { registerStructIds, untagObjects } from './structwrite.js';
-import { checkOnSkipped, markdownElements, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
-import { htmlElements, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
-import { docxElements, checkDocxOptions, type AddDocxResult, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
+import { checkOnSkipped, markdownElementsSteps, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
+import { htmlElementsSteps, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
+import { docxElementsSteps, checkDocxOptions, type AddDocxResult, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
 import { SkipLog, mergeSkipped } from './wmlflow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { HtmlDocument } from './htmldom.js';
-import { placeElements } from './flowplace.js';
+import { placeElementsSteps } from './flowplace.js';
 import {
   normalizeNoteOptions, notesAsTrailing, takenIds, NoteLinks, type FlowNoteOptions, type FlowEndnoteOptions,
 } from './flownotes.js';
@@ -680,35 +681,55 @@ export class Page {
    *  elements that did not fit — pass it to `placeElements` to continue into
    *  another rect or another page. For a document that should paginate itself,
    *  use `Document.AddMarkdown` or a `Flow`. */
-  AddMarkdown(
-    src: string | MdDocument,
-    rect: [number, number, number, number],
-    options: MarkdownFlowOptions & {
+  AddMarkdown(src: string | MdDocument, rect: [number, number, number, number], options: MarkdownFlowOptions & {
       /** Gap between consecutive blocks, on top of the style's own spacing.
        *  Default 0. */
       paragraphSpacing?: number;
       /** Grouping element the content tags under. Omit for untagged output. */
       structParent?: StructElement;
-    } = {},
-  ): AddMarkdownResult {
+    } = {}): AddMarkdownResult {
+    return runOperation('AddMarkdown', options, (context) => this.addMarkdownSteps(src, rect, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddMarkdown}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddMarkdownAsync(src: string | MdDocument, rect: [number, number, number, number], options: MarkdownFlowOptions & {
+      /** Gap between consecutive blocks, on top of the style's own spacing.
+       *  Default 0. */
+      paragraphSpacing?: number;
+      /** Grouping element the content tags under. Omit for untagged output. */
+      structParent?: StructElement;
+    } = {}): Promise<AddMarkdownResult> {
+    return runOperationAsync('AddMarkdown', options, (context) => this.addMarkdownSteps(src, rect, options, context));
+  }
+
+  private *addMarkdownSteps(src: string | MdDocument, rect: [number, number, number, number], options: MarkdownFlowOptions & {
+      /** Gap between consecutive blocks, on top of the style's own spacing.
+       *  Default 0. */
+      paragraphSpacing?: number;
+      /** Grouping element the content tags under. Omit for untagged output. */
+      structParent?: StructElement;
+    }, context: OperationContext): OperationSteps<AddMarkdownResult> {
     // See Document.AddMarkdown: a fresh array on the way out (kk3q).
     checkOnSkipped(options);
     const late: string[] = [];
     const onSkipped = (s: string): void => { late.push(s); options.onSkipped?.(s); };
-    const { elements, skipped } = markdownElements(src, { ...options, onSkipped });
+    const { elements, skipped } = (yield* markdownElementsSteps(src, { ...options, onSkipped }, context));
     // One rect has no column foot and no next column: GFM footnotes are
     // numbered and placed AFTER the content, inside the same rect (v9j3.3.1).
     // The note size is the one the bodies were mapped at, so the gutter mark
     // matches them in either placement (v9j3.3.1 review).
     const fontSize = options.style?.footnoteSize ?? 8;
     const t = this.trailingNotes(elements, { fontSize }, { fontSize }, options.structParent);
-    const { usedHeight, remainder } = placeElements(this.doc, this, t.placed, rect, {
+    try {
+    const { usedHeight, remainder } = (yield* placeElementsSteps(this.doc, this, t.placed, rect, {
       paragraphSpacing: options.paragraphSpacing,
       structParent: options.structParent,
-    });
-    t.done();
+    }, context));
     return { usedHeight, remainder, skipped: [...skipped, ...late] };
-  }
+
+    } finally { t.done(); }
+}
 
   /** Notes for one rect (v9j3.3.1/.2): numbered and placed after the content,
    *  tagged under `structParent` as a flow tags them. Returns the elements to
@@ -743,18 +764,38 @@ export class Page {
    *  paginate itself, use `Document.AddHtml` or a `Flow`.
    *
    *  `rect[2]` is the containing width the CSS boxes resolve against. */
-  AddHtml(
-    src: string | HtmlDocument,
-    rect: [number, number, number, number],
-    options: HtmlFlowOptions & {
+  AddHtml(src: string | HtmlDocument, rect: [number, number, number, number], options: HtmlFlowOptions & {
       /** Gap between consecutive blocks, on top of the CSS margins. Default 0,
        *  and leaving it there is what lets a collapsed margin reproduce
        *  exactly — flow.ts ADDS this between every pair. */
       paragraphSpacing?: number;
       /** Grouping element the content tags under. Omit for untagged output. */
       structParent?: StructElement;
-    } = {},
-  ): AddHtmlResult {
+    } = {}): AddHtmlResult {
+    return runOperation('AddHtml', options, (context) => this.addHtmlSteps(src, rect, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddHtml}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddHtmlAsync(src: string | HtmlDocument, rect: [number, number, number, number], options: HtmlFlowOptions & {
+      /** Gap between consecutive blocks, on top of the CSS margins. Default 0,
+       *  and leaving it there is what lets a collapsed margin reproduce
+       *  exactly — flow.ts ADDS this between every pair. */
+      paragraphSpacing?: number;
+      /** Grouping element the content tags under. Omit for untagged output. */
+      structParent?: StructElement;
+    } = {}): Promise<AddHtmlResult> {
+    return runOperationAsync('AddHtml', options, (context) => this.addHtmlSteps(src, rect, options, context));
+  }
+
+  private *addHtmlSteps(src: string | HtmlDocument, rect: [number, number, number, number], options: HtmlFlowOptions & {
+      /** Gap between consecutive blocks, on top of the CSS margins. Default 0,
+       *  and leaving it there is what lets a collapsed margin reproduce
+       *  exactly — flow.ts ADDS this between every pair. */
+      paragraphSpacing?: number;
+      /** Grouping element the content tags under. Omit for untagged output. */
+      structParent?: StructElement;
+    }, context: OperationContext): OperationSteps<AddHtmlResult> {
     // See Document.AddHtml: a fresh array on the way out, never a mutation of
     // the one htmlElements returned (zch2.16).
     const late: NotRendered[] = [];
@@ -763,11 +804,11 @@ export class Page {
       options.onNotRendered?.(r);
     };
     const { elements, skipped, unsupported } =
-      htmlElements(this.doc, src, rect[2], { ...options, onNotRendered: sink });
-    const { usedHeight, remainder } = placeElements(this.doc, this, elements, rect, {
+      (yield* htmlElementsSteps(this.doc, src, rect[2], { ...options, onNotRendered: sink }, context));
+    const { usedHeight, remainder } = (yield* placeElementsSteps(this.doc, this, elements, rect, {
       paragraphSpacing: options.paragraphSpacing,
       structParent: options.structParent,
-    });
+    }, context));
     return { usedHeight, remainder, skipped: [...skipped, ...late], unsupported };
   }
 
@@ -775,25 +816,33 @@ export class Page {
    *  (`m2fp.5`). A page or column break cannot be honoured in one rect: the
    *  content before and after it is placed continuously and the break reported.
    *  Returns `usedHeight`, `skipped` and a `remainder` for `placeElements`. */
-  AddDocx(
-    bytes: Uint8Array,
-    rect: [number, number, number, number],
-    options: DocxFlowOptions & { structParent?: StructElement } = {},
-  ): AddDocxResult {
+  AddDocx(bytes: Uint8Array, rect: [number, number, number, number], options: DocxFlowOptions & { structParent?: StructElement } = {}): AddDocxResult {
+    return runOperation('AddDocx', options, (context) => this.addDocxSteps(bytes, rect, options, context));
+  }
+
+  /** Cooperatively yield between work units of {@link AddDocx}.
+   *  Cancellation leaves completed edits; do not mutate the document while pending. */
+  AddDocxAsync(bytes: Uint8Array, rect: [number, number, number, number], options: DocxFlowOptions & { structParent?: StructElement } = {}): Promise<AddDocxResult> {
+    return runOperationAsync('AddDocx', options, (context) => this.addDocxSteps(bytes, rect, options, context));
+  }
+
+  private *addDocxSteps(bytes: Uint8Array, rect: [number, number, number, number], options: DocxFlowOptions & { structParent?: StructElement }, context: OperationContext): OperationSteps<AddDocxResult> {
     checkDocxOptions(options);
     const late = new SkipLog();
     const onSkipped = (s: DocxSkipped): void => { late.add(s.name, s.kind, s.count); options.onSkipped?.(s); };
-    const { segments, skipped, notes } = docxElements(this.doc, bytes, rect[2], { ...options, onSkipped });
+    const { segments, skipped, notes } = (yield* docxElementsSteps(this.doc, bytes, rect[2], { ...options, onSkipped }, context));
     if (segments.length > 1) late.add('w:br (page)', 'degraded', segments.length - 1);
     // Word's notes, numbered by Word's properties and placed after the content
     // inside the rect (v9j3.3.2).
     const t = this.trailingNotes(segments.flat(), notes.footnotes, notes.endnotes, options.structParent);
-    const { usedHeight, remainder } = placeElements(this.doc, this, t.placed, rect, {
+    try {
+    const { usedHeight, remainder } = (yield* placeElementsSteps(this.doc, this, t.placed, rect, {
       paragraphSpacing: 0, structParent: options.structParent,
-    });
-    t.done();
+    }, context));
     return { usedHeight, remainder, skipped: mergeSkipped(skipped, late.list()) };
-  }
+
+    } finally { t.done(); }
+}
 
   /** Start a buffered vector-drawing session on this page. Operators are
    *  accumulated until you call apply(), which splices them into /Contents
@@ -810,6 +859,11 @@ export class Page {
     return renderPageToSvg(this.doc, this, options);
   }
 
+  /** Yield between rendering and assembly; a page render itself is atomic. */
+  ToSvgAsync(options?: SvgOptions): Promise<string> {
+    return renderPageToSvgAsync(this.doc, this, options);
+  }
+
   /** Render this page to a standalone HTML document. In the default 'semantic'
    *  mode the output is reflowable markup driven by the tagged structure tree
    *  when the document has one, and by font-size heuristics when it does not.
@@ -818,11 +872,21 @@ export class Page {
     return renderPageToHtml(this.doc, this, options);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToHtmlAsync(options?: HtmlOptions): Promise<string> {
+    return renderPageToHtmlAsync(this.doc, this, options);
+  }
+
   /** Render this page to GFM Markdown. Reconstructs the document from the
    *  tagged structure tree when the document has one, and from font-size
-   *  heuristics when it does not. Never throws. */
+   *  heuristics when it does not. Recovers damaged content; caller cancellation/errors propagate. */
   ToMarkdown(options?: MarkdownExportOptions): string {
     return renderPageToMarkdown(this.doc, this, options);
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToMarkdownAsync(options?: MarkdownExportOptions): Promise<string> {
+    return renderPageToMarkdownAsync(this.doc, this, options);
   }
 
   /** Render this page to a `.docx`. See `Document.ToDocx`. */
@@ -830,10 +894,20 @@ export class Page {
     return renderPageToDocx(this.doc, this, options);
   }
 
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToDocxAsync(options?: DocxOptions): Promise<Uint8Array> {
+    return renderPageToDocxAsync(this.doc, this, options);
+  }
+
   /** Render this page to Markdown plus the image files it references.
    *  See `Document.ToMarkdownAssets`. */
   ToMarkdownAssets(options?: MarkdownExportOptions): MarkdownExportResult {
     return renderPageToMarkdownAssets(this.doc, this, options);
+  }
+
+  /** Yield between cooperative work units; cancellation leaves completed edits. */
+  ToMarkdownAssetsAsync(options?: MarkdownExportOptions): Promise<MarkdownExportResult> {
+    return renderPageToMarkdownAssetsAsync(this.doc, this, options);
   }
 
   /** Render this page to PNG bytes with a pure-TypeScript software rasterizer.
@@ -844,6 +918,11 @@ export class Page {
    *  Unsupported content degrades rather than throwing. */
   ToImage(options?: ImageOptions): Uint8Array {
     return renderPageToPng(this.doc, this, options);
+  }
+
+  /** Yield between rendering and encoding; a page render itself is atomic. */
+  ToImageAsync(options?: ImageOptions): Promise<Uint8Array> {
+    return renderPageToPngAsync(this.doc, this, options);
   }
 
   /** Embed `data` (JPEG or PNG) as an Image XObject and paint it into the

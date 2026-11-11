@@ -1,4 +1,6 @@
 import type { Document } from './document.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
+import type { OperationControlOptions } from './checkpoint.js';
 import type { Page } from './page.js';
 import { Matrix, mul, translate, invert, apply } from './text.js';
 import { PdfDict, PdfObject, PdfStream, isStream } from './types.js';
@@ -15,7 +17,7 @@ import { strokeOutlinePolys } from './strokegeom.js';
 import { glyphDisplacement, glyphOrigin } from './font.js';
 import { rethrowLimit } from './errors.js';
 
-export interface SvgOptions {
+export interface SvgOptions extends OperationControlOptions {
   /** Which page box defines the viewport. Default 'crop'. */
   box?: 'crop' | 'media';
   /** Composite annotation and form-field /AP appearances. Default true. */
@@ -473,8 +475,19 @@ export class SvgSink implements RenderSink {
   }
 }
 
-/** Render one page to a standalone SVG string. Never throws. */
+/** Render one page to a standalone SVG string. Caller cancellation/errors escape. */
 export function renderPageToSvg(doc: Document, page: Page, opts: SvgOptions = {}): string {
+  return runOperation('ToSvg', opts, (context) => renderPageToSvgSteps(doc, page, opts, context));
+}
+
+export function renderPageToSvgAsync(doc: Document, page: Page, opts: SvgOptions = {}): Promise<string> {
+  return runOperationAsync('ToSvg', opts, (context) => renderPageToSvgSteps(doc, page, opts, context));
+}
+
+/** @internal */
+export function* renderPageToSvgSteps(
+  doc: Document, page: Page, opts: SvgOptions, context: OperationContext,
+): OperationSteps<string> {
   const box = opts.box ?? 'crop';
   const { matrix, width, height } = baseMatrix(page, box);
   const sink = new SvgSink(doc);
@@ -483,5 +496,8 @@ export function renderPageToSvg(doc: Document, page: Page, opts: SvgOptions = {}
   } catch (caught) { rethrowLimit(caught);
     // Degrade: whatever was emitted before the failure still renders.
   }
-  return sink.finish(width, height);
+  yield context.progress('render', 1, 1, page.Number);
+  const result = sink.finish(width, height);
+  yield context.progress('assemble', 1, 1, page.Number);
+  return result;
 }

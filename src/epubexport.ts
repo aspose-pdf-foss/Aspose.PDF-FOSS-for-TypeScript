@@ -1,16 +1,18 @@
+import type { OperationControlOptions } from './checkpoint.js';
+import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { createHash } from 'node:crypto';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { isArray, isString, type PdfStream } from './types.js';
-import { buildDocModel, type DocNode } from './docmodel.js';
-import { semanticBody, type HtmlImageSink } from './htmlsemantic.js';
+import { buildDocModelSteps, type DocNode } from './docmodel.js';
+import { semanticBodySteps, type HtmlImageSink } from './htmlsemantic.js';
 import { encodeImage, imageExtension } from './imagehref.js';
 import { writeEpub, type EpubPart, type EpubMetadata } from './epub.js';
 import { splitChapters } from './epubsplit.js';
 import { rethrowLimit } from './errors.js';
 
 /** Options for {@link Document.ToEpub}. */
-export interface EpubOptions {
+export interface EpubOptions extends OperationControlOptions {
   /** `dc:identifier`. Defaults to the trailer `/ID`, then a hash of the
    *  content — every branch deterministic, so the archive stays reproducible. */
   identifier?: string;
@@ -55,9 +57,16 @@ function idFromTrailer(doc: Document): string | undefined {
 }
 
 /** Render `pages` to one EPUB 3 archive. */
-export function renderEpub(
-  doc: Document, pages: Page[], opts: EpubOptions,
-): Uint8Array {
+export function renderEpub(doc: Document, pages: Page[], opts: EpubOptions): Uint8Array {
+  return runOperation('ToEpub', opts, (context) => renderEpubSteps(doc, pages, opts, context));
+}
+
+export function renderEpubAsync(doc: Document, pages: Page[], opts: EpubOptions): Promise<Uint8Array> {
+  return runOperationAsync('ToEpub', opts, (context) => renderEpubSteps(doc, pages, opts, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* renderEpubSteps(doc: Document, pages: Page[], opts: EpubOptions, context: OperationContext): OperationSteps<Uint8Array> {
   const parts: EpubPart[] = [];
 
   // **Invariant:** image identity is the hash of the ENCODED BYTES, not the
@@ -91,7 +100,7 @@ export function renderEpub(
 
   let chapters = [{ title: title || 'Start', nodes: [] as DocNode[] }];
   try {
-    chapters = splitChapters(buildDocModel(doc, pages), title || 'Start');
+    chapters = splitChapters(yield* buildDocModelSteps(doc, pages, context), title || 'Start');
   } catch (caught) { rethrowLimit(caught);
     // Degrade: one empty chapter, as ToDocx and ToHtml degrade to what they
     // produced. A half-written EPUB that opens beats an exception, and the
@@ -103,15 +112,17 @@ export function renderEpub(
   // ONE sink across every chapter, so an image drawn in two of them is one
   // package part. A per-chapter sink would silently duplicate every shared
   // picture, which is invisible in the markup and obvious in the file size.
-  const docs = chapters.map((c) => {
+  const docs: string[] = [];
+  for (const c of chapters) {
     let body = '';
     try {
-      body = semanticBody(doc, c.nodes, images);
+      body = yield* semanticBodySteps(doc, c.nodes, images, context);
     } catch (caught) { rethrowLimit(caught);
       // One unrenderable chapter costs its own content, not the whole book.
     }
-    return xhtml(c.title, language, body);
-  });
+    docs.push(xhtml(c.title, language, body));
+    yield context.progress('chapters', docs.length, chapters.length);
+  }
 
   const nav = xhtml(title, language,
     '<nav epub:type="toc" id="toc">\n<ol>\n'
@@ -138,5 +149,7 @@ export function renderEpub(
 
   const epubMeta: EpubMetadata = { identifier, title, language };
   if (author) epubMeta.author = author;
-  return writeEpub(parts, epubMeta);
+  const result = writeEpub(parts, epubMeta);
+  yield context.progress('assemble', 1, 1);
+  return result;
 }

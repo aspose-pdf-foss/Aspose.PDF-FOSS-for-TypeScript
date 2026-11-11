@@ -1,3 +1,4 @@
+import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
 /** Place a list of {@link FlowElement}s into ONE rectangle on ONE page and hand
  *  back what did not fit.
  *
@@ -39,11 +40,12 @@ export interface PlaceElementsResult {
 /** Lay `elements` top-down into `rect` = `[x, y, w, h]`, where `y` is the
  *  BOTTOM edge (the convention `flowTextBlock` and `Page.AddTextBlock` use).
  *  Draws onto `page` and never creates one. */
-export function placeElements(
-  doc: Document, page: Page, elements: FlowElement[],
-  rect: [number, number, number, number],
-  options: PlaceElementsOptions = {},
-): PlaceElementsResult {
+export function placeElements(doc: Document, page: Page, elements: FlowElement[], rect: [number, number, number, number], options: PlaceElementsOptions = {}): PlaceElementsResult {
+  return runOperation('placeElements', undefined, (context) => placeElementsSteps(doc, page, elements, rect, options, context));
+}
+
+/** @internal Shared resumable algorithm; delegate within the parent context. */
+export function* placeElementsSteps(doc: Document, page: Page, elements: FlowElement[], rect: [number, number, number, number], options: PlaceElementsOptions, context: OperationContext): OperationSteps<PlaceElementsResult> {
   if (!Array.isArray(elements)) throw new TypeError('elements must be an array');
   if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((n) => Number.isFinite(n)))
     throw new TypeError('rect must be [x, y, width, height] of finite numbers');
@@ -73,7 +75,10 @@ export function placeElements(
   const stop = (remainder: FlowElement[]): PlaceElementsResult =>
     ({ usedHeight: rectTop - top, remainder });
 
+  let completedlayout = 0;
   for (let i = 0; i < elements.length; i++) {
+    let stopped: PlaceElementsResult | undefined;
+    operationUnit: {
     const el = elements[i];
     floats = pruneFloats(floats, top);
     // The gap above this element, dropped entirely at the rect's top.
@@ -96,7 +101,7 @@ export function placeElements(
         if (fTop === elTop) top = fTop;
         started = true;
         pendingAfter = 0;
-        continue;
+        break operationUnit;
       }
       // Will not fit this rect: fall through and place it in flow. The marker
       // rides on a FlowElement, so that costs nothing.
@@ -116,15 +121,15 @@ export function placeElements(
     // to where it reopens. Render skips to the next column here; a rect has
     // none, so the pen simply moves down.
     if (elemWidth <= 0) {
-      if (boundary <= y) return stop(elements.slice(i));
+      if (boundary <= y) { stopped = stop(elements.slice(i)); break operationUnit; }
       top = boundary;
       i--;
-      continue;
+      break operationUnit;
     }
     if (availHeight <= 0) {
       // Beside a float with no room left in the band: resume below it.
-      if (besideFloat && boundary > y) { top = boundary; i--; continue; }
-      return stop(elements.slice(i));
+      if (besideFloat && boundary > y) { top = boundary; i--; break operationUnit; }
+      stopped = stop(elements.slice(i)); break operationUnit;
     }
 
     const res = el.place({
@@ -142,17 +147,17 @@ export function placeElements(
           elements = [...elements.slice(0, i), res.remainder, ...elements.slice(i + 1)];
           top = boundary;
           i--;
-          continue;
+          break operationUnit;
         }
-        return stop([res.remainder, ...elements.slice(i + 1)]);
+        stopped = stop([res.remainder, ...elements.slice(i + 1)]); break operationUnit;
       }
       pendingAfter = el.spaceAfter ?? 0;
-      continue;
+      break operationUnit;
     }
     // Nothing painted: a null remainder means the element was empty (discard);
     // anything else means it did not fit what is left, and the rect is done.
-    if (res.remainder === null) continue;
-    if (besideFloat && boundary > y) { top = boundary; i--; continue; }
+    if (res.remainder === null) break operationUnit;
+    if (besideFloat && boundary > y) { top = boundary; i--; break operationUnit; }
     // Nothing has been placed into this rect yet, so this element cannot be
     // deferred to anywhere: it is the rect-level twin of Render's empty column
     // (zch2.16). Offer the shrink, accepting it only when the replacement
@@ -164,12 +169,16 @@ export function placeElements(
         el.onCompromise?.('scaled');
         elements = [...elements.slice(0, i), shrunk, ...elements.slice(i + 1)];
         i--;
-        continue;
+        break operationUnit;
       }
     }
     // It cannot be scaled, and unlike Render this caller gave us a RECT and
     // meant it — `remainder` is a real answer, so nothing is drawn outside it.
-    return stop(elements.slice(i));
+    stopped = stop(elements.slice(i));
+
+    }
+    yield context.progress('layout', ++completedlayout, undefined, page.Number);
+    if (stopped !== undefined) return stopped;
   }
   return stop([]);
 }
