@@ -13,6 +13,7 @@ import {
 } from './sigplaceholder.js';
 import { serializeLinearizedSteps } from './linearize.js';
 import { applyStreamFilterSteps, StreamFilterName } from './streamfilter.js';
+import { registerStreamCopy } from './decodebudget.js';
 
 export interface SerializeOptions extends OperationControlOptions {
   /** Emit a cross-reference stream + compressed object streams (ObjStm) instead
@@ -60,7 +61,9 @@ function remap(o: PdfObject, map: Map<number, number>): PdfObject {
   if (isStream(o)) {
     const d: PdfDict = new Map();
     for (const [k, v] of o.dict) d.set(k, remap(v, map));
-    return { kind: 'stream', dict: d, raw: o.raw };
+    const copy: PdfStream = { kind: 'stream', dict: d, raw: o.raw };
+    registerStreamCopy(copy, o);
+    return copy;
   }
   return o;
 }

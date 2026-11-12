@@ -513,6 +513,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Save-time stream re-filtering honors the document's decode policy.**
+  The copied streams used by `Save({ streamFilter })` had lost their budget
+  registration, so LZW, RunLength and Brotli re-encoding silently used default
+  limits: tighter limits could be bypassed and explicitly trusted input could
+  be refused. Write-plan copies now share the source policy and accounting
+  identity, enforcing the document's total across streams while charging each
+  logical stream once across reads, repeated saves and async saves. Tests pin
+  strict byte, ratio and filter-chain limits, exact totals and unlimited input.
+  (vhks)
+
 - **Page imports preserve source defaults instead of borrowing destination settings.** When a source omitted rotation, crop bounds or resources, re-parenting its copied page let it inherit the destination's values: a previously unrotated page could turn by 180 degrees or be cropped to a small destination viewport. Single-page and bulk copies now state the source's effective defaults, including the existing US Letter fallback for a missing or unusable media box. Null, malformed and dead-reference attributes follow the same fallback behavior as the source `Page` getters; valid inherited objects still use ordinary reference remapping, and explicit prune-policy exclusions still apply. Tests cover all four import entry points, save/reopen, source immutability and unchanged destination pages. (aspose-pdf-foss-for-ts-s4xe)
 
 - **Large page graphs no longer hit JavaScript's function-argument limit during splitting, insertion or repair.** `Split()` spread every copied object number into `Math.max`, bulk insertion spread every page into `splice`, and page-list rebuilds and repair cleanup used spread-based `push`. A wide graph could therefore throw `RangeError: Maximum call stack size exceeded` despite being well inside the resource limits and having no deep nesting. These paths now use scans, array concatenation and loops; extraction and import queues also advance by a cursor rather than repeatedly shifting a large array. Regressions exercise 150,000 referenced objects, insertion of 150,000 distinct pages, and repair of equally wide trees, including null children. (aspose-pdf-foss-for-ts-daqd)

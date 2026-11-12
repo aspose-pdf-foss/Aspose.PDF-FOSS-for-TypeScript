@@ -50,7 +50,7 @@ export class DecodeBudget {
     offer(l.maxDecodedStreamBytes, 'maxDecodedStreamBytes');
     if (l.maxExpansionRatio !== null)
       offer(Math.max(RATIO_FLOOR, l.maxExpansionRatio * Math.max(1, encoded)), 'maxExpansionRatio');
-    if (l.maxTotalDecodedBytes !== null && !(stream && this.counted.has(stream)))
+    if (l.maxTotalDecodedBytes !== null && !(stream && this.counted.has(streamIdentity(stream))))
       offer(Math.max(0, l.maxTotalDecodedBytes - this.total), 'maxTotalDecodedBytes');
     if (contentSoFar !== undefined && l.maxContentBytes !== null)
       offer(Math.max(0, l.maxContentBytes - contentSoFar), 'maxContentBytes');
@@ -65,13 +65,14 @@ export class DecodeBudget {
     if (contentSoFar !== undefined) l.enforce('maxContentBytes', contentSoFar + bytes, 'page content');
     l.enforce('maxDecodedStreamBytes', bytes, what);
     if (bytes > RATIO_FLOOR) l.enforce('maxExpansionRatio', Math.ceil(bytes / Math.max(1, encoded)), what);
-    if (!(stream && this.counted.has(stream))) l.enforce('maxTotalDecodedBytes', this.total + bytes, what);
+    if (!(stream && this.counted.has(streamIdentity(stream)))) l.enforce('maxTotalDecodedBytes', this.total + bytes, what);
   }
 
   /** Charge a stream's decoded size to the running total, once per stream. */
   charge(stream: PdfStream, bytes: number): void {
-    if (this.counted.has(stream)) return;
-    this.counted.add(stream);
+    const identity = streamIdentity(stream);
+    if (this.counted.has(identity)) return;
+    this.counted.add(identity);
     this.total += bytes;
   }
 
@@ -84,15 +85,30 @@ export class DecodeBudget {
   get decoded(): number { return this.total; }
 }
 
-const registry = new WeakMap<PdfStream, DecodeBudget>();
+interface StreamRegistration { budget: DecodeBudget; identity: PdfStream }
+const registry = new WeakMap<PdfStream, StreamRegistration>();
+
+/** Save's remapped copies represent the same logical stream. */
+function streamIdentity(stream: PdfStream): PdfStream {
+  return registry.get(stream)?.identity ?? stream;
+}
 
 /** Tie `stream` to a document's budget. Re-registering moves it. */
 export function registerStream(stream: PdfStream, budget: DecodeBudget): void {
-  registry.set(stream, budget);
+  registry.set(stream, { budget, identity: stream });
+}
+
+/** Preserve a source stream's policy AND once-per-stream accounting on a
+ *  write-plan copy. No registration is invented for unregistered sources;
+ *  those continue to decode under the defaults without a running total. */
+export function registerStreamCopy(copy: PdfStream, source: PdfStream): void {
+  const registration = registry.get(source);
+  if (registration) registry.set(copy, registration);
+  else registry.delete(copy);
 }
 
 /** The budget `stream` decodes under: its document's, else a fresh default one
  *  that carries no running total. */
 export function budgetFor(stream: PdfStream): DecodeBudget {
-  return registry.get(stream) ?? new DecodeBudget(LoadLimits.defaults);
+  return registry.get(stream)?.budget ?? new DecodeBudget(LoadLimits.defaults);
 }

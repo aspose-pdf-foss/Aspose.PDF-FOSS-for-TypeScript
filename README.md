@@ -389,6 +389,13 @@ The bounds are enforced when the document is opened and again as it is used: `Ge
 `ToImage`, exports and conversions decode streams and images under the same policy, so a
 file that opens cleanly can still raise `ResourceLimitError` later.
 
+`Save({ streamFilter })` and `SaveAsync({ streamFilter })` also use that policy
+when decoding streams for re-encoding. Their write-plan copies share the source
+stream's accounting identity: reads and repeated saves charge a logical stream
+once toward `maxTotalDecodedBytes`, while distinct streams share the document's
+total. Explicitly relaxed limits, including `LoadLimits.unlimited()`, carry
+through to saving.
+
 | Limit | Default | Bounds |
 |---|---|---|
 | `maxFileBytes` | 1 GiB | Input bytes; `OpenFile` checks the file size before reading it |
