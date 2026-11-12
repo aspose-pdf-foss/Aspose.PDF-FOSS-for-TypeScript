@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in PDF/A-1 transparency flattening with searchable text.**
+  `ConvertToPdfA('1b', { flattenTransparency: true })` rasterizes complete affected
+  pages at 150 DPI (or `{ dpi }`) while retaining decoded text as an invisible
+  embedded-font layer. The full page supplies the backdrop for blending;
+  unaffected pages and live annotations remain intact. Default unresolved
+  reporting stays unchanged; conflicting preservation requests, signed documents,
+  and tagged or vertical-writing pages remain unresolved, as do annotations
+  whose appearances depend on page resources. Tests compare known alpha
+  composites, rotated crop boxes and text before and after saving. (nh1t.2)
+
 - **Lossless JBIG2 image optimization.** `Optimize({ jbig2: true })` and
   `OptimizeAsync` encode raw and byte-filtered 1-bit DeviceGray image XObjects
   and stencils using generic-region arithmetic coding, without resizing or

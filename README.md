@@ -3246,6 +3246,36 @@ when they are image masks, non-8-bit, indexed, bilevel (JBIG2/CCITT), carry a
 `/Mask` or `/Decode`, use a colorspace with no JPEG equivalent, or are never
 drawn by the content scan (which is what leaves an `/SMask` untouched).
 
+### Flatten Transparency for PDF/A-1
+
+Real transparency stays unresolved by default. Opt in when rasterizing affected
+pages is acceptable:
+
+```ts
+const report = doc.ConvertToPdfA('1b', { flattenTransparency: { dpi: 150 } });
+console.log(report.applied, report.unresolved, report.passed);
+```
+
+`flattenTransparency: true` uses 150 DPI; `{ dpi }` accepts a positive resolution
+up to 1200. The flattening region is the complete affected page, so blend modes
+and soft masks retain their backdrop. This reduces vector editability and fixes
+the visible resolution. Other pages stay intact. The page's decoded text is
+retained at its positions in an invisible, embedded glyphless-font layer;
+copy/paste and search need no OCR. Annotations remain live and are not baked
+into the image. Rotation, crop boxes and page references survive.
+
+The option applies only to PDF/A-1. `preserve: ['transparency']` wins. Signed
+documents and tagged/vertical-writing pages are left unresolved rather than
+losing signatures, structure associations or selection geometry. Preserved
+optional-content layers and PostScript resources also prevent destructive
+flattening. Pages with annotation appearances that lack their own resource
+dictionary stay unresolved, preserving their use of the original page resources.
+It uses this library's software renderer and existing
+text decoder, with their fidelity limits. Successful pages appear under rule
+`Transparency` in `applied`; `passed` still comes from final validation. The
+same option works with `ConvertToPdfAAsync`, yielding progress phase
+`transparency-pages` between complete pages.
+
 ### Convert Colours to Gray, RGB or CMYK
 
 `doc.ConvertColors({ to })` converts a document's colour to one device space in
@@ -3796,7 +3826,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ContentOp` | Interface with 5 properties. |
 | `ContentVisitor` | Interface with 3 methods. |
 | `ConvertColorsOptions` | Options for `doc.ConvertColors`, including `to` and `transform`. |
-| `ConvertOptions` | Interface with 5 properties. |
+| `ConvertOptions` | PDF/A conversion options, including ICC intent, preserved categories and opt-in `flattenTransparency`. |
 | `Crl` | Interface with 7 properties. |
 | `CrlEntry` | Interface with 2 properties. |
 | `DataMatrixOptions` | What `makeDataMatrix` takes: `{ shape }`, `'square'` by default. |
@@ -4836,7 +4866,7 @@ still carries GitHub's number.
 - **One backend does not stroke text** — fixed-mode `ToHtml` (and the DOCX textbox backdrop built on it) suppresses a non-painting run like the other backends but paints a *stroking* run filled, CSS having no portable glyph stroke; `ToImage` and `ToSvg` stroke for real.
 - **PDF/UA validation is a curated subset** — `doc.ValidatePdfUa()` checks objectively decidable PDF/UA-1 rules only. It does not validate reading-order correctness, table header / `/Headers` association, or link-text adequacy, and performs no rendering-based checks. The untagged-content check covers text, images *and* vector paths, but it is heuristic and reported at `warning` severity (one per page) — it tells you something on the page is unmarked, not what. A passing report is necessary but not sufficient for full PDF/UA conformance. At part 2, two scopes are deliberately narrower than the standard: the private-use check on human-readable strings covers a curated set of entries this library models as text (document metadata, outline titles, annotation and field text, structure `/Alt`, `/ActualText`, `/E` and `/T`, and attachment descriptions) rather than every string in the file, which would report on binary values such as `/ID` and encryption or signature data; and a `/Lang` on a marked-content sequence is examined only when that sequence encloses at least one glyph.
 - **PDF/A validation is a curated, decidable subset** — `doc.ValidatePdfA(level)` checks objectively decidable ISO 19005 (parts 1–3) rules from the object model, catalog, metadata, resources, and content streams. It reads an output-intent profile’s ICC header far enough to learn the data colour space it declares, but does **not** otherwise parse ICC profiles for validity, verify glyph presence inside embedded font programs, perform any rendering-based or visual-fidelity check, recursively validate *embedded* PDFs as PDF/A, or validate XMP extension schemas. Some checks are heuristic (device-color detection from content operators; standalone ICC-stream `/N`). A passing report is therefore **necessary but not sufficient** for certified PDF/A conformance.
-- **PDF/A conversion is best-effort** — `doc.ConvertToPdfA` fixes what is deterministically fixable and reports the rest as `unresolved`. The one asset it adds is the bundled substitute for a non-embedded Latin Standard-14 font; it cannot embed any other font whose program is absent (`FontEmbedded`), nor a Standard-14 one whose `/Widths` disagree with the substitute for a code the page shows, and it cannot flatten part-1 transparency (`Transparency` — target part 2/3 instead), transcode LZW/JPX/JBIG2 streams, resolve external streams or reference XObjects, or rewrite a non-standard rendering-intent `ri` operator inside a content stream. Level `a` (auto-tagging) is out of scope. Because conversion re-validates, `passed` is true only when the validator agrees. At part 4 it additionally cannot fix a `/BitsPerComponent` outside {1,2,4,8,16} (`ImageKeys`) or a halftone type outside {1,5} (`Halftone`) without re-encoding the image or changing how the page prints; it does **not** delete a `/ToUnicode` CMap carrying prohibited code points (`ToUnicodeContent`) — legal at part 4, but it would destroy text extraction to fix a handful of code points — does not remove a `/Named` action outside the four page-navigation names, and cannot supply the embedded file a PDF/A-4f document must carry (`EmbeddedFilesRequired`). Part-4 remediation is verified against this library's own PDF/A-4 validator, itself a transcription of veraPDF's published profiles: the two halves now agree with each other by construction, so a passing conversion is **not** evidence that a certified validator would agree.
+- **PDF/A conversion is best-effort** — `doc.ConvertToPdfA` fixes what is deterministically fixable and reports the rest as `unresolved`. It embeds the bundled substitute for a non-embedded Latin Standard-14 font; it cannot embed any other font whose program is absent (`FontEmbedded`), nor a Standard-14 one whose `/Widths` disagree with the substitute for a code the page shows, and it leaves part-1 transparency unresolved unless `flattenTransparency` is explicitly enabled (complete affected pages with invisible searchable text). It cannot transcode LZW/JPX/JBIG2 streams, resolve external streams or reference XObjects, or rewrite a non-standard rendering-intent `ri` operator inside a content stream. Level `a` (auto-tagging) is out of scope. Because conversion re-validates, `passed` is true only when the validator agrees. At part 4 it additionally cannot fix a `/BitsPerComponent` outside {1,2,4,8,16} (`ImageKeys`) or a halftone type outside {1,5} (`Halftone`) without re-encoding the image or changing how the page prints; it does **not** delete a `/ToUnicode` CMap carrying prohibited code points (`ToUnicodeContent`) — legal at part 4, but it would destroy text extraction to fix a handful of code points — does not remove a `/Named` action outside the four page-navigation names, and cannot supply the embedded file a PDF/A-4f document must carry (`EmbeddedFilesRequired`). Part-4 remediation is verified against this library's own PDF/A-4 validator, itself a transcription of veraPDF's published profiles: the two halves now agree with each other by construction, so a passing conversion is **not** evidence that a certified validator would agree.
 - **PDF/X validation is a curated, decidable subset** — `doc.ValidatePdfX(level)` checks objectively decidable ISO 15930 rules from the object model, catalog, metadata, resources, and content streams. It does **not** parse ICC profiles for validity, verify that spot-colour names resolve against the output intent, check ink coverage or overprint semantics, or perform any rendering-based check; X-5 is not covered. The registered-characterization-name list is a subset of the ICC registry, so an unlisted but genuine condition name is reported. A passing report is **necessary but not sufficient** for certified PDF/X conformance.
 - **PDF/X conversion never silently changes printed appearance** — `doc.ConvertToPdfX` fixes structural defects and reports the rest as `unresolved`: it cannot flatten live transparency for X-1a/X-3 (target X-4 instead), embed a font whose program is absent, re-encode RGB raster images, or move an annotation that overlaps the trim area (moving it would change the printed page). `passed: false` with a populated `unresolved` list is an expected outcome, not a failed call. The opt-in `convertColor` RGB → CMYK rewrite is a naive maximum-black-removal formula applied to content-stream operators only (not images, not Form XObjects); without the destination profile the resulting ink values are **not** colorimetrically correct, so it is unsuitable for colour-critical work.
 - **PDF/UA conversion is mechanical only** — `doc.ConvertToPdfUa` fixes the deterministic catalog/metadata defects (`/Lang`, `DisplayDocTitle`, `/Marked`, document title, `/RoleMap`, `/Suspects`, `pdfuaid`) and reports the rest. It never synthesizes accessibility content: alt text, reading order, heading/table/list structure, and the tagging of untagged content require human authoring and surface in `ConversionReport.unresolved`. It does not fabricate a structure tree for an untagged document. Because conversion re-validates, `passed` is true only when the validator agrees — necessary but not sufficient for full PDF/UA conformance.

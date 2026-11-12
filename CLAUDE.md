@@ -3702,12 +3702,25 @@ Source (`src/`):
   something, the border rule included — the plan predicted that one would be
   uncovered, and `test/csstable.test.ts`'s "paints the edges a cell border
   states and no others" closes it.
+- **pdfaflatten.ts** — opt-in `ConvertToPdfA` PDF/A-1 transparency flattening
+  (`nh1t.2`). Uses the entire affected page as the compositing region, opaque
+  sRGB/Flate pixels, and an invisible embedded glyphless text layer reconstructed
+  from original glyph pen spans. Annotations stay live, geometry uses the inverse
+  of renderPageRgb's actual device matrix. Tagged/vertical-writing pages, signed
+  inputs and conflicting optionalContent/postScript preservation are declined.
+  Appearance streams without their own Resources also decline the page: their
+  fallback context would disappear on replacement. Text direction is independent
+  of pen advance (Tz carries the span), including zero-width combining glyphs.
+  Runs before conversion's other passes, only when explicitly enabled and not
+  preserved. Each page/font is complete before yielding; finally removes only
+  newly orphaned objects, preserving all surviving Root/Info references and
+  shared resources. Inherited Resources are detached only when no leaf uses them.
 - **pdfatransparency.ts** — can anything a page's resources reach use
   transparency? (`ixxw.5`) The predicate behind `ConvertToPdfA`'s
   `inertTransparencyGroupPass`.
   **Why it exists:** ISO 19005-1 prohibits transparency and the converter
-  cannot FLATTEN it — correctly, since flattening means rasterizing the page
-  and losing its text — so a page carrying `/Group /S /Transparency` was
+  leaves it unresolved unless raster flattening was explicitly requested,
+  so a page carrying `/Group /S /Transparency` was
   reported unresolved and left alone. Producers stamp that group on pages that
   use no transparency at all, where it cannot change the rendered result.
   **Invariant, and the DIRECTION is the safety property:** it is an

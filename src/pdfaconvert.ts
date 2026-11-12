@@ -16,6 +16,7 @@ import type { Ctx as ScanCtx } from './validatectx.js';
 import { convertColors } from './colorconvert.js';
 import { hasSignatureField } from './signature.js';
 import { usesTransparency } from './pdfatransparency.js';
+import { flattenTransparencySteps, resolveFlattenTransparency } from './pdfaflatten.js';
 import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
 import { describeXmpPackets, repairXmpValueTypes } from './pdfaextfix.js';
@@ -31,6 +32,12 @@ export interface ConvertOptions extends OperationControlOptions {
   iccProfile?: { bytes: Uint8Array; n: 1 | 3 | 4; identifier?: string };
   /** Destructive-removal categories to skip (then reported unresolved). */
   preserve?: ConvertCategory[];
+  /** PDF/A-1 only: rasterize complete pages whose resources use transparency,
+   *  retaining an invisible searchable text layer. Lossy; off by default.
+   *  true means 150 DPI; an object selects a DPI in (0, 1200]. Tagged/vertical
+   *  pages, signed documents, conflicting preserved content, and annotation
+   *  appearances that inherit page resources stay unresolved. */
+  flattenTransparency?: boolean | { dpi?: number };
 }
 
 
@@ -59,6 +66,7 @@ export function convertToPdfAAsync(doc: Document, catalog: PdfDict, level: PdfAL
 /** @internal Shared resumable algorithm; delegate within the parent context. */
 export function* convertToPdfASteps(doc: Document, catalog: PdfDict, level: PdfALevel, opts: ConvertOptions, context: OperationContext): OperationSteps<ConversionReport> {
   const { part, level: lvl } = parseLevel(level);
+  const flattenDpi = resolveFlattenTransparency(opts.flattenTransparency);
   const ic = opts.iccProfile ?? { bytes: srgbIcc(), n: SRGB_N as 3, identifier: 'sRGB' };
   const ctx: Cctx = {
     doc, catalog, part, level: lvl,
@@ -69,9 +77,16 @@ export function* convertToPdfASteps(doc: Document, catalog: PdfDict, level: PdfA
   doc.markModified();
   const applied: ConvertAction[] = [];
   let completed = 0;
+  const flatten = part === 1 && flattenDpi !== undefined
+    && !ctx.preserve.has('transparency') && !hasSignatureField(doc);
+  const totalPasses = PASSES.length + Number(flatten);
+  if (flatten) {
+    applied.push(...yield* flattenTransparencySteps(doc, flattenDpi!, context, ctx.preserve));
+    yield context.progress('passes', ++completed, totalPasses);
+  }
   for (const pass of PASSES) {
     applied.push(...pass(ctx));
-    yield context.progress('passes', ++completed, PASSES.length);
+    yield context.progress('passes', ++completed, totalPasses);
   }
   const unresolved = (yield* validatePdfASteps(doc, catalog, level, context.scope('validate'))).Errors;
   return { applied, unresolved, passed: unresolved.length === 0 };
@@ -288,8 +303,8 @@ const deviceColorPass: Pass = (ctx) => {
  * Part 1 alone: parts 2/3/4 permit transparency outright, so there is no rule
  * to satisfy and removing the group would be a change nobody asked for.
  *
- * ISO 19005-1 prohibits transparency and this converter cannot FLATTEN it —
- * correctly, since flattening means rasterizing the page and losing its text.
+ * ISO 19005-1 prohibits transparency. Real transparency is rasterized only
+ * under the separate explicit opt-in, before these default passes run.
  * But producers stamp `/Group /S /Transparency` on pages that use no
  * transparency at all, and such a group cannot change the rendered result, so
  * removing it costs nothing and is the difference between a document that

@@ -3,8 +3,8 @@ import { PdfObject, PdfDict, isDict, isName, isStream } from './types.js';
 /**
  * Can anything these resources reach use transparency? (`ixxw.5`)
  *
- * ISO 19005-1 prohibits transparency, and `ConvertToPdfA` cannot flatten it —
- * correctly, since flattening means rasterizing the page and losing its text.
+ * ISO 19005-1 prohibits transparency. Without the caller's explicit raster
+ * flattening opt-in, ConvertToPdfA leaves real transparency unresolved.
  * But producers STAMP `/Group /S /Transparency` on pages that use no
  * transparency at all, and such a group cannot change the rendered result. The
  * converter drops one only when this answers false.
