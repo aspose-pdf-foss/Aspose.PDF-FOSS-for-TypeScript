@@ -1004,8 +1004,10 @@ Source (`src/`):
   break at the style boundary. Widths are summed per segment, which agrees
   exactly with measuring the whole string for the WinAnsi and Identity-H drivers
   (a string's width is the sum of its glyph advances) and is what lets the
-  single-run path stay byte-identical. It would NOT hold for a shaping driver,
-  which is one more reason shaping stays single-run and throws with a run list.
+  single-run path stay byte-identical. A contextual shaping driver opts into
+  measuring each candidate line's consolidated run spans instead: GSUB and
+  GPOS can change widths across spaces, so adding word widths would disagree
+  with the spans emitted. The unshaped path keeps its lazy additive packer.
   **Invariant:** lines are lists of word *units*, not contiguous text spans,
   because the engine collapses runs of spaces — `a  b` lays out as `a b`. A
   span-based line preserves the double space and moves the bytes of every
@@ -7366,6 +7368,14 @@ Source (`src/`):
   parse, **cffsubset.ts** CID-keyed `CIDFontType0C` subset build with a
   whole-embed fallback, **cffstrings.ts** the 391 predefined SIDs behind
   SID→glyph-name resolution), and emit Type0/Identity-H at `Save`.
+  **Invariant (`nh1t.3`):** one outline may represent DIFFERENT source strings
+  under selected features. `EmbeddedFont` assigns a stable character code per
+  (original GID, source text) pair. Codes normally equal GIDs; collisions use
+  an Encoding CMap mapping multiple codes to the SAME original CID, and
+  `/ToUnicode` is keyed by CODE. `/W`, TrueType's `/CIDToGIDMap` and CFF's
+  charset stay keyed by original CID. Both horizontal and vertical twins
+  preserve those aliases; otherwise a small capital sharing another letter's
+  outline extracts as whichever string was drawn first.
   **Invariant:** the WOFF2 `glyf` transform discards the format's compact
   encodings, so reconstruction must re-choose them — short-form deltas, `SAME`
   bits, `REPEAT` flag runs. Emitting the plain long form is semantically correct
@@ -7901,6 +7911,10 @@ Source (`src/`):
   GDEF/GSUB/GPOS apply (**otlayout.ts**) driven by **shape.ts**, emitted as
   Identity-H glyph runs (**otemit.ts**), over range-compressed Unicode 16 lookup
   tables (**unicode-data.ts**).
+  **textshape.ts** shares run/block shaping-option inheritance and pure font
+  drivers between rich-text painting, table measurement and intrinsic sizing.
+  Feature maps merge by tag; a styled run is a hard shaping boundary, and bidi
+  reorders glyphs within that span rather than reordering paragraph style spans.
 - **table.ts**, **tablemodel.ts**, **tablegrid.ts**, **tablestream.ts**,
   **tableorient.ts**, **tablestruct.ts**,
   **tablestitch.ts** — table extraction: geometry (ruling lines + text, rotated
@@ -8847,9 +8861,9 @@ Source (`src/`):
   the advance width across, origin at `yMax + tsb`), and the kept-position
   kern measures by the SAME numbers (`verticalAdvance`, of the SUBSTITUTED
   glyph). Without vmtx the `/DW2 [880 -1000]` default answers both.
-  **Note, a stated limit:** a vertical form that is also the face's glyph for
-  another character (a presentation form like U+FE11) extracts as the
-  character it stood in for, horizontally too, `toUnicode` being one map.
+  A vertical form that also represents another character uses a distinct
+  character code when needed (`nh1t.3`), so its source mapping does not replace
+  the horizontal character's mapping.
   **Note, measured:** all 9 mutations redden; the advance-of-the-substituted-
   glyph rule only after the fixture gave the vertical form a vmtx row of its
   own -- with one row for every glyph the two readings agree.

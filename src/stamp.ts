@@ -10,7 +10,8 @@ import {
 import { resolveTabStops, leaderGlyph, leaderFill, type TabStop, type TabLayout } from './tabstops.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { emitLine } from './otemit.js';
-import { shapeText, type ShapeOpts } from './shape.js';
+import { validateFeatures, type ShapeOpts } from './shape.js';
+import { shapeOptionsFor, textDriver } from './textshape.js';
 import { resolveHyphenation, hyphenator, type HyphenationOptions, type Hyphenator } from './hyphenate.js';
 import { enc, serializeString } from './serialize.js';
 import type { StructElement } from './struct.js';
@@ -25,7 +26,6 @@ import {
   type DecorationOptions, type ResolvedDecor, type LineBox, type TextRun,
 } from './textdecor.js';
 import { placeRunLinks, isDeferredLink, type RunLinkBox, type RunLink, type LinkedRun } from './runlink.js';
-import { UnsupportedFeatureError } from './errors.js';
 import { coverageOf, drawsNothing, type Undrawable } from './textcoverage.js';
 
 /** The 12 Latin Standard-14 fonts authoring supports (WinAnsi-encodable).
@@ -76,6 +76,9 @@ export interface StampOptions extends DecorationOptions {
   script?: string;
   /** OpenType language-system tag (default: 'dflt'). */
   language?: string;
+  /** Boolean OpenType feature overrides, e.g. `{ onum: true, liga: false }`.
+   *  Applied only when shaping is enabled for an embedded font. */
+  features?: ShapeOpts['features'];
   /** Draw this stamp beneath existing page content instead of on top of it.
    *  Default false. On a page with nothing to sink beneath this is a plain draw. */
   behind?: boolean;
@@ -110,12 +113,12 @@ export function reportUndrawable(
 ): void {
   if (options.onUndrawable === undefined) return;
   const font = options.font ?? 'Helvetica';
-  const u = coverageOf(content, font, effectiveShape(font, options.shape));
+  const u = coverageOf(content, font, effectiveShape(font, options.shape), options.shape);
   if (u !== undefined) options.onUndrawable(u);
 }
 
-function shapeOptsFrom(o: { dir?: 'auto' | 'ltr' | 'rtl'; script?: string; language?: string }): ShapeOpts {
-  return { dir: o.dir, script: o.script, language: o.language };
+function shapeOptsFrom(o: ShapeOpts): ShapeOpts {
+  return { dir: o.dir, script: o.script, language: o.language, features: o.features };
 }
 
 /** Rendered width of `text` in points for `font` (default Helvetica) at `fontSize`.
@@ -123,8 +126,10 @@ function shapeOptsFrom(o: { dir?: 'auto' | 'ltr' | 'rtl'; script?: string; langu
 export function measureText(
   text: string, fontSize: number, font: AuthoringFont = 'Helvetica',
   shape?: boolean, dir?: StampOptions['dir'], script?: string, language?: string,
+  features?: ShapeOpts['features'],
 ): number {
-  if (effectiveShape(font, shape)) return font.measureShaped(text, fontSize, { dir, script, language });
+  validateFeatures(features);
+  if (effectiveShape(font, shape)) return font.measureShaped(text, fontSize, { dir, script, language, features });
   return driverFor(font).measure(text, fontSize);
 }
 
@@ -147,6 +152,7 @@ export function validateFont(font: AuthoringFont): void {
 }
 
 function normalizeOptions(o: StampOptions): NormalizedOptions {
+  validateFeatures(o.features);
   const font = o.font ?? 'Helvetica';
   validateFont(font);
   const fontSize = o.fontSize ?? 12;
@@ -499,7 +505,8 @@ function rotateBody(body: Uint8Array, deg: number, px: number, py: number): Uint
   return out;
 }
 
-function normalizeBlockOptions(o: TextBlockOptions): NormalizedBlockOptions {
+function normalizeBlockOptions(o: TextBlockOptions, rich = false): NormalizedBlockOptions {
+  validateFeatures(o.features);
   const font = o.font ?? 'Helvetica';
   validateFont(font);
   const fontSize = o.fontSize ?? 12;
@@ -542,7 +549,7 @@ function normalizeBlockOptions(o: TextBlockOptions): NormalizedBlockOptions {
   // layout call on its tab-free path.
   let tabs: TabLayout | undefined;
   if (o.tabStops !== undefined) {
-    if (o.shape === true || effectiveShape(font, o.shape))
+    if (!rich && (o.shape === true || effectiveShape(font, o.shape)))
       throw new TypeError('tabStops cannot be combined with shaping');
     const origin = o.tabOrigin ?? 0;
     if (typeof origin !== 'number' || !Number.isFinite(origin)) throw new TypeError('tabOrigin must be a finite number');
@@ -564,6 +571,8 @@ interface ResolvedRun {
   /** Whether `decor` is the run's OWN (it follows `rise`) rather than the
    *  block's (it stays on the line's baseline). */
   ownDecor: boolean;
+  /** Defined only for a shaped embedded span. */
+  shaping?: ShapeOpts;
 }
 
 /** Resolve a run list against the block's options.
@@ -574,7 +583,9 @@ interface ResolvedRun {
  *
  *  A run inherits any property it does not state, so the common case (`{ text }`
  *  with one bold run among them) restates nothing. */
-function resolveRuns(runs: TextRun[], o: NormalizedBlockOptions): ResolvedRun[] {
+function resolveRuns(
+  runs: TextRun[], o: NormalizedBlockOptions, options: TextBlockOptions, measureOnly = false,
+): ResolvedRun[] {
   const out: ResolvedRun[] = [];
   for (let i = 0; i < runs.length; i++) {
     // Read as a LinkedRun: a note mark's link is a DeferredLink (mba3).
@@ -582,6 +593,9 @@ function resolveRuns(runs: TextRun[], o: NormalizedBlockOptions): ResolvedRun[] 
     if (typeof r?.text !== 'string') throw new TypeError(`run ${i}: text must be a string`);
     const font = r.font ?? o.font;
     validateFont(font);
+    const shaping = shapeOptionsFor(font, r, options);
+    if (o.tabs !== undefined && shaping !== undefined)
+      throw new TypeError('tabStops cannot be combined with shaping');
     const fontSize = r.fontSize ?? o.fontSize;
     if (!Number.isFinite(fontSize) || fontSize <= 0)
       throw new TypeError(`run ${i}: fontSize must be a positive finite number`);
@@ -609,8 +623,8 @@ function resolveRuns(runs: TextRun[], o: NormalizedBlockOptions): ResolvedRun[] 
       || r.background !== undefined;
     const decor = own ? resolveDecor(r, color, fontSize, vmetricsFor(font)) : o.decor;
     out.push({
-      layout: { text: r.text, driver: driverFor(font), fontSize },
-      font, color, decor, link: r.link, rise, ownDecor: own,
+      layout: { text: r.text, driver: textDriver(font, shaping, measureOnly), fontSize },
+      font, color, decor, link: r.link, rise, ownDecor: own, shaping,
     });
   }
   return out;
@@ -662,14 +676,6 @@ function weaveAtomics(
  *  a glyph, so a block that is nothing but boxes must still reach the painter. */
 function nothingDrawable(runs: ResolvedRun[]): boolean {
   return runs.every((r) => !isAtomicRun(r.layout) && drawsNothing(r.layout.text, r.layout.driver));
-}
-
-/** Runs plus shaping is not implemented: BiDi reorders across a whole paragraph,
- *  and how a bidi-run boundary should interact with a style boundary is an open
- *  question. Throwing beats silently dropping either the styles or the shaping. */
-function rejectShapedRuns(o: TextBlockOptions, font: AuthoringFont): void {
-  if (effectiveShape(font, o.shape))
-    throw new UnsupportedFeatureError('complex-text shaping is not supported with a run list');
 }
 
 /** Rebuild the remainder's runs AND its atomics, with each atomic's
@@ -774,11 +780,7 @@ function blockLineBoxes(
  *  shaped line widths. `encode` is unused on the shaped path (emission goes
  *  through {@link emitLine}); `probe` counts shaped glyphs (>0 = drawable). */
 function shapedDriver(font: EmbeddedFont, so: ShapeOpts): FontDriver {
-  return {
-    measure: (t, fs) => font.measureShaped(t, fs, so),
-    encode: () => new Uint8Array(0),
-    probe: (t) => (t.length ? shapeText(t, font.sfnt, so).reduce((n, r) => n + r.glyphs.length, 0) : 0),
-  };
+  return textDriver(font, so);
 }
 
 /** Per-line shaped block body: mirrors {@link buildBlockBody} but shapes each
@@ -1123,7 +1125,11 @@ function buildRunBlockBody(
       const col = `${num(r.color[0])} ${num(r.color[1])} ${num(r.color[2])} rg`;
       if (col !== curColor) { s += `${col}\n`; curColor = col; }
       if (r.rise !== curRise) { s += `${num(r.rise)} Ts\n`; curRise = r.rise; }
-      s += `${serializeString(seg.bytes)} Tj\n`;
+      if (r.shaping !== undefined && r.font instanceof EmbeddedFont) {
+        const font = r.font;
+        s += emitLine(font.shapeRuns(seg.text, r.shaping), layout.fontSize,
+          font.sfnt.unitsPerEm || 1000, (gid) => font.sfnt.advanceWidth(gid), r.rise);
+      } else s += `${serializeString(seg.bytes)} Tj\n`;
       if (mcid !== undefined) s += 'EMC\n';
     }
   }
@@ -1193,7 +1199,7 @@ export function flowTextBlock(
 ): { remainder: string | TextRun[] | null; remainderAtomics?: BlockAtomic[]; usedHeight: number } {
   validateMarking(options);
   validateRect(rect);
-  const o = normalizeBlockOptions(options);
+  const o = normalizeBlockOptions(options, isTextRunList(content));
   const put = o.behind ? prependContent : appendContent;
   const [x, y, w, h] = rect;
 
@@ -1205,8 +1211,7 @@ export function flowTextBlock(
   }
 
   if (isTextRunList(content)) {
-    rejectShapedRuns(options, o.font);
-    const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
+    const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o, options), options.atomics);
     if (nothingDrawable(resolved)) return { remainder: null, usedHeight: 0 };
     // Justification falls back to left when any run is embedded; `ro` is a local
     // copy so the block's own options are not mutated.
@@ -1329,15 +1334,14 @@ export function measureTextBlock(
 export function measureTextBlock(
   content: string | TextRun[], width: number, availHeight: number, options: TextBlockOptions = {},
 ): { usedHeight: number; remainder: string | TextRun[] | null; remainderAtomics?: BlockAtomic[] } {
-  const o = normalizeBlockOptions(options);
+  const o = normalizeBlockOptions(options, isTextRunList(content));
   // (v9j3.1) The same redirect flowTextBlock makes: tabs live on the run path.
   if (o.tabs !== undefined && !isTextRunList(content)) {
     const r = measureTextBlock([{ text: content }], width, availHeight, options);
     return { usedHeight: r.usedHeight, remainder: r.remainder === null ? null : r.remainder.map((t) => t.text).join('') };
   }
   if (isTextRunList(content)) {
-    rejectShapedRuns(options, o.font);
-    const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o), options.atomics);
+    const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o, options, true), options.atomics);
     if (nothingDrawable(resolved)) return { usedHeight: 0, remainder: null };
     const { lines, remainder } = layoutRuns(
       resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0, o.hyphen, o.tabs);
@@ -1350,7 +1354,7 @@ export function measureTextBlock(
   }
   let driver: FontDriver;
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
-  else driver = driverFor(o.font);
+  else driver = textDriver(o.font, undefined, true);
   if (drawsNothing(content, driver)) return { usedHeight: 0, remainder: null };
   const { lines, remainder } = layoutText(content, driver, o.fontSize, width, availHeight, o.leading, o.hyphen);
   return { usedHeight: linesHeight(lines), remainder: remainder === '' ? null : remainder };
@@ -1362,11 +1366,8 @@ export function measureTextBlock(
  *  break identically. The width is what a caller needs to know where a line ends
  *  (toc.ts starts a dot leader there), which neither stampTextBlock nor
  *  measureTextBlock reports.
- *
- *  Note for embedded fonts: `layoutText` encodes each kept line, and an embedded
- *  font's `encode` records used glyphs. Measuring therefore retains glyphs for
- *  text that a caller may end up not drawing — a marginally larger subset, never
- *  a wrong one. */
+ *  Its drivers encode nothing, keeping speculative measurement free of glyph
+ *  recording whether shaping is enabled or disabled. */
 export function wrapLines(
   text: string, width: number, options: TextBlockOptions = {},
 ): { text: string; width: number }[] {
@@ -1375,7 +1376,7 @@ export function wrapLines(
   const o = normalizeBlockOptions(options);
   let driver: FontDriver;
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
-  else driver = driverFor(o.font);
+  else driver = textDriver(o.font, undefined, true);
   if (drawsNothing(text, driver)) return [];
   const { lines } = o.tabs === undefined
     ? layoutText(text, driver, o.fontSize, width, Infinity, o.leading, o.hyphen)

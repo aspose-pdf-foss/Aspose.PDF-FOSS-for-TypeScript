@@ -190,7 +190,7 @@ import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys } from
 import { X509Certificate, KeyObject } from 'node:crypto';
 import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
-import { buildEmbeddedFont } from './fontembed.js';
+import { buildEmbeddedFont, buildFontEncoding, flateStream } from './fontembed.js';
 import { closeSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { systemFontFolders, indexFolder, peekCmap, type FaceRecord } from './fontsource.js';
 import { readFontNames } from './fontnames.js';
@@ -2850,7 +2850,7 @@ export class Document {
       // fallback runs -- still needs a real font there, not an empty dict
       // (g0ky.11): it gets one holding .notdef alone.
       const gids = font.usedGids.size > 0 ? font.usedGids : new Set([0]);
-      const type0 = buildEmbeddedFont(font.sfnt, gids, (obj) => this.allocObject(obj), font.toUnicode);
+      const type0 = buildEmbeddedFont(font.sfnt, gids, (obj) => this.allocObject(obj), font.toUnicode, font.codeToGid);
       if (font.objNum !== undefined) this.install(font.objNum, type0);
       if (font.verticalObjNum !== undefined) {
         // The vertical dict shares the descendant: /DW2 and /W2 are read only
@@ -2867,7 +2867,9 @@ export class Document {
           if (w2.length > 0) d0.set('W2', w2);
         }
         const vertical: PdfDict = new Map(type0);
-        vertical.set('Encoding', name('Identity-V'));
+        vertical.set('Encoding', [...font.codeToGid].some(([code, gid]) => code !== gid)
+          ? this.allocObject(flateStream(buildFontEncoding(font.codeToGid, true)))
+          : name('Identity-V'));
         this.install(font.verticalObjNum, vertical);
       }
 

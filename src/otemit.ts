@@ -6,7 +6,10 @@ function hex4(n: number): string { return (n & 0xffff).toString(16).padStart(4, 
 /** 2-byte Identity-H codes for every glyph across all runs, in visual order. */
 export function encodeGids(runs: ShapedRun[]): Uint8Array {
   const out: number[] = [];
-  for (const r of runs) for (const g of r.glyphs) out.push((g.gid >> 8) & 0xff, g.gid & 0xff);
+  for (const r of runs) for (const g of r.glyphs) {
+    const code = g.code ?? g.gid;
+    out.push((code >> 8) & 0xff, code & 0xff);
+  }
   return Uint8Array.from(out);
 }
 
@@ -18,26 +21,27 @@ interface Item { gid: number; pre: number; post: number; rise: number; }
 export function emitLine(
   runs: ShapedRun[], fontSize: number, unitsPerEm: number,
   naturalAdvance: (gid: number) => number,
+  baseRise = 0,
 ): string {
   const k = 1000 / (unitsPerEm || 1000);
   const items: Item[] = [];
   for (const r of runs) for (const g of r.glyphs) {
     const w = naturalAdvance(g.gid);
     items.push({
-      gid: g.gid,
+      gid: g.code ?? g.gid,
       pre: -(g.xOffset * k),
       post: (g.xOffset + w - g.xAdvance) * k,
-      rise: g.yOffset * (fontSize / (unitsPerEm || 1000)),
+      rise: baseRise + g.yOffset * (fontSize / (unitsPerEm || 1000)),
     });
   }
-  const trivial = items.every((it) => it.pre === 0 && it.post === 0 && it.rise === 0);
+  const trivial = items.every((it) => it.pre === 0 && it.post === 0 && it.rise === baseRise);
   if (trivial) return `<${items.map((it) => hex4(it.gid)).join('')}> Tj\n`;
 
   // Build a TJ array, splitting around any glyph that needs a text rise.
   let s = '';
   let arr: string[] = [];
   const flush = () => { if (arr.length) { s += `[${arr.join(' ')}] TJ\n`; arr = []; } };
-  let curRise = 0;
+  let curRise = baseRise;
   for (const it of items) {
     if (it.rise !== curRise) { flush(); s += `${num(it.rise)} Ts\n`; curRise = it.rise; }
     // Pre-adjust placement: a leading TJ number moves the pen before the glyph.
@@ -49,6 +53,6 @@ export function emitLine(
     else arr.push(`<${hex4(it.gid)}>`);
     if (it.post !== 0) arr.push(num(it.post));
   }
-  if (curRise !== 0) { flush(); s += '0 Ts\n'; } else flush();
+  if (curRise !== baseRise) { flush(); s += `${num(baseRise)} Ts\n`; } else flush();
   return s;
 }

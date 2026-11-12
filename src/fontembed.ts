@@ -77,6 +77,24 @@ export function buildToUnicode(entries: [number, string][]): Uint8Array {
   return enc(head + body + tail);
 }
 
+/** A 2-byte character-code → original CID map for source-text aliases.
+ *  Separate from CIDToGIDMap: CFF's charset and TrueType's subset map both
+ *  continue to address the original glyph CID. @internal */
+export function buildFontEncoding(entries: ReadonlyMap<number, number>, vertical = false): Uint8Array {
+  let s = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n'
+    + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def\n'
+    + '/CMapName /SourceTextEncoding def\n/CMapType 1 def\n'
+    + `/WMode ${vertical ? 1 : 0} def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n`;
+  const sorted = [...entries].sort((a, b) => a[0] - b[0]);
+  for (let i = 0; i < sorted.length; i += 100) {
+    const chunk = sorted.slice(i, i + 100);
+    s += `${chunk.length} begincidchar\n`;
+    for (const [code, cid] of chunk) s += `<${hex4(code)}> ${cid}\n`;
+    s += 'endcidchar\n';
+  }
+  return enc(s + 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend');
+}
+
 /**
  * Build the PDF font object graph for one embedded font and return the Type0
  * font dict (descendant CIDFont, FontDescriptor, FontFile, /CIDToGIDMap, and
@@ -92,11 +110,14 @@ export function buildToUnicode(entries: [number, string][]): Uint8Array {
  *   renumbered subset GID. Malformed/exotic CFF falls back to whole-embedding the
  *   OTTO program as /Subtype /OpenType.
  *
- * /W and /ToUnicode are keyed by the stable original GID either way.
+ * /W stays keyed by original GID (= CID). Character codes normally equal CIDs;
+ * source-text collisions use an Encoding CMap with aliases and a distinct
+ * /ToUnicode entry for each code, without duplicating outlines.
  */
 export function buildEmbeddedFont(
   font: SfntFont, usedGids: Set<number>, alloc: Alloc,
   toUnicode?: Map<number, string>,
+  codeToGid?: ReadonlyMap<number, number>,
 ): PdfDict {
   const scale = 1000 / (font.unitsPerEm || 1000);
   const em = (v: number): number => Math.round(v * scale);
@@ -156,12 +177,15 @@ export function buildEmbeddedFont(
   // /ToUnicode from the shaped cluster map when present (ligatures/reordering),
   // else the font's reverse cmap; restricted to the published CIDs.
   const rev = font.cmapReverse();
+  const hasAliases = codeToGid !== undefined && [...codeToGid].some(([code, gid]) => code !== gid);
+  const encoding = new Map(cids.map((cid) => [cid, cid]));
+  if (hasAliases) for (const [code, gid] of codeToGid!) encoding.set(code, gid);
   const tuEntries: [number, string][] = [];
-  for (const cid of cids) {
-    const override = toUnicode?.get(cid);
-    if (override !== undefined && override !== '') { tuEntries.push([cid, override]); continue; }
+  for (const [code, cid] of [...encoding].sort((a, b) => a[0] - b[0])) {
+    const override = toUnicode?.get(code);
+    if (override !== undefined && override !== '') { tuEntries.push([code, override]); continue; }
     const cp = rev.get(cid);
-    if (cp !== undefined) tuEntries.push([cid, String.fromCodePoint(cp)]);
+    if (cp !== undefined) tuEntries.push([code, String.fromCodePoint(cp)]);
   }
 
   const cidFont: PdfDict = new Map<string, PdfObject>([
@@ -181,7 +205,7 @@ export function buildEmbeddedFont(
     ['Type', name('Font')],
     ['Subtype', name('Type0')],
     ['BaseFont', name(baseFont)],
-    ['Encoding', name('Identity-H')],
+    ['Encoding', hasAliases ? alloc(flateStream(buildFontEncoding(encoding))) : name('Identity-H')],
     ['DescendantFonts', [alloc(cidFont)]],
     ['ToUnicode', alloc(flateStream(buildToUnicode(tuEntries)))],
   ]);

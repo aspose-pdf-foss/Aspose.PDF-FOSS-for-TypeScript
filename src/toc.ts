@@ -164,7 +164,7 @@ function validateRowStyle(style: RowStyle, i: number): void {
  *  options. Shared by the number-column sizing here and the dot-width
  *  computation in tocrender.ts, so both agree. */
 export function rowMeasure(s: string, style: RowStyle, opts: TOCOptions): number {
-  return measureText(s, style.fontSize, style.font, opts.shape, opts.dir, opts.script, opts.language);
+  return measureText(s, style.fontSize, style.font, opts.shape, opts.dir, opts.script, opts.language, opts.features);
 }
 
 /** @internal The stamp.ts single-line options for a row. Forwards every option
@@ -181,7 +181,7 @@ export function rowStampOptions(
   return {
     font: style.font, fontSize: style.fontSize, color: style.color, align,
     opacity: opts.opacity, shape: opts.shape, dir: opts.dir,
-    script: opts.script, language: opts.language,
+    script: opts.script, language: opts.language, features: opts.features,
     underline: style.underline, strikethrough: style.strikethrough,
     background: style.background, behind: opts.behind,
   };
@@ -194,7 +194,7 @@ function rowBlockOptions(style: RowStyle, opts: TOCOptions): TextBlockOptions {
   return {
     font: style.font, fontSize: style.fontSize, color: style.color, leading: style.leading,
     opacity: opts.opacity, shape: opts.shape, dir: opts.dir,
-    script: opts.script, language: opts.language,
+    script: opts.script, language: opts.language, features: opts.features,
     underline: style.underline, strikethrough: style.strikethrough,
     background: style.background, behind: opts.behind,
   };

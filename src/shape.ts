@@ -2,18 +2,50 @@ import { SfntFont } from './sfnt.js';
 import { applyGsub, applyGpos, type ShapedGlyph, type OtTable, type Gdef } from './otlayout.js';
 import { reorderLine, itemizeScripts, arabicJoiningForms } from './bidi.js';
 
-export interface PositionedGlyph { gid: number; cluster: number; xAdvance: number; xOffset: number; yOffset: number; }
+export interface PositionedGlyph {
+  gid: number; cluster: number; xAdvance: number; xOffset: number; yOffset: number;
+  /** Draw-time character-code alias when one outline represents different text. */
+  code?: number;
+}
 export interface ShapedRun { glyphs: PositionedGlyph[]; rtl: boolean; }
-export interface ShapeOpts { dir?: 'auto' | 'ltr' | 'rtl'; script?: string; language?: string; }
+export interface ShapeOpts {
+  dir?: 'auto' | 'ltr' | 'rtl'; script?: string; language?: string;
+  /** Font feature overrides; absent tags keep the shaping defaults. */
+  features?: Readonly<Record<string, boolean>>;
+}
 
 // General features applied across a whole segment buffer, in application order.
 const GSUB_FEATURES = ['ccmp', 'liga', 'rlig', 'calt'];
 const GPOS_FEATURES = ['kern', 'mark', 'mkmk'];
 const ARABIC_TAG = 'arab';
+const JOINING_FEATURES = new Set(['init', 'medi', 'fina', 'isol']);
+
+/** Validate the JavaScript option boundary before any drawing side effects. @internal */
+export function validateFeatures(features: ShapeOpts['features']): void {
+  if (features === undefined) return;
+  if (features === null || typeof features !== 'object' || Array.isArray(features))
+    throw new TypeError('features must be a map of four-character OpenType tags to booleans');
+  for (const [tag, on] of Object.entries(features)) {
+    if (!/^[\x20-\x7e]{4}$/.test(tag) || typeof on !== 'boolean')
+      throw new TypeError('features must map four printable ASCII characters to booleans');
+  }
+}
+
+function enabledFeatures(defaults: string[], features: ShapeOpts['features'], joining: boolean): string[] {
+  const enabled = new Set(defaults);
+  if (features) for (const [tag, on] of Object.entries(features)) {
+    if (joining && JOINING_FEATURES.has(tag)) continue;
+    if (on) enabled.add(tag); else enabled.delete(tag);
+  }
+  return [...enabled];
+}
 
 /** Shape `text` with `sfnt` into visual-order positioned runs. Pure; never throws
  *  for missing/malformed layout tables (Phase-1 apply* degrade to pass-through). */
 export function shapeText(text: string, sfnt: SfntFont, opts: ShapeOpts = {}): ShapedRun[] {
+  validateFeatures(opts.features);
+  const gsubFeatures = enabledFeatures(GSUB_FEATURES, opts.features, true);
+  const gposFeatures = enabledFeatures(GPOS_FEATURES, opts.features, false);
   const codes = [...text].map((c) => c.codePointAt(0)!);
   if (codes.length === 0) return [];
   const dir = opts.dir ?? 'auto';
@@ -31,7 +63,8 @@ export function shapeText(text: string, sfnt: SfntFont, opts: ShapeOpts = {}): S
     for (const sub of splitByLevel(seg, levels)) {
       const otTag = opts.script ?? sub.otTag;
       const rtl = (levels[sub.start] & 1) === 1;
-      const glyphs = shapeSegment(codes, sub.start, sub.end, sfnt, gsub, gpos, gdef, otTag, opts.language, rtl);
+      const glyphs = shapeSegment(codes, sub.start, sub.end, sfnt, gsub, gpos, gdef, otTag, opts.language, rtl,
+        gsubFeatures, gposFeatures, opts.features);
       if (glyphs.length) runs.push({ glyphs, rtl });
     }
   }
@@ -61,6 +94,7 @@ function shapeSegment(
   codes: number[], start: number, end: number, sfnt: SfntFont,
   gsub: OtTable | undefined, gpos: OtTable | undefined,
   gdef: Gdef | undefined, otTag: string, lang: string | undefined, rtl: boolean,
+  gsubFeatures: string[], gposFeatures: string[], features: ShapeOpts['features'],
 ): PositionedGlyph[] {
   // cmap → nominal gids (record source cluster = code-point index).
   const buf: ShapedGlyph[] = [];
@@ -73,12 +107,12 @@ function shapeSegment(
 
   // Arabic: per-glyph joining-form substitution (single-glyph slices — the forms
   // are non-contextual Single Substitutions keyed by nominal glyph).
-  if (gsub && otTag === ARABIC_TAG) applyJoiningForms(codes, start, end, buf, gsub, gdef, otTag, lang);
+  if (gsub && otTag === ARABIC_TAG) applyJoiningForms(codes, start, end, buf, gsub, gdef, otTag, lang, features);
 
   // General GSUB (ligatures / contextual), then re-seed advances, then GPOS.
-  if (gsub) applyGsub(gsub, buf, gdef, otTag, lang, GSUB_FEATURES);
+  if (gsub) applyGsub(gsub, buf, gdef, otTag, lang, gsubFeatures);
   for (const g of buf) g.xAdvance = sfnt.advanceWidth(g.gid);
-  if (gpos) applyGpos(gpos, buf, gdef, otTag, lang, GPOS_FEATURES, rtl);
+  if (gpos) applyGpos(gpos, buf, gdef, otTag, lang, gposFeatures, rtl);
 
   // Shape logical, reverse for RTL visual emission.
   const glyphs: PositionedGlyph[] = buf.map((g) => ({ gid: g.gid, cluster: g.cluster, xAdvance: g.xAdvance, xOffset: g.xOffset, yOffset: g.yOffset }));
@@ -92,13 +126,14 @@ function applyJoiningForms(
   codes: number[], start: number, end: number, buf: ShapedGlyph[],
   gsub: OtTable, gdef: Gdef | undefined,
   otTag: string, lang: string | undefined,
+  features: ShapeOpts['features'],
 ): void {
   const forms = arabicJoiningForms(codes, start, end);
   // buf is aligned to the cmappable subset of [start,end); recompute alignment by
   // walking clusters (buf[k].cluster is the code index).
   for (let k = 0; k < buf.length; k++) {
     const form = forms[buf[k].cluster - start];
-    if (!form) continue;
+    if (!form || features?.[form] === false) continue;
     const one: ShapedGlyph[] = [buf[k]];
     applyGsub(gsub, one, gdef, otTag, lang, [form]);
     buf.splice(k, 1, ...one);

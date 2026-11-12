@@ -2,6 +2,7 @@ import { SfntFont } from './sfnt.js';
 import { FontDriver } from './layout.js';
 import { shapeText, measureShaped, type ShapedRun, type ShapeOpts } from './shape.js';
 import { verticalGlyph } from './otlayout.js';
+import { UnsupportedFeatureError } from './errors.js';
 
 /**
  * An opaque handle to a font program registered with {@link Document.AddFont}.
@@ -23,8 +24,33 @@ export class EmbeddedFont {
   verticalObjNum: number | undefined;
   /** @internal default shaping flag, from {@link Document.AddFont}({ shape }). */
   shape = false;
-  /** @internal gid → source text, for /ToUnicode of shaped/ligated/RTL glyphs. */
+  /** @internal Character code → source text, for /ToUnicode. Codes normally
+   *  equal GIDs; conflicting source strings get distinct codes for one CID. */
   readonly toUnicode = new Map<number, string>();
+  /** @internal Drawn character code → original GID (= CID). */
+  readonly codeToGid = new Map<number, number>();
+  private readonly sourceCodes = new Map<number, Map<string, number>>();
+  private nextCode = 0xffff;
+
+  /** Give each (outline, source text) pair a stable character code. The font's
+   *  Encoding CMap can map multiple codes to one CID without duplicating the
+   *  outline or changing /W, for both TrueType and CFF fonts. */
+  private codeFor(gid: number, source: string): number {
+    let sources = this.sourceCodes.get(gid);
+    const existing = sources?.get(source);
+    if (existing !== undefined) return existing;
+    let code = gid;
+    if (this.codeToGid.has(code)) {
+      while (this.nextCode >= 0 && this.codeToGid.has(this.nextCode)) this.nextCode--;
+      if (this.nextCode < 0) throw new UnsupportedFeatureError('embedded font exhausted its 2-byte character codes');
+      code = this.nextCode--;
+    }
+    if (!sources) { sources = new Map(); this.sourceCodes.set(gid, sources); }
+    sources.set(source, code);
+    this.codeToGid.set(code, gid);
+    this.toUnicode.set(code, source);
+    return code;
+  }
 
   /** @internal Construct via {@link Document.AddFont}. */
   constructor(sfnt: SfntFont) {
@@ -43,14 +69,15 @@ export class EmbeddedFont {
     return w;
   }
 
-  /** @internal Encode `text` to 2-byte Identity-H glyph codes (CID = original
-   *  GID), recording each used GID for subsetting. Uncmapped chars are dropped. */
+  /** @internal Encode `text` to 2-byte codes selecting original GID CIDs,
+   *  recording glyphs for subsetting. Uncmapped chars are dropped. */
   encode(text: string): Uint8Array {
     const out: number[] = [];
     for (const ch of text) {
       const gid = this.sfnt.cmapLookup(ch.codePointAt(0)!);
       if (gid !== undefined) {
-        out.push((gid >> 8) & 0xff, gid & 0xff);
+        const code = this.codeFor(gid, ch);
+        out.push((code >> 8) & 0xff, code & 0xff);
         this.usedGids.add(gid);
       }
     }
@@ -75,9 +102,9 @@ export class EmbeddedFont {
       const base = this.sfnt.cmapLookup(ch.codePointAt(0)!);
       if (base === undefined) continue;
       const gid = this.vglyph(base);
-      out.push((gid >> 8) & 0xff, gid & 0xff);
+      const code = this.codeFor(gid, ch);
+      out.push((code >> 8) & 0xff, code & 0xff);
       this.usedGids.add(gid);
-      if (gid !== base && !this.toUnicode.has(gid)) this.toUnicode.set(gid, ch);
     }
     return Uint8Array.from(out);
   }
@@ -137,10 +164,9 @@ export class EmbeddedFont {
     for (const r of runs) {
       for (const g of r.glyphs) {
         this.usedGids.add(g.gid);
-        if (!this.toUnicode.has(g.gid)) {
-          const next = nextOf.get(g.cluster) ?? g.cluster + 1;
-          this.toUnicode.set(g.gid, codes.slice(g.cluster, Math.max(next, g.cluster + 1)).join(''));
-        }
+        const next = nextOf.get(g.cluster) ?? g.cluster + 1;
+        const code = this.codeFor(g.gid, codes.slice(g.cluster, Math.max(next, g.cluster + 1)).join(''));
+        if (code !== g.gid) g.code = code;
       }
     }
     return runs;

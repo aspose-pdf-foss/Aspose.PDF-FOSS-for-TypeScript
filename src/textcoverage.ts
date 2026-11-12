@@ -85,25 +85,36 @@ export function drawsNothing(text: string, driver: FontDriver): boolean {
  *  rule here would report a run against a face it is not drawn in. */
 export function coverageOf(
   content: string | TextRun[], blockFont: AuthoringFont, shaped: boolean,
+  callShape?: boolean,
 ): Undrawable | undefined {
   const parts = typeof content === 'string'
-    ? [{ text: content, font: blockFont }]
-    : content.map((r) => ({ text: r.text, font: r.font ?? blockFont }));
+    ? [{ text: content, font: blockFont, shaped }]
+    : content.map((r) => {
+      const font = r.font ?? blockFont;
+      return { text: r.text, font, shaped: font instanceof EmbeddedFont
+        && (r.shape ?? callShape ?? (font === blockFont ? shaped : font.shape)) };
+    });
 
   let drew = false;
   const seen = new Set<string>();
   const lost: string[] = [];
   for (const p of parts) {
+    let partDrew = false;
+    const missing = new Set<string>();
     for (const ch of p.text) {
       if (STRUCTURE.has(ch)) continue;
-      if (canDraw(p.font, ch)) { drew = true; continue; }
+      if (canDraw(p.font, ch)) { drew = true; partDrew = true; continue; }
+      if (!seen.has(ch) && missing.size < LOST_CAP) missing.add(ch);
+    }
+    // A shaped span may legitimately consume joiners or formatting characters.
+    // An unshaped neighbour must still report its own missing characters.
+    if (p.shaped && partDrew) continue;
+    for (const ch of missing) {
       if (seen.has(ch)) continue;
       seen.add(ch);
       if (lost.length < LOST_CAP) lost.push(ch);
     }
   }
   if (lost.length === 0) return undefined;
-  // A shaped block reports only that it drew nothing at all.
-  if (drew && shaped) return undefined;
   return { lost: lost.join(''), all: !drew };
 }

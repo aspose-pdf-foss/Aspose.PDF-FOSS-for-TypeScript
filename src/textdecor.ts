@@ -138,6 +138,15 @@ export interface TextRun extends DecorationOptions {
   font?: AuthoringFont;
   fontSize?: number;
   color?: [number, number, number];
+  /** Override the block/font's shaping default for this span. */
+  shape?: boolean;
+  /** Span-local shaping direction, script and language; inherit from the block. */
+  dir?: 'auto' | 'ltr' | 'rtl';
+  script?: string;
+  language?: string;
+  /** Per-tag OpenType overrides, merged over the block's feature map.
+   *  Effective only with shaping enabled for an embedded font. */
+  features?: Readonly<Record<string, boolean>>;
   /** Make this run a hyperlink to this absolute URI. A `/Link` annotation is
    *  placed over the run's laid-out glyphs — one per line it occupies, so a
    *  link broken across a line break stays clickable on both. Styling is NOT

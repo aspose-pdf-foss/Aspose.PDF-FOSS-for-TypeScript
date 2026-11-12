@@ -27,6 +27,22 @@ function makeStore() {
 
 const nm = (o: PdfObject | undefined): string | undefined => (isName(o) ? o.name : undefined);
 
+describe('source-text encoding aliases', () => {
+  it.each([
+    { kind: 'TrueType', bytes: buildClosureTtf(), advance: 0.6 },
+    { kind: 'CFF', bytes: buildCffOtto(), advance: 1 },
+  ])('keeps two source codes on the same $kind outline and width', ({ bytes, advance }) => {
+    const store = makeStore();
+    const type0 = buildEmbeddedFont(parseSfnt(bytes), new Set([1]), store.alloc,
+      new Map([[1, 'A'], [65535, 'B']]), new Map([[1, 1], [65535, 1]]));
+    const tf = new TextFont(type0, store.resolve, store.inflate);
+    const glyphs = tf.decodeGlyphs(Uint8Array.of(0, 1, 255, 255));
+    expect(glyphs.map((g) => g.cid)).toEqual([1, 1]);
+    expect(tf.decode(Uint8Array.of(0, 1, 255, 255))).toBe('AB');
+    expect(glyphs.map((g) => g.width)).toEqual([advance, advance]);
+  });
+});
+
 describe('buildEmbeddedFont — glyf/CIDFontType2', () => {
   // buildClosureTtf: gids 0=.notdef, 1='A'(U+0041, adv 600), 2='B'(U+0042, adv 700),
   // 3=composite->2 (adv 800). unitsPerEm 1000. cmap: 0x41->1, 0x42->2.

@@ -8,10 +8,11 @@ import {
   type Decoration, type Background, type TextRun,
 } from './textdecor.js';
 import { EmbeddedFont } from './embeddedfont.js';
+import { shapeOptionsFor, textDriver } from './textshape.js';
 import type { FlowTextRun } from './flownotes.js';
 import { isDeferredLink, type LinkedRun } from './runlink.js';
 import {
-  FontDriver, winAnsiDriver, layoutText, layoutRuns, weaveByBeforeRun,
+  FontDriver, layoutText, layoutRuns, weaveByBeforeRun,
   type LayoutRun,
 } from './layout.js';
 import { buildImageXObject, BuiltImage } from './imageembed.js';
@@ -214,14 +215,11 @@ export interface ResolvedStyle {
   hyphenate?: HyphenationOptions;
 }
 
-const EMPTY = new Uint8Array(0);
-
 /** A {@link FontDriver} that measures/wraps like the real font but records no
  *  glyph usage — `encode` returns empty bytes, which measurement ignores. This
  *  keeps `measure()` side-effect-free for embedded fonts. */
-function measuringDriverFor(font: AuthoringFont): FontDriver {
-  const real: FontDriver = font instanceof EmbeddedFont ? font.driver() : winAnsiDriver(font);
-  return { measure: (t, fs) => real.measure(t, fs), probe: (t) => real.probe(t), encode: () => EMPTY };
+function measuringDriverFor(font: AuthoringFont, run: TextRun = { text: '' }): FontDriver {
+  return textDriver(font, shapeOptionsFor(font, run), true);
 }
 
 /** The widest single LINE (max-content) and widest single WORD (min-content) of
@@ -803,7 +801,7 @@ export class TableBuilder {
         const pieces: LayoutRun[] = isTextRunList(cell.text)
           ? cell.text.map((run) => ({
             text: run.text,
-            driver: measuringDriverFor(run.font ?? st.font),
+            driver: measuringDriverFor(run.font ?? st.font, run),
             fontSize: run.fontSize ?? st.fontSize,
           }))
           : [{ text: cell.text, driver: measuringDriverFor(st.font), fontSize: st.fontSize }];

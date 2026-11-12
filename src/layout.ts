@@ -11,6 +11,9 @@ import { nextStop, type TabLayout, type TabLeader, type ResolvedTabStop } from '
  *  so it is only called for text that is actually drawn.
  *  @internal */
 export interface FontDriver {
+  /** Whole spans must be measured together (OpenType contextual substitution
+   *  or positioning); word advances are not necessarily additive. */
+  contextual?: boolean;
   /** Width of `text` in points at `fontSize` (unencodable chars dropped). */
   measure(text: string, fontSize: number): number;
   /** Show-string bytes for `text`; may record used glyphs (drawn text only). */
@@ -349,6 +352,7 @@ export function layoutRuns(
     const k = boxWidth / r.atomic.width;
     return { atomic: { ...r.atomic, width: boxWidth, height: r.atomic.height * k } };
   });
+  const contextual = scaled.some((r) => !isAtomicRun(r) && r.driver.contextual === true);
 
   // U+FFFC OBJECT REPLACEMENT CHARACTER, which is what Unicode defines it for.
   // One character per atomic is what lets the whole index-based walk below —
@@ -451,8 +455,8 @@ export function layoutRuns(
     return run.driver.measure('-', run.fontSize);
   };
   /** A unit's width, its drawn hyphen included. */
-  const unitWidth = (u: Unit): number =>
-    spanWidth(u.start, u.end) + (u.hyphen ? hyphenWidth(hyphenRun(u.end)) : 0);
+  const unitWidth = (u: Unit): number => contextual ? packedWidth([u])
+    : spanWidth(u.start, u.end) + (u.hyphen ? hyphenWidth(hyphenRun(u.end)) : 0);
   /** The whole word's points, as positions in `text`, computed once per word. */
   const wordPoints = (u: Unit): readonly number[] =>
     u.word ?? hyphenation!.points(text.slice(u.start, u.end)).map((p) => u.start + p);
@@ -466,7 +470,7 @@ export function layoutRuns(
    *  piece, stopping once past the room: width is monotonic in the prefix, so
    *  the cost is the head, not points x word — measured x7.9 per doubling and
    *  9 s at 8,000 characters before (the `lqs1` class). */
-  const hyphenHead = (u: Unit, room: number, pts: readonly number[]): number | undefined => {
+  const hyphenHead = (u: Unit, room: number, pts: readonly number[], prefix: Unit[] = []): number | undefined => {
     let lo = 0, hi = pts.length;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (pts[mid] <= u.start) lo = mid + 1; else hi = mid; }
     let best: number | undefined;
@@ -474,6 +478,10 @@ export function layoutRuns(
     let from = u.start;
     for (let k = lo; k < pts.length && pts[k] < u.end; k++) {
       const at = pts[k];
+      if (contextual) {
+        if (packedWidth([...prefix, { ...u, end: at, hyphen: true }]) <= room) best = at;
+        continue;
+      }
       w += spanWidth(from, at);
       from = at;
       if (w > room) break;
@@ -627,6 +635,9 @@ export function layoutRuns(
    *  not already make. A word shorter than the first probe pays nothing: the
    *  loop does not run and the single full measure is what it always was. */
   const spanWiderThan = (from: number, to: number, w: number): boolean => {
+    // A contextual font may replace an over-wide prefix with a narrower
+    // ligature when more text arrives, so a prefix cannot settle this answer.
+    if (contextual) return spanWidth(from, to) > w;
     for (let m = 64; from + m < to; m *= 2) {
       if (spanWidth(from, from + m) > w) return true;
     }
@@ -690,6 +701,10 @@ export function layoutRuns(
       const spaceBefore = !first && (tabs === undefined || (i > gapFrom && !afterTab));
       first = false;
       afterTab = isTab;
+      // A token that is wide alone can disappear into a contextual ligature
+      // with the preceding units. Offer that whole candidate before splitting.
+      const wholeFits = contextual && !isTab
+        && packedWidth([...cur, { start: i, end: j, spaceBefore }]) <= limit();
       // LAZY, so that `break para` below stops the split where it stands
       // (`lqs1`): an over-wide word may be longer than the page, and the
       // remainder is re-flowed, so materializing every piece re-splits the
@@ -701,7 +716,7 @@ export function layoutRuns(
       // two cut pieces on one line with a hyphen between them.
       const units: Iterable<Unit> = isTab
         ? [{ start: i, end: j, spaceBefore, tab: true }]
-        : hyphenation === undefined && spanWiderThan(i, j, boxWidth)
+        : hyphenation === undefined && !wholeFits && spanWiderThan(i, j, boxWidth)
           ? overwideUnits(i, j, spaceBefore)
           : [{ start: i, end: j, spaceBefore }];
       for (const u0 of units) {
@@ -757,12 +772,14 @@ export function layoutRuns(
           // (v9j3.1) With a tab on the line the width is position-aware, so it
           // is re-derived from the units; otherwise it is the incremental sum
           // it always was.
-          const next = tabs !== undefined && cur.some((x) => x.tab)
+          const next = contextual ? packedWidth([...cur, u])
+            : tabs !== undefined && cur.some((x) => x.tab)
             ? tabbedLine([...cur, u], wrapped.length).width
             : curWidth + sep + unitWidth(u);
           if (next <= limit()) { cur.push(u); curWidth = next; continue; }
           const pts = hy ? wordPoints(u) : undefined;
-          const at = pts ? hyphenHead(u, limit() - curWidth - sep, pts) : undefined;
+          const at = pts ? hyphenHead(u, contextual ? limit() : limit() - curWidth - sep, pts,
+            contextual ? cur : []) : undefined;
           if (at !== undefined) {
             cur.push({ start: u.start, end: at, spaceBefore: u.spaceBefore, hyphen: true });
             if (!keep(cur, false, cur[0].start)) break para;
@@ -796,7 +813,7 @@ export function layoutRuns(
    *  single-run line yields exactly ONE piece holding the whole line — which is
    *  what makes its measurement and its emitted bytes identical to the string
    *  engine's. */
-  const piecesOf = (units: Unit[]): (RunSlice & { tab?: Unit })[] => {
+  function piecesOf(units: Unit[]): (RunSlice & { tab?: Unit })[] {
     const out: (RunSlice & { tab?: Unit })[] = [];
     // A tab piece is never merged into, nor merged onto (v9j3.1): it is its own
     // segment, painted as a kern.
@@ -831,7 +848,18 @@ export function layoutRuns(
       }
     }
     return out;
-  };
+  }
+
+  /** Match the final segments, including collapsed spaces and inserted
+   *  hyphens, before deciding whether a contextual line fits. */
+  function packedWidth(units: Unit[]): number {
+    let width = 0;
+    for (const p of piecesOf(units)) {
+      const run = scaled[p.run];
+      width += isAtomicRun(run) ? run.atomic.width : run.driver.measure(p.text, run.fontSize);
+    }
+    return width;
+  }
 
   const lines: LaidLine[] = [];
   for (let k = 0; k < kept; k++) {

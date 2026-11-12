@@ -635,9 +635,9 @@ export class Page {
    *  Standard-14 fonts ignore `opts`. */
   MeasureText(
     text: string, fontSize = 12, font: AuthoringFont = 'Helvetica',
-    opts: { shape?: boolean; dir?: 'auto' | 'ltr' | 'rtl'; script?: string; language?: string } = {},
+    opts: { shape?: boolean; dir?: 'auto' | 'ltr' | 'rtl'; script?: string; language?: string; features?: StampOptions['features'] } = {},
   ): number {
-    return measureText(text, fontSize, font, opts.shape, opts.dir, opts.script, opts.language);
+    return measureText(text, fontSize, font, opts.shape, opts.dir, opts.script, opts.language, opts.features);
   }
 
   /** Stamp `text` at (x, y) in PDF user space. Existing content is preserved.

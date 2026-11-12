@@ -5,6 +5,7 @@ import { isDict, isName, name, type PdfDict, type PdfObject } from '../src/types
 import { visitContent, type GlyphEvent } from '../src/text.js';
 import { getStd14Sfnt } from '../src/std14fonts.js';
 import { buildFontReplacePdf, simpleFont } from './helpers/build-font-replace-pdf.js';
+import { buildOtFontFor, buildGsub, singleSubstDelta } from './helpers/build-sfnt.js';
 
 const str = (s: string): PdfObject => ({ kind: 'string', bytes: new TextEncoder().encode(s) });
 const TU = '/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n'
@@ -46,6 +47,20 @@ const nimbus = (doc: Document) => doc.AddFont(new Uint8Array(readFileSync('test/
 const VERT = 'BT /V1 20 Tf 100 300 Td <004100420043> Tj ET';
 
 describe('ReplaceFont: vertical fonts (g0ky.8)', () => {
+  it('preserves source text when a vertical form shares a horizontal outline', () => {
+    const doc = open('BT /F1 20 Tf 20 100 Td (B) Tj ET BT /V1 20 Tf 100 300 Td <0041> Tj ET');
+    const to = doc.AddFont(buildOtFontFor({
+      cmap: [[0x41, 5], [0x42, 12]],
+      gsub: buildGsub([singleSubstDelta('vrt2', 5, 7)]),
+    }));
+    doc.ReplaceFont('Times-Roman', to);
+    doc.ReplaceFont('VertSerif', to);
+    const saved = Document.Open(doc.Save());
+    const gs = glyphs(saved);
+    expect(gs.map((g) => g.text)).toEqual(['B', 'A']);
+    expect(gs.map((g) => g.vertical !== undefined)).toEqual([false, true]);
+  });
+
   it('writes vertical text in the vertical twin of an embedded font, keeping every pen position', () => {
     const doc = open(VERT);
     const before = pens(glyphs(doc));

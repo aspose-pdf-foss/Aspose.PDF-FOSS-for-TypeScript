@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Selectable OpenType features.** Shaped text accepts a boolean `features`
+  map to request font-provided old-style figures, small capitals and stylistic
+  sets, or disable default ligatures and kerning. Measurement and drawing use
+  the same selections; absent features leave glyphs unchanged, and shaping
+  remains opt-in. Synthetic font tests pin selected glyph IDs, advances and
+  Unicode extraction after saving. Rich `TextRun`s can override feature maps
+  and shaping settings independently, inheriting block selections by tag;
+  contextual wrapping, decoration and link widths follow the selected glyphs.
+  Each styled span shapes independently, with bidi confined to that span.
+  Table row sizing and auto-fit use the same feature-selected advances as
+  painting, and speculative measuring does not record glyph usage.
+  Distinct source strings that select one outline receive separate character
+  codes, preserving both strings during extraction without duplicating glyphs.
+  (nh1t.3)
+
 - **Opt-in PDF/A-1 transparency flattening with searchable text.**
   `ConvertToPdfA('1b', { flattenTransparency: true })` rasterizes complete affected
   pages at 150 DPI (or `{ dpi }`) while retaining decoded text as an invisible

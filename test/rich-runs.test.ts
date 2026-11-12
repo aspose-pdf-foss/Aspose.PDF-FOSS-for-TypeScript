@@ -61,11 +61,11 @@ describe('measureTextBlock with runs', () => {
       .toThrow(/thickness/);
   });
 
-  it('rejects shaping with runs rather than silently ignoring it', () => {
+  it('measures a run block with shaping enabled', () => {
     const doc = Document.New();
     const font = doc.AddFont(buildUnicodeTtf());
-    expect(() => measureTextBlock([{ text: 'a' }], 100, 100, { font, shape: true }))
-      .toThrow(/shap/i);
+    expect(measureTextBlock([{ text: 'a' }], 100, 100, { font, shape: true }).remainder)
+      .toBeNull();
   });
 });
 

@@ -13,18 +13,13 @@
  *  run's font. Only U+0020 and '\n' break, so the U+00A0 a code block paints
  *  for indentation keeps its line intact.
  *
- *  Note the DUPLICATED `measuringDriverFor`: tableauthor.ts keeps its own copy
- *  because it has two more callers there (its row-height walk). Six lines, and
- *  not a rule that can drift — a driver that measures like the real font and
- *  encodes nothing is those six lines in both places or it is broken in one,
- *  which its own callers show immediately. */
+ *  Shaping settings and non-recording drivers come from textshape.ts, shared
+ *  with table row measurement and rich-text painting. */
 
 import type { AuthoringFont } from './stamp.js';
 import { isTextRunList, type TextRun } from './textdecor.js';
-import { winAnsiDriver, type FontDriver } from './layout.js';
-import { EmbeddedFont } from './embeddedfont.js';
-
-const EMPTY = new Uint8Array(0);
+import type { FontDriver } from './layout.js';
+import { shapeOptionsFor, textDriver } from './textshape.js';
 
 /** One piece of content with the font it measures at. */
 interface Piece { text: string; driver: FontDriver; fontSize: number }
@@ -32,9 +27,8 @@ interface Piece { text: string; driver: FontDriver; fontSize: number }
 /** A driver that measures like the real font but records no glyph usage —
  *  `encode` returns empty bytes, which measurement ignores. Keeps measuring
  *  side-effect-free for embedded fonts. */
-function measuringDriverFor(font: AuthoringFont): FontDriver {
-  const real: FontDriver = font instanceof EmbeddedFont ? font.driver() : winAnsiDriver(font);
-  return { measure: (t, fs) => real.measure(t, fs), probe: (t) => real.probe(t), encode: () => EMPTY };
+function measuringDriverFor(font: AuthoringFont, run: TextRun = { text: '' }): FontDriver {
+  return textDriver(font, shapeOptionsFor(font, run), true);
 }
 
 /** Width of the concatenated pieces' [from, to) slice, measured piece by piece
@@ -77,7 +71,7 @@ export function textExtents(
   const pieces: Piece[] = isTextRunList(text)
     ? text.map((r) => ({
       text: r.text,
-      driver: measuringDriverFor(r.font ?? font),
+      driver: measuringDriverFor(r.font ?? font, r),
       fontSize: r.fontSize ?? fontSize,
     }))
     : [{ text, driver: measuringDriverFor(font), fontSize }];

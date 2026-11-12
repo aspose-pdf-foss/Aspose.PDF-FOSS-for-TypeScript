@@ -582,18 +582,22 @@ const rest = page.AddTextBlock([
 ```
 
 A `TextRun` may override `font`, `fontSize`, `color`, `underline`,
-`strikethrough` and `background`; anything it leaves unset comes from the block.
+`strikethrough`, `background`, `shape`, `dir`, `script`, `language` and
+`features`; anything it leaves unset comes from the block. Feature maps merge
+by tag: `{ liga: false }` overrides just that feature, and `{}` inherits all
+block selections. Shaping still requires an embedded font with `shape: true`
+on the run, block, or font; setting `features` alone does not enable it.
 `align`, `valign`, `leading`, `rotate` and `opacity` describe the whole block and
 stay there. A word is never broken at a style boundary — `**bold**text` wraps as
 one word. `Flow.AddParagraph`, `Flow.AddHeading` and a list item's `text` take
 the same run list.
 
-Three limits. `align: 'justify'` falls back to left if any run uses an embedded
+`align: 'justify'` falls back to left if any run uses an embedded
 font, because justification rides on `Tw`, which only moves single-byte spaces.
-Complex-text shaping (`shape: true`) is not supported with runs and throws
-`UnsupportedFeatureError`. And leading is block-level, so a run whose `fontSize`
-exceeds the block's advances by the block's leading and can collide with the line
-above.
+Each styled span on a line shapes independently: ligatures, joining and
+contextual substitutions do not cross run boundaries. Bidi reorders glyphs
+inside a span; rich spans retain their source order, without paragraph-wide
+bidi reordering across styles. Tab stops cannot be combined with shaping.
 
 `rotate` turns the block counter-clockwise about the rect's origin (its
 bottom-left corner), the block analogue of `AddText`'s rotation about its anchor
@@ -763,6 +767,29 @@ doc.Pages[0].AddText('السلام عليكم', 72, 700, { font, fontSize: 18, d
 - **GPOS** kerning and mark positioning.
 - Optional `script` (OpenType tag) and `language` (OpenType language-system tag)
   overrides.
+- Optional `features: { onum: true, smcp: true, ss01: true, liga: false }`
+  selects font-provided OpenType features or disables defaults. Keys are four
+  printable ASCII characters and values are booleans; missing features are
+  ignored. `ss01` through `ss20` select stylistic sets when the font provides
+  them. The same map works in `MeasureText` options and controls both measured
+  advances and drawn glyphs. A map alone does not enable shaping.
+
+Mix feature choices in a rich block, Flow paragraph, or table cell by stating
+the map on each run:
+
+```ts
+page.AddTextBlock([
+  { text: 'Small capitals ', features: { smcp: true } },
+  { text: '123', features: { onum: true, ss01: true, liga: false } },
+], [72, 500, 400, 100], { font, fontSize: 12 }); // font was added with shape: true
+```
+
+Runs inherit shaping settings from the block and resolved font; feature maps
+merge by tag. Wrapped overflow keeps those choices, and table auto-fit and row
+sizing use their selected advances. Measurement does not record unused glyphs.
+When different source strings select the same outline, distinct character codes
+preserve both strings through a custom font CMap. `ReplaceText` retains its
+existing Type0 re-encoding restriction to `Identity-H` / `Identity-V` fonts.
 
 Shaped, ligated, and reordered text still round-trips to the original Unicode
 via `/ToUnicode` (verified by `GetText()`). Standard-14 fonts do not shape
@@ -4031,7 +4058,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `TextLine` | Interface with 4 properties. |
 | `TextMatch` | A positioned text match. |
 | `TextRestyle` | What `RestyleText` changes: `font`, `fontSize`, `color`, `underline`, `strikethrough` and `background`. |
-| `TextRun` | One styled span of a rich text block; `rise` shifts its baseline (a superscript) without changing the line height. |
+| `TextRun` | One styled span of a rich text block; optional shaping and OpenType `features` override the block by tag. `rise` shifts its baseline (a superscript) without changing the line height. |
 | `TextWatermark` | A `FindWatermarks` candidate: the same text at the same place on several pages, digit runs matching any digits; reported only. |
 | `TilingPatternOptions` | Placement and repetition for a tiling pattern. |
 | `TimestampInfo` | Verdict on a signature timestamp: the asserted time plus whether the token binds to the signature (imprint) and whether the TSA's signature is valid. |
