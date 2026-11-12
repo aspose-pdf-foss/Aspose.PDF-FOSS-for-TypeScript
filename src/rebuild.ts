@@ -13,6 +13,7 @@ import { readXmp, mirrorXmpToMeta } from './xmp.js';
 import { applyUpdate } from './metadata.js';
 import { inflateStream } from './flate.js';
 import { isEncryptDict } from './crypto.js';
+import { budgetFor } from './decodebudget.js';
 
 /** Register every object the /ObjStm containers in `entries` declare, mutating
  *  `entries` in place and returning the object numbers added plus a damage
@@ -209,7 +210,7 @@ function infoFromXmp(
   if (!isStream(md)) return undefined;
   const info: PdfDict = new Map<string, PdfObject>();
   try {
-    applyUpdate(info, mirrorXmpToMeta(readXmp(inflateStream(md))));
+    applyUpdate(info, mirrorXmpToMeta(readXmp(inflateStream(md), budgetFor(md).limits)));
   } catch (e) {
     rethrowLimit(e);
     return undefined;

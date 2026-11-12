@@ -513,6 +513,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PDF/A identification reads by namespace instead of the `pdfaid` prefix.**
+  `GetXmp()` and PDF/A identification validation now recognize equivalent
+  attribute and element properties under alternate prefixes, including XML
+  entity forms and PDF/A-4 revision values. Parseable packets cannot claim
+  PDF/A through a foreign namespace using that prefix, a comment or a nested
+  property. Empty values remain distinct from absent ones, malformed legacy
+  packets retain their lenient fallback, and resource-limit refusals propagate
+  under the document's policy. Alternate-prefix PDF/A fields are also excluded
+  from custom properties, preventing custom-list updates from erasing them.
+  (mfan)
+
 - **Save-time stream re-filtering honors the document's decode policy.**
   The copied streams used by `Save({ streamFilter })` had lost their budget
   registration, so LZW, RunLength and Brotli re-encoding silently used default

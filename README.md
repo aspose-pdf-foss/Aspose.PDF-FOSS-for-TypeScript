@@ -2957,8 +2957,12 @@ doc.WriteTo('out.pdf');
 ```
 
 `GetXmp()` parses the `/Root /Metadata` packet (Dublin Core, XMP basic, and PDF
-schemas) leniently — malformed packets never throw, and the original text is
-returned in `raw`. `SetXmp(update)` merges the update over the current packet
+schemas) leniently, preserving the original text in `raw`. PDF/A identification
+uses namespace URIs, so alternate prefixes and XML entity forms work in both
+`GetXmp()` and PDF/A validation. Empty values remain distinct from absent ones;
+malformed packets retain a lenient fallback. Decode and XML resource-limit
+refusals still propagate under the document's `LoadLimits`.
+`SetXmp(update)` merges the update over the current packet
 (`null` deletes), rebuilds a well-formed packet, and installs it as an
 uncompressed metadata stream picked up by `Save()`. Shared fields auto-mirror
 with `/Info` in both directions (`SetMetadata` → XMP, `SetXmp` → `/Info`):

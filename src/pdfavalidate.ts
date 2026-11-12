@@ -18,6 +18,7 @@ import {
 } from './validatectx.js';
 import { rethrowLimit } from './errors.js';
 import { parseRdfPacket } from './xmprdf.js';
+import { readPdfaIdentification } from './xmpid.js';
 import { extensionSchemaIssues, type PacketUnderTest } from './pdfaext.js';
 import { valueTypeIssues } from './pdfavaluetypes.js';
 
@@ -212,18 +213,6 @@ const optionalContentRule: Rule = (ctx) => {
     message: 'Optional content (/OCProperties) is prohibited in PDF/A-1.' }];
 };
 
-/** Read a pdfaid property in attribute or element form. */
-function pdfaIdValue(xmp: string, prop: 'part' | 'conformance' | 'rev'): string | undefined {
-  // `*` rather than `+` (ugxr): an EMPTY attribute is a present property with
-  // an invalid value, not a missing one. ISO 19005-4 6.7.3-3 spells the base
-  // conformance by genuine ABSENCE, so with `+` a file declaring
-  // pdfaid:conformance="" read as conformant and passed.
-  const attr = new RegExp(`pdfaid:${prop}\\s*=\\s*["']([^"']*)["']`).exec(xmp);
-  if (attr) return attr[1].trim();
-  const el = new RegExp(`<pdfaid:${prop}>\\s*([^<]*?)\\s*</pdfaid:${prop}>`).exec(xmp);
-  return el ? el[1].trim() : undefined;
-}
-
 const metadataRule: Rule = (ctx) => {
   const xmp = xmpText(ctx);
   if (xmp && /<x:xmpmeta|<rdf:RDF/.test(xmp)) return [];
@@ -239,10 +228,11 @@ function expectedConformance(ctx: Ctx): string | undefined {
 }
 
 const pdfaIdRule: Rule = (ctx) => {
+  // Read only the raw packet: GetXmp also scans unrelated custom properties,
+  // whose damaged values must not change identification validation behavior.
   const xmp = xmpText(ctx);
   if (!xmp) return []; // metadataRule already reports the absence
-  const part = pdfaIdValue(xmp, 'part');
-  const conf = pdfaIdValue(xmp, 'conformance');
+  const { part, conformance: conf, rev } = readPdfaIdentification(xmp, ctx.doc.loadLimits);
   const clause = ctx.part === 4 ? 'ISO 19005-4 §6.7.3' : 'ISO 19005-1 §6.7.11';
   const issues: ValidationIssue[] = [];
   const mk = (message: string): void => {
@@ -262,7 +252,6 @@ const pdfaIdRule: Rule = (ctx) => {
   }
   if (ctx.part === 4) {
     // ISO 19005-4 6.7.3-5. Parts 1–3 have no rev property at all.
-    const rev = pdfaIdValue(xmp, 'rev');
     if (rev !== '2020') mk(`XMP pdfaid:rev is '${rev ?? '(absent)'}', expected '2020'.`);
   }
   return issues;

@@ -1299,7 +1299,7 @@ export class Document {
   GetXmp(): XmpMetadata {
     const md = this.resolve(this.catalog().get('Metadata'));
     if (!isStream(md)) return {};
-    return readXmp(inflateStream(md));
+    return readXmp(inflateStream(md), this.loadLimits);
   }
 
   /** One XMP property as a typed value (`o6uu.4`), found by namespace URI and

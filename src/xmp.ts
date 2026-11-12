@@ -3,6 +3,7 @@ import { parseRdfPacket, serializeRdfPacket, stripNonXmlChars, type RdfPacket, t
 import { rethrowLimit } from './errors.js';
 import { LoadLimits } from './loadlimits.js';
 import { pdfDateToIso, isoToPdfDate } from './pdfdate.js';
+import { readPdfaIdentification } from './xmpid.js';
 
 /** Structured view of a document's XMP packet (read side). */
 export interface XmpMetadata {
@@ -156,8 +157,7 @@ function idValue(xml: string, prop: string): string | undefined {
  *  NaN, never `Number('')`'s 0 — a 0 reads as a document CLAIMING part 0,
  *  where NaN says "present, not a number" and is what junk (part="x") already
  *  yields. One rule for empty and junk rather than two. */
-function idNumber(xml: string, prop: string): number | undefined {
-  const v = idValue(xml, prop);
+function idNumber(v: string | undefined): number | undefined {
   if (v === undefined) return undefined;
   return v === '' ? NaN : Number(v);
 }
@@ -169,8 +169,9 @@ function parseXmpDate(s: string): Date | string {
 }
 
 /** Parse an XMP packet's bytes into a structured XmpMetadata. Lenient: missing
- *  or malformed fields are skipped, never thrown; `raw` holds the packet text. */
-export function readXmp(bytes: Uint8Array): XmpMetadata {
+ *  or malformed fields are skipped; resource-limit refusals propagate.
+ *  `raw` holds the packet text. */
+export function readXmp(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): XmpMetadata {
   const raw = decodeText(bytes);
   const meta: XmpMetadata = { raw };
 
@@ -187,11 +188,12 @@ export function readXmp(bytes: Uint8Array): XmpMetadata {
 
   // ISO 19005-4 6.7.3-5 requires pdfaid:rev="2020"; parts 1-3 have no rev
   // property at all, so an absent one stays absent rather than defaulting.
-  const part = idNumber(raw, 'pdfaid:part'); if (part !== undefined) meta.pdfaPart = part;
-  const conf = idValue(raw, 'pdfaid:conformance'); if (conf !== undefined) meta.pdfaConformance = conf;
-  const rev = idNumber(raw, 'pdfaid:rev'); if (rev !== undefined) meta.pdfaRev = rev;
-  const uaPart = idNumber(raw, 'pdfuaid:part'); if (uaPart !== undefined) meta.pdfuaPart = uaPart;
-  const uaRev = idNumber(raw, 'pdfuaid:rev'); if (uaRev !== undefined) meta.pdfuaRev = uaRev;
+  const id = readPdfaIdentification(raw, limits);
+  const part = idNumber(id.part); if (part !== undefined) meta.pdfaPart = part;
+  if (id.conformance !== undefined) meta.pdfaConformance = id.conformance;
+  const rev = idNumber(id.rev); if (rev !== undefined) meta.pdfaRev = rev;
+  const uaPart = idNumber(idValue(raw, 'pdfuaid:part')); if (uaPart !== undefined) meta.pdfuaPart = uaPart;
+  const uaRev = idNumber(idValue(raw, 'pdfuaid:rev')); if (uaRev !== undefined) meta.pdfuaRev = uaRev;
   const xVersion = idValue(raw, 'pdfxid:GTS_PDFXVersion');
   if (xVersion !== undefined) meta.pdfxVersion = xVersion;
 
@@ -207,8 +209,14 @@ export function readXmp(bytes: Uint8Array): XmpMetadata {
  *  actually written under rather than one we assumed. */
 function readCustom(xml: string): XmpProperty[] {
   const ns = new Map<string, string>();
-  for (const m of xml.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*["']([^"']*)["']/g))
-    if (!RESERVED_PREFIXES.has(m[1])) ns.set(m[1], unescapeXml(m[2]));
+  for (const m of xml.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*["']([^"']*)["']/g)) {
+    const namespace = unescapeXml(m[2]);
+    // PDF/A identification is built-in even when its prefix is not pdfaid;
+    // exposing it as custom would let a custom-list update erase that claim.
+    if (RESERVED_PREFIXES.has(m[1])) continue;
+    if (namespace === NS.pdfaid) ns.delete(m[1]);
+    else ns.set(m[1], namespace);
+  }
   if (ns.size === 0) return [];
 
   const out: XmpProperty[] = [];
@@ -371,8 +379,8 @@ function sanitize(props: RdfProperty[]): void {
 }
 
 /** The six built-in namespaces go out under their standard prefixes, whatever
- *  the source bound them to: `readXmp`, `pdfaIdValue` and `xmpVersion` match
- *  `dc:`, `pdfaid:` … LITERALLY. A foreign namespace that claimed one of those
+ *  the source bound them to: legacy readers of dc, PDF/UA and PDF/X properties
+ *  still match literal prefixes. A foreign namespace that claimed one of those
  *  prefixes loses the claim and the serializer renames it. */
 function pinBuiltinPrefixes(packet: RdfPacket): RdfPacket {
   const std = new Map<string, string>(Object.entries(NS).map(([p, ns]) => [ns, p]));
@@ -387,7 +395,7 @@ function pinBuiltinPrefixes(packet: RdfPacket): RdfPacket {
  *  the fields `readXmp` can see — exactly what survived before `o6uu.3`. */
 function startModel(existing: Uint8Array | undefined, limits: LoadLimits): { packet: RdfPacket; current: XmpMetadata } {
   if (existing === undefined) return { packet: { properties: [], prefixes: new Map() }, current: {} };
-  const current = readXmp(existing);
+  const current = readXmp(existing, limits);
   try {
     return { packet: parseRdfPacket(new TextEncoder().encode(current.raw ?? ''), limits), current };
   } catch (e) {

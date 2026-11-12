@@ -97,7 +97,7 @@ export function xmpSide(bytes: Uint8Array | undefined, limits: LoadLimits): Side
     return out;
   } catch (e) {
     rethrowLimit(e);
-    const m = readXmp(bytes);
+    const m = readXmp(bytes, limits);
     // Dates as WRITTEN, not readXmp's `Date`: that one is `new Date(s)`, which
     // reads a zone-less time as local, so its ISO text differs by machine.
     const raw = m.raw ?? '';
