@@ -172,6 +172,16 @@ const lzwRule: Rule = (ctx) =>
           message: 'Stream uses the prohibited /LZWDecode filter.' }]
       : []);
 
+/** Brotli is an extension to PDF 2.0, outside the base formats on which the
+ *  supported PDF/A profiles rely. Do not claim successful conversion while
+ *  retaining streams that require an extension-aware reader. */
+const brotliRule: Rule = (ctx) =>
+  allObjects(ctx).flatMap(([object, obj]) =>
+    isStream(obj) && filterNames(obj.dict, ctx.R).includes('BrotliDecode')
+      ? [{ rule: 'Brotli', severity: 'error', object,
+          message: 'Stream uses /BrotliDecode, an extension not supported by PDF/A validation.' }]
+      : []);
+
 /** Note, a deliberate divergence from the anchor: the veraPDF PDF/A-4 profile
  *  has NO PostScript-XObject rule, because PDF 2.0 removed the construct
  *  outright. This keeps firing at part 4 — it can only match something PDF 2.0
@@ -845,7 +855,7 @@ const xfaRule: Rule = (ctx) => {
 const STANDARD_INTENTS = new Set(['AbsoluteColorimetric', 'RelativeColorimetric', 'Saturation', 'Perceptual']);
 
 const imageFilterRule: Rule = (ctx) => {
-  const prohibited = new Set(['LZWDecode', ...(ctx.part === 1 ? ['JPXDecode', 'JBIG2Decode'] : [])]);
+  const prohibited = new Set(['LZWDecode', 'BrotliDecode', ...(ctx.part === 1 ? ['JPXDecode', 'JBIG2Decode'] : [])]);
   const issues: ValidationIssue[] = [];
   // Image XObjects.
   for (const [object, obj] of allObjects(ctx)) {
@@ -1291,7 +1301,7 @@ const embeddedFileConformanceRule: Rule = (ctx) => {
 };
 
 const RULES: Rule[] = [
-  encryptionRule, fileIdRule, versionRule, externalStreamRule, lzwRule,
+  encryptionRule, fileIdRule, versionRule, externalStreamRule, lzwRule, brotliRule,
   psXObjectRule, refXObjectRule, optionalContentRule,
   metadataRule, pdfaIdRule, xmpInfoConsistencyRule, extensionSchemaRule, xmpValueTypeRule,
   infoRestrictionRule, permissionsRule, needsRenderingRule,

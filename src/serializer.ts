@@ -26,8 +26,10 @@ export interface SerializeOptions extends OperationControlOptions {
   linearized?: boolean;
   /** Re-encode eligible data streams with this byte-filter on Save. ASCII
    *  targets armor over existing compression (7-bit-clean output); LZW /
-   *  RunLength replace it. Image-codec, XMP-metadata, and structural streams
-   *  are left untouched. Not supported with `linearized`. */
+   *  RunLength / Brotli replace it. Brotli opts into PDF 2.0 and the PDFa
+   *  Brotli extension; readers need extension support. Image-codec,
+   *  XMP-metadata, and structural streams are left untouched.
+   *  Not supported with `linearized`. */
   streamFilter?: StreamFilterName;
   /** Append an incremental update to the bytes the document was opened from,
    *  rather than rewriting it. Only the objects that changed are written, the
@@ -147,7 +149,8 @@ export function* serializeDocumentSteps(objects: Map<number, PdfObject>, trailer
   }
   const plan = yield* planDocumentSteps(objects, trailer, context);
   if (options.streamFilter) yield* applyStreamFilterSteps(plan.objs, options.streamFilter, context);
-  const ver = headerVersion(objects, trailer);
+  if (options.streamFilter === 'BrotliDecode') declareBrotli(plan);
+  const ver = options.streamFilter === 'BrotliDecode' ? '2.0' : headerVersion(objects, trailer);
   // Precedence: an explicit `encrypt` wins; else the document's own retained
   // encryption; else plaintext. `encrypt: false` is how a caller asks for
   // plaintext from a document that was opened encrypted.
@@ -165,6 +168,38 @@ export function* serializeDocumentSteps(objects: Map<number, PdfObject>, trailer
   return options.compressed
     ? yield* serializeCompressedEncryptedSteps(plan, trailer, chosen, id0, id1, ver, context)
     : yield* serializeClassicEncryptedSteps(plan, chosen, id0, id1, ver, context);
+}
+
+/** The PDF Association's Brotli extension applies only to the output copy.
+ *  Resolve against the remapped plan, since /Extensions and its entries may
+ *  be indirect. Keep unrelated developers and PDFa levels intact. */
+function declareBrotli(plan: Plan): void {
+  const resolve = (o: PdfObject | undefined): PdfObject | undefined =>
+    isRef(o) ? plan.objs[o.num - 1] : o;
+  // Plan.rootRef retains its SOURCE number; only references inside objs have
+  // been remapped. The root needs the same oldToNew lookup as the writers.
+  const rootNumber = plan.oldToNew.get(plan.rootRef.num);
+  const catalog = rootNumber === undefined ? undefined : plan.objs[rootNumber - 1];
+  if (!isDict(catalog)) throw new PdfParseError('cannot declare Brotli: /Root is not a dictionary');
+  const prior = resolve(catalog.get('Extensions'));
+  const extensions: PdfDict = new Map(isDict(prior) ? prior : []);
+  const old = resolve(extensions.get('PDFa'));
+  const entries = old === undefined ? [] : isArray(old) ? [...old] : [old];
+  const index = entries.findIndex((entry) => {
+    const d = resolve(entry);
+    const base = isDict(d) ? d.get('BaseVersion') : undefined;
+    return isDict(d) && isName(base) && base.name === '2.0' && d.get('ExtensionLevel') === 1;
+  });
+  const existing = index < 0 ? undefined : resolve(entries[index]);
+  const declaration: PdfDict = new Map(isDict(existing) ? existing : []);
+  declaration.set('BaseVersion', name('2.0'));
+  declaration.set('ExtensionLevel', 1);
+  declaration.set('ExtensionRevision', { kind: 'string', bytes: enc('2026') });
+  declaration.set('URL', { kind: 'string', bytes: enc('https://pdfa.org/resource/extension-brotli') });
+  if (index < 0) entries.push(declaration); else entries[index] = declaration;
+  extensions.set('PDFa', entries.length === 1 ? entries[0] : entries);
+  catalog.set('Extensions', extensions);
+  catalog.set('Version', name('2.0'));
 }
 
 /** The header version to emit: catalog /Version when present, else 1.7. */

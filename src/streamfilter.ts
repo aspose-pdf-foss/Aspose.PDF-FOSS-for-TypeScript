@@ -7,17 +7,17 @@ import { filterList, encodeFilter, decodeStream } from './filters.js';
 
 /** Byte-filters this pass can re-encode a stream into. */
 export type StreamFilterName =
-  | 'ASCII85Decode' | 'ASCIIHexDecode' | 'LZWDecode' | 'RunLengthDecode';
+  | 'ASCII85Decode' | 'ASCIIHexDecode' | 'LZWDecode' | 'RunLengthDecode' | 'BrotliDecode';
 
 const VALID: ReadonlySet<string> = new Set<StreamFilterName>([
-  'ASCII85Decode', 'ASCIIHexDecode', 'LZWDecode', 'RunLengthDecode',
+  'ASCII85Decode', 'ASCIIHexDecode', 'LZWDecode', 'RunLengthDecode', 'BrotliDecode',
 ]);
 /** Targets that armor (wrap) rather than replace the existing chain. */
 const ARMOR: ReadonlySet<string> = new Set(['ASCII85Decode', 'ASCIIHexDecode']);
 /** Known byte-filters (canonical + abbreviations) — a stream is eligible only
  *  if every existing filter is one of these (image codecs / unknowns excluded). */
 const BYTE_FILTERS: ReadonlySet<string> = new Set([
-  'FlateDecode', 'Fl', 'LZWDecode', 'LZW',
+  'FlateDecode', 'Fl', 'LZWDecode', 'LZW', 'BrotliDecode',
   'ASCII85Decode', 'A85', 'ASCIIHexDecode', 'AHx', 'RunLengthDecode', 'RL',
 ]);
 /** /Type values that must never be re-encoded (structural + XMP metadata). */

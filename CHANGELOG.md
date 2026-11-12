@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Brotli stream filters.** `/BrotliDecode` streams decode through Node's
+  Brotli implementation with TIFF/PNG predictors and chained byte filters,
+  under the document's decoded-byte, expansion, total and page-content limits.
+  `Save({ streamFilter: 'BrotliDecode' })` explicitly re-encodes eligible streams
+  and declares the PDF Association's PDF 2.0 extension on output; existing
+  extension entries and the live document stay intact. Default compression
+  is unchanged, since readers need Brotli extension support. Tests check
+  byte-identical decoding, early refusal of an 8 MiB expansion, and classic,
+  compressed and encrypted save/reopen paths.
+
+  PDF/A and PDF/X validation reports Brotli streams as unsupported, so
+  conversion leaves them unresolved instead of claiming conformance with
+  the extension still required. (nh1t.4)
+
 - **Selectable OpenType features.** Shaped text accepts a boolean `features`
   map to request font-provided old-style figures, small capitals and stylistic
   sets, or disable default ligatures and kerning. Measurement and drawing use

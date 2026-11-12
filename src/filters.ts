@@ -1,4 +1,4 @@
-import { inflateSync, deflateSync, constants } from 'node:zlib';
+import { inflateSync, deflateSync, brotliDecompressSync, brotliCompressSync, constants } from 'node:zlib';
 import { PdfStream, PdfDict, PdfObject, isName, isDict, isArray, name } from './types.js';
 import { applyPredictor } from './predictor.js';
 import { lzwDecode, lzwEncode } from './lzw.js';
@@ -31,7 +31,7 @@ export interface DecodeOptions {
  *  total is charged against. `decodeStream` fills both in from the registry. */
 export interface ChainOptions extends DecodeOptions { budget?: DecodeBudget; stream?: PdfStream }
 
-/** Node's code for an inflate that reached `maxOutputLength`. */
+/** Node's code for a zlib/Brotli decode that reached `maxOutputLength`. */
 const TOO_LARGE = 'ERR_BUFFER_TOO_LARGE';
 const tooLarge = (e: unknown): boolean => (e as { code?: string } | null)?.code === TOO_LARGE;
 
@@ -124,6 +124,16 @@ function decodeOne(
     }
     case 'LZWDecode': case 'LZW':
       return withPredictor(parms, lzwDecode(input, num(parms?.get('EarlyChange'), 1), bound.cap));
+    case 'BrotliDecode': {
+      let inflated: Uint8Array;
+      try {
+        inflated = new Uint8Array(brotliDecompressSync(input, zlibCap(bound)));
+      } catch (e) { rethrowLimit(e);
+        if (tooLarge(e)) bound.refuse(bound.cap + 1);
+        throw e;
+      }
+      return withPredictor(parms, inflated);
+    }
     case 'ASCII85Decode': case 'A85': return ascii85Decode(input);
     case 'ASCIIHexDecode': case 'AHx': return asciiHexDecode(input);
     case 'RunLengthDecode': case 'RL': return runLengthDecode(input, bound.cap);
@@ -205,6 +215,7 @@ export function decodeStream(s: PdfStream, opts?: DecodeOptions): Uint8Array {
 export function encodeFilter(filter: string, input: Uint8Array): Uint8Array {
   switch (filter) {
     case 'FlateDecode': case 'Fl': return new Uint8Array(deflateSync(Buffer.from(input)));
+    case 'BrotliDecode': return new Uint8Array(brotliCompressSync(input));
     case 'LZWDecode': case 'LZW': return lzwEncode(input);
     case 'ASCII85Decode': case 'A85': return ascii85Encode(input);
     case 'ASCIIHexDecode': case 'AHx': return asciiHexEncode(input);

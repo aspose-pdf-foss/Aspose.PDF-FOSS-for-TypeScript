@@ -286,7 +286,7 @@ const versionRule: Rule = (ctx) => {
 };
 
 const filtersRule: Rule = (ctx) => {
-  const banned = new Set(isLegacy(ctx.level) ? ['LZWDecode', 'JPXDecode'] : ['LZWDecode']);
+  const banned = new Set(['BrotliDecode', 'LZWDecode', ...(isLegacy(ctx.level) ? ['JPXDecode'] : [])]);
   return allObjects(ctx).flatMap(([object, obj]) => {
     if (!isStream(obj)) return [];
     const hit = filterNames(obj.dict, ctx.R).find((f) => banned.has(f));
