@@ -51,6 +51,23 @@ function errorVs(data: Uint8Array, refData: Uint8Array): Err {
 
 const errorVsRef = (data: Uint8Array): Err => errorVs(data, ref.data);
 
+// Marker framing only: skip length-delimited segments and stuffed entropy
+// bytes. This does not share an encoder, entropy decoder or EXP filter.
+function referenceMarkers(bytes: Uint8Array): { marker: number; payload: Uint8Array }[] {
+  const out: { marker: number; payload: Uint8Array }[] = [];
+  for (let pos = 2; pos < bytes.length;) {
+    if (bytes[pos++] !== 0xff) continue;
+    while (bytes[pos] === 0xff) pos++;
+    const marker = bytes[pos++];
+    if (marker === 0 || marker === 0xd9 || marker === 1 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    const length = (bytes[pos] << 8) | bytes[pos + 1];
+    if (length < 2 || pos + length > bytes.length) throw new Error('truncated reference marker');
+    out.push({ marker, payload: bytes.subarray(pos + 2, pos + length) });
+    pos += length;
+  }
+  return out;
+}
+
 describe('decodeJpeg — real libjpeg fixtures (227x149 RGB 4:2:0)', () => {
   it('reference original is the expected 227x149 P6', () => {
     expect(ref.magic).toBe('P6');
@@ -244,4 +261,49 @@ describe('decodeJpeg — real CMYK fixtures over a synthetic source (61x37)', ()
     const b = decodeJpeg(fixture('synth-cmyk-ycck-baseline.jpg')).data;
     expect(errorVs(a, b).mean).toBeLessThan(1.5);
   });
+});
+
+describe('decodeJpeg — independent lossless and hierarchical references (ka3t)', () => {
+  for (const [label, source, components] of [
+    ['gray', 'reference-gray.pgm', 1], ['rgb', 'reference-rgb.ppm', 3],
+  ] as const) {
+    it(`decodes externally encoded SOF3 ${label} samples exactly`, () => {
+      const bytes = fixture(`reference-lossless-${label}.jpg`);
+      const original = readPnm(fixture(source));
+      const golden = readPnm(fixture(`reference-lossless-${label}.decoded.${label === 'gray' ? 'pgm' : 'ppm'}`));
+      expect(referenceMarkers(bytes).filter((m) => m.marker === 0xc3)).toHaveLength(1);
+      expect(golden.data).toEqual(original.data);
+      const decoded = decodeJpeg(bytes);
+      expect([decoded.width, decoded.height, decoded.comps]).toEqual([37, 29, components]);
+      expect(decoded.data).toEqual(original.data);
+    });
+  }
+
+  for (const [label, expansion, differential, width, height, tolerance] of [
+    ['noexp', 0x00, 0xc7, 37, 29, 1], ['exp', 0x11, 0xc7, 37, 29, 1], ['dct', 0x11, 0xc5, 37, 29, 1],
+    ['prog', 0x11, 0xc6, 37, 29, 1], ['arith', 0x11, 0xcd, 37, 29, 1], ['arith-prog', 0x11, 0xce, 37, 29, 1],
+    ['exp-edge', 0x11, 0xc7, 38, 30, 1], ['lossless-exp', 0x11, 0xc7, 37, 29, 0],
+  ] as const) {
+    it(`matches the independent hierarchical ${label} decode, including the edges`, () => {
+      const bytes = fixture(`reference-hier-${label}.jpg`);
+      const golden = readPnm(fixture(`reference-hier-${label}.decoded.pgm`));
+      const markers = referenceMarkers(bytes);
+      expect(markers.filter((m) => m.marker === 0xde)).toHaveLength(1);
+      expect(markers.filter((m) => m.marker === 0xdf).map((m) => m.payload[0])).toEqual([expansion]);
+      expect(markers.filter((m) => m.marker === differential)).toHaveLength(1);
+      if (tolerance === 0) {
+        expect(markers.filter((m) => m.marker === 0xc3)).toHaveLength(1);
+        // This all-predictive pyramid's external decoder drops at most one
+        // source LSB, but our decode must match its EXP/composition exactly.
+        expect(errorVs(golden.data, readPnm(fixture('reference-gray.pgm')).data).max).toBeLessThanOrEqual(1);
+      }
+      const decoded = decodeJpeg(bytes);
+      expect([decoded.width, decoded.height, decoded.comps]).toEqual([width, height, 1]);
+      expect([golden.width, golden.height, golden.max]).toEqual([width, height, 255]);
+      expect(decoded.data.length).toBe(golden.data.length);
+      // Different integer IDCTs may round by one; the expected image is an
+      // external DECODE, so source-image compression loss earns no tolerance.
+      expect(errorVs(decoded.data, golden.data).max).toBeLessThanOrEqual(tolerance);
+    });
+  }
 });

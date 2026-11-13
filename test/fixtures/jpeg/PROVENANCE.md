@@ -242,3 +242,139 @@ YCCK math were already right. They are a guard, not a fix: every other CMYK path
 in the tree agrees with itself by construction, so these are the only bytes that
 could catch drift. Verified load-bearing rather than merely green — disabling the
 inversion in `cmyk()` fails the corner assertions on `223,159,95,191`.
+
+---
+
+## Generated — independent lossless and hierarchical references (`ka3t`)
+
+**Encoder and reference decoder:** Thomas Richter's complete JPEG implementation,
+release **1.70**, unmodified commit
+[`c719010a26ce0c666e98b2acf924ad5fc24b4f5d`](https://github.com/thorfdbg/libjpeg/tree/c719010a26ce0c666e98b2acf924ad5fc24b4f5d).
+This is a different implementation from IJG/libjpeg-turbo. The same executable
+encoded each stream and independently decoded it to the adjacent `.decoded.pgm`
+or `.decoded.ppm`. Our JPEG implementation and test JPEG builders did neither.
+
+**Why this revision:** upstream `702114c8130ae818ccd2354cc03e879dac69e579`
+failed predictive encoding with `DQT marker missing, no quantization table
+defined`, even with `-q 100`, and returned exit status zero. The selected revision
+precedes the 2025-08-15 quantization-table selection change. The generator checks
+the codec's diagnostic output, nonempty artifacts and decoded samples, so this
+failure cannot silently produce an empty or stale fixture.
+
+### Source samples and licenses
+
+`reference-gray.pgm` and `reference-rgb.ppm` are **our authored 37×29 P5/P6
+sources**, maxval 255; `reference-edge.pgm` is the same gray pattern at **38×30**.
+They contain deterministic ramps, discontinuities and alternating high-frequency
+samples. RGB channels use different formulas, so channel swaps cannot agree with
+the source. The formulas are committed in
+[`scripts/gen-jpeg-reference-fixtures.ts`](../../../scripts/gen-jpeg-reference-fixtures.ts).
+The samples, their compressed streams and reference pixel outputs are repository
+test assets under the project's **MIT license**. No third-party source image,
+codec source, library or executable is vendored in this set.
+
+The external tool offers **GPLv3-or-later** or the **ITU Software License Annex A
+Option 2**; see its pinned
+[source license notice](https://github.com/thorfdbg/libjpeg/blob/c719010a26ce0c666e98b2acf924ad5fc24b4f5d/interface/types.hpp),
+[GPL text](https://github.com/thorfdbg/libjpeg/blob/c719010a26ce0c666e98b2acf924ad5fc24b4f5d/README.license.gpl)
+and [ITU text](https://github.com/thorfdbg/libjpeg/blob/c719010a26ce0c666e98b2acf924ad5fc24b4f5d/README.license.itu).
+It is an authoring tool only, not a project dependency or npm package payload.
+
+### Files and mode checks
+
+All names below start with `reference-`. Every encoded stream has an adjacent
+`<name>.decoded.pgm` (or `.ppm` for RGB). Full **SHA-256 hashes** for the encoded
+stream, source and reference decode, the codec binary hash, exact command-line
+arguments and per-file geometry are in [`reference-manifest.json`](reference-manifest.json).
+
+| JPEG basename | Dimensions | Frames / EXP | Source versus external decode | Our decode versus external decode |
+|---|---|---|---|---|
+| `lossless-gray` | 37×29 | SOF3 | exact | exact |
+| `lossless-rgb` | 37×29 | SOF3, three components | exact | exact |
+| `hier-noexp` | 37×29 | SOF1 + SOF7, EXP `00` | exact | max 1; 31 / 1,073 samples differ |
+| `hier-exp` | 37×29 | SOF1 19×15 + SOF7, EXP `11` | exact | max 1; 7 / 1,073 differ |
+| `hier-dct` | 37×29 | SOF1 19×15 + SOF5, EXP `11` | lossy, max 38 | max 1; 49 / 1,073 differ |
+| `hier-prog` | 37×29 | SOF2 19×15 + SOF6, EXP `11` | lossy, max 38 | max 1; 49 / 1,073 differ |
+| `hier-arith` | 37×29 | SOF9 19×15 + SOF13, EXP `11` | lossy, max 38 | max 1; 49 / 1,073 differ |
+| `hier-arith-prog` | 37×29 | SOF10 19×15 + SOF14, EXP `11` | lossy, max 38 | max 1; 49 / 1,073 differ |
+| `hier-exp-edge` | 38×30 | SOF1 19×15 + SOF7, EXP `11` | exact | max 1; 5 / 1,140 differ |
+| `hier-lossless-exp` | 37×29 | SOF3 19×15 + SOF7, EXP `11` | max 1, as explained below | **exact** |
+
+Tests inspect the actual marker framing: SOF3 for the single-frame sources, and
+DHP, EXP and the required differential SOF for every hierarchy. The two odd
+dimensions require a cropped expansion; the even 38×30 output also interpolates
+its final row and column, where the reference must replicate the true 19×15
+image edge rather than use padded IDCT samples.
+
+**The all-predictive hierarchy is not an exact source round-trip in this external
+codec.** At some interpolated positions its decode is one below the authored
+source, despite SOF3/SOF7 coding. That behavior is frozen, recorded as
+`sourceMaxError: 1`, and checked separately. Our assertion against its **decoded
+reference is exact at every sample**, with no IDCT tolerance. The single-frame
+SOF3 gray and RGB streams compare exactly against both original and decoded
+samples. DCT hierarchies allow only one sample level against the **external
+decode**; the source image's lossy error does not justify a wider threshold.
+
+### Reproduction
+
+Built with Visual Studio 2022, MSVC **14.44.35207**, the repository's original
+`vs15.0/jpeg/jpeg.sln`, Release / Win32, overriding its old toolset with `v143` and
+the installed Windows 10 SDK. No source modifications were made.
+
+```powershell
+$pin = 'c719010a26ce0c666e98b2acf924ad5fc24b4f5d'
+Invoke-WebRequest "https://codeload.github.com/thorfdbg/libjpeg/zip/$pin" -OutFile source.zip
+Expand-Archive -LiteralPath source.zip -DestinationPath . -Force
+$codecDir = Join-Path (Get-Location) "libjpeg-$pin"
+& 'C:/Program Files/Microsoft Visual Studio/2022/Enterprise/MSBuild/Current/Bin/MSBuild.exe' `
+  (Join-Path $codecDir 'vs15.0/jpeg/jpeg.sln') /t:jpeg /p:Configuration=Release `
+  /p:Platform=Win32 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0 /m
+# Run from this project's root:
+npx tsx scripts/gen-jpeg-reference-fixtures.ts (Join-Path $codecDir 'vs15.0/jpeg/Release/jpeg.exe')
+```
+
+The generator writes all three sources and ten streams/reference decodes. It uses
+`-p -c -h` for single-frame predictive coding, `-q 73 -c -h -y 0` for a same-size
+DCT/predictive hierarchy, `-y 1` for a reduced DCT base plus predictive residual,
+and `-y 2` for a DCT pyramid. `-v` selects progressive DCT and `-a` arithmetic
+coding; arithmetic cases omit `-h`. The all-predictive pyramid uses
+`-p -c -h -y 2`. Decoding is simply `jpeg input.jpg output.pgm` / `output.ppm`.
+The manifest records every argument without abbreviations. `npm test` runs none
+of these commands and requires no external programs.
+
+### Defects found and mutation evidence
+
+These fixtures found real defects (`ka3t.1`): differential DC coefficients were
+accumulated rather than coded directly in all four DCT paths; base samples were
+clipped before refinement; EXP lost fractional precision and used padded edges;
+and precision-width modular composition could wrap white to black. Before the
+fix, the first three hierarchy probes differed by maxima of 15, 255 and 12.
+The decoder now retains fractional samples and unclipped references, expands
+actual image extents, adds signed residuals and clamps only final output.
+
+Each mutation was applied alone to production code and restored immediately:
+
+| Mutation | Failing independent cases, of 10 |
+|---|---:|
+| EXP odd samples use the preceding sample (nearest neighbor) | 7 |
+| Omit residual addition | 8 |
+| Expand padded DCT planes instead of actual image extents | 1 (`hier-exp-edge`) |
+| Clamp the base before residual composition | 5 |
+| Restore accumulating Huffman differential DC | 2 |
+| Restore accumulating arithmetic differential DC | 2 |
+| Round hierarchical DCT planes to integers before EXP | 1 (`hier-lossless-exp` also protects expansion precision) |
+
+Two additional mutations restored the old DC prediction in each synthetic
+encoder helper; each failed its two varying-block-mean cases. A complete second
+generation with the same executable reproduced every artifact hash and the
+manifest byte-for-byte.
+The synthetic hierarchy builder also retains quarter-sample predictions before
+forming its residuals; a separate exact-source regression failed before that
+helper correction.
+
+The set uses one independent implementation, 8-bit samples, two-frame 1×1-sampled
+hierarchies and expansion in both axes (or neither). It is not a conformance
+corpus for every JPEG precision, sampling arrangement, restart mode or
+multi-level progression. Existing synthetic tests retain that broader branch
+coverage, including the four new cases with deliberately varying residual block
+means so incorrect fixture-builder DC prediction cannot remain invisible.

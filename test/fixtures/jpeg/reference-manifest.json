@@ -1,0 +1,283 @@
+{
+  "codec": "Thomas Richter libjpeg",
+  "commit": "c719010a26ce0c666e98b2acf924ad5fc24b4f5d",
+  "codecBinarySha256": "0319ebed59cff451125a03ebe8d405cd83a80da7cf4a1b5a658514664e488bdd",
+  "sourceLicense": "MIT (authored for this repository)",
+  "fixtures": [
+    {
+      "jpeg": "reference-lossless-gray.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-lossless-gray.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": true,
+      "sourceMaxError": 0,
+      "encodeArgs": [
+        "-p",
+        "-c",
+        "-h",
+        "reference-gray.pgm",
+        "reference-lossless-gray.jpg"
+      ],
+      "decodeArgs": [
+        "reference-lossless-gray.jpg",
+        "reference-lossless-gray.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "f707c6c49cc2fd4abc9e8e69cb79e5a47b831d43c89800520cb0959c84fd76fa",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73"
+      }
+    },
+    {
+      "jpeg": "reference-lossless-rgb.jpg",
+      "source": "reference-rgb.ppm",
+      "decoded": "reference-lossless-rgb.decoded.ppm",
+      "width": 37,
+      "height": 29,
+      "exactSource": true,
+      "sourceMaxError": 0,
+      "encodeArgs": [
+        "-p",
+        "-c",
+        "-h",
+        "reference-rgb.ppm",
+        "reference-lossless-rgb.jpg"
+      ],
+      "decodeArgs": [
+        "reference-lossless-rgb.jpg",
+        "reference-lossless-rgb.decoded.ppm"
+      ],
+      "sha256": {
+        "jpeg": "4ec8502c497d618cd365d81c0e51463dd4246b369698cbd6881cd688a0fa4ab8",
+        "source": "175ce1678bf51f6cdf6ff189d7033a134afaa46e29c6f7d1ca27b5f056e0ade4",
+        "decoded": "175ce1678bf51f6cdf6ff189d7033a134afaa46e29c6f7d1ca27b5f056e0ade4"
+      }
+    },
+    {
+      "jpeg": "reference-hier-noexp.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-noexp.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": true,
+      "sourceMaxError": 0,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-h",
+        "-y",
+        "0",
+        "reference-gray.pgm",
+        "reference-hier-noexp.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-noexp.jpg",
+        "reference-hier-noexp.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "435bb5538009ca83533bb118566990daba2b29e9ab7c75d345d5f24fb257bb65",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73"
+      }
+    },
+    {
+      "jpeg": "reference-hier-exp.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-exp.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": true,
+      "sourceMaxError": 0,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-h",
+        "-y",
+        "1",
+        "reference-gray.pgm",
+        "reference-hier-exp.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-exp.jpg",
+        "reference-hier-exp.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "9c5e9f06914fe2cef4420ec138ed9a2f2a1534fb68b68f26c221bcbf5aee15ed",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73"
+      }
+    },
+    {
+      "jpeg": "reference-hier-dct.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-dct.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": false,
+      "sourceMaxError": 38,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-h",
+        "-y",
+        "2",
+        "reference-gray.pgm",
+        "reference-hier-dct.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-dct.jpg",
+        "reference-hier-dct.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "35d5b4f2a68a486cae4ed4e6878bdc5d8b0f87684ef610fe0dba56989fee8274",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5bbf6353851bd93829e7a21d209ec3d479513f70126ac57d6d29361cd7a736d0"
+      }
+    },
+    {
+      "jpeg": "reference-hier-prog.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-prog.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": false,
+      "sourceMaxError": 38,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-h",
+        "-v",
+        "-y",
+        "2",
+        "reference-gray.pgm",
+        "reference-hier-prog.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-prog.jpg",
+        "reference-hier-prog.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "a77e3633aa9d7608892b402ae0e15225f897d8aaf1bba1aa8e80928800a05c85",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5bbf6353851bd93829e7a21d209ec3d479513f70126ac57d6d29361cd7a736d0"
+      }
+    },
+    {
+      "jpeg": "reference-hier-arith.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-arith.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": false,
+      "sourceMaxError": 38,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-a",
+        "-y",
+        "2",
+        "reference-gray.pgm",
+        "reference-hier-arith.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-arith.jpg",
+        "reference-hier-arith.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "c23cb28f3021283310d9fd2f3a1d7d252c5e61b8cde276ff98c2938162840ed3",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5bbf6353851bd93829e7a21d209ec3d479513f70126ac57d6d29361cd7a736d0"
+      }
+    },
+    {
+      "jpeg": "reference-hier-arith-prog.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-arith-prog.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": false,
+      "sourceMaxError": 38,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-a",
+        "-v",
+        "-y",
+        "2",
+        "reference-gray.pgm",
+        "reference-hier-arith-prog.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-arith-prog.jpg",
+        "reference-hier-arith-prog.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "8e5d4f204bab5666ffd65ec88810951949be0db9fafcfb1392c3072dd5a854fe",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "5bbf6353851bd93829e7a21d209ec3d479513f70126ac57d6d29361cd7a736d0"
+      }
+    },
+    {
+      "jpeg": "reference-hier-exp-edge.jpg",
+      "source": "reference-edge.pgm",
+      "decoded": "reference-hier-exp-edge.decoded.pgm",
+      "width": 38,
+      "height": 30,
+      "exactSource": true,
+      "sourceMaxError": 0,
+      "encodeArgs": [
+        "-q",
+        "73",
+        "-c",
+        "-h",
+        "-y",
+        "1",
+        "reference-edge.pgm",
+        "reference-hier-exp-edge.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-exp-edge.jpg",
+        "reference-hier-exp-edge.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "7bca001c12ec60b5e9d515de21c936a6aea499b9e06b029b9fc2d9ff64f14940",
+        "source": "8bc3549e5d02e2bcb3417816eeb73562463beae3d6c792d82d06a6444a390572",
+        "decoded": "8bc3549e5d02e2bcb3417816eeb73562463beae3d6c792d82d06a6444a390572"
+      }
+    },
+    {
+      "jpeg": "reference-hier-lossless-exp.jpg",
+      "source": "reference-gray.pgm",
+      "decoded": "reference-hier-lossless-exp.decoded.pgm",
+      "width": 37,
+      "height": 29,
+      "exactSource": false,
+      "sourceMaxError": 1,
+      "encodeArgs": [
+        "-p",
+        "-c",
+        "-h",
+        "-y",
+        "2",
+        "reference-gray.pgm",
+        "reference-hier-lossless-exp.jpg"
+      ],
+      "decodeArgs": [
+        "reference-hier-lossless-exp.jpg",
+        "reference-hier-lossless-exp.decoded.pgm"
+      ],
+      "sha256": {
+        "jpeg": "bfb9bd72af0ca957329a9333910ba6c7ee16a5a40d29eafc1b8d9211fcdd2f6e",
+        "source": "5f43b95ebadf891abf20c3783e555ff75d796404dc0bbc7c3126f791a938dd73",
+        "decoded": "47b0b1ae533c5b4042908ac93452e1c537ecd49ae653f20c7823f07d2b87b4c5"
+      }
+    }
+  ]
+}

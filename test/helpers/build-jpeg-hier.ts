@@ -55,18 +55,24 @@ export function encodeHierarchicalJpeg(o: HierEncodeOptions): Uint8Array {
   }
   const baseJpg = encodeLosslessJpeg({ width: bw, height: bh, comps, pixels: base });
 
-  // --- Reference = upsample(base) per component (matches the decoder). ---
+  // Retain fractional predictions until the residual is formed. Rounding
+  // horizontal and vertical interpolation to whole samples separately can
+  // differ from flooring the final two-axis prediction by one.
+  const scale = 16;
   const up: Int32Array[] = [];
   for (let ci = 0; ci < comps; ci++) {
-    const plane = new Int32Array(bw * bh); for (let i = 0; i < bw * bh; i++) plane[i] = base[i * comps + ci];
+    const plane = new Int32Array(bw * bh); for (let i = 0; i < bw * bh; i++) plane[i] = base[i * comps + ci] * scale;
     up.push(upsample2x(plane, bw, bh, eh, ev).plane);
   }
   const uw = eh ? bw * 2 : bw; // == w
 
   // --- Residual = full − reference, comps-interleaved (signed). ---
   const res: number[] = new Array(w * h * comps);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let ci = 0; ci < comps; ci++)
-    res[(y * w + x) * comps + ci] = pixels[(y * w + x) * comps + ci] - up[ci][y * uw + x];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let ci = 0; ci < comps; ci++) {
+    const prediction = up[ci][y * uw + x] / scale;
+    res[(y * w + x) * comps + ci] = pixels[(y * w + x) * comps + ci]
+      - (o.residual === 'lossless' ? Math.floor(prediction) : prediction);
+  }
 
   // --- Differential frame: encode the residual, then rewrite its SOF marker. ---
   const arith = o.mode === 'arithmetic';

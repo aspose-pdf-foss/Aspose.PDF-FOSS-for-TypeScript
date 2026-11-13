@@ -170,7 +170,7 @@ export function encodeSequentialArithJpeg(o: ArithEncodeOptions): Uint8Array {
     let st = dcContext[ci];
     let v = zz[0] - lastDc[ci];
     if (v === 0) { enc.encode(dcS, st, 0); dcContext[ci] = 0; return; }
-    lastDc[ci] = zz[0];
+    lastDc[ci] = o.differential ? 0 : zz[0];
     enc.encode(dcS, st, 1);
     if (v > 0) { enc.encode(dcS, st + 1, 0); st += 2; dcContext[ci] = 4; }
     else { v = -v; enc.encode(dcS, st + 1, 1); st += 3; dcContext[ci] = 8; }
@@ -255,12 +255,12 @@ export function encodeSequentialArithJpeg(o: ArithEncodeOptions): Uint8Array {
 const AR_L = 0, AR_U = 1, AR_KX = 5; // default arithmetic conditioning
 
 // G.2 DC first: encode point-transformed (>> Al) DC difference for component ci.
-function encDCFirst(enc: ArithEncoder, dcS: Uint8Array, lastDc: Int32Array, dcContext: Int32Array, ci: number, zz: Int32Array, Al: number): void {
+function encDCFirst(enc: ArithEncoder, dcS: Uint8Array, lastDc: Int32Array, dcContext: Int32Array, ci: number, zz: Int32Array, Al: number, differential = false): void {
   const m0 = zz[0] >> Al; // IRIGHT_SHIFT (arithmetic)
   let st = dcContext[ci];
   let v = m0 - lastDc[ci];
   if (v === 0) { enc.encode(dcS, st, 0); dcContext[ci] = 0; return; }
-  lastDc[ci] = m0;
+  lastDc[ci] = differential ? 0 : m0;
   enc.encode(dcS, st, 1);
   if (v > 0) { enc.encode(dcS, st + 1, 0); st += 2; dcContext[ci] = 4; }
   else { v = -v; enc.encode(dcS, st + 1, 1); st += 3; dcContext[ci] = 8; }
@@ -336,7 +336,7 @@ export function encodeProgressiveArithJpeg(o: JpegEncodeOptions): Uint8Array {
     for (let my = 0; my < mcusPerColumn; my++) for (let mx = 0; mx < mcusPerLine; mx++)
       for (let ci = 0; ci < nc; ci++) { const B = blocks[ci], c = cinfo[ci];
         for (let by = 0; by < c.v; by++) for (let bx = 0; bx < c.h; bx++)
-          encDCFirst(enc, dcS, lastDc, dcContext, ci, B.arr[(my * c.v + by) * B.bpl + (mx * c.h + bx)], dcAl); }
+          encDCFirst(enc, dcS, lastDc, dcContext, ci, B.arr[(my * c.v + by) * B.bpl + (mx * c.h + bx)], dcAl, o.differential); }
     scans.push({ comps: cinfo.map((_, i) => i + 1), Ss: 0, Se: 0, Ah: 0, Al: dcAl, bytes: enc.finish() });
   }
   // ---- DC refine (interleaved), only in successive mode ----

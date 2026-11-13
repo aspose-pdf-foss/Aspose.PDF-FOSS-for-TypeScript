@@ -29,11 +29,13 @@ const A: number[][] = (() => {
 // Inverse DCT of a natural-order 8×8 coefficient block → spatial samples
 // (0..maxv, level-shifted by +`shift`), written into `out` (row-major, length
 // 64). `shift`/`maxv` are 128/255 for 8-bit precision, 2048/4095 for 12-bit.
-export function idct(coef: Int32Array, off: number, out: number[], shift: number, maxv: number, differential = false): void {
+// The unclamped signed mode can retain fractional bits for hierarchical
+// reconstruction; ordinary single-frame callers keep integer sample output.
+export function idct(coef: Int32Array, off: number, out: number[], shift: number, maxv: number, differential = false, fractionalBits = 0): void {
   for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
     let s = 0;
     for (let u = 0; u < 8; u++) { const ay = A[u][y], base = off + u * 8; for (let v = 0; v < 8; v++) s += ay * A[v][x] * coef[base + v]; }
-    if (differential) { out[y * 8 + x] = Math.round(s / 4); continue; } // signed residual, no level shift / clamp
+    if (differential) { out[y * 8 + x] = Math.round(s / 4 * (1 << fractionalBits)); continue; } // signed, no level shift / clamp
     const v = Math.round(s / 4 + shift);
     out[y * 8 + x] = v < 0 ? 0 : v > maxv ? maxv : v;
   }
@@ -273,9 +275,11 @@ export function decodeScan(
   let eobrun = 0;
 
   // Baseline sequential: full DC+AC block (raw coefficients).
+  // A differential frame codes each DC directly rather than accumulating it.
   const decodeBaseline = (si: number, off: number) => {
     const sc = scan[si], c = sc.c;
-    const t = decodeHuff(r, sc.dc); const diff = t === 0 ? 0 : extend(r.receive(t), t); pred[si] += diff;
+    const t = decodeHuff(r, sc.dc); const diff = t === 0 ? 0 : extend(r.receive(t), t);
+    pred[si] = frame.differential ? diff : pred[si] + diff;
     c.blocks[off] = pred[si];
     let k = 1;
     while (k < 64) {
@@ -285,9 +289,10 @@ export function decodeScan(
       c.blocks[off + ZIGZAG[k]] = extend(r.receive(size), size); k++;
     }
   };
-  // Progressive DC first scan: coeff[0] = accumulated predictor << Al.
+  // Progressive DC first scan: direct or accumulated DC, point-transformed.
   const decodeDCFirst = (si: number, off: number) => {
-    const t = decodeHuff(r, scan[si].dc); const diff = t === 0 ? 0 : extend(r.receive(t), t); pred[si] += diff;
+    const t = decodeHuff(r, scan[si].dc); const diff = t === 0 ? 0 : extend(r.receive(t), t);
+    pred[si] = frame.differential ? diff : pred[si] + diff;
     scan[si].c.blocks[off] = pred[si] << Al;
   };
   // Progressive AC first scan: run/size over band Ss..Se, with EOB-run tracking.

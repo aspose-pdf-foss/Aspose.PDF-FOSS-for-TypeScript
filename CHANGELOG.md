@@ -513,6 +513,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hierarchical JPEG images compose differential frames correctly.**
+  Sequential and progressive differential DCT frames previously accumulated
+  DC values as predictions, shifting later blocks in Huffman and arithmetic
+  streams. Reconstruction also clipped the base image too early, rounded away
+  fractional EXP samples and interpolated against MCU padding at image edges;
+  modular composition could turn a white sample black. Hierarchies now retain
+  unclipped fractional samples through expansion, use actual image extents and
+  signed residuals, and clamp only the final output. Ten independently encoded
+  and decoded reference streams cover exact SOF3 gray/RGB samples, exact
+  all-predictive EXP composition, and DCT hierarchies within one sample level
+  of the external decoder. Seven mutation checks prove these assertions detect
+  broken expansion, composition, geometry and DC handling. (ka3t, ka3t.1)
+
 - **Custom XMP properties resolve namespaces where they are declared.**
   `GetXmp().custom` previously used the packet's last binding for each prefix,
   so sibling or nested rebindings could mislabel properties, hide foreign

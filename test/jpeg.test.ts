@@ -258,6 +258,26 @@ describe('decodeJpeg — lossless (SOF11 arithmetic)', () => {
 });
 
 describe('decodeJpeg — hierarchical (differential lossless)', () => {
+  it('keeps quarter-sample EXP predictions until forming a lossless residual', () => {
+    const width = 32, height = 32;
+    const pixels = new Uint8Array(width * height);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++)
+      pixels[y * width + x] = (17 * x + 31 * y + 73 * ((x + y) % 3)) & 255;
+    const decoded = decodeJpeg(encodeHierarchicalJpeg({ width, height, comps: 1, pixels, residual: 'lossless' }));
+    expect(decoded.data).toEqual(pixels);
+  });
+
+  for (const mode of ['huffman', 'arithmetic'] as const) for (const residual of ['seq-dct', 'prog-dct'] as const) {
+    it(`${mode} ${residual}: differential blocks carry their own DC instead of a running predictor`, () => {
+      const width = 32, height = 16;
+      const pixels = new Uint8Array(width * height);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++)
+        pixels[y * width + x] = !(x & 1) && !(y & 1) ? 32 : 80 + (x >> 3) * 40 + (y >> 3) * 10;
+      const decoded = decodeJpeg(encodeHierarchicalJpeg({ width, height, comps: 1, pixels, residual, mode }));
+      for (let i = 0; i < pixels.length; i++) expect(Math.abs(decoded.data[i] - pixels[i])).toBeLessThanOrEqual(2);
+    });
+  }
+
   it('SOF7 Huffman: two-frame hierarchical recovers grayscale exactly', () => {
     const w = 32, h = 32; const px = new Uint8Array(w * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) px[y * w + x] = (x * 5 + y * 3) & 0xff;

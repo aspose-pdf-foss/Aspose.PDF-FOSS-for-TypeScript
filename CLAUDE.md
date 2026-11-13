@@ -9923,6 +9923,13 @@ Source (`src/`):
   integer decoding — reusing jpxmq.ts, since JBIG2's arithmetic coder is the
   same MQ coder as JPEG 2000's), and the
   bundled Standard-14 substitute faces (**std14data.ts**, **std14fonts.ts**).
+  **Invariant (`ka3t.1`):** hierarchical DCT DC coefficients are direct values,
+  in both entropy coders and progressive first scans. Composition retains four
+  fractional bits and unclipped samples until final output; EXP expands actual
+  component extents, not padded blocks. Predictive residuals are signed 16-bit
+  values added to the floored reference, never wrapped to image precision.
+  Thomas Richter's independent streams in `fixtures/jpeg/` pin these rules;
+  the all-predictive EXP golden agrees exactly, and DCT goldens within one LSB.
   **Invariant:** a JBIG2 **intermediate** region segment (4, 20, 36, 40) is
   decoded and stored under its segment number for a later segment to consume,
   and is **invisible to the page** until something consumes it. Only the
@@ -14036,7 +14043,7 @@ output, and what the fixture does and does **not** cover:
 | Directory | Provenance | Covers |
 |---|---|---|
 | `fixtures/fonts/` | `PROVENANCE.md` | WOFF2 from wawoff2 and fontTools — `glyf`, `hmtx`, and CFF-flavoured (`OTTO`) input — plus `LiberationSans.dfont`, a Macintosh suitcase written by FontForge, since Apple`s own cannot be vendored. Two of its five container rules stay unanchored and PROVENANCE says which |
-| `fixtures/jpeg/` | `PROVENANCE.md` | libjpeg-turbo's own images, plus `cjpeg`-generated synthetics (incl. CMYK/YCCK) |
+| `fixtures/jpeg/` | `PROVENANCE.md` | libjpeg-turbo's own images, plus external-encoder synthetics (incl. CMYK/YCCK). Since `ka3t`, ten streams from Thomas Richter libjpeg 1.70 at `c719010a`: exact SOF3 gray/RGB sources, independent DHP/EXP hierarchies with SOF5/6/7/13/14 residuals, odd and partial-MCU edge geometry, and an all-predictive EXP stream whose external decode is matched exactly. DCT goldens allow one sample level for IDCT variance. Found direct differential DC coding, premature clipping/wrapping, fractional expansion and padded-edge defects (`ka3t.1`); seven measured mutations fail. Source samples, decodes, command lines and SHA-256 hashes are frozen beside the streams. |
 | `fixtures/svg-input/` | `PROVENANCE.md` | SVG→PDF **input**: an SVGO-optimized pair, a bootstrap-icons file, a d3-shape chart — path-grammar lexis our builders never write. Distinct from `fixtures/svg/`, which is PDF→SVG **output** goldens |
 | `fixtures/svg-filter/` | `PROVENANCE.md` | Browser-rendered goldens for feTurbulence and the lighting primitives — ports of published reference implementations, which cannot validate themselves |
 | `fixtures/svg/` | `PROVENANCE.md` | PDF→SVG **output**: headless-Chrome rasterizations of `ToSvg()` for the transparency constructs, cross-checked against resvg. Our rasterizer works from PDF semantics and the browser from our emitted markup, so agreement is independent evidence (`scripts/gen-svg-goldens.ts`, not run by `npm test`) |

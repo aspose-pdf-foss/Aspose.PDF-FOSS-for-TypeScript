@@ -181,7 +181,8 @@ export function decodeArithScan(
   // F.1.4.4.1 — decode one DC coefficient (natural index 0) into blocks[off].
   const decodeDC = (si: number, off: number) => {
     const sc = scan[si];
-    lastDc[si] += decodeArithDiff(dec, sc.dcStats, dcContext, si, sc.L, sc.U);
+    const diff = decodeArithDiff(dec, sc.dcStats, dcContext, si, sc.L, sc.U);
+    lastDc[si] = frame.differential ? diff : lastDc[si] + diff;
     sc.c.blocks[off] = lastDc[si] << Al;
   };
   // F.1.4.4.2 — decode AC coefficients over the zig-zag band [kStart, kEnd].

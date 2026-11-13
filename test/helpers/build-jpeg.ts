@@ -159,7 +159,7 @@ export function encodeBaselineJpeg(o: JpegEncodeOptions): Uint8Array {
   {
     const pred = new Array(cinfo.length).fill(0);
     traverse((ci, zz) => {
-      const diff = zz[0] - pred[ci]; pred[ci] = zz[0]; dcSyms.add(category(diff));
+      const diff = zz[0] - pred[ci]; pred[ci] = o.differential ? 0 : zz[0]; dcSyms.add(category(diff));
       let k = 1;
       while (k < 64) {
         let run = 0; while (k < 64 && zz[k] === 0) { run++; k++; }
@@ -178,7 +178,7 @@ export function encodeBaselineJpeg(o: JpegEncodeOptions): Uint8Array {
     const pred = new Array(cinfo.length).fill(0);
     let rstIdx = 0;
     traverse((ci, zz) => {
-      const diff = zz[0] - pred[ci]; pred[ci] = zz[0];
+      const diff = zz[0] - pred[ci]; pred[ci] = o.differential ? 0 : zz[0];
       const dcat = category(diff); const d = dcH.enc.get(dcat)!;
       bw.put(d.code, d.len); if (dcat) bw.put(valueBits(diff, dcat), dcat);
       let k = 1;
@@ -256,12 +256,12 @@ function spliceRst(bytes: number[], marks: { at: number; marker: number }[]): nu
 // Collect DC diff categories for the interleaved DC scan at point transform Al.
 // Mirrors the emit's restart-boundary predictor reset so every emitted diff
 // category is present in the table.
-function collectDC(cinfo: CompInfo[], blocks: CompBlocks[], mpl: number, mpc: number, Al: number, syms: Set<number>, ri: number): void {
+function collectDC(cinfo: CompInfo[], blocks: CompBlocks[], mpl: number, mpc: number, Al: number, syms: Set<number>, ri: number, differential = false): void {
   const nc = cinfo.length; const pred = new Array(nc).fill(0);
   const total = mpl * mpc; let mcu = 0;
   for (let my = 0; my < mpc; my++) for (let mx = 0; mx < mpl; mx++) {
     for (let ci = 0; ci < nc; ci++) { const c = cinfo[ci], B = blocks[ci];
-      for (let by = 0; by < c.v; by++) for (let bx = 0; bx < c.h; bx++) { const zz = B.arr[(my * c.v + by) * B.bpl + (mx * c.h + bx)]; const t = zz[0] >> Al; const diff = t - pred[ci]; pred[ci] = t; syms.add(category(diff)); } }
+      for (let by = 0; by < c.v; by++) for (let bx = 0; bx < c.h; bx++) { const zz = B.arr[(my * c.v + by) * B.bpl + (mx * c.h + bx)]; const t = zz[0] >> Al; const diff = t - pred[ci]; pred[ci] = differential ? 0 : t; syms.add(category(diff)); } }
     mcu++;
     if (ri && mcu % ri === 0 && mcu < total) pred.fill(0);
   }
@@ -282,7 +282,7 @@ function collectAC(B: CompBlocks, blocksPerLine: number, blocksPerColumn: number
 
 // Interleaved DC scan entropy at point transform Al. refine=true appends one bit.
 // Restarts (RSTn) every `ri` MCUs when ri > 0.
-function writeDCScan(cinfo: CompInfo[], blocks: CompBlocks[], mpl: number, mpc: number, Al: number, refine: boolean, dcEnc: HuffEnc, ri: number): ScanEntropy {
+function writeDCScan(cinfo: CompInfo[], blocks: CompBlocks[], mpl: number, mpc: number, Al: number, refine: boolean, dcEnc: HuffEnc, ri: number, differential = false): ScanEntropy {
   const bw = new BitWriter(); const marks: { at: number; marker: number }[] = [];
   const nc = cinfo.length; const pred = new Array(nc).fill(0);
   const total = mpl * mpc; let mcu = 0, rstIdx = 0;
@@ -290,7 +290,7 @@ function writeDCScan(cinfo: CompInfo[], blocks: CompBlocks[], mpl: number, mpc: 
     for (let ci = 0; ci < nc; ci++) { const c = cinfo[ci], B = blocks[ci];
       for (let by = 0; by < c.v; by++) for (let bx = 0; bx < c.h; bx++) {
         const zz = B.arr[(my * c.v + by) * B.bpl + (mx * c.h + bx)];
-        if (!refine) { const t = zz[0] >> Al; const diff = t - pred[ci]; pred[ci] = t; const cat = category(diff); const d = dcEnc.get(cat)!; bw.put(d.code, d.len); if (cat) bw.put(valueBits(diff, cat), cat); }
+        if (!refine) { const t = zz[0] >> Al; const diff = t - pred[ci]; pred[ci] = differential ? 0 : t; const cat = category(diff); const d = dcEnc.get(cat)!; bw.put(d.code, d.len); if (cat) bw.put(valueBits(diff, cat), cat); }
         else { bw.put((zz[0] >> Al) & 1, 1); }
       } }
     mcu++;
@@ -383,15 +383,15 @@ export function encodeProgressiveJpeg(o: JpegEncodeOptions): Uint8Array {
   // ---- Symbol collection ----
   const dcSyms = new Set<number>([0]);
   const acSyms = new Set<number>([0x00]);
-  collectDC(cinfo, blocks, mcusPerLine, mcusPerColumn, dcAl, dcSyms, ri);
+  collectDC(cinfo, blocks, mcusPerLine, mcusPerColumn, dcAl, dcSyms, ri, o.differential);
   for (let ci = 0; ci < nc; ci++) { const ab = actualBlocks(width, height, cinfo[ci], maxH, maxV); collectAC(blocks[ci], ab.bpl, ab.bpc, acAl, acSyms); }
   if (o.successive) { for (let r2 = 0; r2 <= 15; r2++) acSyms.add((r2 << 4) | 1); acSyms.add(0xf0); } // AC-refine new-coeff + ZRL symbols
   const dcH = fixedHuff(dcSyms), acH = fixedHuff(acSyms);
 
   // ---- DC scans (interleaved, Ss=0 Se=0): first at Al, then refine to 0 ----
   const dcScans: ScanSpec[] = [];
-  { const s = writeDCScan(cinfo, blocks, mcusPerLine, mcusPerColumn, dcAl, false, dcH.enc, ri); dcScans.push({ comps: cinfo.map((_, i) => i + 1), Ss: 0, Se: 0, Ah: 0, Al: dcAl, bytes: spliceRst(s.bytes, s.marks) }); }
-  if (o.successive) { const s = writeDCScan(cinfo, blocks, mcusPerLine, mcusPerColumn, 0, true, dcH.enc, ri); dcScans.push({ comps: cinfo.map((_, i) => i + 1), Ss: 0, Se: 0, Ah: 1, Al: 0, bytes: spliceRst(s.bytes, s.marks) }); }
+  { const s = writeDCScan(cinfo, blocks, mcusPerLine, mcusPerColumn, dcAl, false, dcH.enc, ri, o.differential); dcScans.push({ comps: cinfo.map((_, i) => i + 1), Ss: 0, Se: 0, Ah: 0, Al: dcAl, bytes: spliceRst(s.bytes, s.marks) }); }
+  if (o.successive) { const s = writeDCScan(cinfo, blocks, mcusPerLine, mcusPerColumn, 0, true, dcH.enc, ri, o.differential); dcScans.push({ comps: cinfo.map((_, i) => i + 1), Ss: 0, Se: 0, Ah: 1, Al: 0, bytes: spliceRst(s.bytes, s.marks) }); }
 
   // ---- AC scans (per component, non-interleaved, Ss=1 Se=63): first at Al, then refine to 0 ----
   const acScans: ScanSpec[] = [];
