@@ -84,13 +84,20 @@ function decodeText(bytes: Uint8Array): string {
 }
 
 /** Unescape the five XML predefined entities plus numeric character references.
+ *  Out-of-range references stay literal, as in xml.ts's lenient decoder.
  *  `&amp;` is resolved last so escaped entities are not double-decoded. */
 function unescapeXml(s: string): string {
   return s
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => {
+      const cp = parseInt(h, 16);
+      return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    })
+    .replace(/&#(\d+);/g, (m, d) => {
+      const cp = Number(d);
+      return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    })
     .replace(/&amp;/g, '&');
 }
 

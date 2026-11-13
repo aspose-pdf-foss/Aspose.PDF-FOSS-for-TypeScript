@@ -513,6 +513,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`GetXmp()` keeps oversized numeric character references literal.**
+  Decimal or hexadecimal references above U+10FFFF, including values that
+  overflow to Infinity, previously raised a raw `RangeError` while reading
+  standard fields, custom values or namespace declarations. The legacy reader
+  now preserves those references and the original packet, matching the shared
+  XML decoder's leniency. Valid references and ampersand-escaped entities keep
+  their existing behavior; regressions also cover document save/reopen. (vj04)
+
 - **TIFF Predictor 2 reconstructs components at their declared bit depth.**
   Packed 1/2/4-bit streams previously received byte-wise additions, corrupting
   pixels without changing the decoded length; 16-bit PDF samples also lost

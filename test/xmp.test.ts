@@ -86,6 +86,62 @@ describe('Document.GetXmp', () => {
   it('returns {} when there is no /Metadata stream', () => {
     expect(Document.Open(buildBlankPage()).GetXmp()).toEqual({});
   });
+
+  it('keeps an out-of-range custom reference literal instead of throwing (vj04)', () => {
+    const packet = '<rdf:Description xmlns:acme="urn:acme" pdf:Producer="Healthy">'
+      + '<acme:BatchId>before &#99999999; after</acme:BatchId></rdf:Description>';
+    const doc = Document.Open(buildXmpPdf(packet));
+    const expected = {
+      producer: 'Healthy', raw: packet,
+      custom: [{ namespace: 'urn:acme', prefix: 'acme', name: 'BatchId', value: 'before &#99999999; after' }],
+    };
+    expect(doc.GetXmp()).toEqual(expected);
+    expect(Document.Open(doc.Save()).GetXmp()).toEqual(expected);
+  });
+});
+
+describe('legacy XMP numeric character references (vj04)', () => {
+  it.each([
+    ['decimal above Unicode range', '&#1114112;'],
+    ['hex above Unicode range', '&#x110000;'],
+    ['reported oversized reference', '&#99999999;'],
+    ['decimal overflowing to Infinity', `&#${'9'.repeat(400)};`],
+    ['hex overflowing to Infinity', `&#x${'f'.repeat(400)};`],
+  ])('preserves %s across literal property forms', (_label, reference) => {
+    const packet = '<rdf:Description xmlns:acme="urn:acme"'
+      + ` pdf:Producer="${reference}" acme:Attribute="${reference}">`
+      + `<dc:title><rdf:Alt><rdf:li>${reference}</rdf:li></rdf:Alt></dc:title>`
+      + `<dc:creator><rdf:Seq><rdf:li>${reference}</rdf:li></rdf:Seq></dc:creator>`
+      + `<pdf:Keywords>${reference}</pdf:Keywords><acme:Element>${reference}</acme:Element>`
+      + '</rdf:Description>';
+    expect(readXmp(enc(packet))).toEqual({
+      raw: packet, title: reference, authors: [reference],
+      producer: reference, keywords: reference,
+      custom: [
+        { namespace: 'urn:acme', prefix: 'acme', name: 'Element', value: reference },
+        { namespace: 'urn:acme', prefix: 'acme', name: 'Attribute', value: reference },
+      ],
+    });
+  });
+
+  it('preserves an out-of-range reference in a namespace declaration', () => {
+    const packet = '<rdf:Description xmlns:acme="urn:acme:&#x110000;" acme:Value="ok"/>';
+    expect(readXmp(enc(packet)).custom).toEqual([
+      { namespace: 'urn:acme:&#x110000;', prefix: 'acme', name: 'Value', value: 'ok' },
+    ]);
+  });
+
+  it('still decodes decimal and hex references through the Unicode boundary', () => {
+    const packet = '<rdf:Description pdf:Producer="&#65; &#x41; &#128512; &#x1F600;'
+      + ' &#1114111; &#x10FFFF; &#0; &#x0;"/>';
+    expect(readXmp(enc(packet)).producer).toBe('A A \u{1f600} \u{1f600} \u{10ffff} \u{10ffff} \0 \0');
+  });
+
+  it('keeps ampersand-escaped references literal and decodes the predefined entities', () => {
+    const packet = '<rdf:Description pdf:Producer="&amp;#65; &amp;#x41; &amp;#99999999;'
+      + ' &lt; &gt; &quot; &apos; &amp;"/>';
+    expect(readXmp(enc(packet)).producer).toBe('&#65; &#x41; &#99999999; < > " \' &');
+  });
 });
 
 describe('buildXmp', () => {
