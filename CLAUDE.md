@@ -1724,6 +1724,20 @@ Source (`src/`):
   such a page comes out blank with nothing said. Tracked as `zch2.14`: the
   report vocabulary is `htmlreport.ts`'s while the loss reaches Markdown and
   hand-built flows equally.
+- **plaintext.ts** — `Document.AddPlainText` / `AddPlainTextAsync` prepare
+  literal text as unpadded preformatted Flow blocks, with Courier 10pt defaults
+  and character-boundary fallback for overwide tokens. One Flow per form-feed
+  segment preserves empty leading, trailing and repeated pages. **Invariant:**
+  validate style, geometry and every section's glyph coverage before allocating
+  any page; font loss is an `UnsupportedFeatureError`, never silent omission.
+  The file wrapper in `node.ts` bounds reads and registers embedded font bytes
+  in its own document. Strict `decodePlainText` defaults to UTF-8 and lets
+  Unicode BOMs override explicit labels; bad bytes are `PdfParseError`, unknown
+  labels `TypeError`. Output is written only after a successful render/save.
+  Tests pin literal text and geometry, wrapping across pages, shaped font
+  coverage, empty form-feed segments, byte decoding and cancellation. Three
+  deliberate mutations (dropping empty segments, weakening shaped coverage,
+  overriding BOMs with the explicit label) each redden their corresponding cases.
 - **mdstyle.ts**, **mdruns.ts**, **mdflow.ts** — Markdown rendering
   (`flow.AddMarkdown`, `page.AddMarkdown`, `doc.AddMarkdown`). Three pure layers
   lowering an `MdDocument` to a flat `FlowElement[]`: `mdstyle.ts` is the style

@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Plain-text to PDF import.** `Document.AddPlainText` and its cooperative
+  async counterpart append Courier pages, preserving indentation, blank lines
+  and tab stops, wrapping overwide tokens and paginating automatically. Form
+  feeds preserve empty leading, trailing and repeated pages. Unsupported
+  characters are refused before page allocation; an embedded font provides
+  Unicode coverage. `textFileToPdf` adds bounded file reads, strict UTF-8 or
+  explicit decoding with Unicode BOM precedence, and embedded font bytes.
+  Tests pin page geometry, pagination, font refusal without mutation, decoding
+  failures without overwriting output, and cooperative cancellation. (nh1t.5)
+
 - **Brotli stream filters.** `/BrotliDecode` streams decode through Node's
   Brotli implementation with TIFF/PNG predictors and chained byte filters,
   under the document's decoded-byte, expansion, total and page-content limits.

@@ -95,6 +95,9 @@ flowchart TD
 - Stamp and flow text with `AddText`/`AddTextBlock` and `doc.NewFlow`, using the 12 Standard-14
   Latin fonts or an embedded TrueType/OpenType/WOFF/WOFF2 font, with optional complex-text
   shaping for bidi, Arabic and OpenType GSUB/GPOS scripts.
+- Import literal plain text with `doc.AddPlainText` or `textFileToPdf`: Courier layout,
+  indentation and tab stops, wrapped lines, automatic pagination and form-feed page breaks.
+  Missing glyphs are rejected; supply an embedded font for Unicode text.
 - Draw vector graphics with `page.Graphics()` (lines, shapes, gradients, tiling patterns) and
   embed raster images (JPEG, PNG, BMP, TIFF) or vector SVG assets with `page.AddSVGObject(data,
   [x, y, w, h], opts?)` — the SVG importer covers gradients, `/SMask`/`/S /Alpha` masks, markers,
@@ -1320,6 +1323,47 @@ footnote that is also `1`, each pointing at a different note. No per-page
 number would be right for the repeated mark, because its note is not on that
 page. To avoid the clash, cite the note from the body instead of the header,
 or give it an explicit `mark` such as `'*'`.
+
+### Render Plain Text
+
+```ts
+import { Document, textFileToPdf } from '@asposefoss/pdf';
+
+const doc = Document.New();
+const pages = doc.AddPlainText('  indented\ttext\nnext line\fsecond page');
+await doc.WriteTo('notes.pdf');
+
+// File import creates its own document and output directories.
+await textFileToPdf('notes.txt', 'output/notes.pdf', { title: 'Notes' });
+```
+
+Defaults are A4, 72pt margins, Courier 10pt, 12pt line advance and tab stops
+every four characters. `PlainTextOptions` accepts `format`, the four `margin*`
+values, `font`, `fontSize`, `leading`, RGB `color`, `tabWidth`, `title`, `signal`
+and `onProgress`. `AddPlainTextAsync` yields between preparation and layout
+units; cancellation leaves completed edits. Both methods return the appended
+`Page[]`. Existing pages are kept.
+
+CRLF and CR become LF. Markup stays literal, blank lines and indentation are
+preserved, and wide tokens wrap at character boundaries when needed. Each form
+feed starts a fresh page; empty input produces one blank page, and leading,
+trailing or repeated form feeds preserve their blank pages. Indentation and
+repeated spaces are drawn using non-breaking spaces (U+00A0), which also appear
+in extracted PDF text.
+
+Every section is checked before pages are allocated. A character the selected
+font cannot draw raises `UnsupportedFeatureError`; use a font returned by
+`doc.AddFont(bytes)` for broader coverage. The file helper instead accepts
+`fontData: Uint8Array`, exclusive with `font`, and registers it in its own
+document. Font overrides may be proportional; use a monospace face to retain
+fixed character widths.
+
+File input defaults to strict UTF-8. UTF-8, UTF-16LE and UTF-16BE byte order
+marks override an explicit `encoding` (a `TextDecoder` label). Invalid bytes
+raise `PdfParseError`, and an unsupported encoding raises `TypeError`.
+The default `LoadLimits.maxFileBytes` bounds input size. Decoding, rendering
+and saving finish before the helper creates output directories or writes the
+PDF, so an import refusal keeps an existing output file intact.
 
 ### Render a Word Document
 
@@ -3660,7 +3704,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 498 public types plus 160
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 500 public types plus 161
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4355,11 +4399,14 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `exportXmlFile(pdfPath, xmlPath, opts?)` / `importXmlFile(pdfPath, xmlPath, outPath?)` | Write a PDF's form-field values as AcroForm XML, or import them; `outPath` defaults to rewriting `pdfPath` |
 | `exportJsonFile(pdfPath, jsonPath, opts?)` / `importJsonFile(pdfPath, jsonPath, outPath?)` | Write a PDF's form-field values as JSON, or import them; `outPath` defaults to rewriting `pdfPath` |
 | `htmlFileToPdf(inputPath, outPath, opts?)` | Render an HTML file to a PDF, decoding its bytes and resolving relative `<img src>` inside its own directory → `{ skipped }` |
+| `textFileToPdf(inputPath, outPath, opts?)` | Decode a plain-text file, append Courier pages with form-feed breaks, and write a PDF; rejects malformed bytes and missing glyphs |
 | `docxFileToPdf(inputPath, outPath, opts?)` | Render a Word document (.docx) to a PDF → `{ skipped }` |
 | `SaveImagesOptions` | What `saveImagesFile` takes: `ImageInfo.Save`'s options |
 | `SaveImagesSkipped` | One image `saveImagesFile` could not write: its `page`, resource `name` and `reason` |
 | `HtmlFileOptions` | What `htmlFileToPdf` takes: `doc.AddHtml`'s options, `title`, and the input bytes' `encoding` |
 | `DocxFileOptions` | What `docxFileToPdf` takes: `doc.AddDocx`'s options and `title` |
+| `PlainTextOptions` | Page format/margins, font, size, leading, RGB color, tab width, title and operation controls for `doc.AddPlainText` |
+| `TextFileOptions` | Plain-text layout plus `encoding` and embedded `fontData` bytes; `font` and `fontData` are exclusive |
 | `Document.Merge(...docs)` | Build a new document from the pages of several |
 | `doc.loadLimits` | The `LoadLimits` the document was opened under — the caller's, else `LoadLimits.defaults` |
 | `doc.Pages` | `Page[]` in document order |
@@ -4464,6 +4511,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `table(t, opts?)` | The builder behind `flow.AddTable`: splits by row across columns and pages |
 | `flow.AddTable(t, opts?)` | Append a `createTable` table, paginated **by row** across columns and pages (`width`, `cellPadding`, `spaceBefore`/`spaceAfter`/`clear`); repeating headers via `setRepeatingRowsCount`, and one `/Table` for the whole thing under a tagged flow. Contrast `page.AddTable`, which is page-positioned |
 | `flow.AddMarkdown(src, opts?)` / `page.AddMarkdown(src, rect, opts?)` / `doc.AddMarkdown(src, opts?)` | Render CommonMark (GFM with `{ gfm: true }`) — see [Markdown](#markdown) |
+| `doc.AddPlainText(text, opts?)` / `doc.AddPlainTextAsync(text, opts?)` | Append literal text with tab stops, wrapping and form-feed page breaks → `Page[]` / `Promise<Page[]>`; strict font coverage before page allocation |
 | `flow.AddDocx(src, opts?)` / `page.AddDocx(bytes, rect, opts?)` / `doc.AddDocx(bytes, opts?)` | Render a Word document (.docx) as a documented subset, reporting the rest in `skipped` — see [Features](#key-capabilities) and [Limitations](#scope-and-limitations) |
 | `flow.AddHtml(src, opts?)` / `page.AddHtml(src, rect, opts?)` / `doc.AddHtml(src, opts?)` | Render an HTML document through the CSS cascade and box model — see [Features](#key-capabilities) and [Limitations](#scope-and-limitations) |
 | `flow.AddColumnBreak()` / `flow.AddFloatBox(box, side)` | Force the next column, or float a `FloatingBox` left/right so text wraps beside it |
@@ -4820,6 +4868,11 @@ still carries GitHub's number.
 
 ## Scope and Limitations
 
+- **Plain-text import requires font coverage for every character.** Courier is
+  the default; Unicode needs a covering embedded font. This strict check also
+  applies when the font enables shaping, including joiners without their own
+  glyph. Layout uses non-breaking spaces to preserve indentation and repeated
+  spaces, so extracted PDF text contains U+00A0 at those positions.
 - **`ReplaceFont` draws vertical text as the new face designs it** — each glyph is the face's own vertical form (its `vrt2`, else `vert`, feature) and is placed by the face's own vertical metrics (`vhea`/`vmtx`, written as `/W2`), so the pen positions are kept while the ink follows the new face rather than the old font's glyph offsets. A face with no vertical feature draws its horizontal forms, and one with no `vmtx` gets the standard default of a 1 em advance with the origin 880 units up. A vertical form that is also the face's glyph for another character (a presentation form such as U+FE11) extracts as the character it stood in for.
 - **Resource limits reduce known amplification; they do not make a hostile file safe** —
   `LoadLimits` bounds the paths listed under *Open Untrusted PDFs Under Resource Limits*, but it

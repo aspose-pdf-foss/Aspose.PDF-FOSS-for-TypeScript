@@ -417,6 +417,8 @@ export function resolveAtomics(list: AtomicSpec[] | undefined): BlockAtomic[] | 
 }
 
 export interface TextBlockOptions extends Omit<StampOptions, 'align' | 'rotate'> {
+  /** @internal Plain-text import splits tokens without a line-break opportunity. */
+  breakAnywhere?: boolean;
   /** Boxes to place among the runs — an image on a line of text. A PARALLEL
    *  channel rather than a field on TextRun, so textdecor.ts's model — read by
    *  mdruns.ts, tableauthor.ts, flowtable.ts and docmodel.ts — does not change
@@ -1218,7 +1220,7 @@ export function flowTextBlock(
     const ro: NormalizedBlockOptions =
       o.align === 'justify' && !justifiable(resolved) ? { ...o, align: 'left' } : o;
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0, ro.hyphen, ro.tabs);
+      resolved.map((r) => r.layout), w, h, ro.leading, ro.fontSize, options.firstLineIndent ?? 0, ro.hyphen, ro.tabs, options.breakAnywhere);
     if (lines.length > 0) {
       const fontKeys = resolved.map((r) => registerFont(doc, page, r.font));
       const gsKey = ro.opacity < 1 ? registerExtGState(doc, page, ro.opacity) : undefined;
@@ -1298,7 +1300,7 @@ export function flowTextBlock(
     const so = shapeOptsFrom(options);
     const driver = shapedDriver(font, so);
     if (drawsNothing(text, driver)) return { remainder: null, usedHeight: 0 };
-    const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading, o.hyphen);
+    const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading, o.hyphen, options.breakAnywhere);
     if (lines.length > 0) {
       const fontKey = registerFont(doc, page, font);
       const gsKey = o.opacity < 1 ? registerExtGState(doc, page, o.opacity) : undefined;
@@ -1309,7 +1311,7 @@ export function flowTextBlock(
   }
   const driver = driverFor(o.font);
   if (drawsNothing(text, driver)) return { remainder: null, usedHeight: 0 };
-  const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading, o.hyphen);
+  const { lines, remainder } = layoutText(text, driver, o.fontSize, w, h, o.leading, o.hyphen, options.breakAnywhere);
   if (lines.length > 0) {
     const fontKey = registerFont(doc, page, o.font);
     const gsKey = o.opacity < 1 ? registerExtGState(doc, page, o.opacity) : undefined;
@@ -1344,7 +1346,7 @@ export function measureTextBlock(
     const { woven: resolved, atomicOf } = weaveAtomics(resolveRuns(content, o, options, true), options.atomics);
     if (nothingDrawable(resolved)) return { usedHeight: 0, remainder: null };
     const { lines, remainder } = layoutRuns(
-      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0, o.hyphen, o.tabs);
+      resolved.map((r) => r.layout), width, availHeight, o.leading, o.fontSize, options.firstLineIndent ?? 0, o.hyphen, o.tabs, options.breakAnywhere);
     const rest = sliceContent(remainder, content, atomicOf, resolved);
     return {
       usedHeight: linesHeight(lines),
@@ -1356,7 +1358,7 @@ export function measureTextBlock(
   if (effectiveShape(o.font, options.shape)) driver = shapedDriver(o.font, shapeOptsFrom(options));
   else driver = textDriver(o.font, undefined, true);
   if (drawsNothing(content, driver)) return { usedHeight: 0, remainder: null };
-  const { lines, remainder } = layoutText(content, driver, o.fontSize, width, availHeight, o.leading, o.hyphen);
+  const { lines, remainder } = layoutText(content, driver, o.fontSize, width, availHeight, o.leading, o.hyphen, options.breakAnywhere);
   return { usedHeight: linesHeight(lines), remainder: remainder === '' ? null : remainder };
 }
 
@@ -1379,8 +1381,8 @@ export function wrapLines(
   else driver = textDriver(o.font, undefined, true);
   if (drawsNothing(text, driver)) return [];
   const { lines } = o.tabs === undefined
-    ? layoutText(text, driver, o.fontSize, width, Infinity, o.leading, o.hyphen)
-    : layoutRuns([{ text, driver, fontSize: o.fontSize }], width, Infinity, o.leading, o.fontSize, 0, o.hyphen, o.tabs);
+    ? layoutText(text, driver, o.fontSize, width, Infinity, o.leading, o.hyphen, options.breakAnywhere)
+    : layoutRuns([{ text, driver, fontSize: o.fontSize }], width, Infinity, o.leading, o.fontSize, 0, o.hyphen, o.tabs, options.breakAnywhere);
   return lines.map((l) => ({ text: l.text, width: l.width }));
 }
 

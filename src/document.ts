@@ -28,6 +28,7 @@ import { renderDocumentToDocx, renderDocumentToDocxAsync, type DocxOptions } fro
 import { renderEpub, renderEpubAsync, type EpubOptions } from './epubexport.js';
 import { renderDocumentToTiff, renderDocumentToTiffAsync, type TiffExportOptions } from './raster.js';
 import { addImagePages, addImagePagesAsync, type AddImagePagesOptions, type AddImagePagesResult } from './imagepages.js';
+import { addPlainText, addPlainTextAsync, type PlainTextOptions } from './plaintext.js';
 import {
   renderDocumentToMarkdown, renderDocumentToMarkdownAsync, renderDocumentToMarkdownAssets, renderDocumentToMarkdownAssetsAsync,
   type MarkdownExportOptions, type MarkdownExportResult,
@@ -3781,6 +3782,20 @@ export class Document {
    *  laid-out pages to the end of this document. */
   NewFlow(options?: FlowOptions): Flow {
     return new Flow(this, options);
+  }
+
+  /** Append literal text on fresh pages. Defaults to Courier 10pt on A4 with
+   *  72pt margins. CR/LF is normalized, tabs expand to stops, and every form
+   *  feed starts a page (including empty segments). Missing glyphs are refused
+   *  before page allocation. Returns the appended pages. */
+  AddPlainText(text: string, options: PlainTextOptions = {}): Page[] {
+    return addPlainText(this, text, options);
+  }
+
+  /** Cooperative counterpart of AddPlainText. Cancellation leaves completed
+   *  edits; do not mutate this document while the operation is pending. */
+  AddPlainTextAsync(text: string, options: PlainTextOptions = {}): Promise<Page[]> {
+    return addPlainTextAsync(this, text, options);
   }
 
   /** Render a whole Markdown document, appending freshly sized pages to the end

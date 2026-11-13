@@ -135,6 +135,8 @@ export function rule(options: FlowRuleOptions = {}): FlowElement[] {
 
 /** Options for {@link codeBlock} / `Flow.AddCodeBlock`. */
 export interface FlowCodeOptions {
+  /** @internal Allow plain-text imports to split overwide tokens. */
+  breakAnywhere?: boolean;
   /** Body font. Default 'Courier'. */
   font?: AuthoringFont;
   /** Font size (points). > 0. Default 9. */
@@ -259,6 +261,7 @@ export function codeBlock(text: string, options: FlowCodeOptions = {}): FlowElem
       : checkColor('background', options.background);
   if (options.color !== undefined) checkColor('color', options.color);
   const opts: TextBlockOptions = {
+    breakAnywhere: options.breakAnywhere,
     font: options.font ?? 'Courier',
     fontSize,
     color: options.color,

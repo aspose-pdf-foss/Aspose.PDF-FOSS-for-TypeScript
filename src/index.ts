@@ -3,10 +3,11 @@ export type { PrunePolicy } from './extractor.js';
 export { PdfParseError, UnsupportedFeatureError, InvalidPasswordError, ResourceLimitError, SeedValueError, AiServiceError } from './errors.js';
 export {
   splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
-  saveImagesFile, saveMarkdownFile, saveDocxFile,
+  saveImagesFile, saveMarkdownFile, saveDocxFile, textFileToPdf,
   exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile, exportXmlFile, importXmlFile, htmlFileToPdf, docxFileToPdf,
 } from './node.js';
-export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions } from './node.js';
+export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions, TextFileOptions } from './node.js';
+export type { PlainTextOptions } from './plaintext.js';
 export { Document } from './document.js';
 export type { OperationProgress, OperationControlOptions } from './checkpoint.js';
 export type {

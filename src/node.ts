@@ -17,12 +17,48 @@ import type { FlowOptions } from './flow.js';
 import type { NotRendered } from './htmlreport.js';
 import type { UnsupportedDeclaration } from './cssprop.js';
 import { rethrowLimit } from './errors.js';
+import { decodePlainText, type PlainTextOptions } from './plaintext.js';
+import type { StdFont } from './metrics.js';
 
 function captureFileControl(options?: OperationControlOptions) {
   const captured = { signal: options?.signal, onProgress: options?.onProgress };
   const control = createOperationControl(captured);
   control.checkpoint();
   return { captured, control };
+}
+
+/** Plain-text file import. An embedded font is supplied as bytes, because the
+ *  wrapper owns the newly created document. font and fontData are exclusive. */
+export interface TextFileOptions extends Omit<PlainTextOptions, 'font'> {
+  font?: StdFont;
+  fontData?: Uint8Array;
+  /** TextDecoder label. Default UTF-8; Unicode BOMs override this label. */
+  encoding?: string;
+}
+
+/** Read literal text, render it on fresh pages and write the resulting PDF.
+ *  Malformed input and missing glyphs are rejected before writing output. */
+export async function textFileToPdf(inputPath: string, outPath: string,
+  options: TextFileOptions = {}): Promise<void> {
+  const { captured, control } = captureFileControl(options);
+  const { font, fontData, encoding, ...layout } = { ...options, ...captured };
+  if (font !== undefined && fontData !== undefined)
+    throw new TypeError('font and fontData are mutually exclusive');
+  if (fontData !== undefined && !(fontData instanceof Uint8Array))
+    throw new TypeError('fontData must be a Uint8Array');
+  LoadLimits.defaults.enforce('maxFileBytes', (await stat(inputPath)).size, inputPath);
+  control.checkpoint();
+  const bytes = new Uint8Array(await readFile(inputPath));
+  control.checkpoint();
+  LoadLimits.defaults.enforce('maxFileBytes', bytes.length, inputPath);
+  const text = decodePlainText(bytes, encoding);
+  const doc = Document.New();
+  await doc.AddPlainTextAsync(text, { ...layout, font: fontData === undefined ? font : doc.AddFont(fontData) });
+  const output = await doc.SaveAsync(captured);
+  control.checkpoint();
+  await mkdir(dirname(resolve(outPath)), { recursive: true });
+  control.checkpoint();
+  await writeFile(outPath, output);
 }
 
 /** Read a PDF for one of the wrappers below, refusing an oversized file from

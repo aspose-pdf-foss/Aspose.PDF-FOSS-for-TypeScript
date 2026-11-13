@@ -952,9 +952,9 @@ function concatBytes(segments: LaidSegment[]): Uint8Array {
 export function layoutText(
   text: string, driver: FontDriver, fontSize: number,
   boxWidth: number, boxHeight: number, leading: number,
-  hyphenation?: Hyphenator,
+  hyphenation?: Hyphenator, breakAnywhere = false,
 ): LayoutResult {
   const { lines, remainder } = layoutRuns(
-    [{ text, driver, fontSize }], boxWidth, boxHeight, leading, fontSize, 0, hyphenation);
+    [{ text, driver, fontSize }], boxWidth, boxHeight, leading, fontSize, 0, hyphenation, undefined, breakAnywhere);
   return { lines, remainder: remainder.map((s) => s.text).join('') };
 }
