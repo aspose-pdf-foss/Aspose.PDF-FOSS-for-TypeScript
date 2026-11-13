@@ -5101,6 +5101,11 @@ Source (`src/`):
   crypto.ts.
 - **xmp.ts** — read (`GetXmp`) and build (`SetXmp`) the `/Root /Metadata` XMP
   packet with a dependency-free scan, mirroring shared fields with `/Info`.
+  **Invariant (`5n57`):** custom literals resolve namespaces in their OWN XML
+  scope, including declarations on the property itself and on an aliased RDF
+  Description. Nested literal fields remain visible, with elements before
+  attributes as before. Built-in namespace aliases are not custom. Only an XML
+  parse failure takes the legacy scan; resource-limit refusals propagate.
   **Invariant (`o6uu.7`):** a write parses the packet under the DOCUMENT's
   `loadLimits` (`editXmpPacket`'s `limits`, passed by `Document.xmpTextFor`),
   and `SetMetadata` computes the XMP text BEFORE touching /Info — the XMP half

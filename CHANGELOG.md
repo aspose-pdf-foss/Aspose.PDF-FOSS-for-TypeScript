@@ -513,6 +513,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Custom XMP properties resolve namespaces where they are declared.**
+  `GetXmp().custom` previously used the packet's last binding for each prefix,
+  so sibling or nested rebindings could mislabel properties, hide foreign
+  values or expose PDF/A identification as custom data. Writing that list back
+  could then overwrite values in the wrong namespace. Reads now follow each
+  element's XML scope, including attribute properties on aliased RDF
+  descriptions, and exclude built-in namespaces under alternate prefixes.
+  Nested literal fields retain their existing visibility without being hoisted
+  by `SetXmp`. Truncated packets keep the legacy fallback, and resource-limit
+  refusals propagate. Regressions pin reads and saved RDF values across sibling,
+  nested and PDF/A-to-foreign rebindings. (5n57)
+
 - **`GetXmp()` keeps oversized numeric character references literal.**
   Decimal or hexadecimal references above U+10FFFF, including values that
   overflow to Infinity, previously raised a raw `RangeError` while reading

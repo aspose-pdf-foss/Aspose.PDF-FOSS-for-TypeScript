@@ -1,5 +1,6 @@
 import type { MetadataUpdate } from './metadata.js';
-import { parseRdfPacket, serializeRdfPacket, stripNonXmlChars, type RdfPacket, type RdfProperty, type RdfValue } from './xmprdf.js';
+import { parseRdfPacket, serializeRdfPacket, stripNonXmlChars, RDF_NS, type RdfPacket, type RdfProperty, type RdfValue } from './xmprdf.js';
+import { parseXml, type XmlNode } from './xml.js';
 import { rethrowLimit } from './errors.js';
 import { LoadLimits } from './loadlimits.js';
 import { pdfDateToIso, isoToPdfDate } from './pdfdate.js';
@@ -204,17 +205,61 @@ export function readXmp(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defau
   const xVersion = idValue(raw, 'pdfxid:GTS_PDFXVersion');
   if (xVersion !== undefined) meta.pdfxVersion = xVersion;
 
-  const custom = readCustom(raw);
+  const custom = readCustom(raw, limits);
   if (custom.length) meta.custom = custom;
 
   return meta;
 }
 
-/** Read every literal property whose prefix is not one of the built-in schemas,
- *  in document order. The prefix→namespace bindings come from the packet's own
- *  `xmlns:` declarations, so a property is reported with the namespace it was
- *  actually written under rather than one we assumed. */
-function readCustom(xml: string): XmpProperty[] {
+/** Resolve each literal under its own xmlns scope, including nested fields.
+ *  Keep the legacy ordering: element literals, then Description attributes.
+ *  Only malformed XML takes the old scan; unsupported RDF still has XML scope. */
+function readCustom(xml: string, limits: LoadLimits): XmpProperty[] {
+  let root: XmlNode;
+  try {
+    root = parseXml(new TextEncoder().encode(xml), limits, { qnames: true });
+  } catch (e) {
+    rethrowLimit(e);
+    return readCustomLegacy(xml);
+  }
+  const elements: XmpProperty[] = [];
+  const attributes: XmpProperty[] = [];
+  const visit = (node: XmlNode, parent: Map<string, string>): void => {
+    let scope = parent;
+    for (const [key, value] of node.attrs) {
+      if (key !== 'xmlns' && !key.startsWith('xmlns:')) continue;
+      if (scope === parent) scope = new Map(parent);
+      scope.set(key === 'xmlns' ? '' : key.slice(6), value);
+    }
+    const add = (out: XmpProperty[], qname: string, value: string): void => {
+      const colon = qname.indexOf(':');
+      if (colon < 0) return; // custom's public contract requires a prefix
+      const prefix = qname.slice(0, colon), name = qname.slice(colon + 1);
+      if (RESERVED_PREFIXES.has(prefix) || !NCNAME.test(prefix) || !NCNAME.test(name)) return;
+      const namespace = scope.get(prefix);
+      if (!namespace || BUILTIN_NAMESPACES.has(namespace)) return;
+      out.push({ namespace, prefix, name, value });
+    };
+    // A container is not a literal, but its nested literal fields have always
+    // been visible. An explicit empty element is visible; a self-closing one
+    // has no raw span and was never matched by the legacy scan.
+    if (node.raw !== undefined && !node.raw.includes('<')) add(elements, node.name, node.text.trim());
+    const colon = node.name.indexOf(':');
+    const namespace = scope.get(colon < 0 ? '' : node.name.slice(0, colon));
+    const local = colon < 0 ? node.name : node.name.slice(colon + 1);
+    if ((namespace === RDF_NS && local === 'Description')
+      || (node.name === 'rdf:Description' && namespace === undefined)) {
+      for (const [key, value] of node.attrs) add(attributes, key, value);
+    }
+    for (const child of node.children) visit(child, scope);
+  };
+  visit(root, new Map());
+  return [...elements, ...attributes];
+}
+
+/** Last resort for truncated legacy packets, whose fields were readable before
+ *  XML parsing. No parsed element uses this packet-wide namespace map. */
+function readCustomLegacy(xml: string): XmpProperty[] {
   const ns = new Map<string, string>();
   for (const m of xml.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*["']([^"']*)["']/g)) {
     const namespace = unescapeXml(m[2]);
@@ -274,6 +319,10 @@ export const NS = {
   pdfuaid: 'http://www.aiim.org/pdfua/ns/id/',
   pdfxid: 'http://www.npes.org/pdfx/ns/id/',
 } as const;
+
+const BUILTIN_NAMESPACES = new Set<string>([
+  ...Object.values(NS), RDF_NS, 'adobe:ns:meta/', 'http://www.w3.org/XML/1998/namespace',
+]);
 
 type FieldKind = 'alt' | 'seq' | 'bag' | 'text' | 'date';
 
