@@ -3,7 +3,7 @@
 import type { Document } from './document.js';
 import type { OperationContext, OperationSteps } from './operation.js';
 import type { ImageOptimization, SkippedImage } from './imageopt.js';
-import { PdfDict, isArray, isDict, isName, isStream, name } from './types.js';
+import { PdfDict, isArray, isName, isStream, name } from './types.js';
 import { decodeImageStream } from './imagedecode.js';
 import { encodeJbig2 } from './jbig2encode.js';
 import { rethrowLimit } from './errors.js';
@@ -35,14 +35,6 @@ function guard(doc: Document, dict: PdfDict): string | undefined {
       if (!isName(filter) || !BYTE_FILTERS.has(filter.name))
         return `unsupported filter ${isName(filter) ? filter.name : '(invalid)'}`;
     }
-  }
-  // predictor.ts's TIFF path reconstructs bytes, not packed 1-bit components.
-  // Do not permanently encode that decoder limitation into a different codec.
-  const parms = doc.resolve(dict.get('DecodeParms') ?? dict.get('DP'));
-  for (const entry of isArray(parms) ? parms : [parms]) {
-    const p = doc.resolve(entry);
-    if (isDict(p) && doc.resolve(p.get('Predictor')) === 2)
-      return 'TIFF predictor is not supported for bilevel optimization';
   }
   return undefined;
 }

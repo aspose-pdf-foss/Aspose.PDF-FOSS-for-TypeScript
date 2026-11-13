@@ -513,6 +513,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TIFF Predictor 2 reconstructs components at their declared bit depth.**
+  Packed 1/2/4-bit streams previously received byte-wise additions, corrupting
+  pixels without changing the decoded length; 16-bit PDF samples also lost
+  carries between bytes. Reconstruction now uses the preceding pixel's same
+  component modulo its width, preserving row padding, row resets and input
+  bytes. Image decoding resolves indirect predictor scalars, and lossless
+  JBIG2 optimization now accepts these corrected bilevel sources. Hand-derived
+  sample vectors cover packed gray/RGB, 16-bit carries and filter chains;
+  TIFF-container fixtures cover both byte orders, and optimization tests pin
+  the all-white plane before and after save/reopen. Invalid predictor geometry
+  raises `PdfParseError` instead of allowing an unbounded row loop. (83me)
+
 - **PDF/A identification reads by namespace instead of the `pdfaid` prefix.**
   `GetXmp()` and PDF/A identification validation now recognize equivalent
   attribute and element properties under alternate prefixes, including XML

@@ -3257,7 +3257,9 @@ the overall savings estimate. It preserves `/Decode`, transparency and other
 image dictionary entries and retains shared object references. It examines
 indirect image XObjects without measuring their placements because it never
 resizes them. Existing CCITT/JBIG2/JPEG/JPX codecs, other color spaces, external
-streams, TIFF predictor 2, malformed sample planes and PDF/A-1 documents are declined. Inline
+streams, malformed sample planes and PDF/A-1 documents are declined. TIFF
+Predictor 2 sources are reconstructed per component before re-encoding,
+including images with indirect predictor parameters. Inline
 images are not rewritten. Both `Optimize` and `OptimizeAsync` support the option;
 progress uses phase `jbig2`, with cancellation between complete images.
 

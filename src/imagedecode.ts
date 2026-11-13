@@ -50,7 +50,10 @@ function resolvedFilters(
   const parms = isArray(p)
     ? p.map((x) => { const r = doc.resolve(x); return isDict(r) ? r : undefined; })
     : names.map(() => (isDict(p) ? p : undefined));
-  return { names, parms };
+  // Byte-filter predictors consume numeric entries directly. Resolve scalar
+  // references on a copy, just as terminal codecs resolve their own entries.
+  return { names, parms: parms.map((d) => d === undefined ? undefined
+    : new Map([...d].map(([key, value]) => [key, doc.resolve(value)]))) };
 }
 
 /** Decoded bytes. JPEG passthrough for DCTDecode; decoded 8-bit samples for

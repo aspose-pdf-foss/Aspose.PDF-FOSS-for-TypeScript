@@ -169,11 +169,10 @@ describe('Optimize lossless JBIG2', () => {
     expect(result.jbig2.skippedImages[0].reason).toMatch(/PDF\/A-1/);
   });
 
-  it.each([false, true])('declines packed TIFF predictor samples (indirect=%s)', (indirect) => {
+  it.each([false, true])('preserves packed TIFF predictor samples through optimization (indirect=%s)', (indirect) => {
     const { doc, nums } = buildBilevelDoc({ width: 512 }), original = image(doc, nums[0]);
     // A white row has one leading 1 followed by 511 zero horizontal deltas.
-    // The existing TIFF decoder incorrectly reconstructs bytes (80 80 ...),
-    // so this pass must not bake that result into a new image codec.
+    // The independent expected plane is all ones, not a decode of the source.
     const deltas = new Uint8Array(64 * 128);
     for (let y = 0; y < 128; y++) deltas[y * 64] = 0x80;
     const raw = new Uint8Array(deflateSync(deltas, { level: 0 }));
@@ -183,10 +182,16 @@ describe('Optimize lossless JBIG2', () => {
     original.dict.set('Filter', indirect ? [doc.allocObject(name('FlateDecode'))] : name('FlateDecode'));
     original.dict.set(indirect ? 'DecodeParms' : 'DP', indirect ? [doc.allocObject(parms)] : parms);
     const stream = { ...original, raw }; doc.replaceObject(nums[0], stream);
+    const expected = new Uint8Array(64 * 128).fill(255);
+    expect(decodeImageStream(doc, stream)).toEqual(expected);
     const result = doc.Optimize(only);
-    expect(image(doc, nums[0])).toBe(stream);
-    expect(result.jbig2.images).toHaveLength(0);
-    expect(result.jbig2.skippedImages[0].reason).toMatch(/TIFF predictor/);
+    expect(result.jbig2.images).toHaveLength(1);
+    expect(image(doc, nums[0]).dict.get('Filter')).toEqual(name('JBIG2Decode'));
+    expect(image(doc, nums[0]).dict.has('DecodeParms')).toBe(false);
+    expect(image(doc, nums[0]).dict.has('DP')).toBe(false);
+    expect(decodeImageStream(doc, image(doc, nums[0]))).toEqual(expected);
+    const reopened = Document.Open(doc.Save());
+    expect(reopened.Pages[0].Images[0].Decode()).toEqual(expected);
   });
 
   it('raises an explicit catalog version below 1.4 only when replacing an image', () => {

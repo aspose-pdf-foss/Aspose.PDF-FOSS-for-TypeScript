@@ -414,19 +414,6 @@ describe('decodeJpeg — progressive (SOF2), spectral selection', () => {
     const rst = decodeJpeg(rstBytes);
     for (let i = 0; i < w * h; i++) expect(rst.data[i]).toBe(plain.data[i]);
   });
-
-  // Hybrid fixture slot: drop a real, externally-generated progressive JPEG here to
-  // guard against an encoder/decoder shared bug (the in-repo encoder validates only
-  // against the baseline decode). Provenance recipe:
-  //   ImageMagick:  magick input.png -interlace JPEG -sampling-factor 4:4:4 ref.jpg
-  //   libjpeg:      cjpeg -progressive -sample 1x1 -outfile ref.jpg input.pgm
-  // Commit the bytes as a Uint8Array constant + the known source pixels, then assert
-  // decodeJpeg(REF) matches the source within DCT tolerance.
-  it.skip('decodes a real (externally-generated) progressive JPEG reference stream', () => {
-    // const REF = Uint8Array.from([/* paste bytes */]);
-    // const dec = decodeJpeg(REF);
-    // expect(dec.width).toBe(/* known */); // ...compare dec.data to known source pixels
-  });
 });
 
 describe('decodeImageRgba — DCTDecode', () => {
@@ -491,45 +478,5 @@ describe('decodeImageRgba — DCTDecode', () => {
     const img = decodeImageRgba(doc, stream, [0, 0, 0]);
     expect(img).toBeDefined();
     expect(img!.data[0]).toBe(200); expect(img!.data[1]).toBe(100); expect(img!.data[2]).toBe(50);
-  });
-
-  // Hybrid fixture slot: drop a real, externally-generated arithmetic JPEG here to
-  // guard against an encoder/decoder shared bug (the in-repo encoder validates only
-  // against the baseline decode). Provenance recipe:
-  //   libjpeg:  cjpeg -arithmetic -sample 1x1 -outfile ref.jpg input.ppm
-  // Commit the bytes as a Uint8Array constant + the known source pixels, then assert
-  // decodeJpeg(REF) matches the source within DCT tolerance.
-  it.skip('decodes a real (externally-generated) arithmetic JPEG reference stream', () => {
-    // const REF = Uint8Array.from([/* paste bytes */]);
-    // const dec = decodeJpeg(REF); // ...compare dec.data to known source pixels
-  });
-});
-
-// Hybrid fixture slot: drop a real, externally-generated lossless JPEG here to
-// guard against a shared encoder/decoder bug (the in-repo encoder validates only
-// against the known input pixels — a strong oracle since lossless is exact, but it
-// cannot catch a symmetric restart/predictor-reset bug). libjpeg's cjpeg cannot
-// emit lossless; provenance recipe:
-//   jpeg-9:   cjpeg (jpeg-9 supports lossless via its lossless mode)
-//   PVRG:     pvrg-jpeg -l -s ref.jpg -ci 0 input.raw
-// Commit the bytes as a Uint8Array + the known source pixels, then assert
-// decodeJpeg(REF) equals the source exactly.
-describe('decodeJpeg — lossless real-file reference', () => {
-  it.skip('decodes a real (externally-generated) lossless JPEG reference stream', () => {
-    // const REF = Uint8Array.from([/* paste bytes */]);
-    // const dec = decodeJpeg(REF); // ...compare dec.data to known source pixels exactly
-  });
-});
-
-// Hybrid fixture slot: drop a real, externally-generated hierarchical JPEG here to
-// guard the EXP upsampling filter + composition against a shared encoder/decoder
-// bug (the in-repo encoder validates against the known original, but uses the same
-// upsample2x on both sides). libjpeg's cjpeg cannot emit hierarchical; provenance:
-//   jpeg-9:  a hierarchical progression script, or PVRG pvrg-jpeg.
-// Commit the bytes + known source pixels, then assert decodeJpeg(REF) matches.
-describe('decodeJpeg — hierarchical real-file reference', () => {
-  it.skip('decodes a real (externally-generated) hierarchical JPEG reference stream', () => {
-    // const REF = Uint8Array.from([/* paste bytes */]);
-    // const dec = decodeJpeg(REF); // ...compare to known source pixels
   });
 });

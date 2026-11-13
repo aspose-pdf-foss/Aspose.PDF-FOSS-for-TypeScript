@@ -364,7 +364,10 @@ Source (`src/`):
   so without it an over-deep object inside an `/ObjStm` was reported `lost`
   and the document OPENED. Held by one case in `test/limits-parse.test.ts`.
 - **flate.ts**, **predictor.ts** — `FlateDecode` (via `node:zlib`) with PNG/TIFF
-  predictors.
+  predictors. TIFF Predictor 2 reconstructs 1/2/4/8/16-bit components modulo
+  their width, using the preceding pixel's same color component. Packed samples
+  are MSB first and 16-bit PDF samples are big-endian; row padding and incomplete
+  final rows are preserved. Invalid TIFF predictor geometry throws PdfParseError.
 - **crypto.ts** — standard security handler decryption on open (RC4, `AESV2`,
   `AESV3`) via `node:crypto`.
 - **document.ts** — the `Document` facade: `Open`/`Save`, page-tree edits,
@@ -13176,10 +13179,10 @@ Source (`src/`):
   pixel preprocessing, globals or standalone end markers. `bilevelopt.ts`
   preserves every unrelated dictionary entry, including Decode and masks, and
   replaces at the same object number. Existing image codecs, external streams,
-  TIFF predictor 2, other color spaces and PDF/A-1 are declined. PDF/A identity
-  is read by namespace, not by a particular XML prefix. TIFF's existing byte
-  predictor cannot reconstruct packed 1-bit components and must not be baked
-  into another codec. Reported under `report.jbig2`,
+  other color spaces and PDF/A-1 are declined. TIFF Predictor 2 sources use
+  component reconstruction, including indirect image predictor parameters.
+  PDF/A identity is read by namespace, not by a particular XML prefix.
+  Reported under `report.jbig2`,
   independently of JPEG and `report.lossy`; yields between images. Pixel limits
   propagate, and an explicit catalog version below 1.4 is raised on replacement.
 - **optimize.ts**, **glyphusage.ts**, **fontshrink.ts**, **dedup.ts**,
