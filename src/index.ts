@@ -216,7 +216,7 @@ export type { TiffFrame, TiffEncodeOptions } from './tiffencode.js';
 export { encodeTiff } from './tiffencode.js';
 export { encodeG4 } from './ccittencode.js';
 export type { G4EncodeOptions } from './ccittencode.js';
-export type { TiffExportOptions } from './raster.js';
+export type { TiffExportOptions, ThumbnailOptions } from './raster.js';
 export { encodeBmp } from './bmpencode.js';
 export { encodeGif } from './gifencode.js';
 export { quantize } from './quantize.js';

@@ -26,7 +26,10 @@ import { StructTreeRoot } from './struct.js';
 import { renderDocumentToHtml, renderDocumentToHtmlAsync, HtmlOptions } from './html.js';
 import { renderDocumentToDocx, renderDocumentToDocxAsync, type DocxOptions } from './docxexport.js';
 import { renderEpub, renderEpubAsync, type EpubOptions } from './epubexport.js';
-import { renderDocumentToTiff, renderDocumentToTiffAsync, type TiffExportOptions } from './raster.js';
+import {
+  renderDocumentToTiff, renderDocumentToTiffAsync, type TiffExportOptions,
+  renderDocumentToThumbnails, renderDocumentToThumbnailsAsync, type ThumbnailOptions,
+} from './raster.js';
 import { addImagePages, addImagePagesAsync, type AddImagePagesOptions, type AddImagePagesResult } from './imagepages.js';
 import { addPlainText, addPlainTextAsync, type PlainTextOptions } from './plaintext.js';
 import {
@@ -1459,6 +1462,20 @@ export class Document {
   /** Yield between selected page renders and final TIFF encoding. */
   ToTiffAsync(options?: TiffExportOptions): Promise<Uint8Array> {
     return renderDocumentToTiffAsync(this, options ?? {});
+  }
+
+  /** Render every page in order to an encoded image (PNG by default).
+   *  Fits the rotated crop viewport inside `maxSize` pixels on each axis,
+   *  preserving aspect ratio subject to pixel rounding. The longest edge
+   *  equals the bound, including enlargement. An empty document returns [].
+   *  Other image options follow `Page.ToImage`; this does not edit the PDF. */
+  ToThumbnails(options: ThumbnailOptions): Uint8Array[] {
+    return renderDocumentToThumbnails(this, options);
+  }
+
+  /** Yield between page rendering and encoding units, with cancellation. */
+  ToThumbnailsAsync(options: ThumbnailOptions): Promise<Uint8Array[]> {
+    return renderDocumentToThumbnailsAsync(this, options);
   }
 
   /** Append one page per frame of an image file, sized to each frame.

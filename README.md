@@ -66,6 +66,8 @@ flowchart TD
 
 ## Key Capabilities
 
+- Render document previews with `doc.ToThumbnails({ maxSize: 256 })`: one image
+  per page, fitted to a pixel bound with rotation and aspect ratio preserved.
 - Parse both classic cross-reference tables and cross-reference streams, including object
   streams (`/ObjStm`); every filter (`FlateDecode` with PNG/TIFF predictors, `LZWDecode`,
   `ASCII85Decode`, `ASCIIHexDecode`, `RunLengthDecode`) has a matching encoder. When the
@@ -246,6 +248,8 @@ const svg = doc.Pages[0].ToSvg();          // standalone <svg> string
 // fs.writeFileSync('page1.svg', svg);
 const png = doc.Pages[0].ToImage({ scale: 2 }); // Uint8Array of PNG bytes @144 DPI
 // fs.writeFileSync('page1.png', png);
+const thumbnails = doc.ToThumbnails({ maxSize: 256 }); // one PNG per page
+// fs.writeFileSync('thumb1.png', thumbnails[0]);
 const html = doc.ToHtml();                 // standalone semantic HTML, all pages
 // fs.writeFileSync('out.html', html);
 const md = doc.ToMarkdown();               // GFM Markdown, all pages
@@ -3527,6 +3531,18 @@ const fixed = doc.ToDocx({ mode: 'textbox' });  // .docx keeping each page's own
 // fs.writeFileSync('fixed.docx', fixed);
 ```
 
+`ToThumbnails` fits each rotated page inside a square pixel bound without padding;
+the longest edge equals `maxSize`, so small pages are enlarged. Dimensions round
+to whole pixels with a one-pixel minimum. It uses the crop box by default; pass
+`box: 'media'` for the media box. Encoding, background, colour mode and annotation
+options follow `ToImage`. `ToThumbnailsAsync` yields between page rendering and
+encoding units and accepts the same cancellation and progress controls. All
+encoded images remain in the returned array, so output memory grows with page
+count. As with explicit `ToImage` dimensions, the caller chooses the canvas
+bound; decode and content limits still apply.
+Zero/non-finite viewports and viewports requiring an infinite render scale are
+refused with `TypeError` before any page renders.
+
 </details>
 
 ### Connect an AI Model
@@ -3704,7 +3720,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 500 public types plus 161
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 501 public types plus 161
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -3724,6 +3740,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `doc.ToDocxAsync(options?)` | `Promise<Uint8Array>` |
 | `doc.ToEpubAsync(options?)` | `Promise<Uint8Array>` |
 | `doc.ToTiffAsync(options?)` | `Promise<Uint8Array>` |
+| `doc.ToThumbnailsAsync(options)` | `Promise<Uint8Array[]>` |
 | `page.ToImageAsync(options?)` | `Promise<Uint8Array>` |
 | `page.ToSvgAsync(options?)` | `Promise<string>` |
 | `page.ToHtmlAsync(options?)` | `Promise<string>` |
@@ -4263,6 +4280,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `MarkdownStyle` | How Markdown renders. |
 | `TiffEncodeOptions` | Interface with 1 property. |
 | `TiffExportOptions` | Options for renderDocumentToTiff. |
+| `ThumbnailOptions` | Required positive safe-integer `maxSize` in pixels, plus `ImageOptions` except `scale`, `width` and `height`. |
 | `TiffFrame` | One page of a TIFF. |
 | `IccTransformOptions` | Options for `iccCmykTransform`: `intent` selects `B2A0` (perceptual, default), `B2A1` (media-relative) or `B2A2` (saturation). |
 
@@ -4598,6 +4616,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.ToMarkdownAssets(options?)` / `page.ToMarkdownAssets(options?)` | Markdown plus the image files it references → `{ markdown, images }`. With the default `images: 'inline'` the list is empty; with `images: 'external'` each distinct image is one `{ path, bytes, mediaType }` to write relative to the Markdown (`imageDir`, default `images`) |
 | `doc.ToDocx(options?)` / `page.ToDocx(options?)` | Export to a `.docx` (Office Open XML) as `Uint8Array`. `mode: 'flow'` (default) reflows over the same model `ToHtml` and `ToMarkdown` read: `Heading1`–`Heading6`, styled runs, lists (nested, ordered, task), hyperlinks, images and tables. `mode: 'textbox'` keeps each page's own geometry instead — every run of text becomes a page-anchored `w:framePr` frame at its PDF position, with one section per page carrying that page's size, plus `backdrop: 'raster'` for a glyph-less render of the page's graphics behind the frames and `box: 'crop' \| 'media'`. Images travel inside the package either way, so there is no assets variant |
 | `doc.ToTiff(options?)` | Rasterize a page selection into ONE multi-page TIFF (`Uint8Array`) — the interchange format for document archival, fax gateways and scanning pipelines. `{ pages }` is a 1-based list or a `"1-5,8,12-"` range string (default all); the rest are `ToImage`'s options, applied to every frame, plus `{ compression }` (`'deflate'` default, `'none'`, or `'g4'` beside `mode: 'bilevel'` for a multi-page CCITT Group 4 file). `background: 'transparent'` is honoured, TIFF carrying alpha where JPEG cannot |
+| `doc.ToThumbnails(options)` | Render every page to an encoded image in document order (`Uint8Array[]`), or `[]` for an empty document. Required `{ maxSize }` bounds both pixel dimensions; the longest edge equals it, including enlargement, and aspect ratio is preserved subject to rounding with a one-pixel minimum. Crop box and rotation apply; `{ box: 'media' }` selects the media box. Other image options follow `ToImage`, including format (PNG by default), background and annotations. Invalid sizing or zero/non-finite viewports throw `TypeError` before rendering. |
 | `doc.AddImagePages(data, options?)` | Append one page per frame of an image file, sized to each frame. A multi-frame TIFF (a scan or fax) becomes one page per frame; a JPEG/PNG/BMP becomes one page. `{ frames }` selects a 0-based subset (normalized ascending, deduped), `{ dpi }` sizes the pages (default 72 — one pixel per point). A frame that will not decode is reported in `skipped` and costs only its own page; throws only if no frame decoded |
 | `page.Images` | `ImageInfo[]` of embedded images (recurses into Form XObjects) |
 | `image.Width` / `image.Height` / `image.Bits` / `image.ColorSpace` / `image.Filter` | Image properties |

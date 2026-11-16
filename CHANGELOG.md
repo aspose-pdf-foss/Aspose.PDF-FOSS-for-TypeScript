@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Document thumbnails.** `Document.ToThumbnails({ maxSize })` and its cooperative
+  async counterpart render every page directly to a bounded canvas, preserving
+  page order, crop boxes, rotation and aspect ratio. The longest edge reaches
+  the pixel bound, including for small pages; image format, background, colour
+  mode and annotation options follow `ToImage`. Tests check fitted geometry and
+  actual pixels, option validation, unchanged document bytes, cancellation and
+  resource-limit propagation. (nh1t.6)
+
 - **Plain-text to PDF import.** `Document.AddPlainText` and its cooperative
   async counterpart append Courier pages, preserving indentation, blank lines
   and tab stops, wrapping overwide tokens and paginating automatically. Form

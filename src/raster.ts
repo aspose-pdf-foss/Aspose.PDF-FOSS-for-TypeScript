@@ -1851,6 +1851,56 @@ export interface TiffExportOptions
   pages?: number[] | string;
 }
 
+/** Every page fitted to a square pixel bound, with the normal image encodings. */
+export interface ThumbnailOptions extends Omit<ImageOptions, 'scale' | 'width' | 'height'> {
+  /** Positive safe integer in pixels. The longest edge equals this bound,
+   *  including enlargement; the other rounds to at least one pixel. */
+  maxSize: number;
+}
+
+export function renderDocumentToThumbnails(doc: Document, opts: ThumbnailOptions): Uint8Array[] {
+  return runOperation('ToThumbnails', opts, context => renderDocumentToThumbnailsSteps(doc, opts, context));
+}
+
+export function renderDocumentToThumbnailsAsync(doc: Document, opts: ThumbnailOptions): Promise<Uint8Array[]> {
+  return runOperationAsync('ToThumbnails', opts, context => renderDocumentToThumbnailsSteps(doc, opts, context));
+}
+
+/** Preflight every viewport before rendering; both runners drive the same work. */
+function* renderDocumentToThumbnailsSteps(
+  doc: Document, opts: ThumbnailOptions, context: OperationContext,
+): OperationSteps<Uint8Array[]> {
+  const maxSize = opts?.maxSize;
+  if (!Number.isSafeInteger(maxSize) || maxSize < 1)
+    throw new TypeError('ToThumbnails: maxSize must be a positive safe integer');
+  const format = resolveFormat(opts);
+  // The TIFF encoder normally checks this after rendering its first frame.
+  // Here the contract includes refusing incompatible output on an empty PDF.
+  if (format === 'tiff' && opts.compression === 'g4' && (opts.mode ?? 'rgb') !== 'bilevel')
+    throw new TypeError("ToThumbnails: compression 'g4' requires mode: 'bilevel'");
+
+  const fitted = doc.Pages.map(page => {
+    const { width, height } = baseMatrix(page, opts.box ?? 'crop');
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0)
+      throw new TypeError(`ToThumbnails: page ${page.Number} has an invalid viewport`);
+    // Divide before multiplying: finite page dimensions can still overflow
+    // under width * maxSize. The longer edge is exact, the shorter at least 1.
+    const fittedWidth = width >= height ? maxSize : Math.max(1, Math.round((width / height) * maxSize));
+    const fittedHeight = height >= width ? maxSize : Math.max(1, Math.round((height / width) * maxSize));
+    // Subnormal point sizes can require an infinite device scale. The normal
+    // renderer falls back to scale 1 there, which would break our pixel bound.
+    if (!Number.isFinite(fittedWidth / width) || !Number.isFinite(fittedHeight / height))
+      throw new TypeError(`ToThumbnails: page ${page.Number} has an unrenderable viewport`);
+    return { page, width: fittedWidth, height: fittedHeight };
+  });
+
+  const images: Uint8Array[] = [];
+  for (const { page, width, height } of fitted) {
+    images.push(yield* renderPageSteps(doc, page, { ...opts, width, height }, { skipGlyphs: false }, context));
+  }
+  return images;
+}
+
 /** Render one page to the frame shape `tiffencode.ts` consumes.
  *
  *  Separate from `renderPage` because a multi-page TIFF needs the SAMPLES of
