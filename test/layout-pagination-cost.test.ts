@@ -1,8 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { layoutRuns, layoutText, winAnsiDriver } from '../src/layout.js';
 import type { FontDriver } from '../src/layout.js';
 import { drawsNothing } from '../src/textcoverage.js';
 import { Document } from '../src/document.js';
+
+/** Count real encoding work across AddMarkdown's measurement, probe and paint
+ *  paths. Its drivers are created internally, so wrap the shared ESM import,
+ *  as layout-overwide-cost does for the line-break analyser. Nothing is stubbed:
+ *  every call still runs the actual encoder and returns its actual bytes. */
+const encoded = vi.hoisted(() => ({ characters: 0 }));
+vi.mock('../src/encoding.js', async (importActual) => {
+  const actual = await importActual<typeof import('../src/encoding.js')>();
+  return {
+    ...actual,
+    encodeWinAnsi: (text: string) => {
+      encoded.characters += text.length;
+      return actual.encodeWinAnsi(text);
+    },
+  };
+});
 
 const CR = winAnsiDriver('Courier');
 const SIZE = 12;
@@ -25,7 +41,7 @@ function counting(): { driver: FontDriver; measured: number[]; probed: number[] 
   };
 }
 
-/** `n` distinct five-character words, so nothing can be memoized by value. */
+/** `n` distinct words, so nothing can be memoized by value. */
 function words(n: number): string {
   const out: string[] = [];
   for (let i = 0; i < n; i++) out.push(String(i).padStart(4, 'w'));
@@ -91,23 +107,34 @@ describe('drawsNothing probes a prefix, not the whole text (pl2h)', () => {
   });
 });
 
-describe('a long paragraph paginates in time linear in its length (pl2h)', () => {
+describe('a long paragraph paginates with linear encoding work (pl2h, 92qb)', () => {
   it('doubling the text roughly doubles the work rather than quadrupling it', () => {
     // Before the fix each doubling cost 4x: 100,000 words took 26.4 s through
     // AddHtml and 6.2 s through AddMarkdown, and 400,000 did not finish in
-    // two minutes. This is a RATIO rather than a time, so it cannot fail on a
-    // slow machine; the quadratic it replaced gives ~4.
-    const run = (n: number): number => {
+    // two minutes. Wall-clock ratios still flaked under CPU contention (92qb):
+    // scheduling can delay just one sample. Count characters through the real
+    // encoder instead: eager wrapping and whole-tail probes both encode the
+    // remaining text once per page, so their work grows quadratically.
+    const run = (n: number): { characters: number; length: number } => {
       const text = `${words(n)} `;
       const doc = Document.New();
-      const t = performance.now();
+      encoded.characters = 0;
       doc.AddMarkdown(text);
-      return performance.now() - t;
+      const characters = encoded.characters;
+      // A no-op or a truncated render must not pass by doing no work. Snapshot
+      // before extraction, which is outside the operation being measured.
+      expect(characters).toBeGreaterThan(text.length);
+      expect(doc.Pages.length).toBeGreaterThan(10);
+      expect(doc.Pages.at(-1)!.GetText()).toContain(String(n - 1));
+      return { characters, length: text.length };
     };
-    run(4000); // warm up, so the first measured run is not paying for the JIT
     const a = run(8000);
     const b = run(16_000);
-    expect(b / a).toBeLessThan(3);
+    expect(b.characters).toBeLessThan(a.characters * 3);
+    // Also cap work per input character, allowing margin for measurement,
+    // coverage and painting.
+    expect(a.characters).toBeLessThan(a.length * 12);
+    expect(b.characters).toBeLessThan(b.length * 12);
   });
 });
 
