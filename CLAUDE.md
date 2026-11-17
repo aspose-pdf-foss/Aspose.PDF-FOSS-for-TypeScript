@@ -3725,11 +3725,21 @@ Source (`src/`):
   (`nh1t.2`). Uses the entire affected page as the compositing region, opaque
   sRGB/Flate pixels, and an invisible embedded glyphless text layer reconstructed
   from original glyph pen spans. Annotations stay live, geometry uses the inverse
-  of renderPageRgb's actual device matrix. Tagged/vertical-writing pages, signed
+  of renderPageRgb's actual device matrix. Tagged pages, signed
   inputs and conflicting optionalContent/postScript preservation are declined.
   Appearance streams without their own Resources also decline the page: their
   fallback context would disappear on replacement. Text direction is independent
   of pen advance (Tz carries the span), including zero-width combining glyphs.
+  **Invariant (`izia`):** vertical text uses an Identity-V glyphless font at
+  the source Tf size and composed matrix bases. One code carries the source
+  glyph's entire Unicode string and effective advance through W2. Splitting a
+  multi-character glyph or normalizing Tf changes selection cells and mixed
+  reading-order tolerances. Recover the rise-adjusted pen from the vertical
+  quad's X centre and Y-bound sum minus penEnd Y. Zero-size glyphs carry source
+  spacing in Tc; every writing-mode switch resets Tf, Tz, Tc and Tw.
+  Vertical Tf/Tc/Tm operands use serializeValue's PDF number precision. A
+  small matrix factor and large Tf (or the reverse) can produce a normal cell;
+  rounding either to six decimals collapses it (two 10pt-cell regressions).
   Runs before conversion's other passes, only when explicitly enabled and not
   preserved. Each page/font is complete before yielding; finally removes only
   newly orphaned objects, preserving all surviving Root/Info references and
@@ -13048,6 +13058,10 @@ Source (`src/`):
   **Invariant:** `GlyphlessCodes.encode` is ATOMIC: a string that would pass
   65,535 distinct characters assigns nothing, so one oversized page fails
   alone instead of poisoning every page after it.
+  **Invariant (`izia`):** encodeGlyph keys the complete Unicode sequence and
+  finite effective advance together, with the same atomic code limit. The
+  optional vertical font uses Identity-V, DW2 and per-code W2 over the same
+  empty program. OCR's encode and default Identity-H font keep their contract.
   **Invariant:** the font is allocated lazily and finished in a `finally`, so a
   run writing nothing changes nothing and an aborted run still leaves a
   complete `/ToUnicode` for the pages it wrote.

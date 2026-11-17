@@ -128,7 +128,7 @@ describe('PDF/A-1 opt-in transparency flattening', () => {
     expect(Document.Open(doc.Save()).Pages[0].GetText()).toBe('A\u0301C');
   });
 
-  it('declines vertical writing without changing text order or selection geometry', () => {
+  it('flattens vertical writing while preserving text order and selection geometry', () => {
     const raw = new TextEncoder().encode('begincmap 2 beginbfchar <0001> <3042> <0002> <3044> endbfchar endcmap');
     const doc = Document.Open(buildSvgPdf({ mediaBox: [0, 0, 300, 300],
       resources: '<< /Font << /V 5 0 R /H << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> /ExtGState << /A << /ca .5 >> >> >>',
@@ -140,13 +140,16 @@ describe('PDF/A-1 opt-in transparency flattening', () => {
       },
     }));
     const text = doc.Pages[0].GetText();
-    const before = doc.Pages[0].GetTextFragments().map((f) => [f.text, f.quad, f.vertical]);
-    expect(before.some((f) => f[2] === true)).toBe(true);
+    const before = doc.Pages[0].GetTextFragments();
+    expect(before.some((f) => f.vertical)).toBe(true);
     const result = doc.ConvertToPdfA('1b', opt);
-    expect(rasterActions(result)).toHaveLength(0);
+    expect(rasterActions(result)).toHaveLength(1);
     expect(doc.Pages[0].GetText()).toBe(text);
-    expect(doc.Pages[0].GetTextFragments().map((f) => [f.text, f.quad, f.vertical])).toEqual(before);
-    expect(result.unresolved.some((i) => i.rule === 'Transparency')).toBe(true);
+    const after = doc.Pages[0].GetTextFragments();
+    expect(after.map((f) => [f.text, f.vertical])).toEqual(before.map((f) => [f.text, f.vertical]));
+    after.forEach((f, i) => f.quad.forEach((n, j) => expect(n).toBeCloseTo(before[i].quad[j], 5)));
+    expect(result.unresolved).toEqual([]);
+    expect(result.passed).toBe(true);
   });
 
   it('honors preserved optional content, including text in an OFF layer', () => {

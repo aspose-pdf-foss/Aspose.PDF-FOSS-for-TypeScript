@@ -3352,9 +3352,13 @@ retained at its positions in an invisible, embedded glyphless-font layer;
 copy/paste and search need no OCR. Annotations remain live and are not baked
 into the image. Rotation, crop boxes and page references survive.
 
+The invisible layer supports vertical writing through an embedded `Identity-V`
+font, retaining source font sizes, per-glyph advances and Unicode sequences.
+Mixed horizontal and vertical text keeps its reading order and selection geometry.
+
 The option applies only to PDF/A-1. `preserve: ['transparency']` wins. Signed
-documents and tagged/vertical-writing pages are left unresolved rather than
-losing signatures, structure associations or selection geometry. Preserved
+documents and tagged pages are left unresolved to preserve signatures and
+structure associations. Preserved
 optional-content layers and PostScript resources also prevent destructive
 flattening. Pages with annotation appearances that lack their own resource
 dictionary stay unresolved, preserving their use of the original page resources.

@@ -89,10 +89,13 @@ function buildProgram(): Uint8Array {
   ]);
 }
 
-/** One code per distinct character (code point), assigned from 1. */
+/** Codes assigned from 1. OCR uses one per code point; vertical reconstruction
+ *  uses one per complete source glyph string and effective advance. */
 export class GlyphlessCodes {
   private readonly byChar = new Map<string, number>();
   private readonly chars: string[] = [];
+  private readonly byGlyph = new Map<string, Map<number, number>>();
+  private readonly advances = new Map<number, number>();
 
   /** The codes for `text`, one per code point. ATOMIC: a string that would push
    *  the font past 65,535 characters assigns nothing and throws `RangeError`,
@@ -104,6 +107,35 @@ export class GlyphlessCodes {
       throw new RangeError(`glyphless font: more than ${MAX_CODES} distinct characters`);
     for (const ch of fresh) { this.chars.push(ch); this.byChar.set(ch, this.chars.length); }
     return [...text].map((ch) => this.byChar.get(ch)!);
+  }
+
+  /** Preserve a source glyph's complete Unicode and its vertical pen span.
+   *  The same text can occupy different spans, so text alone is not a key. */
+  encodeGlyph(text: string, advance: number): number {
+    if (!Number.isFinite(advance * 1000))
+      throw new RangeError('glyphless font: invalid vertical advance');
+    const existing = this.byGlyph.get(text)?.get(advance);
+    if (existing !== undefined) return existing;
+    if (this.chars.length >= MAX_CODES)
+      throw new RangeError(`glyphless font: more than ${MAX_CODES} distinct glyphs`);
+    const code = this.chars.push(text);
+    let metrics = this.byGlyph.get(text);
+    if (!metrics) {
+      metrics = new Map();
+      this.byGlyph.set(text, metrics);
+    }
+    metrics.set(advance, code);
+    this.advances.set(code, advance);
+    return code;
+  }
+
+  /** CIDFont /W2 entries. Position vectors locate the common empty outline;
+   *  only the per-code displacement determines the invisible selection cell. */
+  verticalWidths(): PdfObject[] {
+    const widths: PdfObject[] = [];
+    for (const [code, advance] of this.advances)
+      widths.push(code, [advance * 1000, GLYPHLESS_ADVANCE / 2, 880]);
+    return widths;
   }
 
   get maxCode(): number { return this.chars.length; }
@@ -126,6 +158,7 @@ const empty = (): PdfStream => ({ kind: 'stream', dict: new Map(), raw: new Uint
 export function createGlyphlessFont(
   alloc: (o: PdfObject) => PdfRef,
   replace: (r: PdfRef, o: PdfObject) => void,
+  vertical = false,
 ): GlyphlessFont {
   const bytes = glyphlessProgram();
   const descriptor: PdfDict = new Map<string, PdfObject>([
@@ -143,9 +176,10 @@ export function createGlyphlessFont(
     ])],
     ['FontDescriptor', alloc(descriptor)], ['CIDToGIDMap', cidToGid], ['DW', GLYPHLESS_ADVANCE],
   ]);
+  if (vertical) cidFont.set('DW2', [880, -1000]);
   const font = alloc(new Map<string, PdfObject>([
     ['Type', name('Font')], ['Subtype', name('Type0')], ['BaseFont', name(FONT_NAME)],
-    ['Encoding', name('Identity-H')], ['DescendantFonts', [alloc(cidFont)]], ['ToUnicode', toUnicode],
+    ['Encoding', name(vertical ? 'Identity-V' : 'Identity-H')], ['DescendantFonts', [alloc(cidFont)]], ['ToUnicode', toUnicode],
   ]));
   return {
     font,
@@ -156,6 +190,7 @@ export function createGlyphlessFont(
       for (let c = 1; c <= max; c++) v.setUint16(c * 2, 1);
       replace(cidToGid, flateStream(map));
       replace(toUnicode, flateStream(buildToUnicode(codes.entries())));
+      if (vertical) cidFont.set('W2', codes.verticalWidths());
     },
   };
 }

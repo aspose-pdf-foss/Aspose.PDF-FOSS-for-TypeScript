@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Vertical text survives transparency flattening.** Opt-in PDF/A-1
+  transparency conversion now handles pages containing vertical writing. Its
+  invisible text layer uses an embedded `Identity-V` glyphless font with
+  per-glyph advances, preserving source font sizes, Unicode sequences,
+  mixed-direction reading order and selection geometry. Tests cover varied
+  metrics and spacing, transformed forms, rotated crop boxes, saved-file
+  validation and cancellation after a complete page. (izia)
+
 - **Document thumbnails.** `Document.ToThumbnails({ maxSize })` and its cooperative
   async counterpart render every page directly to a bounded canvas, preserving
   page order, crop boxes, rotation and aspect ratio. The longest edge reaches

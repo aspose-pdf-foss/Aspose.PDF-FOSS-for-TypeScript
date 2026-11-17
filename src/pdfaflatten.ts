@@ -11,6 +11,7 @@ import { GlyphlessCodes, createGlyphlessFont, GLYPHLESS_ADVANCE } from './glyphl
 import { num } from './pagecontent.js';
 import { encodeStream } from './filters.js';
 import { srgbIcc } from './srgb.js';
+import { serializeValue } from './serialize.js';
 
 /** Validate before any conversion pass mutates the document. */
 export function resolveFlattenTransparency(value: unknown): number | undefined {
@@ -117,13 +118,32 @@ function inheritsAppearanceResources(doc: Document, annots: PdfObject | undefine
 /** Reconstruct pen spans through an embedded glyphless font. Glyph outlines
  *  have already been rendered; render mode 3 keeps Unicode and geometry only.
  *  New per-glyph matrices preserve rise, rotation, advances and form placement. */
-function textLayer(glyphs: GlyphEvent[], codes: GlyphlessCodes): string {
-  let body = 'BT\n/Text 1 Tf\n3 Tr\n';
+function textLayer(glyphs: GlyphEvent[], codes: GlyphlessCodes, verticalCodes: GlyphlessCodes): string {
+  let body = 'BT\n3 Tr\n';
   for (const g of glyphs) {
     if (!g.text) continue;
+    const m = mul(g.tm, g.ctm);
+    if (g.vertical) {
+      const code = verticalCodes.encodeGlyph(g.text, g.advance);
+      // The vertical quad is centred on the starting pen and spans its two
+      // Y positions. Recover that pen including rise, regardless of advance
+      // sign. Preserve Tf and the matrix bases so cell width and size survive.
+      const tm: Matrix = [m[0], m[1], m[2], m[3],
+        (g.quad[0] + g.quad[2]) / 2, g.quad[1] + g.quad[3] - g.penEnd[1]];
+      // emitGlyphs folds spacing into advance except at size zero, where only
+      // spacing can move the pen. Word spacing applies to a one-byte 0x20.
+      const spacing = g.tfSize === 0
+        ? g.charSpacing + (g.byteLen === 1 && g.code === 0x20 ? g.wordSpacing : 0) : 0;
+      if (!tm.every(Number.isFinite) || !Number.isFinite(g.tfSize) || !Number.isFinite(spacing))
+        throw new RangeError('flattenTransparency: invalid text geometry');
+      // Tf and matrix factors can compensate each other. Six-decimal display
+      // rounding could turn a normal-sized selection cell into a zero matrix.
+      body += `/TextV ${serializeValue(g.tfSize)} Tf 100 Tz ${serializeValue(spacing)} Tc 0 Tw ` +
+        `${tm.map(serializeValue).join(' ')} Tm <${code.toString(16).padStart(4, '0')}> Tj\n`;
+      continue;
+    }
     const cs = codes.encode(g.text);
     const natural = GLYPHLESS_ADVANCE / 1000 * cs.length;
-    const m = mul(g.tm, g.ctm);
     const x = g.quad[0], y = g.quad[1];
     // Keep the baseline direction independent of pen advance. Combining glyphs
     // can advance zero (and spacing can make an advance negative); encoding
@@ -139,7 +159,7 @@ function textLayer(glyphs: GlyphEvent[], codes: GlyphlessCodes): string {
     if (!tm.every(Number.isFinite) || !Number.isFinite(hscale))
       throw new RangeError('flattenTransparency: invalid text geometry');
     const hex = cs.map((c) => c.toString(16).padStart(4, '0')).join('');
-    body += `${num(hscale)} Tz ${tm.map(num).join(' ')} Tm <${hex}> Tj\n`;
+    body += `/Text 1 Tf 0 Tc 0 Tw ${num(hscale)} Tz ${tm.map(num).join(' ')} Tm <${hex}> Tj\n`;
   }
   return body + 'ET\n';
 }
@@ -164,15 +184,14 @@ export function* flattenTransparencySteps(
         if (inheritsAppearanceResources(doc, page.Dict.get('Annots'))) break pageUnit;
         if (page.Dict.has('StructParents')) break pageUnit;
         const glyphs: GlyphEvent[] = [];
-        let tagged = false, vertical = false;
+        let tagged = false;
         visitContent(doc, page, {
-          glyph: (g) => { glyphs.push(g); if (g.vertical) vertical = true; },
+          glyph: (g) => { glyphs.push(g); },
           marked: () => { tagged = true; },
         }, { skipHidden: true });
-        // The existing glyphless font is Identity-H. Re-encoding Identity-V
-        // through it would lose writing mode and can produce singular matrices.
-        if (tagged || vertical) break pageUnit;
-        const codes = new GlyphlessCodes(), layer = textLayer(glyphs, codes);
+        if (tagged) break pageUnit;
+        const codes = new GlyphlessCodes(), verticalCodes = new GlyphlessCodes();
+        const layer = textLayer(glyphs, codes, verticalCodes);
         // Keep annotations live; rendering them here would duplicate their ink.
         const { width, height, rgb, device } = renderPageRgb(doc, page, dpi / 72, false);
         const m = mul([width, 0, 0, -height, 0, height], invert(device));
@@ -185,12 +204,15 @@ export function* flattenTransparencySteps(
         const profile = doc.allocObject(encodeStream(srgbIcc(), 'FlateDecode', new Map<string, PdfObject>([['N', 3]])));
         image.dict.set('ColorSpace', [name('ICCBased'), profile]);
         const resources: PdfDict = new Map([['XObject', new Map([['Raster', doc.allocObject(image)]])]]);
-        if (codes.maxCode) {
-          const font = createGlyphlessFont((o) => doc.allocObject(o), (r, o) => doc.replaceObject(r.num, o));
-          font.finish(codes);
-          resources.set('Font', new Map([['Text', font.font]]));
+        const fonts: PdfDict = new Map();
+        for (const [key, assigned, vertical] of [['Text', codes, false], ['TextV', verticalCodes, true]] as const) {
+          if (!assigned.maxCode) continue;
+          const font = createGlyphlessFont((o) => doc.allocObject(o), (r, o) => doc.replaceObject(r.num, o), vertical);
+          font.finish(assigned);
+          fonts.set(key, font.font);
         }
-        const body = `q ${m.map(num).join(' ')} cm /Raster Do Q\n${codes.maxCode ? layer : ''}`;
+        if (fonts.size) resources.set('Font', fonts);
+        const body = `q ${m.map(num).join(' ')} cm /Raster Do Q\n${fonts.size ? layer : ''}`;
         const content = doc.allocObject(encodeStream(new TextEncoder().encode(body), 'FlateDecode'));
         page.Dict.set('Contents', content);
         page.Dict.set('Resources', resources);
