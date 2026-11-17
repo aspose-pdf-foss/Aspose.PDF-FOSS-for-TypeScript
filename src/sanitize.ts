@@ -412,9 +412,9 @@ function sanitizeMetadata(doc: Document): NonNullable<SanitizeReport['metadata']
 function sanitizePrivateData(doc: Document): NonNullable<SanitizeReport['privateData']> {
   const r = { pieceInfo: 0, thumbnails: 0, webCapture: 0, permissions: false, searchIndex: false };
   // Acrobat embeds a search index as the catalog's /PieceInfo /SearchIndex
-  // (`74mf.5`, read off its Search.api plug-in), so the pass below already
-  // removes it; this only names it in the report. A word index of the text is
-  // the one piece of page-piece data whose presence a caller asks about.
+  // (`74mf.5`, confirmed by the real Acrobat Pro fixture in `g9vh`). The pass
+  // below already removes it; this only names it in the report. A word index
+  // of the text is the one piece of page-piece data whose presence a caller asks about.
   const piece = doc.resolve(doc.catalog().get('PieceInfo'));
   r.searchIndex = isDict(piece) && piece.has('SearchIndex');
   for (const [, obj] of doc.objectEntries()) {

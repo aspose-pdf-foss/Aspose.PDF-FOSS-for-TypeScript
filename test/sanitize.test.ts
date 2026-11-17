@@ -341,9 +341,9 @@ describe('Sanitize privateData (74mf.2)', () => {
 // Acrobat's embedded search index (`74mf.5`). The shape is read off Acrobat
 // DC 26.1's Search.api plug-in, whose CEmbedIndex code names, in order,
 // PieceInfo, SearchIndex, IsFreshIndex, ModID, PDXFile (a FlateDecode stream
-// opening %PDX-3.2), IndexFile and Index1File (.idx data). No Acrobat-indexed
-// FILE was available — this install runs in Reader mode and refused IAC — so
-// the dictionary below is that inference, not a vendored real one.
+// opening %PDX-3.2), IndexFile and Index1File (.idx data). The dictionary below
+// retains that original inference. Real producer coverage, with those fields
+// directly under SearchIndex, lives in sanitize-search-index-real.test.ts (g9vh).
 describe('Sanitize: Acrobat embedded search index (74mf.5)', () => {
   const indexed = (): Document => {
     const doc = messy();

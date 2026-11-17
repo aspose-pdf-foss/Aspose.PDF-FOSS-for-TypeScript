@@ -7125,15 +7125,18 @@ Source (`src/`):
   through `/Resources`; Save()'s mark-sweep drops what that orphans.
   `/LastModified` goes only beside a removed `/PieceInfo`, since it dates
   that and nothing else. Both rules are mutation-checked (10 of 10 redden).
-  **Note (`74mf.5`), and it is INFERENCE rather than a vendored file:** Acrobat's
-  embedded search index is the catalog's `/PieceInfo /SearchIndex` (`PDXFile`, a
-  `%PDX-3.2` stream, plus `IndexFile`/`Index1File` `.idx` data). That is
-  read off the strings of Acrobat DC 26.1's `Search.api`, where its embed code
-  names `PieceInfo`, `SearchIndex`, `IsFreshIndex`, `ModID`, `PDXFile` and
-  `IndexFile` together. The install on this machine runs in Reader mode and
-  refuses IAC, so no indexed file could be produced. The removal needs no rule
-  of its own, since all of `/PieceInfo` goes; only the `searchIndex` report
-  flag depends on the key. The `EmbeddedFiles` string in that binary sits in
+  **Note (`74mf.5`, confirmed by `g9vh`):** Acrobat's embedded search index is
+  the catalog's `/PieceInfo /SearchIndex` (`PDXFile`, a `%PDX-3.2` stream, plus
+  `IndexFile`/`Index1File` binary data). The original shape came from Acrobat
+  DC 26.1's `Search.api` strings. The vendored three-page Acrobat Pro DC 18
+  document from pdfbox.cfc now confirms it with real producer bytes. Its fields
+  sit directly under SearchIndex, without the synthetic fixture's inferred
+  Private/IsFreshIndex/LastModified nesting. qpdf independently agrees on all
+  three decoded payload hashes; provenance pins the unmodified upstream blob.
+  The removal needs no rule of its own, since all of `/PieceInfo` goes; only
+  the `searchIndex` report flag depends on the key. Tests assert removal from
+  saved bytes and preservation with privateData disabled. The `EmbeddedFiles`
+  string in that binary sits in
   a list of plug-in dependency names and does NOT mean the index is an
   attachment.
   **Invariant (`74mf.3`):** `pagesToImages` keeps NO text layer of its own.
@@ -14070,6 +14073,7 @@ output, and what the fixture does and does **not** cover:
 
 | Directory | Provenance | Covers |
 |---|---|---|
+| `fixtures/acrobat-index/` | `PROVENANCE.md` | Original Acrobat Pro DC 18 three-page PDF from pdfbox.cfc's MIT-licensed corpus. Confirms the real PieceInfo/SearchIndex dictionary and three index streams, their removal from saved bytes and preservation when privateData is disabled. Upstream blob and payload hashes are pinned; qpdf independently confirms the decoded payloads. |
 | `fixtures/fonts/` | `PROVENANCE.md` | WOFF2 from wawoff2 and fontTools — `glyf`, `hmtx`, and CFF-flavoured (`OTTO`) input — plus `LiberationSans.dfont`, a Macintosh suitcase written by FontForge, since Apple`s own cannot be vendored. Two of its five container rules stay unanchored and PROVENANCE says which |
 | `fixtures/jpeg/` | `PROVENANCE.md` | libjpeg-turbo's own images, plus external-encoder synthetics (incl. CMYK/YCCK). Since `ka3t`, ten streams from Thomas Richter libjpeg 1.70 at `c719010a`: exact SOF3 gray/RGB sources, independent DHP/EXP hierarchies with SOF5/6/7/13/14 residuals, odd and partial-MCU edge geometry, and an all-predictive EXP stream whose external decode is matched exactly. DCT goldens allow one sample level for IDCT variance. Found direct differential DC coding, premature clipping/wrapping, fractional expansion and padded-edge defects (`ka3t.1`); seven measured mutations fail. Source samples, decodes, command lines and SHA-256 hashes are frozen beside the streams. |
 | `fixtures/svg-input/` | `PROVENANCE.md` | SVG→PDF **input**: an SVGO-optimized pair, a bootstrap-icons file, a d3-shape chart — path-grammar lexis our builders never write. Distinct from `fixtures/svg/`, which is PDF→SVG **output** goldens |

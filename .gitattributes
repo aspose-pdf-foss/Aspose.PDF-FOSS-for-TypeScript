@@ -21,6 +21,9 @@ test/fixtures/qpdf/*.pdf binary
 # today; say so outright rather than relying on it.
 test/fixtures/compare/*.pdf binary
 
+# Preserve the original Acrobat-produced index streams and upstream blob hash.
+test/fixtures/acrobat-index/*.pdf binary
+
 # The WPT tree-construction corpus carries lone CR bytes inside #data payloads
 # (processing-instructions.dat's `<?hey\rthere=1?>` is one) and other bytes the
 # format deliberately makes unsafe. eol=lf normalization leaves a lone CR alone
