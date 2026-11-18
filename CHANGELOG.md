@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PostScript resource policy fields.** `LoadLimits` now accepts
+  `maxPostScriptOperations` (10,000,000 by default) and
+  `maxPostScriptVmBytes` (128 MiB by default) for the internal language core.
+  Work includes scanning and bulk operations; accounted allocation includes
+  stacks, frames and save journals, with no refund after discard or restore.
+  Hostile-input tests check exact boundaries and propagation through language
+  error handlers. Each field can be raised or disabled with the existing
+  `.with(...)` policy. A public PostScript import API belongs to later work.
+  (aspose-pdf-foss-for-ts-lw8w.1)
+
 - **Vertical text survives transparency flattening.** Opt-in PDF/A-1
   transparency conversion now handles pages containing vertical writing. Its
   invisible text layer uses an embedded `Identity-V` glyphless font with

@@ -10209,6 +10209,85 @@ Source (`src/`):
   stream. So its Huffman aggregate decodes from the segment's first byte. Do
   not cite it as agreeing. Still no real-world FILE uses the shape; one
   independent implementation agreeing is evidence, not conformance.
+- **psvalue.ts** — internal PostScript tagged values, signed 32-bit integers,
+  finite reals, byte-preserving names, composite views, access attributes and
+  named `PsFault` language errors. Strings compare by bytes and names compare
+  with equivalent strings; arrays compare body/view identity and dictionaries
+  compare body identity. Equality is cycle-safe and running callers meter
+  content comparisons. Array/string access and executable flags are per
+  reference; dictionary access is shared by its backing body.
+- **psbudget.ts** — per-interpreter cumulative work and accounted allocation,
+  using `maxPostScriptOperations` and `maxPostScriptVmBytes`. Checks precede
+  allocation. Fixed accounting: 64 bytes per body/name/save, two per name
+  character, 16 per array slot and 64 per dictionary capacity/entry; strings
+  cost one per byte. Journals use the same body/slot/entry schedule. Copy
+  scratch costs one per string byte or 16 per array slot; execution byte views
+  cost 64; restore scratch costs 16 per pending value and 64 per visited body.
+  Frames cost 96, operand slots 16, undo buffers 64 plus 32 per touched operand.
+  These are deterministic conservative charges, not heap measurements.
+  **Invariant:** restore/discard never refunds budgets and repeated `run`
+  shares them. `bootstrap` is only for fixed constructor initialization;
+  supplied source, registered host operators and every later allocation are
+  charged. `null` and `LoadLimits.unlimited()` retain existing policy semantics.
+- **psmemory.ts** — internal composite allocation, mutable shared intervals,
+  overlap-safe copies, dictionary key normalization, local/global VM and
+  journaled saves. All source-controlled reads/writes pass its access and
+  validity checks; callers must not mutate exposed bodies directly. Packed
+  arrays reject ordinary writes while bind has checked replacement helpers.
+  **Invariant:** global bodies cannot retain local composites/save objects.
+  First mutations of pre-save local arrays/dictionaries snapshot before
+  writing; existing strings and global mutations survive restore. Restore
+  validates the prospective restored graph of live roots before any mutation,
+  rejects retained newer local bodies/save tokens, invalidates discarded
+  bodies and restores allocation mode. Its iterative graph walk handles cycles.
+- **psscan.ts** — lazy internal PostScript byte scanner with a shared mutable
+  source cursor for future inline-data readers. Supports decimal/radix numbers,
+  literal/executable/immediate names, escaped/hex/ASCII85 strings and iterative
+  procedure construction. PostScript names do not decode PDF `#xx` escapes.
+  Brackets and double angles are executable construction names, unlike braces.
+  **Invariant:** immediate lookup occurs when that token is reached, after
+  earlier definitions execute. Every source byte, token conversion and builder
+  growth is metered. `maxFileBytes` bounds source and `maxObjectBytes` bounds
+  token/procedure spans. Faults preserve token-start offsets. Active executable
+  string scanners must retain the original string as a restore root.
+- **psvm.ts** — internal iterative `PsInterpreter`, with operand/dictionary
+  stacks and explicit source/procedure/execute/loop/stopped/handler frames.
+  Installs `pscore.ts` and `psdata.ts` without a runtime import cycle; their VM
+  imports are type-only. Exposes typed stack helpers, dictionary lookup, source
+  cursor and operator registration for later graphics/text import work. Host
+  extensions schedule through `execute`/`scheduleLoop`, never recursively pump
+  `run`, and include captured language objects in loop restore roots.
+  **Invariant:** every iteration, including empty loops and name-resolution
+  cycles, consumes fuel. Stack/container growth uses `maxContainerItems`;
+  execution/dictionary depth and save levels use `maxNestingDepth`. Constructor
+  bootstrap alone finalizes readonly global systemdict's special references to
+  fixed local user/error dictionaries. Later registration writes to userdict.
+  **Invariant:** language errors undo touched operator operands and push the
+  offending command before dispatching errordict. Standard handlers populate
+  `$error`; custom handlers choose their own recording. `stopped` catches
+  operand execution faults within its boundary. Uncaught `PsFault` becomes
+  offset-bearing `PdfParseError`; resource/unsupported/host errors propagate.
+  Every catch starts with `rethrowLimit`, so no language handler catches budget
+  exhaustion. Terminal paths clear execution frames in `finally`.
+- **pscore.ts** — installs internal stack/mark, arithmetic/logic/comparison,
+  execution/control, execution-stack inspection and bind operators. Integer
+  overflow promotes where specified, real typing survives integral results,
+  shifts are checked instead of masked by JavaScript and angles use degrees.
+  **Invariant:** control operators validate procedure access before consuming
+  operands, even for untaken branches; `stopped` installs its catch boundary
+  before execution. `bind` traverses body/view identities iteratively, handles
+  cycles and meters pending/visited state; operator replacement preserves
+  packed-array rights, alias access and save journaling.
+- **psdata.ts** — installs internal arrays/packed arrays, strings, dictionaries,
+  conversions, access checks and save/restore operators. Bulk work and scratch
+  are charged before native copies/enumeration. Search meters each comparison,
+  token/conversion scanners share the interpreter budget and dictionaries,
+  and dictionary forall fetches current values and skips removed keys.
+  **Invariant:** the seven language-core modules are internal, have no public
+  index exports or host filesystem/process/network/eval facilities, and do not
+  replace the PDF type-4 calculator below. Semantic fixtures identify Adobe
+  literal/derived expectations in `test/fixtures/postscript-core/PROVENANCE.md`;
+  they are not executed Ghostscript oracle outputs.
 - **textdiff.ts** — the token-level diff under document comparison
   (`aq4a.1`): `diffSequences(a, b, key, opts)` returning equal/delete/insert
   `DiffRun`s plus `minimal`, `diffStats` and `tokenizeWords`. Internal: nothing

@@ -422,6 +422,19 @@ through to saving.
 | `maxContentTokens` | 10,000,000 | Tokens in one page walk: the page and every form, pattern and appearance it draws; one stream in the document-wide rewrites; the content one `AddSVGObject` emits |
 | `maxCanvasPixels` | 2^26 | A render canvas sized from the page box; an explicit `ToImage` width and height are exempt |
 | `maxGlyphOperations` | 100,000 | Work to produce one glyph from a font program: CFF and Type 1 charstring operators, subroutine calls included, or TrueType composite components |
+| `maxPostScriptOperations` | 10,000,000 | Cumulative execution, scanning and proportional bulk work in one internal PostScript interpreter |
+| `maxPostScriptVmBytes` | 128 MiB | Cumulative accounted allocation in one internal PostScript interpreter, including stacks, frames, scratch copies and save journals |
+
+The PostScript fields prepare the internal language core for later import work;
+there is currently no public PostScript import API. One interpreter shares its
+work and allocation totals across repeated runs. Discarding objects or restoring
+VM does not refund them. Accounted bytes use a deterministic conservative charge
+schedule rather than measuring the JavaScript heap. Source and token spans also
+use `maxFileBytes` and `maxObjectBytes`; containers and operand stacks use
+`maxContainerItems`; procedures, execution and dictionary stacks, and open saves
+use `maxNestingDepth`. Exhaustion raises `ResourceLimitError` through language
+error handlers and `stopped`. Each field accepts `null` under the same policy
+rules as the other limits.
 
 Each limit is checked on its own, so the memory the defaults admit is their sum rather than the
 largest of them. Measured costs, on Node 24:
@@ -4016,7 +4029,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ListBoxInit` | Options for Form.AddListBox / Page.AddListBox. |
 | `LoadFontOptions` | A style request alongside the ordinary font options. |
 | `LoadLimitPatch` | A partial policy for `LoadLimits.with`: `undefined` leaves a field, `null` disables it. |
-| `LoadLimitValues` | The seventeen `LoadLimits` fields, each a positive integer or `null`. |
+| `LoadLimitValues` | The nineteen `LoadLimits` fields, each a positive integer or `null`. |
 | `MatrixBarcode` | 2D barcode geometry: a matrix of dark/light modules, row-major, with optional `width`, `height`, `rowHeight` and `quiet` for non-square symbols. |
 | `MdBlockQuote` | Interface with 2 properties. |
 | `MdCode` | Interface with 2 properties. |
@@ -4204,7 +4217,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `encodeFilter` | Encode bytes into one of the PDF byte filters. |
 | `quantize` | Reduce an RGBA image to a 256-colour palette, exactly when it already has 256 or fewer. |
 | `STANDARD_STRUCTURE_TYPES` | The PDF 1.7 standard structure types (grouping, block-level, inline-level, and illustration). |
-| `LIMIT_FIELDS` | The seventeen `LoadLimits` field names, in boundary order. |
+| `LIMIT_FIELDS` | The nineteen `LoadLimits` field names, in boundary order. |
 | `XfaConvertOptions` | Options for `doc.ConvertXfaToAcroForm`: `removeXfa` (default true). |
 | `XfaConvertReport` | What an XFA conversion produced and what it refused. |
 | `XfaFieldResult` | One converted field: its SOM name, type, route and page. |

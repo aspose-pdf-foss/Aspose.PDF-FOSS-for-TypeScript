@@ -9,7 +9,7 @@ import { buildBmp } from './helpers/build-bmp.js';
 import { buildTiff, baseTags } from './helpers/build-tiff.js';
 
 describe('LoadLimits', () => {
-  it('names exactly the 17 fields ibzo.2-.4 and ibzo.12 consume', () => {
+  it('names exactly the 19 fields ibzo.2-.4, ibzo.12 and lw8w.1 consume', () => {
     // Asserted by SIZE, the rule htmlforeign.ts sets for its five tables: a
     // half-pasted field set is a red build rather than a limit that silently
     // does nothing. Every name here is one some later issue enforces.
@@ -24,6 +24,8 @@ describe('LoadLimits', () => {
       'maxContentBytes', 'maxContentTokens', 'maxCanvasPixels',
       // ibzo.12 - font programs
       'maxGlyphOperations',
+      // lw8w.1 - internal PostScript language interpreter
+      'maxPostScriptOperations', 'maxPostScriptVmBytes',
     ]);
   });
 

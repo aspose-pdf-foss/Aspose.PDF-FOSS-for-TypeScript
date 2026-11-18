@@ -33,7 +33,7 @@ export const LIMIT_FIELDS = [
   'maxDecodedStreamBytes', 'maxTotalDecodedBytes', 'maxExpansionRatio',
   'maxFilterChain', 'maxImagePixels', 'maxFunctionSamples', 'maxSalvageProbes',
   'maxContentBytes', 'maxContentTokens', 'maxCanvasPixels',
-  'maxGlyphOperations',
+  'maxGlyphOperations', 'maxPostScriptOperations', 'maxPostScriptVmBytes',
 ] as const;
 
 /** One bounded quantity. `null` disables that field alone. */
@@ -101,6 +101,10 @@ export interface LoadLimitValues {
    *  TrueType composite. Depth alone does not bound either — ten calls a level
    *  across the ten levels a charstring may nest is 10^10. */
   readonly maxGlyphOperations: number | null;
+  /** Cumulative PostScript execution, scanning and proportional bulk work. */
+  readonly maxPostScriptOperations: number | null;
+  /** Cumulative accounted PostScript allocation, including save journals. */
+  readonly maxPostScriptVmBytes: number | null;
 }
 
 /** A partial policy for {@link LoadLimits.with}. `undefined` leaves a field
@@ -173,6 +177,8 @@ const DEFAULTS: LoadLimitValues = {
   // refuses the fan-outs probed in milliseconds for charstrings, ~2.5 s for a
   // composite (each visit copies its contours).
   maxGlyphOperations: 100_000,
+  maxPostScriptOperations: 10_000_000,
+  maxPostScriptVmBytes: 134_217_728,
 };
 
 const UNLIMITED: LoadLimitValues =
@@ -221,6 +227,8 @@ export class LoadLimits implements LoadLimitValues {
   readonly maxContentTokens!: number | null;
   readonly maxCanvasPixels!: number | null;
   readonly maxGlyphOperations!: number | null;
+  readonly maxPostScriptOperations!: number | null;
+  readonly maxPostScriptVmBytes!: number | null;
 
   private constructor(v: LoadLimitValues) {
     for (const f of LIMIT_FIELDS) (this as unknown as Record<string, number | null>)[f] = v[f];
