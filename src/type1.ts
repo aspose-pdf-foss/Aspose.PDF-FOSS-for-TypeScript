@@ -4,6 +4,7 @@ import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import { standardEncodingNames } from './encoding.js';
 import { runType1Charstring, Type1Env, Type1Glyph } from './type1charstring.js';
 import { readType1Header } from './type1header.js';
+import type { FontWork } from './fontwork.js';
 
 const C1 = 52845, C2 = 22719;
 const EEXEC_R = 55665, CHARSTRING_R = 4330;
@@ -30,6 +31,7 @@ export class Type1Font {
   readonly raw: Uint8Array;
   readonly unitsPerEm: number;
   readonly numGlyphs: number;
+  decodedBytes = 0;
 
   private readonly names: string[] = [];
   private readonly byName = new Map<string, Uint8Array>();
@@ -39,7 +41,12 @@ export class Type1Font {
   private readonly cache = new Map<number, Type1Glyph>();
 
   /** `limits.maxGlyphOperations` bounds each glyph's interpretation (`ibzo.12`). */
-  constructor(input: Uint8Array, private readonly limits: LoadLimits = LoadLimits.defaults) {
+  constructor(input: Uint8Array, private readonly limits: LoadLimits = LoadLimits.defaults,
+    private readonly options: { work?: FontWork; strict?: boolean; decode?: import('./decodebudget.js').DecodeBudget } = {}) {
+    // Byte helpers make a bounded number of linear passes and temporary copies.
+    // Hold their conservative complete cost before parsing any supplied bytes.
+    options.work?.work(input.length * 32, 'Type 1 parser byte passes');
+    options.work?.allocate(256 + input.length * 16, 'Type 1 parser scratch and maps');
     this.raw = input;
     const bytes = stripPfb(input);
     const at = indexOfAscii(bytes, 'eexec');
@@ -48,9 +55,10 @@ export class Type1Font {
     let p = at + 5;
     while (p < bytes.length && isWhite(bytes[p])) p++;
     const cipher = looksHex(bytes, p) ? hexDecode(bytes, p) : bytes.subarray(p);
-    const priv = decrypt(cipher, EEXEC_R, 4);
+    const priv = this.decode(cipher, EEXEC_R, 4);
 
     const lenIV = readIntAfter(priv, '/lenIV') ?? 4;
+    if (options.strict && (!Number.isInteger(lenIV) || lenIV < -1)) throw new PdfParseError('Type1: invalid lenIV');
     this.readSubrs(priv, lenIV);
     this.readCharStrings(priv, lenIV);
     if (this.names.length === 0) throw new PdfParseError('Type1: no /CharStrings');
@@ -62,6 +70,12 @@ export class Type1Font {
     this.encoding = readBuiltinEncoding(clear);
   }
 
+  private decode(bytes: Uint8Array, seed: number, skip: number): Uint8Array {
+    const size = skip < 0 ? bytes.length : Math.max(0, bytes.length - skip);
+    this.options.decode?.check(size, bytes.length, undefined, 'Type 1 decryption');
+    const output = decrypt(bytes, seed, skip);
+    this.decodedBytes += output.length; this.options.decode?.chargeBytes(output.length); return output;
+  }
   glyphName(gid: number): string | undefined { return this.names[gid]; }
   gidForName(name: string): number | undefined { return this.nameToGid.get(name); }
 
@@ -82,8 +96,11 @@ export class Type1Font {
    *  render path — PDF `/Widths` drives advances — but read by the AFM
    *  cross-check, and by `imxw.4` when extraction learns Type 1 metrics. */
   glyphWidth(gid: number): number { return this.run(gid)?.width ?? 0; }
+  glyphAdvance(gid: number): [number, number] { const glyph = this.run(gid); return [glyph?.width ?? 0, glyph?.widthY ?? 0]; }
+  glyphSidebearing(gid: number): [number, number] { const glyph = this.run(gid); return [glyph?.sbx ?? 0, glyph?.sby ?? 0]; }
 
   private run(gid: number): Type1Glyph | undefined {
+    this.options.work?.work(1, 'Type 1 glyph lookup');
     if (gid < 0 || gid >= this.names.length) return undefined;
     const hit = this.cache.get(gid);
     if (hit) return hit;
@@ -92,6 +109,7 @@ export class Type1Font {
     const env: Type1Env = {
       subrs: this.subrs,
       limits: this.limits,
+      work: this.options.work, strict: this.options.strict,
       seacGlyph: (code) => {
         const n = standardEncodingNames[code & 0xff];
         return n ? this.byName.get(n) : undefined;
@@ -115,18 +133,23 @@ export class Type1Font {
       const idx = readInt(priv, q); if (!idx) break; q = idx.end;
       const len = readInt(priv, q); if (!len) break; q = len.end;
       const data = afterBinaryToken(priv, q, len.value);
-      if (!data) break;
-      this.subrs[idx.value] = decrypt(data.bytes, CHARSTRING_R, lenIV);
+      if (!data) { if (this.options.strict) throw new PdfParseError('Type1: truncated subroutine'); break; }
+      this.options.work?.items(idx.value + 1, 'Type 1 subroutines');
+      if (this.options.strict && (!Number.isInteger(idx.value) || idx.value < 0 || idx.value > 2147483646 || lenIV > data.bytes.length))
+        throw new PdfParseError('Type1: invalid subroutine');
+      this.subrs[idx.value] = this.decode(data.bytes, CHARSTRING_R, lenIV);
       p = data.end;
     }
   }
 
   private readCharStrings(priv: Uint8Array, lenIV: number): void {
     for (const e of charStringEntries(priv)) {
+      this.options.work?.items(this.names.length + 1, 'Type 1 charstrings');
+      if (this.options.strict && lenIV > e.dataEnd - e.dataStart) throw new PdfParseError('Type1: short charstring');
       if (this.nameToGid.has(e.name)) continue;
       this.nameToGid.set(e.name, this.names.length);
       this.names.push(e.name);
-      this.byName.set(e.name, decrypt(priv.subarray(e.dataStart, e.dataEnd), CHARSTRING_R, lenIV));
+      this.byName.set(e.name, this.decode(priv.subarray(e.dataStart, e.dataEnd), CHARSTRING_R, lenIV));
     }
   }
 
@@ -303,6 +326,7 @@ const isWhite = (b: number): boolean =>
   b === 0x20 || b === 0x0a || b === 0x0d || b === 0x09 || b === 0x00 || b === 0x0c;
 
 function decrypt(data: Uint8Array, r0: number, skip: number): Uint8Array {
+  if (skip === -1) return new Uint8Array(data);
   let r = r0;
   const out = new Uint8Array(Math.max(0, data.length - skip));
   for (let i = 0; i < data.length; i++) {

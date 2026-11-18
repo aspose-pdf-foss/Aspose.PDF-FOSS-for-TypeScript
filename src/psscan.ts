@@ -1,3 +1,4 @@
+import type { PsByteInput } from './psinput.js';
 import type { PsMemory } from './psmemory.js';
 import { integer, real, PsFault, type PsValue, type PsString } from './psvalue.js';
 
@@ -12,47 +13,71 @@ type Builder = { start: number; values: PsValue[] };
  * Names/numbers consume one following whitespace separator (CRLF is one);
  * other terminating delimiters remain unread. All scratch storage is charged
  * cumulatively, including discarded buffers and malformed-token diagnostics. */
-export class PsScanner {
-  position = 0;
+export class PsScanner implements PsByteInput {
+  readonly input: PsByteInput;
+  private readonly arraySource?: Uint8Array;
+  private index = 0;
+  private finished = false;
+  get position(): number { return this.input === this ? this.index : this.input.position; }
+  set position(value: number) { if (this.input === this) this.index = value; else this.input.position = value; }
+  get closed(): boolean { return this.input === this ? this.finished : this.input.closed; }
+  /** Legacy direct-byte access remains available for array-backed host scanners. */
+  get source(): Uint8Array {
+    if (!this.arraySource) throw new PsFault('invalidaccess');
+    return this.arraySource;
+  }
+  byteAt(index: number): number | undefined { return this.input === this ? this.arraySource![index] : this.input.byteAt(index); }
+  span(start: number, end: number): Uint8Array {
+    return this.input === this ? this.arraySource!.subarray(start, end) : this.input.span(start, end);
+  }
+  available(): number { return this.input === this ? this.finished ? 0 : this.arraySource!.length - this.index : this.input.available(); }
+  close(): void { if (this.input === this) this.finished = true; else this.input.close(); }
   /** Start of the current/last lexical token, including an immediate name. */
   lastTokenOffset = 0;
   private procedureStart: number | undefined;
   constructor(
-    readonly source: Uint8Array,
+    source: Uint8Array | PsByteInput,
     readonly memory: PsMemory,
     readonly resolveImmediate?: (text: string) => PsValue,
     readonly currentPacking?: () => boolean,
-  ) { memory.budget.limits.enforce('maxFileBytes', source.length, 'PostScript source'); }
+  ) {
+    if (source instanceof Uint8Array) {
+      memory.budget.limits.enforce('maxFileBytes', source.length, 'PostScript source');
+      this.arraySource = source; this.input = this;
+    } else this.input = source;
+  }
 
   private fault(start: number): never {
     this.memory.budget.allocate(64, 'PostScript error-token view');
-    const command = this.memory.string(this.source.subarray(start, this.position));
+    const command = this.memory.string(this.input.span(start, this.position));
     throw new PsFault('syntaxerror', start, command);
   }
   private read(start?: number): number {
-    if (this.position >= this.source.length) this.fault(start ?? this.position);
+    if (this.input.byteAt(this.position) === undefined) this.fault(start ?? this.position);
+    this.memory.budget.limits.enforce('maxFileBytes', this.position + 1, 'PostScript source');
     if (start !== undefined) this.memory.budget.limits.enforce('maxObjectBytes', this.position + 1 - start, 'PostScript token');
     if (this.procedureStart !== undefined) this.memory.budget.limits.enforce('maxObjectBytes', this.position + 1 - this.procedureStart, 'PostScript procedure');
     this.memory.budget.work(1, 'PostScript source byte');
-    return this.source[this.position++]!;
+    return this.input.byteAt(this.position++)!;
   }
   private skip(): void {
-    while (this.position < this.source.length) {
-      const c = this.source[this.position]!;
+    while (this.input.byteAt(this.position) !== undefined) {
+      const c = this.input.byteAt(this.position)!;
       if (whitespace(c)) this.read();
       else if (c === 37) {
-        do { this.read(); } while (this.position < this.source.length && this.source[this.position] !== 10 && this.source[this.position] !== 13 && this.source[this.position] !== 12);
+        do { this.read(); } while (this.input.byteAt(this.position) !== undefined && this.input.byteAt(this.position) !== 10 && this.input.byteAt(this.position) !== 13 && this.input.byteAt(this.position) !== 12);
       } else break;
     }
   }
   next(): PsValue | undefined {
-    if (!Number.isSafeInteger(this.position) || this.position < 0 || this.position > this.source.length) throw new PsFault('rangecheck', this.position);
+    if (!Number.isSafeInteger(this.position) || this.position < 0 || (this.position > 0 && this.input.byteAt(this.position - 1) === undefined)) throw new PsFault('rangecheck', this.position);
+    if (this.input.closed) return undefined;
     this.procedureStart = undefined;
     const builders: Builder[] = [];
     let outerStart = this.position;
     while (true) {
       this.skip();
-      if (this.position === this.source.length) {
+      if (this.input.byteAt(this.position) === undefined) {
         if (builders.length) this.fault(builders[0]!.start);
         return undefined;
       }
@@ -75,11 +100,11 @@ export class PsScanner {
         if (builders.length === 0) this.procedureStart = undefined;
       } else if (c === 40) value = this.literalString(start, builders.length);
       else if (c === 60) {
-        if (this.source[this.position] === 60) { this.read(start); value = this.memory.name('<<', true); }
-        else if (this.source[this.position] === 126) { this.read(start); value = this.encodedString(start, true, builders.length); }
+        if (this.input.byteAt(this.position) === 60) { this.read(start); value = this.memory.name('<<', true); }
+        else if (this.input.byteAt(this.position) === 126) { this.read(start); value = this.encodedString(start, true, builders.length); }
         else value = this.encodedString(start, false, builders.length);
       } else if (c === 62) {
-        if (this.source[this.position] !== 62) this.fault(start);
+        if (this.input.byteAt(this.position) !== 62) this.fault(start);
         this.read(start); value = this.memory.name('>>', true);
       } else if (c === 41) this.fault(start);
       else if (c === 91 || c === 93) value = this.memory.name(String.fromCharCode(c), true);
@@ -96,18 +121,18 @@ export class PsScanner {
   }
   private word(start: number, literal: boolean): PsValue {
     let immediate = false;
-    if (literal && this.source[this.position] === 47) { this.read(start); immediate = true; }
+    if (literal && this.input.byteAt(this.position) === 47) { this.read(start); immediate = true; }
     const textStart = literal ? this.position : start;
-    while (this.position < this.source.length && !delimiter(this.source[this.position]!)) this.read(start);
+    while (this.input.byteAt(this.position) !== undefined && !delimiter(this.input.byteAt(this.position)!)) this.read(start);
     const length = this.position - textStart;
     this.memory.budget.allocate(64 + length * 2, 'PostScript token text');
     this.memory.budget.work(length, 'PostScript token text');
     let text = '';
-    for (let i = textStart; i < this.position; i++) text += String.fromCharCode(this.source[i]!);
+    for (let i = textStart; i < this.position; i++) text += String.fromCharCode(this.input.byteAt(i)!);
     // PLRM token: consume only the first whitespace separator, treating CRLF
     // as one newline. It is source work, outside the word's object span.
-    if (this.position < this.source.length && whitespace(this.source[this.position]!)) {
-      if (this.read() === 13 && this.source[this.position] === 10) this.read();
+    if (this.input.byteAt(this.position) !== undefined && whitespace(this.input.byteAt(this.position)!)) {
+      if (this.read() === 13 && (this.input.peekLineFeed?.() ?? (this.input.byteAt(this.position) === 10))) this.read();
     }
     if (immediate) {
       if (!this.resolveImmediate) throw new PsFault('undefined', start);
@@ -178,13 +203,13 @@ export class PsScanner {
       else if (c === 92) {
         c = this.read(start);
         if (c === 10 || c === 13) {
-          if (c === 13 && this.source[this.position] === 10) this.read(start);
+          if (c === 13 && this.input.byteAt(this.position) === 10) this.read(start);
           continue;
         }
         if (c >= 48 && c <= 55) {
           let value = c - 48;
           for (let i = 1; i < 3; i++) {
-            const next = this.source[this.position];
+            const next = this.input.byteAt(this.position);
             if (next === undefined || next < 48 || next > 55) break;
             value = value * 8 + this.read(start) - 48;
           }
@@ -192,7 +217,7 @@ export class PsScanner {
         }
         c = c === 110 ? 10 : c === 114 ? 13 : c === 116 ? 9 : c === 98 ? 8 : c === 102 ? 12 : c;
       } else if (c === 13) {
-        if (this.source[this.position] === 10) this.read(start);
+        if (this.input.byteAt(this.position) === 10) this.read(start);
         c = 10;
       }
       out.push(c);

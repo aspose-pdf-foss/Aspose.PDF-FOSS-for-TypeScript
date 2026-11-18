@@ -549,6 +549,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Private glyph names no longer crash Unicode lookup.** Font glyph names such
+  as `constructor`, `toString`, and `__proto__` are treated as unknown names,
+  rather than inheriting JavaScript object properties and throwing a host
+  `RangeError` during text extraction or font conversion. The PostScript text
+  review regression suite checks all three names. (aspose-pdf-foss-for-ts-lw8w.3)
+
+- **Standard glyph names retain their text.** Glyph-name decoding now includes
+  Adobe's mappings for the supported Latin, Symbol and Dingbats name vectors,
+  including ligatures, Greek letters and mathematical symbols. Explicit glyph
+  selection and PDF encoding differences preserve known Unicode instead of
+  dropping those characters; unknown names still receive no invented text.
+  (lw8w.3)
+
 - **Hierarchical JPEG images compose differential frames correctly.**
   Sequential and progressive differential DCT frames previously accumulated
   DC values as predictions, shifting later blocks in Huffman and arithmetic

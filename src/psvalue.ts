@@ -22,7 +22,8 @@ export type PsDictionary = Ref & { kind: 'dictionary'; body: PsDictionaryBody };
 export type PsComposite = PsArray | PsString | PsDictionary;
 export type PsGState = Ref & { kind: 'gstate'; body: PsGStateBody; access: PsAccess };
 export type PsFile = Ref & { kind: 'file'; body: PsFileBody; access: PsAccess };
-export type PsReference = PsComposite | PsGState | PsFile;
+export type PsFontId = Ref & { kind: 'fontid'; body: PsBody; access: PsAccess };
+export type PsReference = PsComposite | PsGState | PsFile | PsFontId;
 export type PsSave = Ref & { kind: 'save'; id: number };
 export type PsValue = PsInteger | PsReal | PsBoolean | PsName | PsOperator | PsMark | PsNull | PsReference | PsSave;
 export class PsFault extends Error {
@@ -48,7 +49,7 @@ export function canRead(value: PsReference): boolean { return accessOf(value) ==
 export function canWrite(value: PsReference): boolean { return accessOf(value) === 'unlimited' && !(value.kind === 'array' && value.body.packed); }
 export function isComposite(value: PsValue): value is PsComposite { return value.kind === 'array' || value.kind === 'string' || value.kind === 'dictionary'; }
 /** Backed objects, including non-indexable graphics states. */
-export function isReference(value: PsValue): value is PsReference { return isComposite(value) || value.kind === 'gstate' || value.kind === 'file'; }
+export function isReference(value: PsValue): value is PsReference { return isComposite(value) || value.kind === 'gstate' || value.kind === 'file' || value.kind === 'fontid'; }
 /** Supply work when comparing source-controlled bytes/names in a running VM. */
 export function psEquals(a: PsValue, b: PsValue, work?: (count: number) => void): boolean {
   if ((a.kind === 'integer' || a.kind === 'real') && (b.kind === 'integer' || b.kind === 'real')) return a.value === b.value;
@@ -81,6 +82,9 @@ export function psEquals(a: PsValue, b: PsValue, work?: (count: number) => void)
     case 'dictionary': return b.kind === 'dictionary' && a.body === b.body;
     case 'gstate': return b.kind === 'gstate' && a.body === b.body;
     case 'file': return b.kind === 'file' && a.body === b.body;
+    case 'fontid':
+      if (!a.body.valid || b.kind === 'fontid' && !b.body.valid) throw new PsFault('invalidrestore');
+      return b.kind === 'fontid' && a.body === b.body;
     case 'operator': return b.kind === 'operator' && a.execute === b.execute;
     case 'save': return b.kind === 'save' && a.id === b.id;
     case 'mark': case 'null': return true;

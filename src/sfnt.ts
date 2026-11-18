@@ -1,12 +1,13 @@
 import { PdfParseError, UnsupportedFeatureError, rethrowLimit } from './errors.js';
 import { LoadLimits } from './loadlimits.js';
-import { readFontNames } from './fontnames.js';
+import { namesFromTables } from './fontnames.js';
 import { extractTtcFace } from './ttc.js';
 import { parseOtLayout, type OtLayout } from './otlayout.js';
 import { sfntFromWoff } from './woff.js';
 import { isType1 } from './type1header.js';
 import { sfntFromType1 } from './type1cff.js';
 import { isDfont, extractDfontFace } from './dfont.js';
+import type { FontWork } from './fontwork.js';
 
 export type OutlineKind = 'glyf' | 'cff';
 
@@ -47,6 +48,8 @@ export class SfntFont {
   /** The policy this font was parsed under (`ibzo.12`): composite expansion
    *  against `maxGlyphOperations`, `cmap` entries against `maxContainerItems`. */
   limits: LoadLimits = LoadLimits.defaults;
+  work?: FontWork;
+  strict = false;
   /** @internal components visited by the {@link glyphOutline} call in flight. */
   private outlineOps = 0;
   /** @internal numGlyphs+1 byte offsets into the glyf table (glyf fonts only). */
@@ -62,6 +65,7 @@ export class SfntFont {
 
   /** Raw glyf bytes for `gid` (empty for `.notdef`, empty glyphs, or CFF fonts). */
   glyphData(gid: number): Uint8Array {
+    if (this.strict && (!Number.isInteger(gid) || gid < 0 || gid >= this.numGlyphs)) throw new PdfParseError('invalid TrueType glyph index');
     if (this.outlines !== 'glyf' || gid < 0 || gid + 1 >= this.loca.length) return new Uint8Array(0);
     return this.glyf.subarray(this.loca[gid], this.loca[gid + 1]);
   }
@@ -93,30 +97,41 @@ export class SfntFont {
    *  y-up). Resolves composite glyphs recursively (transform + offset). Returns
    *  `[]` for empty glyphs, CFF fonts, or on malformed data. */
   glyphOutline(gid: number, depth = 0): GlyphPoint[][] {
+    this.work?.depth(depth + 1, 'TrueType glyph'); this.work?.work(1, 'TrueType glyph');
+    if (depth > 6 && this.strict) throw new PdfParseError('TrueType composite nesting');
     if (this.outlines !== 'glyf' || depth > 6) return [];
     // (ibzo.12) Depth 6 bounds nothing on its own: a composite may list thousands
     // of components, each itself a composite, so the visits multiply per level.
     if (depth === 0) this.outlineOps = 0;
     const g = this.glyphData(gid);
-    if (g.length < 10) return [];
+    if (g.length < 10) { if (this.strict && g.length) throw new PdfParseError('truncated TrueType glyph'); return []; }
     const v = new DataView(g.buffer, g.byteOffset, g.byteLength);
     const numContours = v.getInt16(0);
     try {
       return numContours < 0 ? this.decodeComposite(g, v, depth) : this.decodeSimple(g, v, numContours);
-    } catch (caught) { rethrowLimit(caught); return []; }
+    } catch (caught) { rethrowLimit(caught); if (this.strict) throw caught instanceof PdfParseError || caught instanceof UnsupportedFeatureError
+      ? caught : new PdfParseError('malformed TrueType glyph'); return []; }
   }
 
   private decodeSimple(g: Uint8Array, v: DataView, numContours: number): GlyphPoint[][] {
     let p = 10;
+    this.work?.items(numContours, 'TrueType contours'); this.work?.allocate(64 + numContours * 80, 'TrueType contours');
+    this.work?.work(numContours, 'TrueType contour ends');
     const ends: number[] = [];
     for (let i = 0; i < numContours; i++) { ends.push(v.getUint16(p)); p += 2; }
     const numPoints = numContours === 0 ? 0 : ends[numContours - 1] + 1;
+    this.work?.items(numPoints, 'TrueType points'); this.work?.allocate(numPoints * 80 + 192, 'TrueType point scratch');
+    this.work?.work(numPoints * 4, 'TrueType point decode');
+    if (this.strict && ends.some((end, i) => i > 0 && end <= ends[i - 1]!)) throw new PdfParseError('invalid TrueType contour ends');
     p += 2 + v.getUint16(p);                       // skip instructions
+    if (this.strict && p > g.length) throw new PdfParseError('truncated TrueType instructions');
 
     const flags: number[] = [];
     while (flags.length < numPoints) {
       const f = g[p++]; flags.push(f);
+      if (this.strict && f === undefined) throw new PdfParseError('truncated TrueType flags');
       if (f & 0x08) { let rep = g[p++]; while (rep-- > 0) flags.push(f); }
+      if (this.strict && (p > g.length || flags.length > numPoints)) throw new PdfParseError('invalid TrueType flag repeat');
     }
     const xs: number[] = []; let x = 0;
     for (const f of flags) {
@@ -131,6 +146,7 @@ export class SfntFont {
       ys.push(y);
     }
     const contours: GlyphPoint[][] = [];
+    if (this.strict && p > g.length) throw new PdfParseError('truncated TrueType coordinates');
     let s = 0;
     for (const e of ends) {
       const pts: GlyphPoint[] = [];
@@ -147,6 +163,7 @@ export class SfntFont {
     const out: GlyphPoint[][] = [];
     let p = 10;
     for (;;) {
+      this.work?.work(1, 'TrueType composite component'); this.work?.allocate(32, 'TrueType composite component');
       const flags = v.getUint16(p); const gi = v.getUint16(p + 2); p += 4;
       let arg1: number, arg2: number;
       if (flags & ARG_WORDS) { arg1 = v.getInt16(p); arg2 = v.getInt16(p + 2); p += 4; }
@@ -155,9 +172,13 @@ export class SfntFont {
       if (flags & WE_HAVE_A_SCALE) { a = d = f2dot14(v.getInt16(p)); p += 2; }
       else if (flags & X_AND_Y_SCALE) { a = f2dot14(v.getInt16(p)); d = f2dot14(v.getInt16(p + 2)); p += 4; }
       else if (flags & TWO_BY_TWO) { a = f2dot14(v.getInt16(p)); b = f2dot14(v.getInt16(p + 2)); c = f2dot14(v.getInt16(p + 4)); d = f2dot14(v.getInt16(p + 6)); p += 8; }
+      if (this.strict && !(flags & ARGS_XY)) throw new UnsupportedFeatureError('TrueType point-attached composites are unsupported');
+      if (this.strict && p > g.length) throw new PdfParseError('truncated TrueType composite');
       const dx = (flags & ARGS_XY) ? arg1 : 0, dy = (flags & ARGS_XY) ? arg2 : 0;
       this.limits.enforce('maxGlyphOperations', ++this.outlineOps, 'TrueType composite glyph');
       for (const contour of this.glyphOutline(gi, depth + 1)) {
+        this.work?.items(out.length + 1, 'TrueType composite contours'); this.work?.allocate(64 + contour.length * 32, 'TrueType composite points');
+        this.work?.work(contour.length, 'TrueType composite transform');
         out.push(contour.map((pt) => ({ x: a * pt.x + c * pt.y + dx, y: b * pt.x + d * pt.y + dy, on: pt.on })));
       }
       if (!(flags & MORE)) break;
@@ -198,7 +219,7 @@ export class SfntFont {
     }
     const off = this._cmapDir.get(key);
     if (off === undefined) return undefined;
-    const m = parseCmapSubtable(data, off, this.limits);
+    const m = parseCmapSubtable(data, off, this.limits, this.work);
     this._cmapSubs.set(key, m);
     return m;
   }
@@ -214,7 +235,7 @@ export class SfntFont {
    * them, and this table exists for the custom names that chain cannot answer.
    */
   postNames(): (string | undefined)[] | undefined {
-    if (this._postNames === undefined) this._postNames = readPostNames(this.table('post', false)) ?? null;
+    if (this._postNames === undefined) this._postNames = readPostNames(this.table('post', false), this.work) ?? null;
     return this._postNames ?? undefined;
   }
 
@@ -276,7 +297,9 @@ export class SfntFont {
     return this._otLayout ?? undefined;
   }
 
-  constructor(bytes: Uint8Array) {
+  constructor(bytes: Uint8Array, options: { work?: FontWork; strict?: boolean } = {}) {
+    this.work = options.work; this.strict = options.strict ?? false;
+    this.work?.allocate(256, 'sfnt parser'); this.work?.work(bytes.length, 'sfnt metadata byte passes');
     this.raw = bytes;
     const r = new Reader(bytes);
     const version = r.u32();
@@ -287,11 +310,14 @@ export class SfntFont {
     else throw new PdfParseError(`unrecognized sfnt version 0x${version.toString(16)}`, 0);
 
     const numTables = r.u16();
+    this.work?.items(numTables, 'sfnt tables'); this.work?.allocate(numTables * 96, 'sfnt tables');
+    this.work?.work(numTables, 'sfnt tables');
     r.u16(); r.u16(); r.u16(); // searchRange, entrySelector, rangeShift (ignored)
     this.tables = new Map();
     for (let i = 0; i < numTables; i++) {
       const tag = r.tag(); r.u32(); // checksum (ignored)
       const offset = r.u32(); const length = r.u32();
+      if (this.strict && (offset + length > bytes.length || this.tables.has(tag))) throw new PdfParseError('invalid sfnt table directory');
       this.tables.set(tag, { offset, length });
     }
     this.outlines = this.tables.has('CFF ') ? 'cff' : 'glyf';
@@ -315,7 +341,7 @@ export class SfntFont {
 }
 
 function parseCmapSubtable(
-  data: Uint8Array, base: number, limits: LoadLimits = LoadLimits.defaults,
+  data: Uint8Array, base: number, limits: LoadLimits = LoadLimits.defaults, work?: FontWork,
 ): Map<number, number> {
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const format = v.getUint16(base);
@@ -329,17 +355,20 @@ function parseCmapSubtable(
   const out = {
     set(c: number, gid: number): void {
       limits.enforce('maxContainerItems', ++written, 'cmap subtable');
+      work?.items(written, 'cmap subtable'); work?.allocate(64, 'cmap entry');
       map.set(c, gid);
     },
   };
   if (format === 0) {
     for (let c = 0; c < 256; c++) {
+      work?.work(1, 'cmap entry');
       const gid = v.getUint8(base + 6 + c);
       if (gid !== 0) out.set(c, gid);
     }
   } else if (format === 6) {
     const first = v.getUint16(base + 6); const count = v.getUint16(base + 8);
     for (let i = 0; i < count; i++) {
+      work?.work(1, 'cmap entry');
       const gid = v.getUint16(base + 10 + i * 2);
       if (gid !== 0) out.set(first + i, gid);
     }
@@ -350,12 +379,14 @@ function parseCmapSubtable(
     const deltaBase = startBase + segX2;
     const rangeBase = deltaBase + segX2;
     for (let s = 0; s < segCount; s++) {
+      work?.work(1, 'cmap segment');
       const end = v.getUint16(endBase + s * 2);
       const start = v.getUint16(startBase + s * 2);
       const delta = v.getUint16(deltaBase + s * 2);
       const rangeOff = v.getUint16(rangeBase + s * 2);
       if (start === 0xffff) continue;
       for (let c = start; c <= end; c++) {
+        work?.work(1, 'cmap entry');
         let gid: number;
         if (rangeOff === 0) gid = (c + delta) & 0xffff;
         else {
@@ -369,11 +400,12 @@ function parseCmapSubtable(
     const nGroups = v.getUint32(base + 12);
     let g = base + 16;
     for (let i = 0; i < nGroups; i++) {
+      work?.work(1, 'cmap group');
       const startChar = v.getUint32(g); const endChar = v.getUint32(g + 4); const startGid = v.getUint32(g + 8);
       // A code point past U+10FFFF is not Unicode, so a group reaching 0xFFFFFFFF
       // maps nothing there — and without the clamp it asked for 2^32 entries.
       const last = Math.min(endChar, 0x10ffff);
-      for (let c = startChar; c <= last; c++) out.set(c, startGid + (c - startChar));
+      for (let c = startChar; c <= last; c++) { work?.work(1, 'cmap entry'); out.set(c, startGid + (c - startChar)); }
       g += 12;
     }
   }
@@ -385,9 +417,10 @@ function parseCmapSubtable(
  *  Exported so `fontsource.ts`'s `peekCmap` reads a candidate face's coverage
  *  through THIS parser rather than a second one written beside it -- the rule
  *  `cidcmap.ts` already follows for the bundled CMaps and a document's own. */
-export function readCmap(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults): Map<number, number> {
+export function readCmap(data: Uint8Array, limits: LoadLimits = LoadLimits.defaults, work?: FontWork): Map<number, number> {
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const numTables = v.getUint16(2);
+  work?.items(numTables, 'cmap candidates'); work?.allocate(64 + numTables * 32, 'cmap candidates'); work?.work(numTables, 'cmap candidates');
   const candidates: { score: number; offset: number }[] = [];
   for (let i = 0; i < numTables; i++) {
     const rec = 4 + i * 8;
@@ -401,7 +434,7 @@ export function readCmap(data: Uint8Array, limits: LoadLimits = LoadLimits.defau
   }
   candidates.sort((a, b) => b.score - a.score);
   for (const c of candidates) {
-    const m = parseCmapSubtable(data, c.offset, limits);
+    const m = parseCmapSubtable(data, c.offset, limits, work);
     if (m.size > 0) return m;
   }
   return new Map();
@@ -409,17 +442,19 @@ export function readCmap(data: Uint8Array, limits: LoadLimits = LoadLimits.defau
 
 /** Read `post` v2.0 glyph names. Indices below 258 select a Macintosh standard
  *  name and are left `undefined` — see {@link SfntFont.postNames}. */
-function readPostNames(data: Uint8Array | undefined): (string | undefined)[] | undefined {
+function readPostNames(data: Uint8Array | undefined, work?: FontWork): (string | undefined)[] | undefined {
   if (!data || data.length < 34) return undefined;
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
   if (v.getUint32(0) !== 0x00020000) return undefined;
   const numGlyphs = v.getUint16(32);
   if (34 + numGlyphs * 2 > data.length) return undefined;
 
+  work?.allocate(64 + numGlyphs * 16, 'post glyph names'); work?.work(numGlyphs, 'post glyph names');
   const custom: string[] = [];
   for (let p = 34 + numGlyphs * 2; p < data.length;) {
     const len = data[p];
     if (p + 1 + len > data.length) break;
+    work?.allocate(64 + len * 2, 'post custom name'); work?.work(len, 'post custom name');
     custom.push(String.fromCharCode(...data.subarray(p + 1, p + 1 + len)));
     p += 1 + len;
   }
@@ -439,7 +474,14 @@ function readPostNames(data: Uint8Array | undefined): (string | undefined)[] | u
  * else — a caller may not know which kind of file it was handed, so naming a
  * face of a plain font is meaningless rather than an error.
  */
-export function parseSfnt(bytes: Uint8Array, faceIndex = 0, limits: LoadLimits = LoadLimits.defaults): SfntFont {
+export function parseSfnt(bytes: Uint8Array, faceIndex = 0, limits: LoadLimits = LoadLimits.defaults,
+  options: { work?: FontWork; strict?: boolean } = {}): SfntFont {
+  try { return parseSfntData(bytes, faceIndex, limits, options); }
+  catch (caught) { rethrowLimit(caught); if (options.strict && !(caught instanceof PdfParseError) && !(caught instanceof UnsupportedFeatureError))
+    throw new PdfParseError('malformed sfnt font'); throw caught; }
+}
+function parseSfntData(bytes: Uint8Array, faceIndex: number, limits: LoadLimits,
+  options: { work?: FontWork; strict?: boolean }): SfntFont {
   const sig = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
   if (sig === 0x774f4646 /* wOFF */ || sig === 0x774f4632 /* wOF2 */) bytes = sfntFromWoff(bytes, limits);
   // A collection is rebuilt into a standalone sfnt before anything else sees
@@ -453,14 +495,16 @@ export function parseSfnt(bytes: Uint8Array, faceIndex = 0, limits: LoadLimits =
   // u32 compare — which is why it goes LAST, after every cheap test. A face is
   // a subarray of one `sfnt` resource; see dfont.ts for why nothing is rebuilt.
   else if (isDfont(bytes)) bytes = extractDfontFace(bytes, faceIndex);
-  const f = new SfntFont(bytes);
+  const f = new SfntFont(bytes, options);
   const maxp = f.table('maxp')!;
   f.limits = limits;
   f.numGlyphs = new DataView(maxp.buffer, maxp.byteOffset, maxp.byteLength).getUint16(4);
+  options.work?.items(f.numGlyphs, 'sfnt glyphs');
 
   const head = f.table('head')!;
   const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
   f.unitsPerEm = hv.getUint16(18) || 1000;
+  if (options.strict && (!hv.getUint16(18) || ![0, 1].includes(hv.getInt16(50)))) throw new PdfParseError('invalid sfnt head');
   f.bbox = [hv.getInt16(36), hv.getInt16(38), hv.getInt16(40), hv.getInt16(42)];
   f.indexToLocFormat = hv.getInt16(50) === 1 ? 1 : 0;
 
@@ -468,22 +512,28 @@ export function parseSfnt(bytes: Uint8Array, faceIndex = 0, limits: LoadLimits =
   const numberOfHMetrics = new DataView(hhea.buffer, hhea.byteOffset, hhea.byteLength).getUint16(34);
   const hmtx = f.table('hmtx')!;
   const mv = new DataView(hmtx.buffer, hmtx.byteOffset, hmtx.byteLength);
+  options.work?.items(numberOfHMetrics, 'sfnt advances'); options.work?.allocate(numberOfHMetrics * 16, 'sfnt advances');
+  options.work?.work(numberOfHMetrics, 'sfnt advances');
+  if (options.strict && (!numberOfHMetrics || numberOfHMetrics > f.numGlyphs)) throw new PdfParseError('invalid sfnt horizontal metrics');
   for (let i = 0; i < numberOfHMetrics; i++) f.advances.push(mv.getUint16(i * 4));
 
   const cmapTable = f.table('cmap', false); // optional: subset fonts carry no cmap
-  if (cmapTable) f.cmap = readCmap(cmapTable, limits);
+  if (cmapTable) f.cmap = readCmap(cmapTable, limits, options.work);
 
   if (f.outlines === 'glyf') {
     const locaBytes = f.table('loca')!;
     const lv = new DataView(locaBytes.buffer, locaBytes.byteOffset, locaBytes.byteLength);
+    options.work?.allocate((f.numGlyphs + 1) * 16, 'sfnt loca'); options.work?.work(f.numGlyphs + 1, 'sfnt loca');
     for (let i = 0; i <= f.numGlyphs; i++)
       f.loca.push(f.indexToLocFormat === 0 ? lv.getUint16(i * 2) * 2 : lv.getUint32(i * 4));
     f.glyf = f.table('glyf')!;
+    if (options.strict && f.loca.some((offset, i) => offset > f.glyf.length || i > 0 && offset < f.loca[i - 1]!))
+      throw new PdfParseError('invalid sfnt loca offsets');
   }
 
   // Through fontnames.ts, the one owner of the name table: two readings would
   // otherwise be free to disagree about platform preference or UTF-16 decoding.
-  f.postScriptName = readFontNames(bytes)?.postScriptName;
+  f.postScriptName = namesFromTables({ name: f.table('name', false), head, os2: f.table('OS/2', false) }, options.work)?.postScriptName;
 
   const macStyle = hv.getUint16(44);
 

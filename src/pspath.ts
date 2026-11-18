@@ -250,13 +250,15 @@ export function transformPsPath(path: PsPathData, matrix: Matrix, budget: PsBudg
 }
 
 export function strokePsPath(graphics: PsGraphics): PsPathData {
-  const budget = graphics.budget;
-  const tolerance = graphics.state.flatness * 72 / 250;
-  const flat = flattenPsPath(graphics.state.path, tolerance, budget);
-  const user = transformPsPath(flat, inversePsMatrix(graphics.state.ctm), budget);
+  return strokePsPathData(graphics.state.path, graphics.state, graphics.budget);
+}
+export function strokePsPathData(path: PsPathData, state: import('./psstate.js').PsState, budget: PsBudget): PsPathData {
+  const tolerance = state.flatness * 72 / 250;
+  const flat = flattenPsPath(path, tolerance, budget);
+  const user = transformPsPath(flat, inversePsMatrix(state.ctm), budget);
   let polygons: number[][];
   try {
-    polygons = strokeOutlinePolys(user.segments, graphics.state.ctm, graphics.state.line,
+    polygons = strokeOutlinePolys(user.segments, state.ctm, state.line,
       { budget, pixelSize: 72 / 250, tolerance });
   } catch (caught) {
     rethrowLimit(caught);

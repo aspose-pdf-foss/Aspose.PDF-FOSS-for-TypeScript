@@ -13,12 +13,20 @@ import { PdfParseError } from './errors.js';
 import { serializeValue } from './serialize.js';
 import { name, isArray, isDict, isName, isRef, isStream, isString,
   type PdfObject, type PdfDict, type PdfStream } from './types.js';
+import type { PsPdfGlyph } from './psfontpdf.js';
 
 export interface PsPageOutput { box: PsBox; content: Uint8Array; resources: PdfDict }
 export interface PsOutputCounters { bytes: number; tokens: number }
 const owners = new WeakMap<PsPageOutput, PsBudget>();
 
 export class PsPdfWriter {
+  beforeMark?: () => void;
+  observePath?: (path: PsPathData, state: PsState, mode: 'fill' | 'eofill' | 'stroke') => void;
+  observeImage?: (matrix: Matrix) => void;
+  observeForm?: (form: PdfStream, matrix: Matrix) => void;
+  observeText?: (glyph: PsPdfGlyph, matrix: Matrix) => void;
+  suppressMarks = false;
+  clipToBox = true;
   private readonly parts: string[] = [];
   private length = 0;
   private readonly resources: PdfDict = new Map();
@@ -31,7 +39,7 @@ export class PsPdfWriter {
 
   constructor(readonly budget: PsBudget, readonly box: PsBox,
     private readonly counters: PsOutputCounters = { bytes: 0, tokens: 0 },
-    readonly uncolored = false, readonly basis: Matrix = IDENTITY) {
+    public uncolored = false, readonly basis: Matrix = IDENTITY) {
     budget.allocate(192, 'PDF output writer');
     this.inverseBasis = inversePsMatrix(basis);
   }
@@ -115,12 +123,24 @@ export class PsPdfWriter {
   }
 
   transaction(operation: () => void): void {
+    this.budget.allocate(64 + this.resourceNames.size * 32, 'PDF resource transaction');
+    this.budget.work(this.resourceNames.size);
+    const resourceCounts = new Map<string, number>();
+    for (const [category, names] of this.resourceNames) resourceCounts.set(category, names.size);
     const count = this.parts.length, length = this.length, cached = this.cached, marks = this.hasMarks;
     let committed = false;
     try { operation(); committed = true; }
     finally {
       if (!committed) {
         this.parts.length = count; this.length = length; this.cached = cached; this.hasMarks = marks;
+        for (const [category, names] of this.resourceNames) {
+          const keep = resourceCounts.get(category);
+          if (keep === undefined) { this.resourceNames.delete(category); this.resources.delete(category); }
+          else {
+            let i = 0;
+            for (const [object, key] of names) if (i++ >= keep) { names.delete(object); (this.resources.get(category) as PdfDict).delete(key); }
+          }
+        }
       }
     }
   }
@@ -156,8 +176,8 @@ export class PsPdfWriter {
 
   writeClips(state: PsState): void {
     const [x0, y0, x1, y1] = this.box;
-    this.emit('re', [x0, y0, x1 - x0, y1 - y0]);
-    this.emit('W'); this.emit('n');
+    if (this.clipToBox) { this.emit('re', [x0, y0, x1 - x0, y1 - y0]);
+      this.emit('W'); this.emit('n'); }
     for (const clip of state.clips) {
       this.writePath(this.localPath(clip.path));
       this.emit(clip.evenOdd ? 'W*' : 'W');
@@ -208,6 +228,7 @@ export class PsPdfWriter {
 
   paintPath(path: PsPathData, state: PsState, mode: 'fill' | 'eofill' | 'stroke'): void {
     if (!path.segments.length) return;
+    this.beforeMark?.(); this.observePath?.(path, state, mode); if (this.suppressMarks) return;
     if (state.color.space !== 'Pattern' && psDevicePaint(state.color).none) return;
     const stroke = mode === 'stroke';
     const geometry = stroke ? transformPsPath(path, inversePsMatrix(state.ctm), this.budget) : this.localPath(path);
@@ -224,6 +245,7 @@ export class PsPdfWriter {
   }
 
   drawImage(image: PdfStream, matrix: Matrix, state: PsState): void {
+    this.beforeMark?.(); this.observeImage?.(matrix); if (this.suppressMarks) return;
     if (image.dict.get('ImageMask') === true && state.color.space !== 'Pattern' && psDevicePaint(state.color).none) return;
     this.transaction(() => {
       this.emit('q'); this.writeClips(state);
@@ -235,11 +257,24 @@ export class PsPdfWriter {
   }
 
   drawForm(form: PdfStream, matrix: Matrix, state: PsState): void {
+    this.beforeMark?.(); this.observeForm?.(form, matrix); if (this.suppressMarks) return;
     this.transaction(() => {
       this.emit('q'); this.writeClips(state);
       this.emit('cm', mul(matrix, this.inverseBasis));
       this.emit('Do', [name(this.resource('XObject', form))]);
       this.emit('Q'); this.hasMarks = true;
+    });
+  }
+
+  drawText(glyph: PsPdfGlyph, glyphToDevice: Matrix, state: PsState): void {
+    this.beforeMark?.(); this.observeText?.(glyph, glyphToDevice); if (this.suppressMarks) return;
+    if (state.color.space !== 'Pattern' && psDevicePaint(state.color).none) return;
+    const matrix = mul(mul(inversePsMatrix(glyph.fontMatrix), glyphToDevice), this.inverseBasis);
+    this.transaction(() => {
+      this.emit('q'); this.writeClips(state); this.paintState(state, false);
+      this.emit('BT'); this.emit('Tf', [name(this.resource('Font', glyph.font)), 1]);
+      this.emit('Tm', matrix); this.emit('Tj', [{ kind: 'string', bytes: Uint8Array.of(glyph.code) }]);
+      this.emit('ET'); this.emit('Q'); this.hasMarks = true;
     });
   }
 

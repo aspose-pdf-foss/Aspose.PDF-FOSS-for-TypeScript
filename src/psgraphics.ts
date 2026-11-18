@@ -14,9 +14,18 @@ import { installPsSource } from './pssource.js';
 import { installPsImage } from './psimage.js';
 import { installPsPaint } from './pspaint.js';
 import { apply } from './text.js';
+import { inversePsMatrix } from './psmatrix.js';
+import { transformPsPath, strokePsPathData } from './pspath.js';
 
 interface SavedGraphics { state: PsState; barrier: boolean }
-export interface PsCapture { complete(): PsPageOutput; abort(): void }
+export interface PsCaptureOptions { mode?: 'paint' | 'measure' | 'path'; requireMetrics?: boolean; clip?: 'bbox' | 'inherit' }
+export interface PsCapture {
+  readonly roots: import('./psvalue.js').PsValue[];
+  complete(): PsPageOutput; abort(): void;
+  declareGlyphMetrics(advance: [number, number], box?: PsBox, uncolored?: boolean): void;
+  collectedPath(): PsPathData;
+}
+const capturePaths = new WeakMap<Uint8Array, PsPathData>();
 
 export class PsGraphics {
   readonly budget;
@@ -30,8 +39,11 @@ export class PsGraphics {
   private finalized?: readonly PsPageOutput[];
   private trailing?: PsPageOutput;
   private captures = 0;
+  private activeMode?: 'paint' | 'measure' | 'path';
+  get captureMode(): 'paint' | 'measure' | 'path' | undefined { return this.activeMode; }
   get writer(): PsPdfWriter { if (!this.captures) this.syncDevice(); return this.pageWriter; }
   get uncolored(): boolean { return this.pageWriter.uncolored; }
+  outputWriter(box: PsBox, uncolored = false): PsPdfWriter { return new PsPdfWriter(this.budget, box, this.counters, uncolored); }
   assertColorAllowed(): void { if (this.uncolored) throw new PsFault('undefined'); }
   private assertPageAllowed(): void {
     if (this.captures) throw new UnsupportedFeatureError('PostScript page changes during capture are unsupported');
@@ -55,6 +67,7 @@ export class PsGraphics {
   private defaultState(box: PsBox, matrix: Matrix, discarding = false): PsState {
     this.budget.allocate(512, 'initial graphics state');
     return {
+      font: this.current?.font,
       deviceBox: [...box],
       ctm: [...matrix], defaultMatrix: [...matrix], path: { segments: [] }, clips: [], clipSaves: [],
       line: { width: 1, cap: 0, join: 0, miter: 10, dash: [], dashPhase: 0 },
@@ -201,15 +214,24 @@ export class PsGraphics {
   replaceState(state: PsState): void { this.assertColorAllowed(); this.current = state; }
 
   /** matrix maps capture coordinates to the shared device coordinate system. */
-  beginCapture(box: PsBox, matrix: Matrix, uncolored: boolean): PsCapture {
+  beginCapture(box: PsBox, matrix: Matrix, uncolored: boolean, options: PsCaptureOptions = {}): PsCapture {
     this.budget.depth(this.captures + 1, 'paint capture');
     const state = copyPsState(this.current, this.budget);
-    const writer = new PsPdfWriter(this.budget, box, this.counters, uncolored || this.uncolored, matrix);
+    const inverse = inversePsMatrix(matrix), parentMode = this.activeMode, mode = options.mode ?? parentMode;
+    let writerBox = box;
+    if (options.clip === 'inherit') {
+      const b = state.deviceBox, points = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].map(([x, y]) => apply(inverse, x!, y!));
+      writerBox = [Math.min(...points.map(p => p[0])), Math.min(...points.map(p => p[1])), Math.max(...points.map(p => p[0])), Math.max(...points.map(p => p[1]))];
+    }
+    const writer = new PsPdfWriter(this.budget, writerBox, this.counters, uncolored || this.uncolored, matrix);
+    // The caller clips text to its device box; baking that box into a glyph
+    // makes the completed glyph depend on its placement.
+    if (options.clip === 'inherit') writer.clipToBox = false;
     state.ctm = [...matrix]; state.defaultMatrix = [...matrix]; state.path = { segments: [] };
     const points = [[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]]
       .map(([x, y]) => apply(matrix, x!, y!));
     if (!points.flat().every(Number.isFinite)) throw new PsFault('undefinedresult');
-    state.clips = [{ path: psPathFromSegments([
+    if (options.clip !== 'inherit') state.clips = [{ path: psPathFromSegments([
       { op: 'M', x: points[0]![0], y: points[0]![1] },
       ...points.slice(1).map(([x, y]) => ({ op: 'L' as const, x, y })), { op: 'Z' },
     ]), evenOdd: false }];
@@ -217,16 +239,65 @@ export class PsGraphics {
     const initial = copyPsState(state, this.budget);
     this.budget.allocate(32, 'capture graphics stack');
     const parent = this.pageWriter, parentState = this.current, parentStates = this.states;
+    const roots: import('./psvalue.js').PsValue[] = [];
+    const retain = (value: import('./psvalue.js').PsValue): void => { this.budget.allocate(16, 'capture root'); roots.push(value); };
+    visitPsStateRoots(parentState, retain);
+    for (const entry of parentStates) { this.budget.work(); visitPsStateRoots(entry.state, retain); }
+    const collected: PsPathData = { segments: [] };
+    let marked = false, declared = false;
+    const include = (x: number, y: number): void => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new PsFault('undefinedresult');
+      if (!collected.bbox) collected.bbox = [x, y, x, y];
+      else { const b = collected.bbox; b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); }
+    };
+    const append = (path: PsPathData): void => {
+      const local = transformPsPath(path, inverse, this.budget);
+      this.budget.items(collected.segments.length + local.segments.length, 'captured glyph path'); this.budget.allocate(local.segments.length * 16, 'captured path entries');
+      for (const s of local.segments) { this.budget.work(); collected.segments.push(s); if (s.op !== 'Z') { include(s.x, s.y); if (s.op === 'C') { include(s.x1, s.y1); include(s.x2, s.y2); } } }
+    };
+    const includeBox = (b: PsBox, by: Matrix): void => {
+      for (const [x, y] of [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]) { const p = apply(mul(by, inverse), x!, y!); include(p[0], p[1]); }
+    };
+    if (mode) {
+      writer.suppressMarks = mode !== 'paint';
+      writer.beforeMark = () => { if (options.requireMetrics && !declared) throw new PsFault('undefined'); marked = true; };
+      writer.observePath = (path, state, paint) => append(paint === 'stroke' ? strokePsPathData(path, state, this.budget) : path);
+      writer.observeImage = by => includeBox([0, 0, 1, 1], by);
+      writer.observeForm = (form, by) => {
+        const path = capturePaths.get(form.raw);
+        if (path) append(transformPsPath(path, by, this.budget));
+        const b = form.dict.get('BBox'); if (Array.isArray(b) && b.length === 4 && b.every(n => typeof n === 'number')) includeBox(b as PsBox, by);
+      };
+      writer.observeText = (glyph, by) => { if (glyph.path) append(transformPsPath(glyph.path, by, this.budget)); if (glyph.box) includeBox(glyph.box, by); };
+    }
     this.pageWriter = writer; this.current = state;
+    this.activeMode = mode;
     this.states = [{ state: initial, barrier: true }]; this.captures++;
     let active = true;
     const abort = (): void => {
       if (active) {
         this.pageWriter = parent; this.current = parentState; this.states = parentStates;
+        this.activeMode = parentMode;
         this.captures--; active = false;
       }
     };
-    return { abort, complete: () => { const output = writer.finish(); abort(); return output; } };
+    return { abort, roots,
+      declareGlyphMetrics: (_advance, bounds, noColor) => {
+        if (!active || declared || marked) throw new PsFault('undefined');
+        if (bounds && (bounds[2] < bounds[0] || bounds[3] < bounds[1])) throw new PsFault('rangecheck');
+        if (bounds) {
+          const path = psPathFromSegments(psRectangleSegments([bounds], matrix, this.budget));
+          this.budget.allocate(64, 'glyph cache clips');
+          this.current.clips.push({ path, evenOdd: false }); initial.clips.push({ path, evenOdd: false });
+        }
+        writer.uncolored ||= !!noColor; declared = true;
+      },
+      collectedPath: () => collected,
+      complete: () => {
+        if (options.requireMetrics && !declared) throw new PsFault('undefined');
+        const output = writer.finish(); if (mode) capturePaths.set(output.content, collected); abort(); return output;
+      },
+    };
   }
 
   withPaintScope(complete: () => void, unwind: () => void): PsInvocation {

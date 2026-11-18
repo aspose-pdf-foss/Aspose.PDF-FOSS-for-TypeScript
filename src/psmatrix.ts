@@ -23,6 +23,8 @@ function checked(matrix: Matrix): Matrix {
 
 export function inversePsMatrix(matrix: Matrix): Matrix {
   if (matrix[0] * matrix[3] - matrix[1] * matrix[2] === 0) throw new PsFault('undefinedresult');
+  // Avoid determinant cancellation for the common scale/translate basis.
+  if (matrix[1] === 0 && matrix[2] === 0) return checked([1 / matrix[0], 0, 0, 1 / matrix[3], -matrix[4] / matrix[0], -matrix[5] / matrix[3]]);
   return checked(invert(matrix));
 }
 

@@ -1,3 +1,4 @@
+import type { PsByteInput } from './psinput.js';
 import type { LoadLimits } from './loadlimits.js';
 import { PdfParseError, rethrowLimit } from './errors.js';
 import { PsBudget } from './psbudget.js';
@@ -52,6 +53,7 @@ export class PsInterpreter {
   packing = false;
   private readonly frames: Frame[] = [];
   private running = false;
+  private started = false;
   private offset = 0;
   private initializing = true;
   private command: PsValue = psNull();
@@ -115,6 +117,16 @@ export class PsInterpreter {
     this.budget.allocate(64, 'standard operator');
     this.memory.installSystemOperator(this.memory.name(text), operator(text, () => execute(this)));
   }
+  /** Optional feature preflight, before any installation allocates or publishes. */
+  assertStandardInstallation(): void { if (this.running || this.started || this.saves.length) throw new PsFault('invalidaccess'); }
+  registerStandardValue(text: string, value: PsValue): void {
+    if (this.running || this.saves.length) throw new PsFault('invalidaccess');
+    this.memory.installSystemValue(this.memory.name(text), value);
+  }
+  registerStandardBinding(text: string, resolve: () => PsValue, roots: readonly PsValue[]): void {
+    if (this.running || this.saves.length) throw new PsFault('invalidaccess');
+    this.memory.installSystemBinding(this.memory.name(text), resolve, roots);
+  }
   lookup(text: string): PsValue | undefined {
     const key = name(text); const dictionary = this.where(key); return dictionary ? this.memory.lookup(dictionary, key) : undefined;
   }
@@ -131,7 +143,20 @@ export class PsInterpreter {
   }
   end(): void { if (this.dictionaries.length <= 3) throw new PsFault('dictstackunderflow'); this.dictionaries.pop(); }
   clearDictionaries(): void { this.dictionaries.length = 3; }
-  scanner(source: Uint8Array): PsScanner {
+  /** Restore the exact caller prefix, even if the callback used begin/end or
+   * cleardictstack. Cleanup is safe while unwinding an exhausted budget. */
+  withDictionaryScope(dictionary: PsDictionary): PsInvocation {
+    this.budget.allocate(64 + this.dictionaries.length * 16, 'dictionary scope');
+    this.budget.work(this.dictionaries.length, 'dictionary scope');
+    const prefix = this.dictionaries.slice();
+    this.begin(dictionary);
+    const restore = (): void => {
+      this.dictionaries.length = prefix.length;
+      for (let i = 0; i < prefix.length; i++) this.dictionaries[i] = prefix[i]!;
+    };
+    return { roots: prefix, complete: restore, unwind: restore };
+  }
+  scanner(source: Uint8Array | PsByteInput): PsScanner {
     const scanner = new PsScanner(source, this.memory, text => { const value = this.lookup(text); if (!value) throw new PsFault('undefined', scanner.lastTokenOffset); return value; }, () => this.packing);
     return scanner;
   }
@@ -326,8 +351,9 @@ export class PsInterpreter {
     for (let i = this.frames.length - 1; i >= 0; i--) { this.budget.work(); const frame = this.frames[i]!; if (frame.kind === 'handler') { offset = frame.fault.offset ?? offset; break; } }
     this.stop(new PsFault(errorName, offset));
   }
-  run(source: Uint8Array): void {
+  run(source: Uint8Array | PsByteInput): void {
     if (this.running) throw new PsFault('invalidaccess');
+    this.started = true;
     this.running = true;
     this.uncaught = undefined;
     try {

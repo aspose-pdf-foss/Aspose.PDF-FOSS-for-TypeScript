@@ -30,7 +30,7 @@ export function installPsCore(vm: PsInterpreter): void {
   op('mark', () => vm.push(mark()));
   op('cleartomark', () => vm.replace(vm.markDepth() + 1));
   op('counttomark', () => vm.push(integer(vm.markDepth())));
-  op('type', () => { const v = vm.peek(); vm.replace(1, name(v.kind === 'dictionary' ? 'dicttype' : v.kind === 'array' && v.body.packed ? 'packedarraytype' : `${v.kind}type`)); });
+  op('type', () => { const v = vm.peek(); vm.replace(1, name(v.kind === 'dictionary' ? 'dicttype' : v.kind === 'fontid' ? 'fonttype' : v.kind === 'array' && v.body.packed ? 'packedarraytype' : `${v.kind}type`)); });
   for (const [text, fn] of Object.entries({ add: (a: number, b: number) => a + b, sub: (a: number, b: number) => a - b, mul: (a: number, b: number) => a * b })) {
     op(text, () => { const b = vm.number(), a = vm.number(1); vm.replace(2, numeric(fn(a.value, b.value), a.kind === 'integer' && b.kind === 'integer')); });
   }

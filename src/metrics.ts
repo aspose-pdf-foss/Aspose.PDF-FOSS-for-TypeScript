@@ -395,6 +395,22 @@ export function glyphWidth(font: StdFont, code: number): number {
   return WIDTHS[font][code] ?? 0;
 }
 
+/** AFM widths by glyph identity, independent of a document's byte encoding. */
+export function stdGlyphWidth(font: StdFont, name: string): number {
+  if (name === '.notdef') return 0;
+  if (font.startsWith('Courier')) return 600;
+  if (name === 'minus') return stdGlyphWidth(font, 'plus');
+  if (name === 'fraction') return 167;
+  if (['breve', 'dotaccent', 'ring', 'hungarumlaut', 'ogonek', 'caron'].includes(name)) return 333;
+  if (name === 'Lslash') return stdGlyphWidth(font, 'L');
+  if (name === 'lslash') return stdGlyphWidth(font, 'l');
+  if (name === 'dotlessi') return stdGlyphWidth(font, 'i');
+  if (name === 'fi' || name === 'fl') return font.startsWith('Helvetica')
+    ? (font.includes('Bold') ? 611 : 500) : font === 'Times-Italic' ? 500 : 556;
+  const code = WINANSI_NAMES.indexOf(name);
+  return code < 0 ? 0 : glyphWidth(font, code);
+}
+
 /** Width of `font`-encoded `bytes` in points at `fontSize`. */
 export function measure(font: StdFont, bytes: Uint8Array, fontSize: number): number {
   let units = 0;

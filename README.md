@@ -428,7 +428,12 @@ through to saving.
 The PostScript fields bound the internal language and graphics engine for later
 import work; there is currently no public PostScript import API. The internal
 graphics installer supports vector paths/clipping, device/Indexed/tint colors,
-sampled images, forms and tiling patterns. CIE color spaces, shading and arbitrary
+sampled images, forms and tiling patterns. The optional internal text session
+supports Standard-14, supplied/source Type 1 and Type 42, procedure-built Type 3,
+horizontal FMapType 2/3 composites, positioned shows, callbacks and character
+paths. Program glyph output uses Type 3 outlines and loses original hinting.
+CID/CMap fonts, vertical writing and unsupported font mechanisms fail explicitly.
+CIE color spaces, shading and arbitrary
 printer policies fail explicitly. One interpreter shares its
 work and allocation totals across repeated runs. Discarding objects or restoring
 VM does not refund them. Accounted bytes use a deterministic conservative charge

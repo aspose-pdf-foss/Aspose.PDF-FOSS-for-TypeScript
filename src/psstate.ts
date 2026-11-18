@@ -25,6 +25,7 @@ export type PsColorState =
   | (PsColorBase & { space: 'Separation' | 'DeviceN'; alternate: PsColorState; names: string[]; transform: PsArray; native?: number[] })
   | (PsColorBase & { space: 'Pattern'; base?: PsColorState; pattern?: PsDictionary; resource?: PdfStream });
 export interface PsState {
+  font?: PsDictionary;
   deviceBox: PsBox;
   ctm: Matrix;
   defaultMatrix: Matrix;
@@ -109,6 +110,7 @@ export function visitPsColorRoots(color: PsColorState, visit: (value: PsValue) =
 }
 
 export function visitPsStateRoots(state: PsState, visit: (value: PsValue) => void): void {
+  if (state.font) visit(state.font);
   visitPsColorRoots(state.color, visit);
   if (state.sourceDash) visit(state.sourceDash);
 }

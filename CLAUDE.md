@@ -10212,7 +10212,8 @@ Source (`src/`):
 - **psstate.ts** — internal graphics-state types and bounded path/state copying.
   Paths use device-space M/L/C/Z segments and retain current/subpath-start
   coordinates and optional setbbox metadata. Copies charge before constructing
-  arrays. Root enumeration retains source color descriptors and dash arrays.
+  arrays. Root enumeration retains selected fonts, source color descriptors and
+  dash arrays. Font selection survives graphics/page/device initialization.
 - **psgraphics.ts** — optional graphics installation and graphics/save stacks.
   Defaults are A4 at 595 by 842 points and an identity default matrix. Graphics
   installation consumes ordinary interpreter budgets. Language-only instances
@@ -10259,6 +10260,58 @@ Source (`src/`):
   placement. Native device samples and Decode survive into PDF; 12-bit samples
   expand to PDF's supported 16-bit representation. Lookup/tint pixels use the
   same color callbacks as vector painting. Publication happens after completion.
+- **psnumbers.ts** — lazy checked show-displacement sequences, including Adobe
+  encoded-number strings with signed 16/32-bit fixed point and IEEE32/native
+  reals. Native reals are IEEE32 in the host's byte order. Headers and lengths
+  are validated before reads; payload work remains cumulative and metered.
+- **pstext.ts**, **pscomposite.ts** — optional PostScript text session and shared
+  rooted character cursor. Showing, measurement and character paths use private
+  VM work frames with full affine glyph matrices and two-dimensional advances.
+  PDF placement and PostScript current-point movement remain separate. Nested
+  glyph text follows its enclosing paint/measure/path capture policy.
+  FMapType 2/3 mapping shares this cursor for every consumer. Modal escapes
+  ascend the nearest modal ancestor; nonmodal second bytes feed nested selectors.
+  Type 0 definition/derivation propagates matrices into composite descendants
+  only; drawing combines the base and its immediate parent exactly once.
+- **psglyph.ts** — Type 3 BuildGlyph/BuildChar invocation and checked glyph
+  metrics. Every callback runs on the VM pump with independent rooted font,
+  graphics and capture scopes. Escapes unwind without allocation. Measurement
+  preserves source effects while suppressing PDF painting; path capture keeps
+  vector/stroke geometry and omits image portions. Glyph captures inherit caller
+  clipping instead of clipping setcharwidth paint to FontBBox. Suspended captures
+  retain caller graphics roots, including saved graphics states, until unwind.
+  Select the effective leaf BEFORE creating the glyph restore boundary; restore
+  the capture before restoring its font scope.
+- **psfontpdf.ts** — job-owned native Standard-14 and Type 3 glyph banks. Glyph
+  codes are append-only and completed charprocs never change their meaning;
+  banks split at 256 codes and before a new glyph would reference its own bank
+  through nested text resources. Exact geometry, metrics and completed capture resource
+  comparisons decide reuse. Dynamic glyph paint keeps its resource namespace in
+  a Form referenced by the font. Text is placed explicitly with the PDF intrinsic
+  FontMatrix and output-owner basis removed; PS advances remain independent.
+- **psfont.ts** — VM-owned font definitions, selection/derivation and Font/Encoding
+  resources. A private dictionary/FID cache retains compiled snapshots, while
+  trusted CharStrings lineage supports copied/re-encoded builtin faces. Local
+  registries are journaled overlays over global dictionaries; definition compiles
+  before readonly publication and derived fonts retain full affine matrices.
+  Glyph callback scopes root/restore effective leaf and root font selections.
+- **fontwork.ts**, **psfonttypes.ts**, **psfontprogram.ts** — optional per-job
+  font-engine accounting, non-PDF PostScript font descriptors and strict program
+  snapshots. Type 1 preserves sidebearings and two-dimensional advances; Type 42
+  uses CharStrings name-to-GID mappings and exact quadratic-to-cubic contours
+  normalized by unitsPerEm. Metrics overrides move outlines with sidebearings.
+  Strict adapters report invalidfont for damage and propagate unsupported features
+  and resource limits. Bundled outlines parse per job under shared decode/work
+  budgets; legacy PDF parser calls retain their caches and damage recovery.
+- **pseexec.ts** — lazy Type 1 eexec cipher sources and supplied PFB framing.
+  Decrypted currentfile reads and execution share one cursor. Lookahead caches
+  encoded end positions without consuming clear suffixes; PFB binary tags
+  override the hexadecimal heuristic. Decoding shares the graphics DecodeBudget.
+  Automatic systemdict scopes restore the caller prefix on completion/escape.
+- **psstreamend.ts** — bounded Deflate/LZW framing for pull-source filters.
+  Reads exactly through EOD/checksum without decoding following source bytes;
+  the ordinary codecs still validate payloads. Huffman storage and bit work are
+  metered before growth, including framing that fails or exhausts its budget.
 - **pssource.ts** — VM-owned supplied-byte files and lazy decoding filters.
   Source execution and currentfile share the scanner cursor; executable strings
   keep the enclosing file identity. Filter chains initialize iteratively on
@@ -10343,6 +10396,17 @@ Source (`src/`):
   Gstate bodies are copied/journaled through psstate.ts and their retained
   source roots participate in prospective restore validation. Gstate access
   attributes belong to references, as array/string attributes do.
+  Font IDs have protected readonly backed identities and normal local/global
+  lifetimes. Host-only readonly registry capabilities journal writes without
+  exposing source mutation. Overlay parents participate in lookup, enumeration
+  and prospective restore graphs. Dynamic system bindings resolve through all
+  dictionary views and retain explicit roots; fixed installations keep global
+  retention barriers. Only the remembered system dictionary hosts bindings.
+- **psinput.ts** — internal supplied-byte input contract. Peeking/span access
+  does not commit the shared cursor; adapters own bounded lookahead storage.
+  Unknown remaining length is -1, without draining a reader. Array-backed
+  scanners implement the input contract themselves, preserving existing direct
+  source identity and accounting without allocating a second wrapper.
 - **psscan.ts** — lazy internal PostScript byte scanner with a shared mutable
   source cursor for future inline-data readers. Supports decimal/radix numbers,
   literal/executable/immediate names, escaped/hex/ASCII85 strings and iterative
@@ -10353,6 +10417,9 @@ Source (`src/`):
   growth is metered. `maxFileBytes` bounds source and `maxObjectBytes` bounds
   token/procedure spans. Faults preserve token-start offsets. Active executable
   string scanners must retain the original string as a restore root.
+  Pull inputs share the same cursor with token/file/image reads. The legacy
+  `source` property is available for array-backed scanners only; pull callers use
+  `input`. Filter windows peek without advancing, then commit consumed bytes.
 - **psvm.ts** — internal iterative `PsInterpreter`, with operand/dictionary
   stacks and explicit source/procedure/execute/loop/stopped/handler frames.
   Installs `pscore.ts` and `psdata.ts` without a runtime import cycle; their VM

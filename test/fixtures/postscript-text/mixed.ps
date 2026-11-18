@@ -1,0 +1,27 @@
+%!PS-Adobe-3.0
+% Original integration source; the two program slots are expanded by its test.
+%%TYPE1_FONT%%
+%%TYPE42_FONT%%
+/G << /FontName /G /FontType 3 /FontMatrix [.001 0 0 .001 0 0]
+  /FontBBox [0 0 500 700] /Encoding StandardEncoding
+  /BuildGlyph { pop pop 500 0 setcharwidth 0 0 400 600 rectfill }
+>> definefont pop
+/Pair << /FontType 0 /FontMatrix [1 0 0 1 0 0] /FMapType 2
+  /Encoding [0 1] /FDepVector [ /Courier findfont /G findfont ]
+>> definefont pop
+/Courier 12 selectfont 10 100 moveto (AB) show
+/Courier findfont dup length dict begin
+  { 1 index /FID ne { def } { pop pop } ifelse } forall
+  /Encoding StandardEncoding dup length array copy def
+  Encoding 65 /B put /Recode currentdict end definefont 12 scalefont setfont (A) show
+/Source1 12 selectfont (A) show
+/Source42 12 selectfont (B) show
+/G 12 selectfont /X glyphshow
+/Pair 12 selectfont <00410141> show
+<< /FormType 1 /BBox [0 0 100 100] /Matrix [1 0 0 1 0 0]
+   /PaintProc { pop /Courier 12 selectfont 10 50 moveto (F) show }
+>> execform
+<< /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20]
+   /XStep 20 /YStep 20 /PaintProc { pop /Courier 10 selectfont 0 0 moveto (P) show }
+>> matrix makepattern setpattern 10 10 40 20 rectfill
+showpage

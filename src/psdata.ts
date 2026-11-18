@@ -41,7 +41,7 @@ export function installPsData(vm: PsInterpreter): void {
   op('length', () => {
     const v = vm.peek(); let length: number;
     if (v.kind === 'name') length = v.text.length;
-    else { const c = composite(v); readable(c); length = c.kind === 'dictionary' ? c.body.entries.length : c.length; }
+    else { const c = composite(v); readable(c); length = c.kind === 'dictionary' ? vm.memory.dictionarySize(c) : c.length; }
     vm.replace(1, integer(length));
   });
   op('get', () => vm.replace(2, vm.memory.get(composite(vm.peek(1)), vm.peek())));

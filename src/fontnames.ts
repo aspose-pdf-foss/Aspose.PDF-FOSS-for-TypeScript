@@ -74,11 +74,12 @@ export function parseTableDirectory(header: Uint8Array): Map<string, TableRange>
 interface NameRec { text: string; win: boolean }
 
 /** Decode the name table into nameID -> best record. */
-function readNameTable(data: Uint8Array): Map<number, NameRec> {
+function readNameTable(data: Uint8Array, work?: import('./fontwork.js').FontWork): Map<number, NameRec> {
   const out = new Map<number, NameRec>();
   if (data.length < 6) return out;
   const count = u16(data, 2), stringOffset = u16(data, 4);
   for (let i = 0; i < count; i++) {
+    work?.work(1, 'font name record');
     const rec = 6 + i * 12;
     if (rec + 12 > data.length) break;
     const plat = u16(data, rec);
@@ -86,6 +87,7 @@ function readNameTable(data: Uint8Array): Map<number, NameRec> {
     const len = u16(data, rec + 8), off = u16(data, rec + 10);
     const start = stringOffset + off;
     if (start + len > data.length) continue;
+    work?.allocate(64 + len * 2, 'decoded font name'); work?.work(len, 'decoded font name');
     const bytes = data.subarray(start, start + len);
     let text: string;
     if (plat === 3) {                       // UTF-16BE
@@ -118,10 +120,10 @@ function readNameTable(data: Uint8Array): Map<number, NameRec> {
  * unusable; a caller wanting ID 6 does not care.
  */
 export function namesFromTables(
-  t: { name?: Uint8Array; head?: Uint8Array; os2?: Uint8Array },
+  t: { name?: Uint8Array; head?: Uint8Array; os2?: Uint8Array }, work?: import('./fontwork.js').FontWork,
 ): FontNames | undefined {
   if (!t.name) return undefined;
-  const recs = readNameTable(t.name);
+  const recs = readNameTable(t.name, work);
   const family = recs.get(1)?.text ?? '';
 
   const macStyle = t.head && t.head.length >= 46 ? u16(t.head, 44) : 0;

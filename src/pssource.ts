@@ -2,6 +2,8 @@ import { inflateSync } from 'node:zlib';
 import type { PsInterpreter } from './psvm.js';
 import type { PsScanner } from './psscan.js';
 import type { PsBudget } from './psbudget.js';
+import type { PsByteInput } from './psinput.js';
+import { psEncodedLength } from './psstreamend.js';
 import { PsFault, boolean, integer, name, canRead, type PsFile, type PsString, type PsDictionary, type PsValue } from './psvalue.js';
 import { DecodeBudget } from './decodebudget.js';
 import { asciiHexDecode, ascii85Decode, runLengthDecode } from './ascii.js';
@@ -13,7 +15,8 @@ import { rethrowLimit, UnsupportedFeatureError } from './errors.js';
 export interface PsReader {
   position: number;
   closed: boolean;
-  readonly source: Uint8Array;
+  readonly input: PsByteInput;
+  readonly scanner: PsScanner;
   readonly depth: number;
   readByte(): number | undefined;
   available(): number;
@@ -38,24 +41,32 @@ class SourceReader implements PsReader {
     if (typeof this.initial === 'function') throw new PsFault('ioerror');
     return this.initial;
   }
-  get source(): Uint8Array { return this.scanner.source; }
+  get input(): PsByteInput { return this.scanner.input; }
   get position(): number { return this.scanner.position; }
   set position(value: number) { this.scanner.position = value; }
   readByte(): number | undefined {
-    if (this.closed || this.position === this.source.length) { this.close(); return undefined; }
+    if (this.closed) return undefined;
+    const byte = this.input.byteAt(this.position);
+    if (byte === undefined) { this.close(); return undefined; }
     this.scanner.memory.budget.work(1, 'file byte');
-    const byte = this.source[this.position++];
-    if (this.position === this.source.length) this.close();
+    this.position++;
+    if (this.input.available() === 0) this.close();
     return byte;
   }
-  available(): number { return this.closed ? 0 : this.source.length - this.position; }
+  available(): number { return this.closed ? 0 : this.input.available(); }
   close(): void {
     let current: SourceReader | undefined = this;
     while (current && !current.closed) {
       current.closed = true;
+      if (typeof current.initial !== 'function') current.initial.input.close();
       current = current.closeSource ? current.parent : undefined;
     }
   }
+}
+
+/** Construct an owned reader for an internal bounded pull source. */
+export function sourcePsFile(vm: PsInterpreter, input: PsByteInput, roots: readonly PsValue[] = []): PsFile {
+  return vm.memory.file(new SourceReader(vm.scanner(input), vm.budget), roots);
 }
 
 export function currentPsFile(vm: PsInterpreter): PsFile {
@@ -76,6 +87,41 @@ function parameter(vm: PsInterpreter, parameters: PsDictionary | undefined, key:
   if (!value) return fallback;
   if (value.kind !== 'integer') throw new PsFault('typecheck');
   return value.value;
+}
+
+/** Materialize a codec window without advancing its source. Pull sources stop
+ * at the codec's terminator; ordinary arrays retain the original tail view. */
+function encodedWindow(reader: PsReader, filter: string, early: number, budget: PsBudget, decode: DecodeBudget): Uint8Array {
+  const start = reader.position, available = reader.available();
+  if (available >= 0) return reader.input.span(start, start + available);
+  if (filter === 'FlateDecode' || filter === 'LZWDecode') {
+    const length = psEncodedLength(reader.input, start, filter, early, budget, decode);
+    return reader.input.span(start, start + length);
+  }
+  let buffer = new Uint8Array(0), length = 0, literal = 0, previous = -1;
+  for (;;) {
+    budget.work(1, 'encoded source lookahead');
+    const byte = reader.input.byteAt(start + length);
+    if (byte === undefined) break;
+    budget.limits.enforce('maxFileBytes', length + 1, 'encoded source');
+    if (length === buffer.length) {
+      const capacity = Math.max(16, buffer.length * 2);
+      budget.allocate(64 + capacity, 'encoded source scratch');
+      budget.work(length, 'encoded source scratch');
+      const next = new Uint8Array(capacity); next.set(buffer); buffer = next;
+    }
+    buffer[length++] = byte;
+    if (filter === 'ASCIIHexDecode' && byte === 62) break;
+    if (filter === 'ASCII85Decode' && previous === 126 && byte === 62) break;
+    if (filter === 'RunLengthDecode') {
+      if (literal) literal--;
+      else if (byte === 128) break;
+      else literal = byte < 128 ? byte + 1 : 1;
+    }
+    previous = byte;
+  }
+  budget.allocate(64, 'encoded source view');
+  return buffer.subarray(0, length);
 }
 
 export function decodePsSource(vm: PsInterpreter, source: PsFile | PsString, filter: string,
@@ -100,7 +146,7 @@ export function decodePsSource(vm: PsInterpreter, source: PsFile | PsString, fil
   return vm.memory.file(new SourceReader(() => {
   const start = reader.position;
   vm.budget.allocate(64, 'encoded file view');
-  const input = reader.source.subarray(start, start + reader.available());
+  const input = encodedWindow(reader, filter, early, vm.budget, decode);
   const bound = decode.cap(input.length);
   // Scratch arrays, native output and predictor rows fit inside this hold.
   // Leave half the VM/work capacity available for codec dictionaries.
@@ -205,7 +251,7 @@ export function installPsSource(vm: PsInterpreter, decode: DecodeBudget): void {
       const byte = reader.readByte();
       if (byte === undefined) break;
       if (text === 'readline' && (byte === 10 || byte === 13)) {
-        if (byte === 13 && reader.source[reader.position] === 10) reader.readByte();
+        if (byte === 13 && reader.input.byteAt(reader.position) === 10) reader.readByte();
         complete = true; break;
       }
       if (count === target.length) throw new PsFault('rangecheck');

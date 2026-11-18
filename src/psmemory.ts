@@ -5,7 +5,7 @@ import { copyPsState, visitPsStateRoots, type PsState } from './psstate.js';
 import {
   PsFault, accessOf, canRead, canWrite, integer, isComposite, isReference, name, normalizeKey,
   psEquals, psNull, type PsAccess, type PsArray, type PsBody, type PsComposite,
-  type PsDictionary, type PsGState, type PsReference, type PsName, type PsOperator, type PsSave, type PsString, type PsValue,
+  type PsDictionary, type PsGState, type PsReference, type PsName, type PsOperator, type PsSave, type PsString, type PsValue, type PsFontId,
 } from './psvalue.js';
 
 type Snapshot = { values: PsValue[] } | { entries: [PsValue, PsValue][]; access: PsAccess; capacity: number } | { state: PsState };
@@ -23,6 +23,8 @@ export class PsMemory {
   private levels: Level[] = [];
   private systemBootstrapped = false;
   private systemDictionary?: PsDictionary;
+  private readonly bindings = new Map<string, { resolve: () => PsValue; roots: readonly PsValue[] }>();
+  private readonly parents = new WeakMap<PsDictionary['body'], PsDictionary>();
   constructor(readonly budget: PsBudget) {}
   /** Constructor-only systemdict finalization. The language explicitly permits
    * this one global dictionary to hold the fixed local user/error dictionaries.
@@ -36,6 +38,21 @@ export class PsMemory {
   /** Fixed host installations can add operator objects to the remembered system
    * dictionary. Source writes still use put and its normal readonly checks. */
   installSystemOperator(key: PsName, value: PsOperator): void {
+    this.installSystemValue(key, value);
+  }
+  installSystemValue(key: PsName, value: PsValue): void {
+    this.retained(true, value);
+    this.installSystemEntry(key, value);
+    this.bindings.delete(key.text);
+  }
+  installSystemBinding(key: PsName, resolve: () => PsValue, roots: readonly PsValue[]): void {
+    if (!this.systemDictionary || this.levels.length) throw new PsFault('invalidaccess');
+    for (const value of roots) this.retained(false, value);
+    this.budget.allocate(128 + roots.length * 16, 'system binding');
+    const binding = { resolve, roots: roots.slice() };
+    this.installSystemEntry(key, psNull()); this.bindings.set(key.text, binding);
+  }
+  private installSystemEntry(key: PsName, value: PsValue): void {
     const dictionary = this.systemDictionary;
     if (!dictionary || this.levels.length) throw new PsFault('invalidaccess');
     const index = this.find(dictionary, key);
@@ -82,6 +99,21 @@ export class PsMemory {
     this.length(capacity); this.budget.allocate(64 + capacity * 64, 'dictionary');
     const body = this.body({ ...this.identity(), entries: [] as [PsValue, PsValue][], access: 'unlimited' as PsAccess, capacity });
     return { kind: 'dictionary', body, executable: false };
+  }
+  fontId(): PsFontId {
+    this.budget.allocate(64, 'font identity');
+    return { kind: 'fontid', body: this.body(this.identity()), access: 'readonly', executable: false };
+  }
+  readonlyRegistry(parent?: PsDictionary): {
+    dictionary: PsDictionary; put(key: PsValue, value: PsValue): void; remove(key: PsValue): void;
+  } {
+    if (parent) { this.read(parent); this.retained(this.currentGlobal, parent); }
+    const dictionary = this.dictionary(); dictionary.body.access = 'readonly';
+    if (parent) this.parents.set(dictionary.body, parent);
+    return { dictionary,
+      put: (key, value) => { this.valid(dictionary); this.putDictionary(dictionary, key, value); },
+      remove: key => { this.valid(dictionary); this.removeDictionary(dictionary, key); },
+    };
   }
   name(text: string, executable = false): PsName {
     this.budget.allocate(64 + text.length * 2, 'name');
@@ -178,9 +210,9 @@ export class PsMemory {
   get(value: PsComposite, key: number | PsValue): PsValue {
     this.read(value);
     if (value.kind === 'dictionary') {
-      const index = this.find(value, this.key(key));
-      if (index < 0) throw new PsFault('undefined');
-      return value.body.entries[index]![1];
+      const found = this.lookup(value, this.key(key));
+      if (found === undefined) throw new PsFault('undefined');
+      return found;
     }
     const index = this.index(value, key) + value.offset;
     return value.kind === 'array' ? value.body.values[index]! : integer(value.body.bytes[index]!);
@@ -212,30 +244,61 @@ export class PsMemory {
     return value.body.bytes.subarray(value.offset, value.offset + value.length);
   }
   lookup(value: PsDictionary, key: PsValue): PsValue | undefined {
-    this.read(value); const index = this.find(value, this.key(key));
-    return index < 0 ? undefined : value.body.entries[index]![1];
+    const normalized = this.key(key);
+    let current: PsDictionary | undefined = value, depth = 0;
+    while (current) {
+      this.read(current);
+      const index = this.find(current, normalized);
+      if (index >= 0) return this.bindingValue(current, current.body.entries[index]!);
+      current = this.parents.get(current.body);
+      if (current) this.budget.depth(++depth, 'dictionary overlay');
+    }
+    return undefined;
+  }
+  private bindingValue(dictionary: PsDictionary, pair: [PsValue, PsValue]): PsValue {
+    const key = pair[0];
+    if (dictionary.body === this.systemDictionary?.body && key.kind === 'name') {
+      const binding = this.bindings.get(key.text);
+      if (binding) { this.budget.work(1, 'system binding'); const value = binding.resolve(); this.retained(false, value); return value; }
+    }
+    return pair[1];
+  }
+  dictionarySize(value: PsDictionary): number {
+    this.read(value);
+    return this.parents.has(value.body) ? this.entries(value).length : value.body.entries.length;
   }
   entries(value: PsDictionary): [PsValue, PsValue][] {
-    this.read(value); this.budget.allocate(value.body.entries.length * 64, 'dictionary entries');
-    this.budget.work(value.body.entries.length, 'dictionary entries');
-    return value.body.entries.map(([key, item]) => [key, item]);
+    this.read(value);
+    if (!this.parents.has(value.body)) {
+      this.budget.allocate(value.body.entries.length * 64, 'dictionary entries');
+      this.budget.work(value.body.entries.length, 'dictionary entries');
+      return value.body.entries.map(pair => [pair[0], this.bindingValue(value, pair)]);
+    }
+    const result: [PsValue, PsValue][] = [];
+    let current: PsDictionary | undefined = value, depth = 0;
+    while (current) {
+      this.read(current);
+      for (const pair of current.body.entries) {
+        this.budget.work(1, 'dictionary overlay entries');
+        let shadowed = false;
+        for (const entry of result) {
+          this.budget.work(1, 'dictionary overlay comparison');
+          if (psEquals(entry[0], pair[0], n => this.budget.work(n))) { shadowed = true; break; }
+        }
+        if (!shadowed) {
+          this.budget.items(result.length + 1); this.budget.allocate(64, 'dictionary overlay entry');
+          result.push([pair[0], this.bindingValue(current, pair)]);
+        }
+      }
+      current = this.parents.get(current.body);
+      if (current) this.budget.depth(++depth, 'dictionary overlay');
+    }
+    return result;
   }
   put(target: PsComposite, key: number | PsValue, value: PsValue): void {
     this.write(target);
     if (target.kind === 'dictionary') {
-      const normalized = this.key(key);
-      this.retained(target.body.global, normalized); this.retained(target.body.global, value);
-      const index = this.find(target, normalized);
-      if (index < 0) {
-        this.budget.items(target.body.entries.length + 1);
-        if (target.body.entries.length >= target.body.capacity) this.budget.allocate(64, 'dictionary entry');
-      }
-      this.journal(target);
-      if (index < 0) {
-        target.body.entries.push([normalized, value]);
-        target.body.capacity = Math.max(target.body.capacity, target.body.entries.length);
-      } else target.body.entries[index] = [target.body.entries[index]![0], value];
-      return;
+      this.putDictionary(target, key, value); return;
     }
     const index = this.index(target, key) + target.offset;
     if (target.kind === 'string') {
@@ -247,9 +310,26 @@ export class PsMemory {
     this.retained(target.body.global, value); this.journal(target);
     target.body.values[index] = value;
   }
+  private putDictionary(target: PsDictionary, key: number | PsValue, value: PsValue): void {
+    const normalized = this.key(key);
+    this.retained(target.body.global, normalized); this.retained(target.body.global, value);
+    const index = this.find(target, normalized);
+    if (index < 0) {
+      this.budget.items(target.body.entries.length + 1);
+      if (target.body.entries.length >= target.body.capacity) this.budget.allocate(64, 'dictionary entry');
+    }
+    this.journal(target);
+    if (index < 0) {
+      target.body.entries.push([normalized, value]);
+      target.body.capacity = Math.max(target.body.capacity, target.body.entries.length);
+    } else target.body.entries[index] = [target.body.entries[index]![0], value];
+  }
   /** Implements undef; absence is harmless, access and journaling still apply. */
   remove(target: PsDictionary, key: PsValue): void {
-    this.write(target); const index = this.find(target, this.key(key));
+    this.write(target); this.removeDictionary(target, key);
+  }
+  private removeDictionary(target: PsDictionary, key: PsValue): void {
+    const index = this.find(target, this.key(key));
     if (index < 0) return;
     this.budget.work(target.body.entries.length - index, 'dictionary removal');
     this.journal(target); target.body.entries.splice(index, 1);
@@ -284,7 +364,7 @@ export class PsMemory {
   }
   restrictAccess<T extends PsReference>(value: T, access: PsAccess): T {
     this.valid(value);
-    if ((value.kind === 'dictionary' || value.kind === 'gstate') && access === 'executeonly') throw new PsFault('typecheck');
+    if ((value.kind === 'dictionary' || value.kind === 'gstate' || value.kind === 'fontid') && access === 'executeonly') throw new PsFault('typecheck');
     if (rank[access] < rank[accessOf(value)]) throw new PsFault('invalidaccess');
     if (value.kind === 'dictionary') { this.journal(value); value.body.access = access; return value; }
     return { ...value, access };
@@ -324,6 +404,9 @@ export class PsMemory {
         const values = snapshot && 'values' in snapshot ? snapshot.values : value.body.values;
         for (const item of values) push(item);
       } else if (value.kind === 'dictionary') {
+        const parent = this.parents.get(value.body); if (parent) push(parent);
+        if (value.body === this.systemDictionary?.body) for (const binding of this.bindings.values())
+          for (const root of binding.roots) push(root);
         const entries = snapshot && 'entries' in snapshot ? snapshot.entries : value.body.entries;
         for (const [key, item] of entries) { push(key); push(item); }
       } else if (value.kind === 'gstate') {

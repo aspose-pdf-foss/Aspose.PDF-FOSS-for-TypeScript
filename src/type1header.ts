@@ -13,6 +13,8 @@
 
 /** The header fields anything outside this module needs. */
 export interface Type1Header {
+  /** Full glyph-to-user matrix when explicitly stated. */
+  matrix?: [number, number, number, number, number, number];
   /** /FontName — becomes the sfnt PostScript name, and hence /BaseFont. */
   fontName?: string;
   /** /FamilyName. */
@@ -143,6 +145,7 @@ export function readType1Header(bytes: Uint8Array): Type1Header {
 
   const box = psNumbers(clear, '/FontBBox');
   return {
+    ...(fm?.length === 6 ? { matrix: fm as [number, number, number, number, number, number] } : {}),
     fontName: psName(clear, '/FontName'),
     familyName: psString(clear, '/FamilyName'),
     weight: psString(clear, '/Weight'),
