@@ -4,10 +4,10 @@ const WS = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
 
 /** ASCIIHexDecode: hex digit pairs, whitespace skipped, '>' ends data.
  *  An odd trailing nibble is treated as if followed by '0'. */
-export function asciiHexDecode(input: Uint8Array): Uint8Array {
+export function asciiHexDecode(input: Uint8Array, maxOut = Infinity): Uint8Array {
   const out: number[] = [];
   let hi = -1;
-  for (let i = 0; i < input.length; i++) {
+  for (let i = 0; i < input.length && out.length <= maxOut; i++) {
     const c = input[i];
     if (c === 0x3e) break; // '>'
     if (WS.has(c)) continue;
@@ -19,14 +19,14 @@ export function asciiHexDecode(input: Uint8Array): Uint8Array {
     if (hi < 0) hi = v;
     else { out.push((hi << 4) | v); hi = -1; }
   }
-  if (hi >= 0) out.push(hi << 4); // odd trailing nibble padded with 0
+  if (hi >= 0 && out.length <= maxOut) out.push(hi << 4); // odd trailing nibble padded with 0
   return Uint8Array.from(out);
 }
 
 /** ASCII85Decode: base-85, whitespace skipped, optional '<~' prefix, 'z' => four
  *  zero bytes, '~>' (or end) ends data. A partial final group of n chars yields
  *  n-1 bytes. */
-export function ascii85Decode(input: Uint8Array): Uint8Array {
+export function ascii85Decode(input: Uint8Array, maxOut = Infinity): Uint8Array {
   const out: number[] = [];
   const group: number[] = [];
   let i = 0;
@@ -34,16 +34,18 @@ export function ascii85Decode(input: Uint8Array): Uint8Array {
   const flush = () => {
     let n = 0;
     for (const g of group) n = (n * 85 + g) >>> 0;
-    out.push((n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
+    for (const byte of [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]) {
+      if (out.length <= maxOut) out.push(byte);
+    }
     group.length = 0;
   };
-  for (; i < input.length; i++) {
+  for (; i < input.length && out.length <= maxOut; i++) {
     const c = input[i];
     if (c === 0x7e) break; // '~' (of '~>')
     if (WS.has(c)) continue;
     if (c === 0x7a) { // 'z'
       if (group.length !== 0) throw new PdfParseError('ASCII85Decode: z inside group');
-      out.push(0, 0, 0, 0);
+      for (let k = 0; k < 4 && out.length <= maxOut; k++) out.push(0);
       continue;
     }
     if (c < 0x21 || c > 0x75) throw new PdfParseError(`ASCII85Decode: bad char 0x${c.toString(16)}`);
@@ -57,7 +59,7 @@ export function ascii85Decode(input: Uint8Array): Uint8Array {
     let n = 0;
     for (const g of group) n = (n * 85 + g) >>> 0;
     const b = [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
-    for (let k = 0; k < cnt - 1; k++) out.push(b[k]);
+    for (let k = 0; k < cnt - 1 && out.length <= maxOut; k++) out.push(b[k]);
   }
   return Uint8Array.from(out);
 }
@@ -72,10 +74,10 @@ export function runLengthDecode(input: Uint8Array, maxOut = Infinity): Uint8Arra
     const len = input[i++];
     if (len === 128) break;
     if (len < 128) {
-      for (let k = 0; k <= len && i < input.length; k++) out.push(input[i++]);
+      for (let k = 0; k <= len && i < input.length && out.length <= maxOut; k++) out.push(input[i++]);
     } else {
       const b = input[i++];
-      for (let k = 0; k < 257 - len; k++) out.push(b);
+      for (let k = 0; k < 257 - len && out.length <= maxOut; k++) out.push(b);
     }
   }
   return Uint8Array.from(out);

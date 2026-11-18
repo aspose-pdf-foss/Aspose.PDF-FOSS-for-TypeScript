@@ -10209,6 +10209,99 @@ Source (`src/`):
   stream. So its Huffman aggregate decodes from the segment's first byte. Do
   not cite it as agreeing. Still no real-world FILE uses the shape; one
   independent implementation agreeing is evidence, not conformance.
+- **psstate.ts** — internal graphics-state types and bounded path/state copying.
+  Paths use device-space M/L/C/Z segments and retain current/subpath-start
+  coordinates and optional setbbox metadata. Copies charge before constructing
+  arrays. Root enumeration retains source color descriptors and dash arrays.
+- **psgraphics.ts** — optional graphics installation and graphics/save stacks.
+  Defaults are A4 at 595 by 842 points and an identity default matrix. Graphics
+  installation consumes ordinary interpreter budgets. Language-only instances
+  acquire no graphics operators.
+  **Invariant (`lw8w.2`):** VM save boundaries activate only after memory save
+  succeeds. grestoreall stops at the most recent boundary. State restoration
+  replaces the complete state, including absent optional fields. Paint scopes
+  isolate the graphics stack and retain all parent-stack roots until completion
+  or unwind. Their cleanup allocates nothing.
+  Page operators own explicit blank pages, retained copypage marks, erasepage,
+  trailing marked-page finalization, PageSize transitions and null devices.
+  Finalization counts the trailing marked page against the same page-list bound
+  as explicit page publication.
+  The device box/default matrix participate in saved state. Vector painting
+  emits isolated PDF blocks and preserves constructed device coordinates while
+  applying the full current stroke matrix.
+- **pspdf.ts** — bounded PDF operator/resource output and the internal
+  appendPsPages Document adapter. Serialization walks nested operands iteratively
+  and checks token/byte limits while producing them. Counters are shared across
+  the graphics job, including subsequent pages and future nested captures.
+  **Invariant (`lw8w.2`):** failed paint transactions discard incomplete content
+  blocks. Snapshots retain their resource dictionaries independently of later
+  writer additions. The adapter validates page dimensions before publishing,
+  isolates per-page resource dictionaries and reuses shared resource/content
+  streams across copied pages, preventing output amplification by duplication.
+  Patterns used in the identity coordinate basis retain their original stream
+  identity across pages; transformed capture owners receive rebased copies.
+  External qpdf checks establish structural validity only.
+- **pspaint.ts** — FormType 1 and colored/uncolored Type 1 tiling captures.
+  makepattern binds private metadata to a VM-valid readonly dictionary body.
+  Completed cells cache native PDF pattern streams; an escaped callback clears
+  construction state and publishes nothing. Forms/cells have independent
+  resource dictionaries. Capture matrices map local coordinates to the shared
+  device coordinate system; the writer rebases geometry, stroke/image matrices
+  and nested pattern resources into each capture owner. Color setters and ordinary
+  images are forbidden in uncolored cells. Page changes are forbidden in captures.
+  Each capture's bottom graphics-stack entry retains its initial transformed
+  state and BBox clip; unbalanced restores never expose the caller's state.
+  The beginCapture boundary also supports future host-added font resources.
+- **psimage.ts** — stack/dictionary sampled images, stencils and shared-pump
+  data producers. Declared pixels and sample storage are checked before growth.
+  Procedure chunks are copied before another invocation; empty chunks end input.
+  Partial final rows are discarded while completed rows keep their original
+  placement. Native device samples and Decode survive into PDF; 12-bit samples
+  expand to PDF's supported 16-bit representation. Lookup/tint pixels use the
+  same color callbacks as vector painting. Publication happens after completion.
+- **pssource.ts** — VM-owned supplied-byte files and lazy decoding filters.
+  Source execution and currentfile share the scanner cursor; executable strings
+  keep the enclosing file identity. Filter chains initialize iteratively on
+  first read and consume only their encoded prefix. Native Flate and existing
+  ASCII/RunLength/LZW codecs are bounded by shared DecodeBudget and reserved VM
+  bytes/work before growth. File positions do not roll back; restore closes new
+  local files without rejecting their surviving references. No host paths open.
+- **pscolor.ts** — device, Indexed, Separation and DeviceN color selection,
+  source-component queries, tint callbacks and line-state parameters. Color
+  callbacks run on the existing VM pump and commit only after validation.
+  Native CMYK colorants and Separation All/None ignore alternate parameters;
+  other tints prepare alternate device paint. The virtual device uses identity
+  black generation/UCR and Adobe's additive-black CMYK conversion.
+  Fixed graphics operators are installed in readonly systemdict through the
+  operator-only host installation boundary; ordinary host registration remains
+  in userdict. Source code cannot use this boundary to write systemdict.
+- **psmatrix.ts** — validated six-element matrix operands and matrix/point
+  operators. Reuses text.ts's row-vector affine helpers. Operand aliases are
+  read before destination writes, singular inverses report undefinedresult,
+  and transformed coordinates remain finite PostScript reals.
+- **pspath.ts** — device-space path construction, currentpoint, arcs/tangent
+  arcs and bounding queries. Matrix changes affect subsequent construction and
+  user-space readback. Segment growth is bounded before mutation. pathbbox
+  includes curve control points and excludes a trailing moveto, per Adobe.
+  Finite huge angles normalize before deriving subdivision counts.
+  Advanced operators use iterative device-space flattening, bounded pathforall
+  snapshots, reversed contour traversal and shared stroke-outline geometry.
+  Flattening measures control-point distance to the finite chord segment so
+  collinear curves that overshoot their endpoints retain their excursions.
+  User paths compile a validated operator inventory, including encoded opcodes
+  and repetition prefixes, to the existing VM pump. Optional stroke matrices
+  transform the pen while retaining the constructed path's device placement.
+- **psclip.ts** — cumulative PostScript clip constraints and clippath boundary
+  materialization. Drawing can replay the original curve constraints. clippath
+  flattens curves at `flatness * 72 / 250` points, splits crossing/coincident
+  edges, tests winding membership against every constraint and links oriented
+  boundaries, preserving holes/disjoint regions under nonzero filling.
+  **Invariant (`lw8w.2`):** comparison, intersection, sorting, boundary growth
+  and adjacency walks are metered before large scratch growth. The clipping
+  operators preserve the current path. Boundary vertex keys use a 1e-8-point
+  tolerance. Shared strokegeom helpers accept an optional PostScript budget,
+  pixel size and flatness, including metering inside dash expansion. Ordinary
+  renderer calls retain their existing default geometry contract.
 - **psvalue.ts** — internal PostScript tagged values, signed 32-bit integers,
   finite reals, byte-preserving names, composite views, access attributes and
   named `PsFault` language errors. Strings compare by bytes and names compare
@@ -10216,6 +10309,9 @@ Source (`src/`):
   compare body identity. Equality is cycle-safe and running callers meter
   content comparisons. Array/string access and executable flags are per
   reference; dictionary access is shared by its backing body.
+  `PsGState` extends the backed-object union while `PsComposite` retains its
+  indexable array/string/dictionary meaning. `isReference` covers backed objects
+  for global barriers, validity/access checks and VM root walks.
 - **psbudget.ts** — per-interpreter cumulative work and accounted allocation,
   using `maxPostScriptOperations` and `maxPostScriptVmBytes`. Checks precede
   allocation. Fixed accounting: 64 bytes per body/name/save, two per name
@@ -10229,6 +10325,10 @@ Source (`src/`):
   shares them. `bootstrap` is only for fixed constructor initialization;
   supplied source, registered host operators and every later allocation are
   charged. `null` and `LoadLimits.unlimited()` retain existing policy semantics.
+  **Invariant (`lw8w.2`):** reservations hold capacity before bounded native
+  allocation and commit actual byte/work costs once. Cancellation releases
+  uncommitted capacity only. Ordinary charges include outstanding reservations,
+  so a decoder cannot oversubscribe a job by nesting reservations.
 - **psmemory.ts** — internal composite allocation, mutable shared intervals,
   overlap-safe copies, dictionary key normalization, local/global VM and
   journaled saves. All source-controlled reads/writes pass its access and
@@ -10240,6 +10340,9 @@ Source (`src/`):
   validates the prospective restored graph of live roots before any mutation,
   rejects retained newer local bodies/save tokens, invalidates discarded
   bodies and restores allocation mode. Its iterative graph walk handles cycles.
+  Gstate bodies are copied/journaled through psstate.ts and their retained
+  source roots participate in prospective restore validation. Gstate access
+  attributes belong to references, as array/string attributes do.
 - **psscan.ts** — lazy internal PostScript byte scanner with a shared mutable
   source cursor for future inline-data readers. Supports decimal/radix numbers,
   literal/executable/immediate names, escaped/hex/ASCII85 strings and iterative
@@ -10269,6 +10372,18 @@ Source (`src/`):
   offset-bearing `PdfParseError`; resource/unsupported/host errors propagate.
   Every catch starts with `rethrowLimit`, so no language handler catches budget
   exhaustion. Terminal paths clear execution frames in `finally`.
+  **Invariant (`lw8w.2`):** `invoke` schedules callbacks on the same pump with
+  completion and unwind boundaries. Returning error handlers resume inside the
+  boundary. Escaping stop/exit/quit and terminal errors unwind exited scopes in
+  reverse order. Unwind callbacks must be allocation-free and nonthrowing so
+  cleanup works after budget exhaustion. Save participants prepare snapshots
+  before memory save and enumerate prospective roots before restore mutates
+  anything. An optional saved callback activates a prepared graphics boundary
+  after memory save succeeds. Activation and final restore callbacks allocate
+  nothing and cannot throw.
+  Internal image work uses continuation frames distinct from language loops:
+  `exit` skips that work and targets the enclosing language loop, while restore
+  retains the continuation's roots.
 - **pscore.ts** — installs internal stack/mark, arithmetic/logic/comparison,
   execution/control, execution-stack inspection and bind operators. Integer
   overflow promotes where specified, real typing survives integral results,

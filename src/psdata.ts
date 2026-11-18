@@ -1,7 +1,8 @@
 import type { PsInterpreter } from './psvm.js';
-import { PsFault, boolean, canRead, canWrite, integer, isComposite, mark, real, withExecutable, type PsArray, type PsComposite, type PsString, type PsValue } from './psvalue.js';
+import { PsFault, boolean, canRead, canWrite, integer, isComposite, isReference, mark, real, withExecutable, type PsArray, type PsComposite, type PsReference, type PsString, type PsValue } from './psvalue.js';
 
 function composite(value: PsValue): PsComposite { if (!isComposite(value)) throw new PsFault('typecheck'); return value; }
+function reference(value: PsValue): PsReference { if (!isReference(value)) throw new PsFault('typecheck'); return value; }
 function sequence(value: PsValue): PsArray | PsString { if (value.kind !== 'array' && value.kind !== 'string') throw new PsFault('typecheck'); return value; }
 function readable(value: PsComposite): void { if (!value.body.valid) throw new PsFault('invalidrestore'); if (!canRead(value)) throw new PsFault('invalidaccess'); }
 function writable(value: PsComposite): void { if (!value.body.valid) throw new PsFault('invalidrestore'); if (!canWrite(value)) throw new PsFault('invalidaccess'); }
@@ -62,6 +63,12 @@ export function installPsData(vm: PsInterpreter): void {
     vm.replace(value.length + 1, value);
   });
   op('copy', () => {
+    if (vm.peek().kind === 'gstate') {
+      const target = vm.typed('gstate'), source = vm.typed('gstate', 1);
+      vm.memory.writeGState(target, vm.memory.readGState(source));
+      vm.replace(2, target);
+      return;
+    }
     const target = vm.peek();
     if (target.kind === 'integer') {
       const n = target.value; if (n < 0) throw new PsFault('rangecheck'); if (n > vm.stack.length - 1) throw new PsFault('stackunderflow');
@@ -132,13 +139,13 @@ export function installPsData(vm: PsInterpreter): void {
     const result = radix === 10 ? numericText(value) : (integer(Math.trunc(value.value)).value >>> 0).toString(radix).toUpperCase();
     vm.budget.allocate(64 + result.length * 2, 'conversion text'); vm.replace(3, writeText(vm, dest, result));
   });
-  for (const key of ['readonly', 'executeonly', 'noaccess'] as const) op(key, () => vm.replace(1, vm.memory.restrictAccess(composite(vm.peek()), key)));
+  for (const key of ['readonly', 'executeonly', 'noaccess'] as const) op(key, () => vm.replace(1, vm.memory.restrictAccess(reference(vm.peek()), key)));
   for (const key of ['rcheck', 'wcheck']) op(key, () => {
-    const value = composite(vm.peek()); if (!value.body.valid) throw new PsFault('invalidrestore'); vm.replace(1, boolean(key === 'rcheck' ? canRead(value) : canWrite(value)));
+    const value = reference(vm.peek()); if (!value.body.valid) throw new PsFault('invalidrestore'); vm.replace(1, boolean(key === 'rcheck' ? canRead(value) : canWrite(value)));
   });
   op('setglobal', () => { vm.memory.currentGlobal = vm.typed('boolean').value; vm.replace(1); });
   op('currentglobal', () => vm.push(boolean(vm.memory.currentGlobal)));
-  op('gcheck', () => { const value = vm.peek(); vm.replace(1, boolean(isComposite(value) ? value.body.global : value.kind !== 'save')); });
+  op('gcheck', () => { const value = vm.peek(); vm.replace(1, boolean(isReference(value) ? value.body.global : value.kind !== 'save')); });
   op('save', () => vm.push(vm.save()));
   op('restore', () => { const token = vm.typed('save'); vm.replace(1); vm.restore(token); });
 }

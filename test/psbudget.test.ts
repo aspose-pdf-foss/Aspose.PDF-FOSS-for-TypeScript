@@ -32,3 +32,59 @@ it('disables a single PostScript budget without disabling its neighbor', () => {
   budget.work(100_000_000); budget.allocate(1);
   expect(() => budget.allocate(1)).toThrowError(expect.objectContaining({ limit: 'maxPostScriptVmBytes', allowed: 1, reached: 2 }));
 });
+
+describe('PostScript budget reservations', () => {
+  const limits = LoadLimits.defaults.with({ maxPostScriptVmBytes: 128, maxPostScriptOperations: 32 });
+
+  it('holds capacity and commits only the actual cost', () => {
+    const budget = new PsBudget(limits);
+    const reservation = budget.reserve(64, 8);
+    expect(budget.remainingBytes).toBe(64);
+    expect(budget.remainingOperations).toBe(24);
+    expect(() => budget.allocate(65)).toThrowError(expect.objectContaining({ limit: 'maxPostScriptVmBytes', reached: 129 }));
+    reservation.commit(16, 2);
+    expect(budget.remainingBytes).toBe(112);
+    expect(budget.remainingOperations).toBe(30);
+    budget.allocate(112);
+    expect(() => budget.allocate(1)).toThrow();
+    expect(() => reservation.commit(0, 0)).toThrow(RangeError);
+  });
+
+  it('releases unused capacity once without refunding committed work', () => {
+    const budget = new PsBudget(limits);
+    budget.work(3);
+    const outer = budget.reserve(64, 8);
+    const inner = budget.reserve(64, 8);
+    expect(budget.remainingBytes).toBe(0);
+    inner.cancel();
+    outer.commit(16, 2);
+    expect(budget.remainingBytes).toBe(112);
+    expect(budget.remainingOperations).toBe(27);
+    expect(() => inner.cancel()).toThrow(RangeError);
+  });
+
+  it('refuses invalid and overcommitted costs without losing the reservation', () => {
+    const budget = new PsBudget(limits);
+    for (const count of [-1, 0.5, NaN, Infinity]) {
+      expect(() => budget.reserve(count, 0)).toThrow(RangeError);
+      expect(() => budget.reserve(0, count)).toThrow(RangeError);
+    }
+    const reservation = budget.reserve(8, 8);
+    expect(() => reservation.commit(9, 0)).toThrow(RangeError);
+    expect(() => reservation.commit(0, 9)).toThrow(RangeError);
+    reservation.cancel();
+    expect(budget.remainingBytes).toBe(128);
+  });
+
+  it('refuses a reservation atomically against both limits', () => {
+    const budget = new PsBudget(limits);
+    expect(() => budget.reserve(64, 33)).toThrowError(expect.objectContaining({ limit: 'maxPostScriptOperations' }));
+    expect(budget.remainingBytes).toBe(128);
+    expect(budget.remainingOperations).toBe(32);
+    const unlimited = new PsBudget(LoadLimits.unlimited());
+    expect(unlimited.remainingBytes).toBe(Infinity);
+    const reservation = unlimited.reserve(1000, 1000);
+    reservation.commit(10, 10);
+    expect(unlimited.remainingOperations).toBe(Infinity);
+  });
+});

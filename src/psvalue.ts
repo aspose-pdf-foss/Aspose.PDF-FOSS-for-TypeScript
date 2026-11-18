@@ -1,8 +1,13 @@
+import type { PsState } from './psstate.js';
+import type { PsReader } from './pssource.js';
+
 export type PsAccess = 'unlimited' | 'readonly' | 'executeonly' | 'noaccess';
 export interface PsBody { global: boolean; valid: boolean; epoch: number }
 export interface PsArrayBody extends PsBody { values: PsValue[]; packed: boolean }
 export interface PsStringBody extends PsBody { bytes: Uint8Array }
 export interface PsDictionaryBody extends PsBody { entries: [PsValue, PsValue][]; access: PsAccess; capacity: number }
+export interface PsGStateBody extends PsBody { state: PsState }
+export interface PsFileBody extends PsBody { reader: PsReader; owner: object; roots: readonly PsValue[] }
 interface Ref { executable: boolean }
 export type PsInteger = Ref & { kind: 'integer'; value: number };
 export type PsReal = Ref & { kind: 'real'; value: number };
@@ -15,8 +20,11 @@ export type PsArray = Ref & { kind: 'array'; body: PsArrayBody; offset: number; 
 export type PsString = Ref & { kind: 'string'; body: PsStringBody; offset: number; length: number; access: PsAccess };
 export type PsDictionary = Ref & { kind: 'dictionary'; body: PsDictionaryBody };
 export type PsComposite = PsArray | PsString | PsDictionary;
+export type PsGState = Ref & { kind: 'gstate'; body: PsGStateBody; access: PsAccess };
+export type PsFile = Ref & { kind: 'file'; body: PsFileBody; access: PsAccess };
+export type PsReference = PsComposite | PsGState | PsFile;
 export type PsSave = Ref & { kind: 'save'; id: number };
-export type PsValue = PsInteger | PsReal | PsBoolean | PsName | PsOperator | PsMark | PsNull | PsComposite | PsSave;
+export type PsValue = PsInteger | PsReal | PsBoolean | PsName | PsOperator | PsMark | PsNull | PsReference | PsSave;
 export class PsFault extends Error {
   constructor(readonly errorName: string, readonly offset?: number, readonly command?: PsValue) { super(errorName); this.name = 'PsFault'; }
 }
@@ -35,10 +43,12 @@ export const operator = (name: string, execute: () => void): PsOperator => ({ ki
 export const mark = (): PsMark => ({ kind: 'mark', executable: false });
 export const psNull = (): PsNull => ({ kind: 'null', executable: false });
 export function withExecutable<T extends PsValue>(value: T, executable: boolean): T { return { ...value, executable }; }
-export function accessOf(value: PsComposite): PsAccess { return value.kind === 'dictionary' ? value.body.access : value.access; }
-export function canRead(value: PsComposite): boolean { return accessOf(value) === 'unlimited' || accessOf(value) === 'readonly'; }
-export function canWrite(value: PsComposite): boolean { return accessOf(value) === 'unlimited' && !(value.kind === 'array' && value.body.packed); }
+export function accessOf(value: PsReference): PsAccess { return value.kind === 'dictionary' ? value.body.access : value.access; }
+export function canRead(value: PsReference): boolean { return accessOf(value) === 'unlimited' || accessOf(value) === 'readonly'; }
+export function canWrite(value: PsReference): boolean { return accessOf(value) === 'unlimited' && !(value.kind === 'array' && value.body.packed); }
 export function isComposite(value: PsValue): value is PsComposite { return value.kind === 'array' || value.kind === 'string' || value.kind === 'dictionary'; }
+/** Backed objects, including non-indexable graphics states. */
+export function isReference(value: PsValue): value is PsReference { return isComposite(value) || value.kind === 'gstate' || value.kind === 'file'; }
 /** Supply work when comparing source-controlled bytes/names in a running VM. */
 export function psEquals(a: PsValue, b: PsValue, work?: (count: number) => void): boolean {
   if ((a.kind === 'integer' || a.kind === 'real') && (b.kind === 'integer' || b.kind === 'real')) return a.value === b.value;
@@ -69,6 +79,8 @@ export function psEquals(a: PsValue, b: PsValue, work?: (count: number) => void)
       return true;
     case 'array': return b.kind === 'array' && a.body === b.body && a.offset === b.offset && a.length === b.length;
     case 'dictionary': return b.kind === 'dictionary' && a.body === b.body;
+    case 'gstate': return b.kind === 'gstate' && a.body === b.body;
+    case 'file': return b.kind === 'file' && a.body === b.body;
     case 'operator': return b.kind === 'operator' && a.execute === b.execute;
     case 'save': return b.kind === 'save' && a.id === b.id;
     case 'mark': case 'null': return true;

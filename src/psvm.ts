@@ -6,13 +6,36 @@ import { PsScanner } from './psscan.js';
 import { PsFault, boolean, name, operator, psNull, type PsArray, type PsDictionary, type PsSave, type PsString, type PsValue } from './psvalue.js';
 import { installPsCore } from './pscore.js';
 import { installPsData } from './psdata.js';
+import type { PsFile } from './psvalue.js';
+
+export interface PsInvocation {
+  roots: readonly PsValue[];
+  complete: () => void;
+  /** Allocation-free, nonthrowing cleanup, including during resource exhaustion. */
+  unwind: () => void;
+}
+
+export interface PsSaveSnapshot {
+  visitRoots(visit: (value: PsValue) => void): void;
+  /** Activate a prepared boundary after memory save succeeds, without allocation. */
+  saved?(): void;
+  /** Apply already prepared state without allocating or throwing. */
+  restore(): void;
+}
+
+export interface PsSaveParticipant {
+  /** Prepare and charge a snapshot without mutating participant state. */
+  prepareSave(): PsSaveSnapshot;
+}
 
 type Frame =
-  | { kind: 'source'; scanner: PsScanner; owner?: PsString }
+  | { kind: 'source'; scanner: PsScanner; owner?: PsString | PsFile }
   | { kind: 'procedure'; procedure: PsArray; index: number; offset: number }
   | { kind: 'loop'; step: () => boolean; roots: readonly PsValue[] }
+  | { kind: 'work'; step: () => boolean; roots: readonly PsValue[] }
   | { kind: 'execute'; value: PsValue; indirect: boolean; offset: number }
   | { kind: 'handler'; fault: PsFault; command: PsValue }
+  | { kind: 'invocation'; invocation: PsInvocation; command: PsValue; offset: number }
   | { kind: 'stopped' };
 
 export class PsInterpreter {
@@ -35,8 +58,21 @@ export class PsInterpreter {
   private undo: { index: number; value: PsValue }[] | undefined;
   private undoFloor = 0;
   private undoLength = 0;
-  private readonly saves: { token: PsSave; packing: boolean }[] = [];
+  private readonly saves: { token: PsSave; packing: boolean; snapshots: PsSaveSnapshot[] }[] = [];
+  private readonly saveParticipants: PsSaveParticipant[] = [];
   private uncaught: PsFault | undefined;
+  private fileSupport?: { open(scanner: PsScanner): PsFile; scanner(file: PsFile): PsScanner };
+  installFileSupport(support: { open(scanner: PsScanner): PsFile; scanner(file: PsFile): PsScanner }): void {
+    if (this.running || this.fileSupport || this.saves.length) throw new PsFault('invalidaccess');
+    this.fileSupport = support;
+  }
+  get currentFile(): PsFile | undefined {
+    for (let i = this.frames.length - 1; i >= 0; i--) {
+      this.budget.work(); const frame = this.frames[i]!;
+      if (frame.kind === 'source' && frame.owner?.kind === 'file') return frame.owner;
+    }
+    return undefined;
+  }
   get currentScanner(): PsScanner | undefined {
     for (let i = this.frames.length - 1; i >= 0; i--) { this.budget.work(); const frame = this.frames[i]!; if (frame.kind === 'source') return frame.scanner; }
     return undefined;
@@ -71,6 +107,13 @@ export class PsInterpreter {
   registerOperator(text: string, execute: (vm: PsInterpreter) => void): void {
     this.budget.allocate(64, 'operator');
     this.memory.put(this.initializing ? this.systemdict : this.userdict, this.memory.name(text), operator(text, () => execute(this)));
+  }
+  /** Install a fixed library operator before source execution and open saves.
+   * Host extensions continue to use registerOperator and ordinary userdict. */
+  registerStandardOperator(text: string, execute: (vm: PsInterpreter) => void): void {
+    if (this.running || this.saves.length) throw new PsFault('invalidaccess');
+    this.budget.allocate(64, 'standard operator');
+    this.memory.installSystemOperator(this.memory.name(text), operator(text, () => execute(this)));
   }
   lookup(text: string): PsValue | undefined {
     const key = name(text); const dictionary = this.where(key); return dictionary ? this.memory.lookup(dictionary, key) : undefined;
@@ -135,6 +178,32 @@ export class PsInterpreter {
   execute(value: PsValue, indirect = true): void {
     this.frame({ kind: 'execute', value, indirect, offset: this.offset });
   }
+  /** Schedule a callback with completion and lexical-scope cleanup on the same
+   * iterative pump. A returning language error handler stays inside the scope. */
+  invoke(value: PsValue, invocation: PsInvocation): void {
+    const base = this.frames.length;
+    let installed = false;
+    let scheduled = false;
+    try {
+      this.budget.allocate(invocation.roots.length * 16, 'invocation roots');
+      this.frame({ kind: 'invocation', invocation, command: this.command, offset: this.offset });
+      installed = true;
+      this.execute(value);
+      scheduled = true;
+    } finally {
+      if (!scheduled) {
+        if (installed) this.unwindTo(base);
+        else invocation.unwind();
+      }
+    }
+  }
+  /** Cleanup deliberately spends no fuel and allocates no scratch storage. */
+  private unwindTo(length: number): void {
+    while (this.frames.length > length) {
+      const frame = this.frames.pop()!;
+      if (frame.kind === 'invocation') frame.invocation.unwind();
+    }
+  }
   private dispatch(value: PsValue, indirect = true): void {
     for (;;) {
       this.budget.work();
@@ -146,36 +215,59 @@ export class PsInterpreter {
       if (value.kind === 'operator') { value.execute(); return; }
       if (value.kind === 'array') { this.memory.checkExecutable(value); this.frame({ kind: 'procedure', procedure: value, index: 0, offset: this.offset }); return; }
       if (value.kind === 'string') { this.frame({ kind: 'source', scanner: this.scanner(this.memory.executionBytes(value)), owner: value }); return; }
+      if (value.kind === 'file') {
+        if (!this.fileSupport) throw new PsFault('invalidaccess');
+        this.frame({ kind: 'source', scanner: this.fileSupport.scanner(value), owner: value }); return;
+      }
       if (value.kind !== 'null') this.push(value); return;
     }
   }
   scheduleLoop(step: () => boolean, roots: readonly PsValue[]): void {
     this.budget.allocate(roots.length * 16, 'loop roots'); this.frame({ kind: 'loop', step, roots });
   }
+  /** Internal continuation work is not a language-level exit target. */
+  scheduleWork(step: () => boolean, roots: readonly PsValue[]): void {
+    this.budget.allocate(roots.length * 16, 'work roots'); this.frame({ kind: 'work', step, roots });
+  }
   scheduleStopped(value: PsValue): void { this.frame({ kind: 'stopped' }); this.execute(value); }
   exit(): void {
     for (let i = this.frames.length - 1; i >= 0; i--) {
       this.budget.work(); const frame = this.frames[i]!;
       if (frame.kind === 'stopped') break;
-      if (frame.kind === 'loop') { this.frames.length = i; return; }
+      if (frame.kind === 'loop') { this.unwindTo(i); return; }
     }
     throw new PsFault('invalidexit');
   }
   stop(fault?: PsFault): void {
     for (let i = this.frames.length - 1; i >= 0; i--) {
-      this.budget.work(); if (this.frames[i]!.kind === 'stopped') { this.frames.length = i; this.push(boolean(true)); return; }
+      this.budget.work(); if (this.frames[i]!.kind === 'stopped') { this.unwindTo(i); this.push(boolean(true)); return; }
     }
     if (!fault) for (let i = this.frames.length - 1; i >= 0; i--) { this.budget.work(); const frame = this.frames[i]!; if (frame.kind === 'handler') { fault = frame.fault; break; } }
-    this.frames.length = 0; this.uncaught = fault;
+    this.unwindTo(0); this.uncaught = fault;
   }
-  quit(): void { this.frames.length = 0; }
+  quit(): void { this.unwindTo(0); }
   executionStack(): PsValue[] {
     this.budget.allocate(this.frames.length * 16, 'execution stack view'); this.budget.work(this.frames.length);
     return this.frames.map(frame => frame.kind === 'procedure' ? frame.procedure : frame.kind === 'source' ? frame.owner ?? psNull() : frame.kind === 'execute' ? frame.value : frame.kind === 'handler' ? frame.command : name(`--${frame.kind}--`));
   }
   get executionDepth(): number { return this.frames.length; }
+  addSaveParticipant(participant: PsSaveParticipant): void {
+    if (this.running || this.saves.length) throw new PsFault('invalidaccess');
+    this.budget.items(this.saveParticipants.length + 1);
+    this.budget.allocate(16, 'save participant');
+    this.saveParticipants.push(participant);
+  }
   save(): PsSave {
-    this.budget.allocate(32, 'save interpreter state'); const token = this.memory.save(); this.saves.push({ token, packing: this.packing }); return token;
+    this.budget.allocate(32 + this.saveParticipants.length * 16, 'save interpreter state');
+    const snapshots: PsSaveSnapshot[] = [];
+    for (const participant of this.saveParticipants) {
+      this.budget.work();
+      snapshots.push(participant.prepareSave());
+    }
+    const token = this.memory.save();
+    this.saves.push({ token, packing: this.packing, snapshots });
+    for (const snapshot of snapshots) snapshot.saved?.();
+    return token;
   }
   restore(token: PsSave): void {
     const roots: PsValue[] = [];
@@ -188,11 +280,21 @@ export class PsInterpreter {
       else if (frame.kind === 'source' && frame.owner) add(frame.owner);
       else if (frame.kind === 'execute') add(frame.value);
       else if (frame.kind === 'handler') add(frame.command);
-      else if (frame.kind === 'loop') for (const value of frame.roots) add(value);
+      else if (frame.kind === 'loop' || frame.kind === 'work') for (const value of frame.roots) add(value);
+      else if (frame.kind === 'invocation') for (const value of frame.invocation.roots) add(value);
     }
     this.budget.work(this.saves.length); const index = this.saves.findIndex(save => save.token.id === token.id);
+    if (index >= 0) {
+      const snapshots = this.saves[index]!.snapshots;
+      this.budget.work(snapshots.length, 'save participant restore');
+      for (const snapshot of snapshots) snapshot.visitRoots(add);
+    }
     this.memory.restore(token, roots);
-    if (index >= 0) { this.packing = this.saves[index]!.packing; this.saves.length = index; }
+    if (index >= 0) {
+      this.packing = this.saves[index]!.packing;
+      for (const snapshot of this.saves[index]!.snapshots) snapshot.restore();
+      this.saves.length = index;
+    }
   }
   private recover(fault: PsFault): void {
     if (this.undo) {
@@ -229,7 +331,8 @@ export class PsInterpreter {
     this.running = true;
     this.uncaught = undefined;
     try {
-      this.frame({ kind: 'source', scanner: this.scanner(source) });
+      const scanner = this.scanner(source);
+      this.frame({ kind: 'source', scanner, owner: this.fileSupport?.open(scanner) });
       while (this.frames.length) {
         this.budget.work(); const frame = this.frames[this.frames.length - 1]!;
         this.budget.allocate(64, 'operand undo buffer');
@@ -237,16 +340,32 @@ export class PsInterpreter {
         let scanning = false;
         try {
           if (frame.kind === 'source') {
-            scanning = true; const value = frame.scanner.next(); scanning = false; this.offset = frame.scanner.lastTokenOffset;
-            if (!value) this.frames.pop(); else this.dispatch(value, false);
+            scanning = true;
+            const value = frame.owner?.kind === 'file' && frame.owner.body.reader.closed ? undefined : frame.scanner.next();
+            scanning = false; this.offset = frame.scanner.lastTokenOffset;
+            if (!value) {
+              this.frames.pop();
+              if (frame.owner?.kind === 'file') this.memory.readFile(frame.owner, true).close();
+            } else this.dispatch(value, false);
           } else if (frame.kind === 'procedure') {
             this.offset = frame.offset;
             if (frame.index === frame.procedure.length) this.frames.pop();
             else this.dispatch(this.memory.fetch(frame.procedure, frame.index++), false);
           } else if (frame.kind === 'execute') {
             this.frames.pop(); this.offset = frame.offset; this.dispatch(frame.value, frame.indirect);
-          } else if (frame.kind === 'loop') {
+          } else if (frame.kind === 'loop' || frame.kind === 'work') {
             if (!frame.step()) this.frames.pop();
+          } else if (frame.kind === 'invocation') {
+            this.frames.pop();
+            this.offset = frame.offset;
+            this.command = frame.command;
+            let completed = false;
+            try {
+              frame.invocation.complete();
+              completed = true;
+            } finally {
+              if (!completed) frame.invocation.unwind();
+            }
           } else if (frame.kind === 'handler') this.frames.pop();
           else { this.frames.pop(); this.push(boolean(false)); }
           this.undo = undefined;
@@ -263,6 +382,6 @@ export class PsInterpreter {
       rethrowLimit(caught);
       if (caught instanceof PsFault) throw new PdfParseError(`PostScript ${caught.errorName}`, caught.offset ?? this.offset);
       throw caught;
-    } finally { this.frames.length = 0; this.running = false; this.undo = undefined; }
+    } finally { this.unwindTo(0); this.running = false; this.undo = undefined; }
   }
 }

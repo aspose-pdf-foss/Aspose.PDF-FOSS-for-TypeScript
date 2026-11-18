@@ -1,11 +1,14 @@
 import { PsBudget } from './psbudget.js';
+import type { PsReader } from './pssource.js';
+import type { PsFile, PsFileBody } from './psvalue.js';
+import { copyPsState, visitPsStateRoots, type PsState } from './psstate.js';
 import {
-  PsFault, accessOf, canRead, canWrite, integer, isComposite, name, normalizeKey,
+  PsFault, accessOf, canRead, canWrite, integer, isComposite, isReference, name, normalizeKey,
   psEquals, psNull, type PsAccess, type PsArray, type PsBody, type PsComposite,
-  type PsDictionary, type PsName, type PsSave, type PsString, type PsValue,
+  type PsDictionary, type PsGState, type PsReference, type PsName, type PsOperator, type PsSave, type PsString, type PsValue,
 } from './psvalue.js';
 
-type Snapshot = { values: PsValue[] } | { entries: [PsValue, PsValue][]; access: PsAccess; capacity: number };
+type Snapshot = { values: PsValue[] } | { entries: [PsValue, PsValue][]; access: PsAccess; capacity: number } | { state: PsState };
 type Level = { token: PsSave; epoch: number; global: boolean; journal: Map<PsBody, Snapshot> };
 const rank: Record<PsAccess, number> = { unlimited: 0, readonly: 1, executeonly: 2, noaccess: 3 };
 let nextSaveId = 1;
@@ -19,6 +22,7 @@ export class PsMemory {
   private bodies: PsBody[] = [];
   private levels: Level[] = [];
   private systemBootstrapped = false;
+  private systemDictionary?: PsDictionary;
   constructor(readonly budget: PsBudget) {}
   /** Constructor-only systemdict finalization. The language explicitly permits
    * this one global dictionary to hold the fixed local user/error dictionaries.
@@ -26,6 +30,22 @@ export class PsMemory {
   bootstrapSystemDictionary(value: PsDictionary): void {
     if (this.systemBootstrapped || this.levels.length || value.body.global) throw new PsFault('invalidaccess');
     this.systemBootstrapped = true; value.body.global = true; value.body.access = 'readonly';
+    this.systemDictionary = value;
+  }
+
+  /** Fixed host installations can add operator objects to the remembered system
+   * dictionary. Source writes still use put and its normal readonly checks. */
+  installSystemOperator(key: PsName, value: PsOperator): void {
+    const dictionary = this.systemDictionary;
+    if (!dictionary || this.levels.length) throw new PsFault('invalidaccess');
+    const index = this.find(dictionary, key);
+    if (index >= 0) dictionary.body.entries[index] = [dictionary.body.entries[index]![0], value];
+    else {
+      this.budget.items(dictionary.body.entries.length + 1, 'system operators');
+      this.budget.allocate(64, 'system operator entry');
+      dictionary.body.entries.push([key, value]);
+      dictionary.body.capacity = Math.max(dictionary.body.capacity, dictionary.body.entries.length);
+    }
   }
 
   private body<T extends PsBody>(body: T): T { this.bodies.push(body); return body; }
@@ -67,9 +87,40 @@ export class PsMemory {
     this.budget.allocate(64 + text.length * 2, 'name');
     return name(text, executable);
   }
-  private valid(value: PsComposite): void { if (!value.body.valid) throw new PsFault('invalidrestore'); }
-  private read(value: PsComposite): void { this.valid(value); if (!canRead(value)) throw new PsFault('invalidaccess'); }
-  private write(value: PsComposite): void { this.valid(value); if (!canWrite(value)) throw new PsFault('invalidaccess'); }
+  gstate(state: PsState): PsGState {
+    visitPsStateRoots(state, value => this.retained(this.currentGlobal, value));
+    const copy = copyPsState(state, this.budget);
+    this.budget.allocate(64, 'gstate body');
+    const body = this.body({ ...this.identity(), state: copy });
+    return { kind: 'gstate', body, access: 'unlimited', executable: false };
+  }
+  file(reader: PsReader, roots: readonly PsValue[] = []): PsFile {
+    this.budget.allocate(96 + roots.length * 16, 'file body');
+    for (const value of roots) this.retained(this.currentGlobal, value);
+    const body = this.body({ ...this.identity(), reader, owner: this, roots: roots.slice() });
+    return { kind: 'file', body, access: 'readonly', executable: false };
+  }
+  readFile(value: PsFile, execute = false): PsReader {
+    if (value.body.owner !== this) throw new PsFault('invalidaccess');
+    if (execute) { this.valid(value); if (accessOf(value) === 'noaccess') throw new PsFault('invalidaccess'); }
+    else this.read(value);
+    return value.body.reader;
+  }
+  checkWritableString(value: PsString): void { this.write(value); }
+  readGState(value: PsGState): PsState {
+    this.read(value);
+    return value.body.state;
+  }
+  writeGState(value: PsGState, state: PsState): void {
+    this.write(value);
+    visitPsStateRoots(state, item => this.retained(value.body.global, item));
+    const copy = copyPsState(state, this.budget);
+    this.journal(value);
+    value.body.state = copy;
+  }
+  private valid(value: PsReference): void { if (!value.body.valid) throw new PsFault('invalidrestore'); }
+  private read(value: PsReference): void { this.valid(value); if (!canRead(value)) throw new PsFault('invalidaccess'); }
+  private write(value: PsReference): void { this.valid(value); if (!canWrite(value)) throw new PsFault('invalidaccess'); }
   private execute(value: PsArray | PsString): void {
     this.valid(value); if (accessOf(value) === 'noaccess') throw new PsFault('invalidaccess');
   }
@@ -81,7 +132,7 @@ export class PsMemory {
       if (!this.levels.some(level => level.token.id === value.id)) throw new PsFault('invalidrestore');
       if (global) throw new PsFault('invalidaccess');
     }
-    if (!isComposite(value)) return;
+    if (!isReference(value)) return;
     this.valid(value);
     if (global && !value.body.global) throw new PsFault('invalidaccess');
   }
@@ -93,7 +144,7 @@ export class PsMemory {
   }
   private key(key: number | PsValue): PsValue {
     if (typeof key === 'number' || key.kind === 'null') throw new PsFault('typecheck');
-    if (isComposite(key)) this.valid(key);
+    if (isReference(key)) this.valid(key);
     if (key.kind === 'string') {
       this.read(key); this.budget.work(key.length, 'string key');
       this.budget.allocate(64 + key.length * 2, 'string key name');
@@ -107,11 +158,15 @@ export class PsMemory {
     }
     return -1;
   }
-  private journal(value: PsArray | PsDictionary): void {
+  private journal(value: PsArray | PsDictionary | PsGState): void {
     if (value.body.global) return;
     for (const level of this.levels) {
       this.budget.work();
       if (value.body.epoch > level.epoch || level.journal.has(value.body)) continue;
+      if (value.kind === 'gstate') {
+        level.journal.set(value.body, { state: copyPsState(value.body.state, this.budget) });
+        continue;
+      }
       const length = value.kind === 'array' ? value.body.values.length : value.body.entries.length;
       this.budget.allocate(64 + length * (value.kind === 'array' ? 16 : 64), 'save journal');
       this.budget.work(length, 'save journal');
@@ -227,9 +282,9 @@ export class PsMemory {
     // Preserve the destination's reference attributes.
     return { ...target, length: source.length };
   }
-  restrictAccess<T extends PsComposite>(value: T, access: PsAccess): T {
+  restrictAccess<T extends PsReference>(value: T, access: PsAccess): T {
     this.valid(value);
-    if (value.kind === 'dictionary' && access === 'executeonly') throw new PsFault('typecheck');
+    if ((value.kind === 'dictionary' || value.kind === 'gstate') && access === 'executeonly') throw new PsFault('typecheck');
     if (rank[access] < rank[accessOf(value)]) throw new PsFault('invalidaccess');
     if (value.kind === 'dictionary') { this.journal(value); value.body.access = access; return value; }
     return { ...value, access };
@@ -255,7 +310,10 @@ export class PsMemory {
         const rootIndex = this.levels.findIndex(saved => saved.token.id === value.id);
         if (rootIndex < 0 || rootIndex > index) throw new PsFault('invalidrestore');
       }
-      if (!isComposite(value)) continue;
+      if (!isReference(value)) continue;
+      // File references remain usable as closed files after restore. Unlike
+      // arrays/strings they do not make the restore invalid.
+      if (value.kind === 'file') continue;
       if (!value.body.valid || (!value.body.global && value.body.epoch > level.epoch)) throw new PsFault('invalidrestore');
       if (seen.has(value.body)) continue;
       this.budget.allocate(64, 'restore visited body'); seen.add(value.body);
@@ -268,18 +326,25 @@ export class PsMemory {
       } else if (value.kind === 'dictionary') {
         const entries = snapshot && 'entries' in snapshot ? snapshot.entries : value.body.entries;
         for (const [key, item] of entries) { push(key); push(item); }
+      } else if (value.kind === 'gstate') {
+        const state = snapshot && 'state' in snapshot ? snapshot.state : value.body.state;
+        visitPsStateRoots(state, push);
       }
     }
     // All validation and proportional charges precede the first VM mutation.
     this.budget.work(this.bodies.length + level.journal.size, 'restore bodies');
     for (const [body, snapshot] of level.journal) {
       if ('values' in snapshot) (body as PsArray['body']).values = snapshot.values;
+      else if ('state' in snapshot) (body as PsGState['body']).state = snapshot.state;
       else {
         const dictionary = body as PsDictionary['body'];
         dictionary.entries = snapshot.entries; dictionary.access = snapshot.access; dictionary.capacity = snapshot.capacity;
       }
     }
-    for (const body of this.bodies) if (!body.global && body.epoch > level.epoch) body.valid = false;
+    for (const body of this.bodies) if (!body.global && body.epoch > level.epoch) {
+      if ('reader' in body) (body as PsFileBody).reader.close();
+      else body.valid = false;
+    }
     this.levels.length = index; this.currentGlobal = level.global;
   }
 }

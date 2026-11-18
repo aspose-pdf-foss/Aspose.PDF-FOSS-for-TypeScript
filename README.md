@@ -425,14 +425,22 @@ through to saving.
 | `maxPostScriptOperations` | 10,000,000 | Cumulative execution, scanning and proportional bulk work in one internal PostScript interpreter |
 | `maxPostScriptVmBytes` | 128 MiB | Cumulative accounted allocation in one internal PostScript interpreter, including stacks, frames, scratch copies and save journals |
 
-The PostScript fields prepare the internal language core for later import work;
-there is currently no public PostScript import API. One interpreter shares its
+The PostScript fields bound the internal language and graphics engine for later
+import work; there is currently no public PostScript import API. The internal
+graphics installer supports vector paths/clipping, device/Indexed/tint colors,
+sampled images, forms and tiling patterns. CIE color spaces, shading and arbitrary
+printer policies fail explicitly. One interpreter shares its
 work and allocation totals across repeated runs. Discarding objects or restoring
 VM does not refund them. Accounted bytes use a deterministic conservative charge
 schedule rather than measuring the JavaScript heap. Source and token spans also
 use `maxFileBytes` and `maxObjectBytes`; containers and operand stacks use
 `maxContainerItems`; procedures, execution and dictionary stacks, and open saves
-use `maxNestingDepth`. Exhaustion raises `ResourceLimitError` through language
+use `maxNestingDepth`. Graphics captures and reader chains share that depth
+bound; reader chains also use `maxFilterChain`. Images use `maxImagePixels`.
+One graphics job shares decoding totals and reserves VM bytes/work before native
+decoding. PDF output shares content byte/token limits across pages and captures.
+Callback escape abandons unfinished captures while retaining earlier completed
+output. Exhaustion raises `ResourceLimitError` through language
 error handlers and `stopped`. Each field accepts `null` under the same policy
 rules as the other limits.
 

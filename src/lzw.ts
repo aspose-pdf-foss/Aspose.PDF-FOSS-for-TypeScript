@@ -9,10 +9,12 @@ const EOD = 257;
  *  Stops as soon as the output passes `maxOut` (`ibzo.3`) and returns what it
  *  has, so the caller sees the overshoot and names the bound; it never throws
  *  for it, keeping this module free of a policy it has no business knowing. */
-export function lzwDecode(input: Uint8Array, earlyChange = 1, maxOut = Infinity): Uint8Array {
+export function lzwDecode(input: Uint8Array, earlyChange = 1, maxOut = Infinity,
+  metadata?: { consumed: number; ended: boolean; charge?: (bytes: number, work: number) => void }): Uint8Array {
   const out: number[] = [];
   let table: number[][] = [];
   const reset = () => {
+    metadata?.charge?.(258 * 64, 256);
     table = new Array(258);
     for (let i = 0; i < 256; i++) table[i] = [i];
     table[CLEAR] = [];
@@ -26,7 +28,7 @@ export function lzwDecode(input: Uint8Array, earlyChange = 1, maxOut = Infinity)
   let bitBuf = 0, bitCnt = 0, pos = 0;
   const read = (): number => {
     while (bitCnt < width) {
-      if (pos >= input.length) return EOD;
+      if (pos >= input.length) return -1;
       bitBuf = (bitBuf << 8) | input[pos++];
       bitCnt += 8;
     }
@@ -36,23 +38,26 @@ export function lzwDecode(input: Uint8Array, earlyChange = 1, maxOut = Infinity)
 
   for (;;) {
     const code = read();
-    if (code === EOD) break;
+    if (code < 0) break;
+    if (code === EOD) { if (metadata) metadata.ended = true; break; }
     if (code === CLEAR) { reset(); width = 9; next = 258; prev = null; continue; }
 
     let entry: number[];
     if (code < next && table[code]) entry = table[code];
-    else if (code === next && prev) entry = [...prev, prev[0]];
+    else if (code === next && prev) { metadata?.charge?.(64 + (prev.length + 1) * 8, prev.length + 1); entry = [...prev, prev[0]]; }
     else throw new PdfParseError(`LZWDecode: bad code ${code} (next ${next})`);
 
-    for (const b of entry) out.push(b);
+    for (const b of entry) { if (out.length > maxOut) break; out.push(b); }
     if (out.length > maxOut) break;
 
     if (prev) {
+      metadata?.charge?.(64 + (prev.length + 1) * 8, prev.length + 1);
       table[next++] = [...prev, entry[0]];
       if (next === (1 << width) - earlyChange && width < 12) width++;
     }
     prev = entry;
   }
+  if (metadata) metadata.consumed = pos;
   return Uint8Array.from(out);
 }
 
