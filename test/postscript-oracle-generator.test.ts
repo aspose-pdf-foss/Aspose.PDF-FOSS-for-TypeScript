@@ -46,6 +46,11 @@ describe('staged PostScript reference generation', () => {
   it('separates vector and raster options and preserves literal argv', () => {
     const f=fixture(); const input='a "quote" $() ` file.ps';
     const args=oracleCommands(f.cases[0]!, {input,setup:'host.ps',fontmap:'Fontmap',pdfOutput:'x.pdf',pngOutput:'x-%d.png',fontPaths:['font name.t1']});
+    const separator = process.platform === 'win32' ? ';' : ':';
+    const permitRead = `--permit-file-read=${input}${separator}host.ps${separator}Fontmap${separator}font name.t1`;
+    for (const argv of [args.pdf, args.png]) {
+      expect(argv.filter(arg => arg.startsWith('--permit-file-read='))).toEqual([permitRead]);
+    }
     expect(args.pdf).toContain(input); expect(args.pdf).toContain('-dOmitID=true');
     expect(args.pdf).not.toContain('-dTextAlphaBits=4'); expect(args.png).toContain('-r144');
     expect(args.png).toContain('-dTextAlphaBits=4');

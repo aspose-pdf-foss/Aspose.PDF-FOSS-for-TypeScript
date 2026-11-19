@@ -193,6 +193,7 @@ diagnostics. All were RED before their fixes. A source-input mutation survived
 the original Buffer.slice snapshot because it shared storage; independent byte
 copies now detect that mutation, and normal imports pass after restoration.
 
-Deferred minor findings are tracked as `lw8w.7` (the Windows-specific permission
-list separator on Unix) and `lw8w.8` (acceptance of a duplicate outer EndProlog).
-The executable capture and generation instructions here are verified on Windows.
+The generator uses the host platform's separator for Ghostscript's read
+permission list (`lw8w.7`). The executable capture and generation instructions
+here are verified on Windows. Duplicate outer EndProlog handling is tracked
+separately as `lw8w.8`.

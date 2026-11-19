@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Document } from '../src/document.js';
 import { crc32 } from '../src/crc32.js';
 import { decodePng } from '../test/helpers/decode-png.js';
@@ -13,7 +13,7 @@ export interface OracleCommand { executable:string; prefixArgs:readonly string[]
 export interface OraclePaths { input:string; setup:string; fontmap:string; pdfOutput:string; pngOutput:string; fontPaths:readonly string[] }
 export function oracleCommands(c: OracleCase, p: OraclePaths): {pdf:string[];png:string[]} {
   const common=['-dSAFER','-dBATCH','-dNOPAUSE','-dNOPLATFONTS','-dNONATIVEFONTMAP',
-    `-sFONTMAP=${p.fontmap}`,'-sFONTPATH=',`--permit-file-read=${[p.input,p.setup,p.fontmap,...p.fontPaths].join(';')}`];
+    `-sFONTMAP=${p.fontmap}`,'-sFONTPATH=',`--permit-file-read=${[p.input,p.setup,p.fontmap,...p.fontPaths].join(delimiter)}`];
   const finish=['-f',p.setup,'-f',p.input,...(c.flushMarkedTail?['-c','showpage']:[])];
   const eps=c.setup==='eps-native'?['-dEPSCrop']:c.setup==='eps-literal'?['-dNOEPS']:[];
   return {
