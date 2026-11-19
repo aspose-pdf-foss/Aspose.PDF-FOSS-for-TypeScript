@@ -1,6 +1,5 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { PageFormat } from './pageformat.js';
 import { PsBudget } from './psbudget.js';
 import type { PsBox, PsPathData, PsState } from './psstate.js';
 import type { Matrix } from './text.js';
@@ -12,7 +11,7 @@ import { psDevicePaint } from './pscolor.js';
 import { PdfParseError } from './errors.js';
 import { serializeValue } from './serialize.js';
 import { name, isArray, isDict, isName, isRef, isStream, isString,
-  type PdfObject, type PdfDict, type PdfStream } from './types.js';
+  type PdfObject, type PdfDict, type PdfStream, type PdfRef } from './types.js';
 import type { PsPdfGlyph } from './psfontpdf.js';
 
 export interface PsPageOutput { box: PsBox; content: Uint8Array; resources: PdfDict }
@@ -296,7 +295,7 @@ export class PsPdfWriter {
   }
 }
 
-function installResources(doc: Document, object: PdfObject, budget: PsBudget,
+function installResources(allocate: (object: PdfObject) => PdfRef, object: PdfObject, budget: PsBudget,
   streams: Map<object, PdfObject>): PdfObject {
   let result: PdfObject = null;
   type Job = { value: PdfObject; set: (value: PdfObject) => void; depth: number } | { end: object };
@@ -320,7 +319,7 @@ function installResources(doc: Document, object: PdfObject, budget: PsBudget,
     budget.allocate(128 + length * 64, 'PDF resource installation');
     const target: PdfObject = isArray(source) ? [] : new Map();
     if (stream) {
-      const reference = doc.allocObject({ kind: 'stream', dict: target as PdfDict, raw: value.raw });
+      const reference = allocate({ kind: 'stream', dict: target as PdfDict, raw: value.raw });
       streams.set(value, reference);
       job.set(reference);
     } else { copies.set(value, target); job.set(target); }
@@ -340,37 +339,38 @@ function installResources(doc: Document, object: PdfObject, budget: PsBudget,
   return result;
 }
 
-export function appendPsPages(doc: Document, pages: readonly PsPageOutput[]): Page[] {
+export function preparePsPages(pages: readonly PsPageOutput[], allocate: (object: PdfObject) => PdfRef,
+  budget: PsBudget): PdfDict[] {
+  budget.items(pages.length, 'prepared PDF pages');
+  budget.allocate(64 + pages.length * 16, 'prepared PDF pages');
   for (const page of pages) {
+    budget.work();
     const b = page.box;
     if (b.length !== 4 || !b.every(Number.isFinite) || b[2] <= b[0] || b[3] <= b[1]
       || !Number.isFinite(b[2] - b[0]) || !Number.isFinite(b[3] - b[1]))
       throw new TypeError('PostScript page dimensions must be positive and finite');
   }
-  const result: Page[] = [];
-  const prepared: { output: PsPageOutput; resources: PdfObject; content: PdfObject }[] = [];
+  const prepared: PdfDict[] = [];
   const streams = new Map<object, PdfObject>();
   const contents = new Map<Uint8Array, PdfObject>();
   for (const output of pages) {
-    const budget = owners.get(output) ?? new PsBudget(doc.loadLimits);
     budget.allocate(512, 'PDF page installation');
-    const resources = installResources(doc, output.resources, budget, streams);
+    const resources = installResources(allocate, output.resources, budget, streams);
     let content = contents.get(output.content);
     if (!content) {
       budget.allocate(64, 'PDF content installation');
-      content = doc.allocObject({ kind: 'stream', dict: new Map(), raw: output.content });
+      content = allocate({ kind: 'stream', dict: new Map(), raw: output.content });
       contents.set(output.content, content);
     }
     budget.allocate(64, 'prepared PDF page');
-    prepared.push({ output, resources, content });
+    prepared.push(new Map<string, PdfObject>([
+      ['Type', name('Page')], ['MediaBox', [...output.box]], ['CropBox', [...output.box]], ['Rotate', 0],
+      ['Resources', resources], ['Contents', content],
+    ]));
   }
-  for (const { output, resources, content } of prepared) {
-    const [x0, y0, x1, y1] = output.box;
-    const page = doc.AddPage(PageFormat.custom(x1 - x0, y1 - y0)).page;
-    page.Dict.set('MediaBox', [...output.box]);
-    page.Dict.set('Resources', resources);
-    page.Dict.set('Contents', content);
-    result.push(page);
-  }
-  return result;
+  return prepared;
+}
+
+export function appendPsPages(doc: Document, pages: readonly PsPageOutput[], budget?: PsBudget): Page[] {
+  return doc.appendPsPagesInternal(pages, budget ?? (pages[0] && owners.get(pages[0])) ?? new PsBudget(doc.loadLimits));
 }

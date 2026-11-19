@@ -41,10 +41,10 @@ export function writePsMatrix(vm: PsInterpreter, dest: PsArray, matrix: Matrix):
 export function installPsMatrix(vm: PsInterpreter, graphics: PsGraphics): void {
   const op = (text: string, execute: () => void): void => vm.registerStandardOperator(text, execute);
   op('matrix', () => vm.push(vm.memory.arrayFrom(IDENTITY.map(real))));
-  op('initmatrix', () => { graphics.state.ctm = [...graphics.state.defaultMatrix]; });
+  op('initmatrix', () => { graphics.state.ctm = [...graphics.defaultMatrix]; });
   for (const text of ['identmatrix', 'defaultmatrix', 'currentmatrix']) op(text, () => {
     const matrix = text === 'identmatrix' ? IDENTITY
-      : text === 'defaultmatrix' ? graphics.state.defaultMatrix : graphics.state.ctm;
+      : text === 'defaultmatrix' ? graphics.defaultMatrix : graphics.state.ctm;
     vm.replace(1, writePsMatrix(vm, vm.typed('array'), matrix));
   });
   op('setmatrix', () => {

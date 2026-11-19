@@ -18,6 +18,7 @@ export type { LoadFontOptions, FontMatch, FontFamily } from './fontmatch.js';
 export type { ObjStmDamage } from './objstm.js';
 export type { PdfRevision } from './xref.js';
 export { Page } from './page.js';
+export type { PostScriptFont, PostScriptOptions, PostScriptResult } from './psimport.js';
 export { ImageInfo } from './image.js';
 export { imageExtension } from './imagehref.js';
 export type { EncodedImage, SaveImageOptions, SaveImageFormat } from './imagehref.js';

@@ -1,6 +1,10 @@
 import type { OperationControlOptions } from './checkpoint.js';
 import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { Lexer } from './lexer.js';
+import { preparePsPages, type PsPageOutput } from './pspdf.js';
+import type { PsBudget } from './psbudget.js';
+import { runPostScriptImport, type PostScriptOptions, type PostScriptResult } from './psimport.js';
+import { appendPsPages } from './pspdf.js';
 import { refreshBarcodeFields } from './paperbarcode.js';
 import type { FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
@@ -1153,6 +1157,55 @@ export class Document {
     this.install(n, obj);
     this.markModified();
     return ref(n);
+  }
+
+  /** Synchronously append a bounded PostScript/EPS job. Each call has its own
+   * interpreter and font registry; a failure leaves the destination unchanged. */
+  AddPostScript(bytes: Uint8Array, options: PostScriptOptions = {}): PostScriptResult {
+    const job = runPostScriptImport(bytes, options, this.loadLimits);
+    return { pages: appendPsPages(this, job.pages, job.budget) };
+  }
+
+  /** @internal Prepare an entire PostScript job before publishing any objects.
+   * Existing page dictionaries, branches and live handles retain their identity. */
+  appendPsPagesInternal(pages: readonly PsPageOutput[], budget: PsBudget): Page[] {
+    if (!pages.length) return [];
+    const rootNum = this.requireIndirectPagesRoot();
+    const root = this.objects.get(rootNum);
+    if (!isDict(root)) throw new PdfParseError('PostScript append requires a /Pages dictionary');
+    const kids = this.resolve(root.get('Kids'));
+    if (!isArray(kids)) throw new PdfParseError('PostScript append requires a /Kids array');
+    budget.items(kids.length + pages.length, 'PDF root Kids');
+    budget.items(this.Pages.length + pages.length, 'PDF page handles');
+    budget.work(this.objects.size + this.Pages.length + kids.length, 'PDF append staging');
+    budget.allocate(128 + (kids.length + pages.length) * 16
+      + (this.Pages.length + pages.length) * 32, 'PDF append lists');
+    let next = this.maxObjNum();
+    if (!Number.isSafeInteger(next) || next < 0) throw new PdfParseError('Unsafe PDF object numbering');
+    const staged = new Map<number, PdfObject>();
+    const allocate = (object: PdfObject): PdfRef => {
+      if (!Number.isSafeInteger(next + 1)) throw new PdfParseError('Unsafe PDF object numbering');
+      this.loadLimits.enforce('maxObjects', this.objects.size + staged.size + 1, 'PostScript append');
+      budget.work(); budget.allocate(128, 'staged PDF object and ref');
+      staged.set(++next, object);
+      return ref(next);
+    };
+    const prepared = preparePsPages(pages, allocate, budget);
+    const newKids = kids.slice(), numbers = this.pageObjNums.slice(), result: Page[] = [];
+    for (const dict of prepared) {
+      budget.work(); budget.allocate(128, 'PDF page handle and parent');
+      dict.set('Parent', ref(rootNum));
+      const pageRef = allocate(dict);
+      newKids.push(pageRef); numbers.push(pageRef.num);
+      result.push(new Page(this, dict, this.Pages.length + result.length + 1));
+    }
+    // No decoding, caller callbacks, traversal or policy checks after this point.
+    for (const [num, object] of staged) this.install(num, object);
+    root.set('Kids', newKids); root.set('Count', this.Pages.length + result.length);
+    for (const page of result) this.Pages.push(page);
+    this.pageObjNums = numbers;
+    this.markModified();
+    return result;
   }
 
   /** @internal Replace the object stored at `num` in place, so every existing

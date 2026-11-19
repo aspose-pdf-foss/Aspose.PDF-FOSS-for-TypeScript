@@ -10225,6 +10225,14 @@ Source (`src/`):
   or unwind. Their cleanup allocates nothing.
   Page operators own explicit blank pages, retained copypage marks, erasepage,
   trailing marked-page finalization, PageSize transitions and null devices.
+  **Invariant (`lw8w.4`):** EPS is a fixed single-page host device: showpage
+  checks capture restrictions before becoming a no-op, copypage and even empty
+  setpagedevice are refused, and finish emits one page even after nulldevice or
+  no marks. The normalized box/default matrix survive graphics resets.
+  Host and active-capture defaults are retained independently of PsState: a
+  gstate or VM save can escape a form and reinstall its mutable state later.
+  initmatrix/defaultmatrix/initgraphics still use the active device's defaults,
+  while explicit CTM and clip restoration retains its ordinary meaning.
   Finalization counts the trailing marked page against the same page-list bound
   as explicit page publication.
   The device box/default matrix participate in saved state. Vector painting
@@ -10242,6 +10250,13 @@ Source (`src/`):
   Patterns used in the identity coordinate basis retain their original stream
   identity across pages; transformed capture owners receive rebased copies.
   External qpdf checks establish structural validity only.
+  **Invariant (`lw8w.4`):** preparePsPages uses an allocation callback; it never
+  changes Document. appendPsPagesInternal stages objects, page handles and root
+  Kids/Count before publishing through install. Actual object count, including
+  unreachable objects, is checked per allocation. Failure preserves live Page
+  identities, page-tree branches, Save bytes and pending signed-output state.
+  Imported pages state CropBox and Rotate themselves, overriding inherited
+  destination values without changing what preexisting pages inherit.
 - **pspaint.ts** — FormType 1 and colored/uncolored Type 1 tiling captures.
   makepattern binds private metadata to a VM-valid readonly dictionary body.
   Completed cells cache native PDF pattern streams; an escaped callback clears
@@ -10264,6 +10279,18 @@ Source (`src/`):
   encoded-number strings with signed 16/32-bit fixed point and IEEE32/native
   reals. Native reals are IEEE32 in the host's byte order. Headers and lengths
   are validated before reads; payload work remains cumulative and metered.
+- **psimport.ts** — public synchronous `Document.AddPostScript` job and option
+  types. Validates caller input, creates a fresh VM/explicit font registry and
+  uses one PsBudget for framing, DSC, execution, glyphs and staged publication.
+  `pageSize` configures plain PS only; EPS uses normalized outer bounds.
+- **epsdsc.ts** — metered outer DSC bounding boxes with lexical, nested-region
+  and counted-data exclusion; executable source bytes remain unchanged.
+  Ordinary PS comments (including DSC argument text) end at form feed as the
+  VM scanner's do, but only CR/LF establish physical DSC column zero. Counted
+  Lines and preview rows keep physical line semantics. Fixed argument parsers
+  reserve scratch first and split at most one field beyond their valid arity.
+- **eps.ts** — bounded PS/EPS identity and DOS preview-envelope framing; only
+  the declared PostScript span reaches the VM. Preview payloads remain opaque.
 - **pstext.ts**, **pscomposite.ts** — optional PostScript text session and shared
   rooted character cursor. Showing, measurement and character paths use private
   VM work frames with full affine glyph matrices and two-dimensional advances.

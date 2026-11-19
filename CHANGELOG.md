@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PostScript and EPS page import.** `Document.AddPostScript(bytes, options?)`
+  synchronously appends vector, image and extractable-text output from the
+  bounded interpreter, with explicit supplied fonts and a fresh job budget on
+  each call. EPS uses outer DSC integer/HiRes bounds, preserves its fractional
+  origin at one point per point and skips DOS TIFF/WMF previews. A fixed EPS
+  device neutralizes every `showpage` route. Resources and pages are staged so
+  any parse, unsupported-feature or policy failure preserves existing live page
+  handles and signed output. Imported pages override inherited crop and rotation,
+  and EPS resets retain their host defaults even after restoring captured graphics
+  state. Regression tests reproduce the former installer's
+  leaked objects and dirty signature cache. (lw8w.4)
+
 - **PostScript resource policy fields.** `LoadLimits` now accepts
   `maxPostScriptOperations` (10,000,000 by default) and
   `maxPostScriptVmBytes` (128 MiB by default) for the internal language core.

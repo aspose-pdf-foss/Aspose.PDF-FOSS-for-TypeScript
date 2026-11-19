@@ -27,10 +27,21 @@ export interface PsCapture {
 }
 const capturePaths = new WeakMap<Uint8Array, PsPathData>();
 
+export interface PsGraphicsOptions { box?: PsBox; defaultMatrix?: Matrix; eps?: boolean }
+
 export class PsGraphics {
   readonly budget;
   readonly decode: DecodeBudget;
-  get defaultBox(): PsBox { return this.current.deviceBox; }
+  get defaultBox(): PsBox {
+    return this.epsDevice && !this.current.discarding
+      ? (this.captureDevice ?? this.epsDevice).box : this.current.deviceBox;
+  }
+  get defaultMatrix(): Matrix {
+    return this.epsDevice && !this.current.discarding
+      ? (this.captureDevice ?? this.epsDevice).matrix : this.current.defaultMatrix;
+  }
+  private readonly epsDevice?: { box: PsBox; matrix: Matrix };
+  private captureDevice?: { box: PsBox; matrix: Matrix };
   private current: PsState;
   private states: SavedGraphics[] = [];
   private readonly counters: PsOutputCounters = { bytes: 0, tokens: 0 };
@@ -39,6 +50,7 @@ export class PsGraphics {
   private finalized?: readonly PsPageOutput[];
   private trailing?: PsPageOutput;
   private captures = 0;
+  private readonly eps: boolean;
   private activeMode?: 'paint' | 'measure' | 'path';
   get captureMode(): 'paint' | 'measure' | 'path' | undefined { return this.activeMode; }
   get writer(): PsPdfWriter { if (!this.captures) this.syncDevice(); return this.pageWriter; }
@@ -50,8 +62,9 @@ export class PsGraphics {
   }
   get state(): PsState { return this.current; }
 
-  constructor(readonly vm: PsInterpreter, options: { box?: PsBox; defaultMatrix?: Matrix } = {}) {
+  constructor(readonly vm: PsInterpreter, options: PsGraphicsOptions = {}) {
     this.budget = vm.budget;
+    this.eps = options.eps === true;
     this.decode = new DecodeBudget(this.budget.limits);
     const box = options.box ?? [0, 0, 595, 842];
     const matrix = options.defaultMatrix ?? IDENTITY;
@@ -59,6 +72,10 @@ export class PsGraphics {
       throw new TypeError('PostScript page box must have positive finite dimensions');
     if (matrix.length !== 6 || !matrix.every(Number.isFinite))
       throw new TypeError('PostScript default matrix must contain six finite numbers');
+    if (this.eps) {
+      this.budget.allocate(192, 'fixed EPS device');
+      this.epsDevice = { box: [...box], matrix: [...matrix] };
+    }
     this.current = this.defaultState(box, matrix);
     this.pageWriter = new PsPdfWriter(this.budget, this.defaultBox, this.counters);
     vm.addSaveParticipant({ prepareSave: () => this.prepareSave() });
@@ -79,7 +96,7 @@ export class PsGraphics {
 
   initialize(): void {
     this.assertColorAllowed();
-    this.current = this.defaultState(this.current.deviceBox, this.current.defaultMatrix, this.current.discarding);
+    this.current = this.defaultState(this.defaultBox, this.defaultMatrix, this.current.discarding);
   }
 
   private publish(output: PsPageOutput): void {
@@ -106,6 +123,10 @@ export class PsGraphics {
 
   showPage(copy = false): void {
     this.assertPageAllowed();
+    if (this.eps) {
+      if (copy) throw new UnsupportedFeatureError('EPS copypage is unsupported');
+      return;
+    }
     if (this.current.discarding) return;
     this.syncDevice();
     const output = this.pageWriter.finish();
@@ -125,7 +146,7 @@ export class PsGraphics {
   }
 
   setPageSize(width: number, height: number): void {
-    this.assertPageAllowed();
+    this.assertPageDeviceAllowed();
     if (width <= 0 || height <= 0) throw new PsFault('rangecheck');
     const box = this.current.deviceBox;
     if (!this.current.discarding && width === box[2] - box[0] && height === box[3] - box[1]) return;
@@ -147,14 +168,19 @@ export class PsGraphics {
 
   finish(): readonly PsPageOutput[] {
     this.syncDevice();
-    this.budget.items(this.pages.length + (this.pageWriter.hasMarks ? 1 : 0), 'output pages');
-    const trailing = this.pageWriter.hasMarks ? this.pageWriter.finish() : undefined;
+    this.budget.items(this.pages.length + (this.pageWriter.hasMarks || this.eps ? 1 : 0), 'output pages');
+    const trailing = this.pageWriter.hasMarks || this.eps ? this.pageWriter.finish() : undefined;
     if (this.finalized && this.trailing === trailing) return this.finalized;
     this.budget.allocate((this.pages.length + (trailing ? 1 : 0)) * 16, 'completed pages');
     this.budget.work(this.pages.length, 'completed pages');
     this.finalized = trailing ? [...this.pages, trailing] : this.pages.slice();
     this.trailing = trailing;
     return this.finalized;
+  }
+
+  assertPageDeviceAllowed(): void {
+    this.assertPageAllowed();
+    if (this.eps) throw new UnsupportedFeatureError('EPS page-device changes are unsupported');
   }
 
   private checkGrowth(): void {
@@ -237,6 +263,8 @@ export class PsGraphics {
     ]), evenOdd: false }];
     state.clipSaves = [];
     const initial = copyPsState(state, this.budget);
+    const parentDevice = this.captureDevice;
+    if (this.eps) this.budget.allocate(64, 'EPS capture device');
     this.budget.allocate(32, 'capture graphics stack');
     const parent = this.pageWriter, parentState = this.current, parentStates = this.states;
     const roots: import('./psvalue.js').PsValue[] = [];
@@ -271,12 +299,14 @@ export class PsGraphics {
       writer.observeText = (glyph, by) => { if (glyph.path) append(transformPsPath(glyph.path, by, this.budget)); if (glyph.box) includeBox(glyph.box, by); };
     }
     this.pageWriter = writer; this.current = state;
+    if (this.eps) this.captureDevice = { box: initial.deviceBox, matrix: initial.defaultMatrix };
     this.activeMode = mode;
     this.states = [{ state: initial, barrier: true }]; this.captures++;
     let active = true;
     const abort = (): void => {
       if (active) {
         this.pageWriter = parent; this.current = parentState; this.states = parentStates;
+        this.captureDevice = parentDevice;
         this.activeMode = parentMode;
         this.captures--; active = false;
       }
@@ -328,7 +358,7 @@ export class PsGraphics {
 
 const installed = new WeakSet<PsInterpreter>();
 export function installPsGraphics(vm: PsInterpreter,
-  options: { box?: PsBox; defaultMatrix?: Matrix } = {}): PsGraphics {
+  options: PsGraphicsOptions = {}): PsGraphics {
   if (installed.has(vm)) throw new PsFault('invalidaccess');
   installed.add(vm);
   const graphics = new PsGraphics(vm, options);
@@ -411,6 +441,7 @@ export function installPsGraphics(vm: PsInterpreter,
       if (width.value <= 0 || height.value <= 0) throw new PsFault('rangecheck');
       size = [width.value, height.value];
     }
+    graphics.assertPageDeviceAllowed();
     if (size) graphics.setPageSize(...size);
     vm.replace(1);
   });

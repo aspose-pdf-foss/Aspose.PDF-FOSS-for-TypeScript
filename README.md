@@ -66,6 +66,8 @@ flowchart TD
 
 ## Key Capabilities
 
+- **PostScript/EPS import** — `doc.AddPostScript(bytes, options?)` appends vector, image and extractable-text pages synchronously. Plain PS may emit multiple pages; EPS always emits one cropped page using outer DSC BoundingBox/HiResBoundingBox, including deferred trailer bounds and DOS TIFF/WMF preview wrappers. Supply fonts explicitly with `fonts: [{ name, bytes }]`; definitions and resource budgets are job-local. Failed jobs leave existing pages and objects unchanged. This is a bounded language subset, not a full printer interpreter or a claim of independent visual parity.
+
 - Render document previews with `doc.ToThumbnails({ maxSize: 256 })`: one image
   per page, fitted to a pixel bound with rotation and aspect ratio preserved.
 - Parse both classic cross-reference tables and cross-reference streams, including object
@@ -346,6 +348,28 @@ doc.WriteTo('scratch.pdf');
 
 ## Additional Examples
 
+### Import PostScript or EPS
+
+```typescript
+import { Document, PageFormat } from '@asposefoss/pdf';
+import { readFileSync, writeFileSync } from 'node:fs';
+
+const doc = Document.New();
+doc.AddPostScript(readFileSync('artwork.eps'));
+doc.AddPostScript(readFileSync('job.ps'), { format: 'ps', pageSize: PageFormat.Letter });
+writeFileSync('combined.pdf', doc.Save());
+```
+
+`format` defaults to `'auto'`; EPS requires an EPSF first-line header and valid
+outer DSC bounds. `pageSize` sets only the initial plain-PS device and is refused
+for EPS. EPS translates its lower-left origin to zero without scaling or
+margins, clips to its bounds, and neutralizes `showpage`. Page-device changes
+and `copypage` in EPS are unsupported. Empty PS adds no pages; empty EPS adds one.
+The returned `{ pages }` contains only the newly appended live page handles.
+The synchronous call uses `doc.loadLimits`; no progress/cancellation interface
+or font-folder/system-font lookup is performed. Macintosh envelopes must first
+be extracted to their data fork. See the PostScript limits and engine scope above.
+
 More real, verified snippets are collected below, each demonstrating one operation without
 obscuring the primary installation and quick-start path.
 
@@ -422,11 +446,12 @@ through to saving.
 | `maxContentTokens` | 10,000,000 | Tokens in one page walk: the page and every form, pattern and appearance it draws; one stream in the document-wide rewrites; the content one `AddSVGObject` emits |
 | `maxCanvasPixels` | 2^26 | A render canvas sized from the page box; an explicit `ToImage` width and height are exempt |
 | `maxGlyphOperations` | 100,000 | Work to produce one glyph from a font program: CFF and Type 1 charstring operators, subroutine calls included, or TrueType composite components |
-| `maxPostScriptOperations` | 10,000,000 | Cumulative execution, scanning and proportional bulk work in one internal PostScript interpreter |
-| `maxPostScriptVmBytes` | 128 MiB | Cumulative accounted allocation in one internal PostScript interpreter, including stacks, frames, scratch copies and save journals |
+| `maxPostScriptOperations` | 10,000,000 | Cumulative framing, DSC, execution and PDF installation work in one `AddPostScript` job |
+| `maxPostScriptVmBytes` | 128 MiB | Cumulative accounted allocation in one `AddPostScript` job, including stacks, frames, metadata, fonts and installation scratch |
 
-The PostScript fields bound the internal language and graphics engine for later
-import work; there is currently no public PostScript import API. The internal
+The PostScript fields bound each synchronous `doc.AddPostScript(bytes, options?)`
+job, using the destination's current `loadLimits`. Each call has a fresh
+interpreter and font registry; a failure leaves pages and objects unchanged. The
 graphics installer supports vector paths/clipping, device/Indexed/tint colors,
 sampled images, forms and tiling patterns. The optional internal text session
 supports Standard-14, supplied/source Type 1 and Type 42, procedure-built Type 3,
@@ -3750,7 +3775,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 501 public types plus 161
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 504 public types plus 161
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4562,6 +4587,10 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.AddPlainText(text, opts?)` / `doc.AddPlainTextAsync(text, opts?)` | Append literal text with tab stops, wrapping and form-feed page breaks → `Page[]` / `Promise<Page[]>`; strict font coverage before page allocation |
 | `flow.AddDocx(src, opts?)` / `page.AddDocx(bytes, rect, opts?)` / `doc.AddDocx(bytes, opts?)` | Render a Word document (.docx) as a documented subset, reporting the rest in `skipped` — see [Features](#key-capabilities) and [Limitations](#scope-and-limitations) |
 | `flow.AddHtml(src, opts?)` / `page.AddHtml(src, rect, opts?)` / `doc.AddHtml(src, opts?)` | Render an HTML document through the CSS cascade and box model — see [Features](#key-capabilities) and [Limitations](#scope-and-limitations) |
+| `doc.AddPostScript(bytes, options?)` | Synchronously append bounded PS/EPS output; returns newly appended live pages. |
+| `PostScriptFont` | Explicit job-local font alias `{ name, bytes }`; accepts Type 1 and TrueType programs. |
+| `PostScriptOptions` | Format (`'auto'` \| `'ps'` \| `'eps'`), initial PS `pageSize`, and explicit `fonts`. |
+| `PostScriptResult` | `{ pages: Page[] }` containing only newly appended pages in order. |
 | `flow.AddColumnBreak()` / `flow.AddFloatBox(box, side)` | Force the next column, or float a `FloatingBox` left/right so text wraps beside it |
 | `flow.RestartNotes(kind?)` | Restart footnote and/or endnote numbering at this point (Word's "restart each section"); `FlowNoteOptions.restart: 'page'` restarts footnotes on every page |
 | `flow.AddFloatingBox(box, opts?)` | Place a `FloatingBox` in the flow itself (pull-quote/callout); atomic, nothing wraps beside it |

@@ -23,3 +23,7 @@ docs/feature-showcase-signed.pdf
 
 # veraPDF source downloads (regenerate src/xmpschemadata.ts via npm run gen:xmpschemas)
 /verapdf/
+
+################
+/.tmp/
+################
