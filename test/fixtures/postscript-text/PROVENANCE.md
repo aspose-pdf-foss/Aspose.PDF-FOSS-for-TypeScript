@@ -15,6 +15,11 @@ Saved/reopened extraction and pixel checks use this library. qpdf is a structura
 check only. No independent interpreter or visual agreement is claimed; the broad
 producer corpus remains `lw8w.5`, and public PS/EPS framing remains `lw8w.4`.
 
+The separately executed [lw8w.5 oracle corpus](../postscript-oracle/PROVENANCE.md)
+now supplies Ghostscript PDF/direct-PNG references, including these same licensed
+font programs under explicit encoding and unhinted-device settings. The checks
+described above remain literal tests, rather than independent oracle outputs.
+
 The standard name-vector Unicode subset in `src/encoding.ts` comes from Adobe's
 AGL/AGLFN repository, `glyphlist.txt` and `zapfdingbats.txt`, table version 2.0
 (September 20, 2002), fetched 2026-11-18. SHA-256 of those source files:

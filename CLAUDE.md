@@ -10285,6 +10285,8 @@ Source (`src/`):
   `pageSize` configures plain PS only; EPS uses normalized outer bounds.
 - **epsdsc.ts** — metered outer DSC bounding boxes with lexical, nested-region
   and counted-data exclusion; executable source bytes remain unchanged.
+  An implicit outer EndProlog before the trailer is accepted (`lw8w.5`), as
+  Illustrator 1.2d4 emits; a nested end still must match its opener.
   Ordinary PS comments (including DSC argument text) end at form feed as the
   VM scanner's do, but only CR/LF establish physical DSC column zero. Counted
   Lines and preview rows keep physical line semantics. Fixed argument parsers
@@ -14361,6 +14363,7 @@ output, and what the fixture does and does **not** cover:
 
 | Directory | Provenance | Covers |
 |---|---|---|
+| `fixtures/postscript-oracle/` | `PROVENANCE.md` | Ghostscript 10.07.1 PDF and direct-source RGB PNG references for thirteen PS/EPS inputs, including untouched Illustrator tiger and upstream colorcir. Exact supplied fonts/encoding, 144 dpi unhinted raster, literal geometry, foreground regions and mutations. A documented RGB interpolation exception does not claim matching kernels. |
 | `fixtures/acrobat-index/` | `PROVENANCE.md` | Original Acrobat Pro DC 18 three-page PDF from pdfbox.cfc's MIT-licensed corpus. Confirms the real PieceInfo/SearchIndex dictionary and three index streams, their removal from saved bytes and preservation when privateData is disabled. Upstream blob and payload hashes are pinned; qpdf independently confirms the decoded payloads. |
 | `fixtures/fonts/` | `PROVENANCE.md` | WOFF2 from wawoff2 and fontTools — `glyf`, `hmtx`, and CFF-flavoured (`OTTO`) input — plus `LiberationSans.dfont`, a Macintosh suitcase written by FontForge, since Apple`s own cannot be vendored. Two of its five container rules stay unanchored and PROVENANCE says which |
 | `fixtures/jpeg/` | `PROVENANCE.md` | libjpeg-turbo's own images, plus external-encoder synthetics (incl. CMYK/YCCK). Since `ka3t`, ten streams from Thomas Richter libjpeg 1.70 at `c719010a`: exact SOF3 gray/RGB sources, independent DHP/EXP hierarchies with SOF5/6/7/13/14 residuals, odd and partial-MCU edge geometry, and an all-predictive EXP stream whose external decode is matched exactly. DCT goldens allow one sample level for IDCT variance. Found direct differential DC coding, premature clipping/wrapping, fractional expansion and padded-edge defects (`ka3t.1`); seven measured mutations fail. Source samples, decodes, command lines and SHA-256 hashes are frozen beside the streams. |

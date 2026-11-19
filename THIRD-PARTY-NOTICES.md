@@ -80,3 +80,12 @@ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
 OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# Ghostscript example test inputs
+
+`test/fixtures/postscript-oracle/inputs/upstream-tiger.eps` and
+`upstream-colorcir.ps` are unchanged examples from ArtifexSoftware/ghostpdl
+commit `9a39d68ca934f8e9343f46a2803e765122a3b4a9` (10.07.1).
+Upstream includes the examples under AGPL-3.0-or-later. The applicable
+`LICENSE.ghostpdl` and `COPYING.ghostpdl` are retained beside the corpus.
+These test inputs are excluded from the published package.
+

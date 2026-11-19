@@ -1,0 +1,75 @@
+[
+  {
+    "id": "page-width",
+    "test": "ps-pages",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "omit-clip",
+    "test": "ps-paths",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "remove-clipped-feature",
+    "test": "ps-paths",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "image-sample",
+    "test": "ps-images",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "image-placement",
+    "test": "ps-images",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "tiny-glyph",
+    "test": "ps-fonts",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "all-glyph-paint",
+    "test": "ps-fonts",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "glyph-baseline",
+    "test": "ps-fonts",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "form-transform",
+    "test": "ps-reuse",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "eps-sign",
+    "test": "eps-integer",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "mark-blank-page",
+    "test": "ps-pages",
+    "killed": true,
+    "exit": 1
+  },
+  {
+    "id": "source-input-immutability",
+    "test": "ps-pages",
+    "killed": true,
+    "exit": 1,
+    "priorSharedSnapshotExit": 0
+  }
+]

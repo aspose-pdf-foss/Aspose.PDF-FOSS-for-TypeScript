@@ -59,7 +59,8 @@
     "gen:zip": "node scripts/gen-zip-fixtures.mjs",
     "gen:hyph": "node scripts/gen-hyphenation.mjs",
     "gen:barcodes": "node scripts/gen-barcode-tables.mjs",
-    "gen:barcode-goldens": "tsx scripts/gen-barcode-goldens.ts"
+    "gen:barcode-goldens": "tsx scripts/gen-barcode-goldens.ts",
+    "gen:postscript-oracles": "tsx scripts/gen-postscript-oracles.ts"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

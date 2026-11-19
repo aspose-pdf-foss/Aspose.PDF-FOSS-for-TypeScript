@@ -1,0 +1,855 @@
+{
+  "generator": "postscript-oracle-runner",
+  "version": 1,
+  "dpi": 144,
+  "tool": {
+    "version": "GPL Ghostscript 10.07.1 (2026-05-19)\nCopyright (C) 2026 Artifex Software, Inc.  All rights reserved.",
+    "executableSha256": "de3bce7c03dfce0dfd78af8bf1d464c6a21fbcb7237f127ec5c027179d2c2741"
+  },
+  "cases": [
+    {
+      "id": "ps-pages",
+      "source": "inputs/ps-pages.ps",
+      "sourceSha256": "dfcbb8fc2e9b5206b1afb7895d4f6b01fb149ccff25b16b35e3318c8c215bbab",
+      "format": "ps",
+      "setup": "ps",
+      "flushMarkedTail": true,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            80,
+            60
+          ],
+          "blank": true,
+          "regions": []
+        },
+        {
+          "mediaBox": [
+            0,
+            0,
+            80,
+            60
+          ],
+          "regions": [
+            {
+              "id": "red",
+              "box": [
+                10,
+                10,
+                50,
+                40
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 20,
+                  "y": 20,
+                  "rgb": [
+                    255,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "mediaBox": [
+            0,
+            0,
+            100,
+            80
+          ],
+          "regions": [
+            {
+              "id": "blue",
+              "box": [
+                20,
+                20,
+                70,
+                60
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 40,
+                  "y": 40,
+                  "rgb": [
+                    0,
+                    0,
+                    255
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "files": {
+        "ps-pages.pdf": "24dc416d56a42933cc644a28c520c34bd99c74662b3c78723af5c22fac817fe8",
+        "ps-pages-1.png": "18a13d81b9a40dac4e84ea5dbaaddf2463b06053f95c66f6f6fd64235e02ac63",
+        "ps-pages-2.png": "c06ace1b5dd7194fdc14d11ef836df28cc611583a10dbc92fc135eb979c3b3b9",
+        "ps-pages-3.png": "a965e1427dc893cfe56efd6823dcfc9264e396859ee121ab90f73b3802bd98b6"
+      },
+      "host": "<< /PageSize [595 842] >> setpagedevice",
+      "setupSha256": "e272a9d72f9e46e03621d407162e91ed04d0b34228fe12ff597f45e5cbad389e",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "ps-paths",
+      "source": "inputs/ps-paths.ps",
+      "sourceSha256": "f4b791a980d6359f33733ea3a9070dc12ecb9ceebce173271d09679bce1e0892",
+      "format": "ps",
+      "setup": "ps",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            160,
+            120
+          ],
+          "regions": [
+            {
+              "id": "clip",
+              "box": [
+                15,
+                15,
+                85,
+                85
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "dashes",
+              "box": [
+                7,
+                96,
+                153,
+                104
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "cubic",
+              "box": [
+                5,
+                5,
+                159,
+                95
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "ps-paths.pdf": "f6f98fa1d45ee11e91a0c3b616d6352188e132da5595378da6b67f5b748b5a33",
+        "ps-paths-1.png": "1620b056622aea0cab9bbea4740d3bc4ebc005f79aac80fab551381d5684720e"
+      },
+      "host": "<< /PageSize [595 842] >> setpagedevice",
+      "setupSha256": "e272a9d72f9e46e03621d407162e91ed04d0b34228fe12ff597f45e5cbad389e",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "ps-images",
+      "source": "inputs/ps-images.ps",
+      "sourceSha256": "24292eaa6769f28eb417cea772ba54bbfab0809841ab8e5d48ae23da5317b645",
+      "format": "ps",
+      "setup": "ps",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            160,
+            120
+          ],
+          "regions": [
+            {
+              "id": "rgb",
+              "box": [
+                10,
+                10,
+                70,
+                50
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 12,
+                  "y": 48,
+                  "rgb": [
+                    255,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "gray",
+              "box": [
+                90,
+                10,
+                150,
+                50
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 92,
+                  "y": 30,
+                  "rgb": [
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                {
+                  "x": 148,
+                  "y": 30,
+                  "rgb": [
+                    255,
+                    255,
+                    255
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "files": {
+        "ps-images.pdf": "295cb1fe1278b95f45e6c7f5e03ef82a5be3d69a15d93af84a3be7da09fc35fe",
+        "ps-images-1.png": "618d7894bfcfade87c3f595b4496b4236fa97665638b4eea5a4878bba93ae126"
+      },
+      "host": "<< /PageSize [595 842] >> setpagedevice",
+      "setupSha256": "e272a9d72f9e46e03621d407162e91ed04d0b34228fe12ff597f45e5cbad389e",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "ps-fonts",
+      "source": "inputs/ps-fonts.ps",
+      "sourceSha256": "311131c741aa009d6e73f9385aa9a1976372c86b8ef85bd37d8fb4a760b395ba",
+      "format": "ps",
+      "setup": "ps",
+      "flushMarkedTail": false,
+      "fonts": [
+        {
+          "name": "NimbusSans-Regular",
+          "path": "test/fixtures/fonts/NimbusSans-Regular.t1",
+          "sha256": "779a9c820bbe8b470d36e77bcf949eef7bf1b889184274ba0f51da4c8c883cfa"
+        },
+        {
+          "name": "LiberationSans",
+          "path": "fonts/LiberationSans-Regular.ttf",
+          "sha256": "76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8"
+        }
+      ],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            200,
+            120
+          ],
+          "regions": [
+            {
+              "id": "type1",
+              "box": [
+                10,
+                88,
+                105,
+                118
+              ],
+              "kind": "text"
+            },
+            {
+              "id": "truetype",
+              "box": [
+                10,
+                55,
+                105,
+                87
+              ],
+              "kind": "text"
+            },
+            {
+              "id": "procedure",
+              "box": [
+                10,
+                20,
+                48,
+                44
+              ],
+              "kind": "text"
+            },
+            {
+              "id": "transformed",
+              "box": [
+                112,
+                22,
+                150,
+                65
+              ],
+              "kind": "text"
+            },
+            {
+              "id": "tiny-A",
+              "box": [
+                176,
+                98,
+                187,
+                110
+              ],
+              "kind": "text"
+            }
+          ],
+          "text": [
+            "AWgy",
+            "AB"
+          ]
+        }
+      ],
+      "files": {
+        "ps-fonts.pdf": "53aad66ecd157552fa2c002a8ae0092691bd58cdf339726488b3e4068dbdf648",
+        "ps-fonts-1.png": "eb2fb42d1e5b6d54cdd25b81f42e21836b7a33ed1e9fbb05de67432884665e73"
+      },
+      "host": "<< /PageSize [595 842] >> setpagedevice",
+      "setupSha256": "fef0e8e9da16aa2fd828ae2a95f93e11a7cccf517fa9709506c11983e760505f",
+      "fontmapSha256": "f39ad2f649e08d9f57753b17c90533c78bbdaf1365e53835920c1f140b522f94"
+    },
+    {
+      "id": "ps-reuse",
+      "source": "inputs/ps-reuse.ps",
+      "sourceSha256": "65c853e53a778195c49b51059f7c02423f3d41a7f80471b665ff510bbd42500d",
+      "format": "ps",
+      "setup": "ps",
+      "flushMarkedTail": false,
+      "fonts": [
+        {
+          "name": "NimbusSans-Regular",
+          "path": "test/fixtures/fonts/NimbusSans-Regular.t1",
+          "sha256": "779a9c820bbe8b470d36e77bcf949eef7bf1b889184274ba0f51da4c8c883cfa"
+        }
+      ],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            160,
+            120
+          ],
+          "regions": [
+            {
+              "id": "nested-form",
+              "box": [
+                38,
+                18,
+                135,
+                96
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "nested-text",
+              "box": [
+                50,
+                55,
+                70,
+                76
+              ],
+              "kind": "text"
+            }
+          ],
+          "text": [
+            "F"
+          ]
+        }
+      ],
+      "files": {
+        "ps-reuse.pdf": "4261d65c0957578a99db78a17f23f1307944862b3139ef810ffcc1d7dd17b13e",
+        "ps-reuse-1.png": "f79ac10594a981c85afd9d434e0a4aae4c9e416a9ffa558ca0ca7393b4f39040"
+      },
+      "host": "<< /PageSize [595 842] >> setpagedevice",
+      "setupSha256": "607faae302feb417d603e5844dbee8fa2645631c1911e01dae06e69c77e6e401",
+      "fontmapSha256": "05215236c2019f37aeb3127873bfd72f6e74c96435f871bedf7522398550e62f"
+    },
+    {
+      "id": "eps-integer",
+      "source": "inputs/eps-integer.eps",
+      "sourceSha256": "819a263f845ae32e92816153789dc72edf93983ae71ccc73712a4322311089a1",
+      "format": "eps",
+      "setup": "eps-native",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            100,
+            50
+          ],
+          "regions": [
+            {
+              "id": "origin-fill",
+              "box": [
+                0,
+                0,
+                40,
+                50
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 2,
+                  "y": 45,
+                  "rgb": [
+                    255,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "image",
+              "box": [
+                4,
+                4,
+                18,
+                18
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "diagonal",
+              "box": [
+                42,
+                0,
+                95,
+                45
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "eps-integer.pdf": "cc77962e243105a07a2fdbd0014e99dbef094aaad82f88aa117ae18a56bdfe01",
+        "eps-integer-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d"
+      },
+      "host": "",
+      "setupSha256": "9592dfb77a2d4466f1ab13311f8b7233c76f18b3386f5584cca7f7a571751bc7",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "eps-hires",
+      "source": "inputs/eps-hires.eps",
+      "sourceSha256": "bf08a095c6fae0b75a773c942b1822d1a7b0ac5b0b33da3fcfafcd8fd0bd5bac",
+      "format": "eps",
+      "setup": "eps-native",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            99.25,
+            49.25
+          ],
+          "regions": [
+            {
+              "id": "fractional-origin",
+              "box": [
+                0,
+                0,
+                40,
+                40
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "diagonal",
+              "box": [
+                40,
+                0,
+                95,
+                45
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "eps-hires.pdf": "4efc2cf2bee65abc4132656e040a65abb330115666c1b8d76b156547f416dd40",
+        "eps-hires-1.png": "3a56201a262311c365b3522963f71725407d7f8a70762f14d60cae1b09b21722"
+      },
+      "host": "",
+      "setupSha256": "9592dfb77a2d4466f1ab13311f8b7233c76f18b3386f5584cca7f7a571751bc7",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "eps-deferred",
+      "source": "inputs/eps-deferred.eps",
+      "sourceSha256": "dd9c85e9fdb57c3c2769f2dab94bacb20e126f9dabc69b5f61cac7e4a8e10b7f",
+      "format": "eps",
+      "setup": "eps-literal",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            100,
+            50
+          ],
+          "regions": [
+            {
+              "id": "origin-fill",
+              "box": [
+                0,
+                0,
+                40,
+                50
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 2,
+                  "y": 45,
+                  "rgb": [
+                    255,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "image",
+              "box": [
+                4,
+                4,
+                18,
+                18
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "diagonal",
+              "box": [
+                42,
+                0,
+                95,
+                45
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "epsBox": [
+        -10,
+        20,
+        90,
+        70
+      ],
+      "files": {
+        "eps-deferred.pdf": "3e3dab58efb01e34f4e5aed03dd760e328fe94c6f85ac18bdbfbfc3ab851dd98",
+        "eps-deferred-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d"
+      },
+      "host": "<< /PageSize [100 50] >> setpagedevice 10 -20 translate",
+      "setupSha256": "547b029911c1e9c8a1e1f2cd6d462b18089432e4778629c710b802e37b3d69d8",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "eps-epsi",
+      "source": "inputs/eps-epsi.eps",
+      "sourceSha256": "10eb17c917161885b508ae9aa9acdad3aadc26ee31a424a0fd0252144eab47be",
+      "format": "eps",
+      "setup": "eps-native",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            100,
+            50
+          ],
+          "regions": [
+            {
+              "id": "counted-image",
+              "box": [
+                0,
+                0,
+                100,
+                50
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "eps-epsi.pdf": "9af08fbdfd45991d232c2d62fceef1286f64ef22ec30328cc7c7247c384ecf79",
+        "eps-epsi-1.png": "4aa50667ac883882a7fa7bd307707e39002429afc955782d24c7f287b1e01789"
+      },
+      "host": "",
+      "setupSha256": "9592dfb77a2d4466f1ab13311f8b7233c76f18b3386f5584cca7f7a571751bc7",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "eps-dos-tiff",
+      "source": "inputs/eps-dos-tiff.eps",
+      "sourceSha256": "67a35550802b264666805a379d557a65519897fde69d8f7bedcfa4b6b7da47f4",
+      "format": "eps",
+      "setup": "eps-native",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            100,
+            50
+          ],
+          "regions": [
+            {
+              "id": "origin-fill",
+              "box": [
+                0,
+                0,
+                40,
+                50
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 2,
+                  "y": 45,
+                  "rgb": [
+                    255,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "image",
+              "box": [
+                4,
+                4,
+                18,
+                18
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "diagonal",
+              "box": [
+                42,
+                0,
+                95,
+                45
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "eps-dos-tiff.pdf": "cc77962e243105a07a2fdbd0014e99dbef094aaad82f88aa117ae18a56bdfe01",
+        "eps-dos-tiff-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d"
+      },
+      "host": "",
+      "setupSha256": "9592dfb77a2d4466f1ab13311f8b7233c76f18b3386f5584cca7f7a571751bc7",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "eps-dos-wmf",
+      "source": "inputs/eps-dos-wmf.eps",
+      "sourceSha256": "6a872933bc49d4401fb2a036e587e7a3a4ab096a1d24d451b15f4fa3f4f16237",
+      "format": "eps",
+      "setup": "eps-native",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            100,
+            50
+          ],
+          "regions": [
+            {
+              "id": "origin-fill",
+              "box": [
+                0,
+                0,
+                40,
+                50
+              ],
+              "kind": "paint",
+              "probes": [
+                {
+                  "x": 2,
+                  "y": 45,
+                  "rgb": [
+                    255,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "image",
+              "box": [
+                4,
+                4,
+                18,
+                18
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "diagonal",
+              "box": [
+                42,
+                0,
+                95,
+                45
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "eps-dos-wmf.pdf": "cc77962e243105a07a2fdbd0014e99dbef094aaad82f88aa117ae18a56bdfe01",
+        "eps-dos-wmf-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d"
+      },
+      "host": "",
+      "setupSha256": "9592dfb77a2d4466f1ab13311f8b7233c76f18b3386f5584cca7f7a571751bc7",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "upstream-tiger",
+      "source": "inputs/upstream-tiger.eps",
+      "sourceSha256": "ed255555fdab768cce7f025dcde744a6807292cac40f80f73733fbffe61edb4f",
+      "format": "eps",
+      "setup": "eps-native",
+      "flushMarkedTail": false,
+      "fonts": [],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            550,
+            568
+          ],
+          "regions": [
+            {
+              "id": "tiger",
+              "box": [
+                0,
+                0,
+                550,
+                568
+              ],
+              "kind": "paint"
+            }
+          ]
+        }
+      ],
+      "files": {
+        "upstream-tiger.pdf": "f414f7c756af1bbbd2c22a652faadffd35c7001058e7e690436f74c283168593",
+        "upstream-tiger-1.png": "622469c93711c2ab3320f120095ccd832c498f8aef99ca62bc23ae2d371f27ef"
+      },
+      "host": "",
+      "setupSha256": "9592dfb77a2d4466f1ab13311f8b7233c76f18b3386f5584cca7f7a571751bc7",
+      "fontmapSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "id": "upstream-colorcir",
+      "source": "inputs/upstream-colorcir.ps",
+      "sourceSha256": "3867d5e63b6e48e67682970254161368e718a6fb486c49a8029689d2b5d7d9ce",
+      "format": "ps",
+      "setup": "ps",
+      "flushMarkedTail": false,
+      "fonts": [
+        {
+          "name": "Times-Roman",
+          "path": "fonts/LiberationSerif-Regular.ttf",
+          "sha256": "058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74"
+        }
+      ],
+      "pages": [
+        {
+          "mediaBox": [
+            0,
+            0,
+            595,
+            842
+          ],
+          "regions": [
+            {
+              "id": "rings",
+              "box": [
+                0,
+                100,
+                595,
+                750
+              ],
+              "kind": "paint"
+            },
+            {
+              "id": "labels",
+              "box": [
+                65,
+                65,
+                595,
+                100
+              ],
+              "kind": "text"
+            }
+          ],
+          "text": [
+            "Red",
+            "Green",
+            "Blue"
+          ]
+        }
+      ],
+      "files": {
+        "upstream-colorcir.pdf": "aae4f805f737f033f45d2c21ec275630535f53e6190a6792b0af2b991afc0132",
+        "upstream-colorcir-1.png": "39f0ee89fc31b1bc2bbbd56b57afd472ab6c9e896420a18101d82cdad19d2bcd"
+      },
+      "host": "<< /PageSize [595 842] >> setpagedevice",
+      "setupSha256": "285cba15dbd3a360c9a311f2989af32ee9e999c9d7f7705355630ee50b025ea9",
+      "fontmapSha256": "97cd32188843acdb3308602e769dc16fe44bec6d598d1924e728c77932463c02"
+    }
+  ]
+}

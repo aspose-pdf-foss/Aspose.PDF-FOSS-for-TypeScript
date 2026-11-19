@@ -1,4 +1,5 @@
 * text=auto eol=lf
+test/fixtures/postscript-oracle/inputs/** -text
 
 # Frozen third-party regression fixtures: byte-exact or worthless. A .ppm has an
 # ASCII header and may contain no NUL at all, so git's content sniffing calls it

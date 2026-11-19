@@ -20,3 +20,8 @@ Device conversion uses identity black generation/UCR and additive-black CMYK.
 qpdf 12.3.2 is used to check generated PDF structure. It is not a visual oracle.
 Ghostscript and MuPDF were not executed; no independent visual conformance
 claim is made.
+
+The separate [lw8w.5 oracle corpus](../postscript-oracle/PROVENANCE.md) now
+contains executed Ghostscript references, with explicit fonts, RGB/Gray device
+settings and bounded region comparisons. `composite.ps` remains a literal test
+fixture and is not one of those independent reference inputs.

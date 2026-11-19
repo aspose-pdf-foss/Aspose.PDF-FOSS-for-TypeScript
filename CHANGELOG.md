@@ -561,6 +561,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Older Illustrator EPS prologs.** Import accepts an outer `%%EndProlog`
+  without `%%BeginProlog`, as Adobe Illustrator 1.2d4's tiger example emits.
+  Nested DSC boundaries still require matching openers. (lw8w.5)
+
 - **Private glyph names no longer crash Unicode lookup.** Font glyph names such
   as `constructor`, `toString`, and `__proto__` are treated as unknown names,
   rather than inheriting JavaScript object properties and throwing a host

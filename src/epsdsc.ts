@@ -137,6 +137,9 @@ export function readEpsBox(source: Uint8Array, budget: PsBudget): PsBox {
         continue;
       }
       if (key.startsWith('End') && key !== 'EndComments') {
+        // Older Illustrator EPS uses an implicit outer prolog. A nested end
+        // still has to match its opener; only this outer boundary is optional.
+        if (key === 'EndProlog' && stack.length === 0 && region !== 'trailer') { region = 'body'; continue; }
         if (stack.pop() !== key.slice(3)) fail('mismatched DSC region');
         continue;
       }

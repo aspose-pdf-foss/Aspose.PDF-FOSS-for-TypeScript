@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "dpi": 144,
+  "referenceHashes": {
+    "ps-pages.pdf": "24dc416d56a42933cc644a28c520c34bd99c74662b3c78723af5c22fac817fe8",
+    "ps-pages-1.png": "18a13d81b9a40dac4e84ea5dbaaddf2463b06053f95c66f6f6fd64235e02ac63",
+    "ps-pages-2.png": "c06ace1b5dd7194fdc14d11ef836df28cc611583a10dbc92fc135eb979c3b3b9",
+    "ps-pages-3.png": "a965e1427dc893cfe56efd6823dcfc9264e396859ee121ab90f73b3802bd98b6",
+    "ps-paths.pdf": "f6f98fa1d45ee11e91a0c3b616d6352188e132da5595378da6b67f5b748b5a33",
+    "ps-paths-1.png": "1620b056622aea0cab9bbea4740d3bc4ebc005f79aac80fab551381d5684720e",
+    "ps-images.pdf": "295cb1fe1278b95f45e6c7f5e03ef82a5be3d69a15d93af84a3be7da09fc35fe",
+    "ps-images-1.png": "618d7894bfcfade87c3f595b4496b4236fa97665638b4eea5a4878bba93ae126",
+    "ps-fonts.pdf": "53aad66ecd157552fa2c002a8ae0092691bd58cdf339726488b3e4068dbdf648",
+    "ps-fonts-1.png": "eb2fb42d1e5b6d54cdd25b81f42e21836b7a33ed1e9fbb05de67432884665e73",
+    "ps-reuse.pdf": "4261d65c0957578a99db78a17f23f1307944862b3139ef810ffcc1d7dd17b13e",
+    "ps-reuse-1.png": "f79ac10594a981c85afd9d434e0a4aae4c9e416a9ffa558ca0ca7393b4f39040",
+    "eps-integer.pdf": "cc77962e243105a07a2fdbd0014e99dbef094aaad82f88aa117ae18a56bdfe01",
+    "eps-integer-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d",
+    "eps-hires.pdf": "4efc2cf2bee65abc4132656e040a65abb330115666c1b8d76b156547f416dd40",
+    "eps-hires-1.png": "3a56201a262311c365b3522963f71725407d7f8a70762f14d60cae1b09b21722",
+    "eps-deferred.pdf": "3e3dab58efb01e34f4e5aed03dd760e328fe94c6f85ac18bdbfbfc3ab851dd98",
+    "eps-deferred-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d",
+    "eps-epsi.pdf": "9af08fbdfd45991d232c2d62fceef1286f64ef22ec30328cc7c7247c384ecf79",
+    "eps-epsi-1.png": "4aa50667ac883882a7fa7bd307707e39002429afc955782d24c7f287b1e01789",
+    "eps-dos-tiff.pdf": "cc77962e243105a07a2fdbd0014e99dbef094aaad82f88aa117ae18a56bdfe01",
+    "eps-dos-tiff-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d",
+    "eps-dos-wmf.pdf": "cc77962e243105a07a2fdbd0014e99dbef094aaad82f88aa117ae18a56bdfe01",
+    "eps-dos-wmf-1.png": "23ccff9e78033b7ed7699c86aa470c15b3112edf14a69322dbdc551f5e63dc9d",
+    "upstream-tiger.pdf": "f414f7c756af1bbbd2c22a652faadffd35c7001058e7e690436f74c283168593",
+    "upstream-tiger-1.png": "622469c93711c2ab3320f120095ccd832c498f8aef99ca62bc23ae2d371f27ef",
+    "upstream-colorcir.pdf": "aae4f805f737f033f45d2c21ec275630535f53e6190a6792b0af2b991afc0132",
+    "upstream-colorcir-1.png": "39f0ee89fc31b1bc2bbbd56b57afd472ab6c9e896420a18101d82cdad19d2bcd"
+  },
+  "pages": {
+    "ps-pages:1": {
+      "whole": 0,
+      "regions": {}
+    },
+    "ps-pages:2": {
+      "whole": 0.005,
+      "regions": {
+        "red": 0.005
+      }
+    },
+    "ps-pages:3": {
+      "whole": 0.005,
+      "regions": {
+        "blue": 0.005
+      }
+    },
+    "ps-paths:1": {
+      "whole": 0.005,
+      "regions": {
+        "clip": 0.005,
+        "dashes": 0.005,
+        "cubic": 0.005
+      }
+    },
+    "ps-images:1": {
+      "whole": 0.08048359728506788,
+      "regions": {
+        "rgb": 0.14611979166666667,
+        "gray": 0.005
+      }
+    },
+    "ps-fonts:1": {
+      "whole": 0.005,
+      "regions": {
+        "type1": 0.005,
+        "truetype": 0.005,
+        "procedure": 0.005,
+        "transformed": 0.005,
+        "tiny-A": 0.005
+      }
+    },
+    "ps-reuse:1": {
+      "whole": 0.023708599651365486,
+      "regions": {
+        "nested-form": 0.023708599651365486,
+        "nested-text": 0.019329865361077114
+      }
+    },
+    "eps-integer:1": {
+      "whole": 0.005,
+      "regions": {
+        "origin-fill": 0.005,
+        "image": 0.005,
+        "diagonal": 0.005
+      }
+    },
+    "eps-hires:1": {
+      "whole": 0.015501974983541804,
+      "regions": {
+        "fractional-origin": 0.0179296875,
+        "diagonal": 0.005
+      }
+    },
+    "eps-deferred:1": {
+      "whole": 0.005,
+      "regions": {
+        "origin-fill": 0.005,
+        "image": 0.005,
+        "diagonal": 0.005
+      }
+    },
+    "eps-epsi:1": {
+      "whole": 0.005,
+      "regions": {
+        "counted-image": 0.005
+      }
+    },
+    "eps-dos-tiff:1": {
+      "whole": 0.005,
+      "regions": {
+        "origin-fill": 0.005,
+        "image": 0.005,
+        "diagonal": 0.005
+      }
+    },
+    "eps-dos-wmf:1": {
+      "whole": 0.005,
+      "regions": {
+        "origin-fill": 0.005,
+        "image": 0.005,
+        "diagonal": 0.005
+      }
+    },
+    "upstream-tiger:1": {
+      "whole": 0.018146459618040935,
+      "regions": {
+        "tiger": 0.018146459618040935
+      }
+    },
+    "upstream-colorcir:1": {
+      "whole": 0.005543115566645751,
+      "regions": {
+        "rings": 0.005596988869477916,
+        "labels": 0.005
+      }
+    }
+  }
+}

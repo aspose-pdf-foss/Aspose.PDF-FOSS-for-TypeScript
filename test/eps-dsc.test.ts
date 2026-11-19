@@ -7,6 +7,9 @@ import { epsSource } from './helpers/build-eps.js';
 import { psBytes, joinPs } from './helpers/ps-font-program.js';
 const read=(b:Uint8Array)=>readEpsBox(b,new PsBudget());
 describe('outer EPS DSC bounds',()=>{
+ it('accepts an implicit outer prolog boundary',()=>{
+   expect(read(epsSource('%%EndProlog\nshowpage'))).toEqual([-10,20,90,70]);
+ });
  it.each(['%ordinary', '%%Ignored: ordinary'])('does not promote string metadata after a form-feed-terminated %s comment', comment=>{
    const fake = `${comment}\f(label\n%%Trailer\n%%BoundingBox: 0 0 999 999\n) pop\n`;
    expect(()=>read(epsSource(fake,'%%BoundingBox: (atend)'))).toThrow(PdfParseError);

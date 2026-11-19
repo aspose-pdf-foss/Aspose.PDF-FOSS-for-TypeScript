@@ -1,0 +1,546 @@
+{
+  "ps-pages:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 0,
+      "strictMismatches": 0,
+      "edgeAccepted": 0,
+      "mismatchFraction": 0,
+      "maxDelta": 0,
+      "observed": 0,
+      "expected": 0,
+      "pageFraction": 0
+    },
+    "regions": []
+  },
+  "ps-pages:2": {
+    "failures": [],
+    "whole": {
+      "foreground": 4800,
+      "strictMismatches": 0,
+      "edgeAccepted": 0,
+      "mismatchFraction": 0,
+      "maxDelta": 0,
+      "observed": 4800,
+      "expected": 4800,
+      "pageFraction": 0
+    },
+    "regions": [
+      {
+        "foreground": 4800,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 4800,
+        "expected": 4800,
+        "id": "red"
+      }
+    ]
+  },
+  "ps-pages:3": {
+    "failures": [],
+    "whole": {
+      "foreground": 8000,
+      "strictMismatches": 0,
+      "edgeAccepted": 0,
+      "mismatchFraction": 0,
+      "maxDelta": 0,
+      "observed": 8000,
+      "expected": 8000,
+      "pageFraction": 0
+    },
+    "regions": [
+      {
+        "foreground": 8000,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 8000,
+        "expected": 8000,
+        "id": "blue"
+      }
+    ]
+  },
+  "ps-paths:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 18497,
+      "strictMismatches": 893,
+      "edgeAccepted": 890,
+      "mismatchFraction": 0.00016218846299399903,
+      "maxDelta": 107,
+      "observed": 18246,
+      "expected": 18495,
+      "pageFraction": 0.011627604166666666
+    },
+    "regions": [
+      {
+        "foreground": 14614,
+        "strictMismatches": 323,
+        "edgeAccepted": 320,
+        "mismatchFraction": 0.00020528260572054194,
+        "maxDelta": 104,
+        "observed": 14595,
+        "expected": 14614,
+        "id": "clip"
+      },
+      {
+        "foreground": 2112,
+        "strictMismatches": 192,
+        "edgeAccepted": 192,
+        "mismatchFraction": 0,
+        "maxDelta": 68,
+        "observed": 1920,
+        "expected": 2112,
+        "id": "dashes"
+      },
+      {
+        "foreground": 16385,
+        "strictMismatches": 701,
+        "edgeAccepted": 698,
+        "mismatchFraction": 0.000183094293561184,
+        "maxDelta": 107,
+        "observed": 16326,
+        "expected": 16383,
+        "id": "cubic"
+      }
+    ]
+  },
+  "ps-images:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 17680,
+      "strictMismatches": 1121,
+      "edgeAccepted": 18,
+      "mismatchFraction": 0.0623868778280543,
+      "maxDelta": 26,
+      "observed": 17440,
+      "expected": 17680,
+      "pageFraction": 0.014596354166666667
+    },
+    "regions": [
+      {
+        "foreground": 9600,
+        "strictMismatches": 1121,
+        "edgeAccepted": 18,
+        "mismatchFraction": 0.11489583333333334,
+        "maxDelta": 26,
+        "observed": 9600,
+        "expected": 9600,
+        "id": "rgb"
+      },
+      {
+        "foreground": 8080,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 6,
+        "observed": 7840,
+        "expected": 8080,
+        "id": "gray"
+      }
+    ]
+  },
+  "ps-fonts:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 5821,
+      "strictMismatches": 800,
+      "edgeAccepted": 800,
+      "mismatchFraction": 0,
+      "maxDelta": 151,
+      "observed": 5777,
+      "expected": 5667,
+      "pageFraction": 0.008333333333333333
+    },
+    "regions": [
+      {
+        "foreground": 2102,
+        "strictMismatches": 316,
+        "edgeAccepted": 316,
+        "mismatchFraction": 0,
+        "maxDelta": 106,
+        "observed": 2076,
+        "expected": 2034,
+        "id": "type1"
+      },
+      {
+        "foreground": 2000,
+        "strictMismatches": 350,
+        "edgeAccepted": 350,
+        "mismatchFraction": 0,
+        "maxDelta": 120,
+        "observed": 1982,
+        "expected": 1949,
+        "id": "truetype"
+      },
+      {
+        "foreground": 1421,
+        "strictMismatches": 114,
+        "edgeAccepted": 114,
+        "mismatchFraction": 0,
+        "maxDelta": 151,
+        "observed": 1421,
+        "expected": 1392,
+        "id": "procedure"
+      },
+      {
+        "foreground": 232,
+        "strictMismatches": 13,
+        "edgeAccepted": 13,
+        "mismatchFraction": 0,
+        "maxDelta": 28,
+        "observed": 232,
+        "expected": 227,
+        "id": "transformed"
+      },
+      {
+        "foreground": 66,
+        "strictMismatches": 7,
+        "edgeAccepted": 7,
+        "mismatchFraction": 0,
+        "maxDelta": 21,
+        "observed": 66,
+        "expected": 65,
+        "id": "tiny-A"
+      }
+    ]
+  },
+  "ps-reuse:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 8605,
+      "strictMismatches": 822,
+      "edgeAccepted": 676,
+      "mismatchFraction": 0.016966879721092388,
+      "maxDelta": 255,
+      "observed": 8529,
+      "expected": 8597,
+      "pageFraction": 0.010703125
+    },
+    "regions": [
+      {
+        "foreground": 8605,
+        "strictMismatches": 822,
+        "edgeAccepted": 676,
+        "mismatchFraction": 0.016966879721092388,
+        "maxDelta": 255,
+        "observed": 8529,
+        "expected": 8597,
+        "id": "nested-form"
+      },
+      {
+        "foreground": 817,
+        "strictMismatches": 108,
+        "edgeAccepted": 97,
+        "mismatchFraction": 0.01346389228886169,
+        "maxDelta": 126,
+        "observed": 814,
+        "expected": 809,
+        "id": "nested-text"
+      }
+    ]
+  },
+  "eps-integer:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 9082,
+      "strictMismatches": 260,
+      "edgeAccepted": 260,
+      "mismatchFraction": 0,
+      "maxDelta": 60,
+      "observed": 9042,
+      "expected": 9082,
+      "pageFraction": 0.013
+    },
+    "regions": [
+      {
+        "foreground": 8000,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 8000,
+        "expected": 8000,
+        "id": "origin-fill"
+      },
+      {
+        "foreground": 784,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 784,
+        "expected": 784,
+        "id": "image"
+      },
+      {
+        "foreground": 1082,
+        "strictMismatches": 260,
+        "edgeAccepted": 260,
+        "mismatchFraction": 0,
+        "maxDelta": 60,
+        "observed": 1042,
+        "expected": 1082,
+        "id": "diagonal"
+      }
+    ]
+  },
+  "eps-hires:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 7595,
+      "strictMismatches": 500,
+      "edgeAccepted": 421,
+      "mismatchFraction": 0.010401579986833442,
+      "maxDelta": 191,
+      "observed": 7522,
+      "expected": 7492,
+      "pageFraction": 0.02537942236434699
+    },
+    "regions": [
+      {
+        "foreground": 6400,
+        "strictMismatches": 80,
+        "edgeAccepted": 1,
+        "mismatchFraction": 0.01234375,
+        "maxDelta": 191,
+        "observed": 6400,
+        "expected": 6400,
+        "id": "fractional-origin"
+      },
+      {
+        "foreground": 1115,
+        "strictMismatches": 340,
+        "edgeAccepted": 340,
+        "mismatchFraction": 0,
+        "maxDelta": 162,
+        "observed": 1042,
+        "expected": 1092,
+        "id": "diagonal"
+      }
+    ]
+  },
+  "eps-deferred:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 9082,
+      "strictMismatches": 260,
+      "edgeAccepted": 260,
+      "mismatchFraction": 0,
+      "maxDelta": 60,
+      "observed": 9042,
+      "expected": 9082,
+      "pageFraction": 0.013
+    },
+    "regions": [
+      {
+        "foreground": 8000,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 8000,
+        "expected": 8000,
+        "id": "origin-fill"
+      },
+      {
+        "foreground": 784,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 784,
+        "expected": 784,
+        "id": "image"
+      },
+      {
+        "foreground": 1082,
+        "strictMismatches": 260,
+        "edgeAccepted": 260,
+        "mismatchFraction": 0,
+        "maxDelta": 60,
+        "observed": 1042,
+        "expected": 1082,
+        "id": "diagonal"
+      }
+    ]
+  },
+  "eps-epsi:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 20000,
+      "strictMismatches": 0,
+      "edgeAccepted": 0,
+      "mismatchFraction": 0,
+      "maxDelta": 3,
+      "observed": 20000,
+      "expected": 20000,
+      "pageFraction": 0
+    },
+    "regions": [
+      {
+        "foreground": 20000,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 3,
+        "observed": 20000,
+        "expected": 20000,
+        "id": "counted-image"
+      }
+    ]
+  },
+  "eps-dos-tiff:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 9082,
+      "strictMismatches": 260,
+      "edgeAccepted": 260,
+      "mismatchFraction": 0,
+      "maxDelta": 60,
+      "observed": 9042,
+      "expected": 9082,
+      "pageFraction": 0.013
+    },
+    "regions": [
+      {
+        "foreground": 8000,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 8000,
+        "expected": 8000,
+        "id": "origin-fill"
+      },
+      {
+        "foreground": 784,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 784,
+        "expected": 784,
+        "id": "image"
+      },
+      {
+        "foreground": 1082,
+        "strictMismatches": 260,
+        "edgeAccepted": 260,
+        "mismatchFraction": 0,
+        "maxDelta": 60,
+        "observed": 1042,
+        "expected": 1082,
+        "id": "diagonal"
+      }
+    ]
+  },
+  "eps-dos-wmf:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 9082,
+      "strictMismatches": 260,
+      "edgeAccepted": 260,
+      "mismatchFraction": 0,
+      "maxDelta": 60,
+      "observed": 9042,
+      "expected": 9082,
+      "pageFraction": 0.013
+    },
+    "regions": [
+      {
+        "foreground": 8000,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 8000,
+        "expected": 8000,
+        "id": "origin-fill"
+      },
+      {
+        "foreground": 784,
+        "strictMismatches": 0,
+        "edgeAccepted": 0,
+        "mismatchFraction": 0,
+        "maxDelta": 0,
+        "observed": 784,
+        "expected": 784,
+        "id": "image"
+      },
+      {
+        "foreground": 1082,
+        "strictMismatches": 260,
+        "edgeAccepted": 260,
+        "mismatchFraction": 0,
+        "maxDelta": 60,
+        "observed": 1042,
+        "expected": 1082,
+        "id": "diagonal"
+      }
+    ]
+  },
+  "upstream-tiger:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 1016444,
+      "strictMismatches": 74602,
+      "edgeAccepted": 61879,
+      "mismatchFraction": 0.012517167694432748,
+      "maxDelta": 255,
+      "observed": 1011459,
+      "expected": 1009012,
+      "pageFraction": 0.05970070422535211
+    },
+    "regions": [
+      {
+        "foreground": 1016444,
+        "strictMismatches": 74602,
+        "edgeAccepted": 61879,
+        "mismatchFraction": 0.012517167694432748,
+        "maxDelta": 255,
+        "observed": 1011459,
+        "expected": 1009012,
+        "id": "tiger"
+      }
+    ]
+  },
+  "upstream-colorcir:1": {
+    "failures": [],
+    "whole": {
+      "foreground": 411174,
+      "strictMismatches": 82160,
+      "edgeAccepted": 81159,
+      "mismatchFraction": 0.0024344924533166007,
+      "maxDelta": 137,
+      "observed": 398891,
+      "expected": 410835,
+      "pageFraction": 0.04099882233178307
+    },
+    "regions": [
+      {
+        "foreground": 402407,
+        "strictMismatches": 79838,
+        "edgeAccepted": 78841,
+        "mismatchFraction": 0.002477591095582333,
+        "maxDelta": 102,
+        "observed": 390434,
+        "expected": 402407,
+        "id": "rings"
+      },
+      {
+        "foreground": 8767,
+        "strictMismatches": 2322,
+        "edgeAccepted": 2318,
+        "mismatchFraction": 0.0004562564161058515,
+        "maxDelta": 137,
+        "observed": 8457,
+        "expected": 8428,
+        "id": "labels"
+      }
+    ]
+  }
+}

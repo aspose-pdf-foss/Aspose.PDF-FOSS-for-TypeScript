@@ -31,3 +31,7 @@ Ghostscript oracle results**, and do not establish general PostScript
 conformance. The normal test suite reads only this committed data, requires no
 network access, and has no external interpreter dependency. Painting, fonts,
 EPS framing and rendered-page differential fixtures belong to later issues.
+
+Since `lw8w.5`, a separate [independent PS/EPS corpus](../postscript-oracle/PROVENANCE.md)
+retains executed Ghostscript PDF and direct PNG references for thirteen inputs.
+That evidence does not change the origin or scope of the literal data here.
