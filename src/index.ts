@@ -53,12 +53,16 @@ export { OptionalContent, Layer, LayerConfig } from './ocg.js';
 export type { AddLayerOptions, LayerState, LayerUsage, UsageContext, UsageEvent } from './ocg.js';
 export type { FlattenLayersReport } from './ocflatten.js';
 export type { PagesToImagesOptions, SanitizeOptions, SanitizeReport } from './sanitize.js';
-export { Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation, RedactAnnotation, CaretAnnotation } from './annotation.js';
+export {
+  Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation,
+  RedactAnnotation, CaretAnnotation, LineAnnotation, PolyAnnotation,
+} from './annotation.js';
 export type {
   TextNoteOptions, AnnotationReplyOptions, ReplyType, StampAnnotationOptions, MarkupOptions, MarkupType,
   AnnotationState, AnnotationStateModel, AnnotationStateReplyOptions,
   LinkOptions, LinkAction, FileAttachmentOptions, RedactAnnotationOptions, CaretOptions,
 } from './annotation.js';
+export type { RectilinearMeasure, MeasureNumberFormat } from './measure.js';
 export { Attachment } from './embeddedfile.js';
 export type { AttachmentOptions } from './embeddedfile.js';
 export type { CollectionSettings, CollectionFieldDef, CollectionFieldType, CollectionView } from './collection.js';

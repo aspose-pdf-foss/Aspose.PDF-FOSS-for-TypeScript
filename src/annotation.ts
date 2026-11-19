@@ -28,6 +28,7 @@ import {
 } from './embeddedfile.js';
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import type { Layer } from './ocg.js';
+import { buildRectilinearMeasure, readRectilinearMeasure, type RectilinearMeasure } from './measure.js';
 
 // Annotation flag bits (/F), PDF 32000-1 §12.5.3.
 const FLAG_HIDDEN = 1 << 1; // bit 2, value 2
@@ -591,9 +592,31 @@ const LINE_ENDINGS: ReadonlySet<string> = new Set<string>([
   'None', 'OpenArrow', 'ClosedArrow', 'Circle', 'Square',
 ]);
 
+function attachAnnotationMeasure(doc: Document, annotation: PdfDict, measure: PdfDict): void {
+  // An incremental save keeps the original header and raises its effective
+  // version through the catalog.
+  const version = doc.headerVersion();
+  if (version !== undefined && /^1\.[0-6]$/.test(version)) doc.catalog().set('Version', name('1.7'));
+  annotation.set('Measure', measure);
+}
+
+abstract class MeasuredAnnotation extends Annotation {
+  /** Rectilinear measurement metadata. Assign undefined to remove it. */
+  get Measure(): RectilinearMeasure | undefined {
+    return readRectilinearMeasure(this.doc, this.Dict.get('Measure'));
+  }
+
+  set Measure(value: RectilinearMeasure | undefined) {
+    const measure = buildRectilinearMeasure(value);
+    if (measure === undefined) this.Dict.delete('Measure');
+    else attachAnnotationMeasure(this.doc, this.Dict, measure);
+    this.touch();
+  }
+}
+
 /** A /Line annotation: a straight segment between /L endpoints with optional
  *  /LE endings (arrowheads/shapes) at each end. */
-export class LineAnnotation extends Annotation {
+export class LineAnnotation extends MeasuredAnnotation {
   /** /L endpoints [x1,y1,x2,y2]; undefined when missing/malformed. */
   get Line(): [number, number, number, number] | undefined {
     const l = numArray(this.doc, this.Dict.get('L'), 4);
@@ -652,7 +675,7 @@ export type PolyType = 'polygon' | 'polyline';
 /** A /Polygon (closed) or /PolyLine (open) annotation: a multi-vertex path in
  *  /Vertices, optionally filled (/IC) and, for polylines, capped with /LE
  *  endings. */
-export class PolyAnnotation extends Annotation {
+export class PolyAnnotation extends MeasuredAnnotation {
   /** 'polyline' for /PolyLine, else 'polygon'. */
   get PolyType(): PolyType {
     return this.Subtype === 'PolyLine' ? 'polyline' : 'polygon';
@@ -1058,6 +1081,7 @@ export interface BaseAnnotInit {
   rect: [number, number, number, number];
   color?: [number, number, number];
   contents?: string;
+  measure?: RectilinearMeasure;
   /** Auto-attach a companion /Popup to the created annotation. */
   popup?: PopupSpec;
 }
@@ -1082,7 +1106,9 @@ export function createAnnotation(doc: Document, page: Page, init: BaseAnnotInit)
     if (typeof init.contents !== 'string') throw new TypeError('contents must be a string');
     dict.set('Contents', pdfText(init.contents));
   }
+  const measure = buildRectilinearMeasure(init.measure);
   dict.set('P', doc.pageRef(page.Number));
+  if (measure !== undefined) attachAnnotationMeasure(doc, dict, measure);
   const r = doc.allocObject(dict);
   ownAnnots(doc, page).push(r);
   if (init.popup) createPopup(doc, page, r, init.popup, dict);
@@ -1461,6 +1487,8 @@ export function addCaret(doc: Document, page: Page, opts: CaretOptions): CaretAn
 export interface LineOptions {
   /** Endpoints [x1,y1,x2,y2] in user space (sets /L). */
   line: [number, number, number, number];
+  /** Rectilinear calibration metadata. */
+  measure?: RectilinearMeasure;
   /** Auto-attach a companion /Popup. */
   popup?: PopupSpec;
   /** Stroke color /C, RGB 0..1. Default black [0,0,0]. */
@@ -1497,7 +1525,8 @@ export function addLine(doc: Document, page: Page, opts: LineOptions): LineAnnot
   const minY = Math.min(y1, y2) - margin, maxY = Math.max(y1, y2) + margin;
 
   const dict = createAnnotation(doc, page, {
-    subtype: 'Line', rect: [minX, minY, maxX, maxY], color, contents: opts.contents, popup: opts.popup,
+    subtype: 'Line', rect: [minX, minY, maxX, maxY], color,
+    contents: opts.contents, popup: opts.popup, measure: opts.measure,
   });
   const annot = new LineAnnotation(doc, dict);
   annot.Line = [x1, y1, x2, y2];
@@ -1524,6 +1553,8 @@ export function addLine(doc: Document, page: Page, opts: LineOptions): LineAnnot
 export interface PolygonOptions {
   /** Flat vertex list [x1,y1,x2,y2,…] (≥2 points); sets /Vertices. */
   vertices: number[];
+  /** Rectilinear calibration metadata. */
+  measure?: RectilinearMeasure;
   /** Auto-attach a companion /Popup. */
   popup?: PopupSpec;
   /** Border stroke color /C, RGB 0..1. Default black [0,0,0]. */
@@ -1549,7 +1580,7 @@ export function addPolygon(doc: Document, page: Page, opts: PolygonOptions): Pol
   const rect = paddedRect(vertices, Math.max(width, 1));
 
   const dict = createAnnotation(doc, page, {
-    subtype: 'Polygon', rect, color, contents: opts.contents, popup: opts.popup,
+    subtype: 'Polygon', rect, color, contents: opts.contents, popup: opts.popup, measure: opts.measure,
   });
   const annot = new PolyAnnotation(doc, dict);
   annot.Vertices = vertices;
@@ -1569,6 +1600,8 @@ export function addPolygon(doc: Document, page: Page, opts: PolygonOptions): Pol
 export interface PolylineOptions {
   /** Flat vertex list [x1,y1,x2,y2,…] (≥2 points); sets /Vertices. */
   vertices: number[];
+  /** Rectilinear calibration metadata. */
+  measure?: RectilinearMeasure;
   /** Auto-attach a companion /Popup. */
   popup?: PopupSpec;
   /** Stroke color /C, RGB 0..1. Default black [0,0,0]. */
@@ -1602,7 +1635,7 @@ export function addPolyline(doc: Document, page: Page, opts: PolylineOptions): P
   const rect = paddedRect(vertices, hasEndings ? endingSize : Math.max(width, 1));
 
   const dict = createAnnotation(doc, page, {
-    subtype: 'PolyLine', rect, color, contents: opts.contents, popup: opts.popup,
+    subtype: 'PolyLine', rect, color, contents: opts.contents, popup: opts.popup, measure: opts.measure,
   });
   const annot = new PolyAnnotation(doc, dict);
   annot.Vertices = vertices;

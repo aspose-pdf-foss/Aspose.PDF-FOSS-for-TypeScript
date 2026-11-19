@@ -710,12 +710,20 @@ export function encodeWinAnsi(text: string): Uint8Array {
   return Uint8Array.from(out);
 }
 
-/** PDFDocEncoding: like WinAnsi for ASCII; the CP1252 punctuation lives in 0x18..0x1F and 0xA0.
- *  Only the entries needed in practice are pinned; baseline mirrors Latin-1. */
+/** PDFDocEncoding from PDF 32000-1 Annex D.3. */
 export const pdfDocEncoding: Enc = (() => {
-  const t = winAnsi.slice();
-  t[0xa0] = '€'; // Euro in PDFDocEncoding
-  t[0xad] = '­';
+  const t: Enc = Array.from({ length: 256 }, (_, code) => String.fromCharCode(code));
+  const accents = [0x02d8, 0x02c7, 0x02c6, 0x02d9, 0x02dd, 0x02db, 0x02da, 0x02dc];
+  const symbols = [
+    0x2022, 0x2020, 0x2021, 0x2026, 0x2014, 0x2013, 0x0192, 0x2044,
+    0x2039, 0x203a, 0x2212, 0x2030, 0x201e, 0x201c, 0x201d, 0x2018,
+    0x2019, 0x201a, 0x2122, 0xfb01, 0xfb02, 0x0141, 0x0152, 0x0160,
+    0x0178, 0x017d, 0x0131, 0x0142, 0x0153, 0x0161, 0x017e,
+  ];
+  accents.forEach((unicode, i) => { t[0x18 + i] = String.fromCharCode(unicode); });
+  symbols.forEach((unicode, i) => { t[0x80 + i] = String.fromCharCode(unicode); });
+  t[0xa0] = '€';
+  t[0x7f] = t[0x9f] = t[0xad] = undefined;
   return t;
 })();
 

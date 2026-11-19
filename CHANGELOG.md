@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Rectilinear annotation measurements.** Lines, polylines, and polygons accept
+  a `measure` creation option and expose a writable `Measure` property. The
+  PDF dictionary carries the scale ratio, separate axis calibrations, and
+  ordered unit formats for distance and area. (k4h1.3)
+
 - **Annotation review states.** `Annotation.AddStateReply` creates an authored
   state record on the same page. `TextAnnotation.State` and `StateModel`
   read and edit the record, including the defaults for the Marked and Review

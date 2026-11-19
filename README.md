@@ -2982,8 +2982,8 @@ page.RemoveAnnotation(page.Annotations[0]);
 (`StampName`), `MarkupAnnotation` (`MarkupType`/`QuadPoints`), `LinkAnnotation`
 (`Action`/`Dest`), `FileAttachmentAnnotation` (`Icon`/`FileName`/`GetBytes()`),
 `SquareCircleAnnotation` (`ShapeType`/`InteriorColor`/`BorderWidth`),
-`LineAnnotation` (`Line`/`LineEndings`/`BorderWidth`),
-`PolyAnnotation` (`PolyType`/`Vertices`/`InteriorColor`/`BorderWidth`/`LineEndings`),
+`LineAnnotation` (`Line`/`LineEndings`/`BorderWidth`/`Measure`),
+`PolyAnnotation` (`PolyType`/`Vertices`/`InteriorColor`/`BorderWidth`/`LineEndings`/`Measure`),
 `InkAnnotation` (`InkList`/`BorderWidth`),
 `FreeTextAnnotation`
 (`Alignment`/`FontSize`/`TextColor`/`BorderWidth`/`InteriorColor`/`Intent`/`CalloutLine`/`CalloutEnding`),
@@ -2995,6 +2995,31 @@ Every handle shares the base accessors
 (`/F` = 4); stamp and markup annotations get a generated `/AP` appearance, while
 text notes and zero-border links render natively. Coordinates are PDF user space
 (origin bottom-left, points).
+
+### Set Annotation Measurements
+
+```ts
+const measured = doc.Pages[0].AddLine({
+  line: [72, 200, 144, 200],
+  measure: {
+    scaleRatio: '1 in = 1 ft',
+    xAxis: [{ unit: 'ft', conversionFactor: 1 / 72 }],
+    distance: [{ unit: 'ft', conversionFactor: 1 }, { unit: 'in', conversionFactor: 12 }],
+    area: [{ unit: 'sq ft', conversionFactor: 1 }],
+  },
+});
+console.log(measured.Measure?.scaleRatio);
+```
+
+`AddPolyline` and `AddPolygon` accept the same option. `scaleRatio` is display
+text. The first `xAxis` factor converts default user space to the largest X
+unit. The first `distance` and `area` factors convert from that unit and its
+square, respectively. Each later format converts the fractional remainder from
+the previous unit. Use `yAxis` and `yToX` for separate Y calibration and
+conversion. `Measure` reads a snapshot and assigning `undefined` removes the
+metadata. Writing a measurement declares PDF 1.7 in an older document's
+catalog, including when saving incrementally. Fractional display options apply
+to the final format in each array.
 
 ### Embed Files and Attachments
 
@@ -3779,7 +3804,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 509 public types plus 161
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 511 public types plus 163
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4278,10 +4303,14 @@ for work-unit boundaries and mutation/lifetime rules.
 | `AuthoringFont` | A font for the text-authoring API: one of the 12 Latin Standard-14 faces (by name) or an embedded font handle from AddFont. |
 | `CaretAnnotation` | A /Caret annotation (PDF 32000-1 §12.5.6.11): a text-insertion mark, drawn as a wedge at the point where text should be added, optionally with a paragraph sign. |
 | `FileAttachmentAnnotation` | A /FileAttachment annotation: an icon on the page whose /FS embeds a file. |
+| `LineAnnotation` | A `/Line` annotation with endpoints, endings, and optional measurement metadata. |
 | `LinkAction` | @deprecated Use PdfAction. |
 | `LinkAnnotation` | A /Link annotation. |
 | `MarkupAnnotation` | A text-markup annotation (/Highlight, /Underline, /StrikeOut, /Squiggly) positioned by /QuadPoints (8 numbers per marked quad). |
 | `MarkupType` | The four text-markup subtypes, lower-cased. |
+| `MeasureNumberFormat` | Unit label, conversion factor, and optional display formatting for one entry in a number-format array. |
+| `PolyAnnotation` | A `/Polygon` or `/PolyLine` annotation with vertices and optional measurement metadata. |
+| `RectilinearMeasure` | Scale ratio, axis calibrations, and ordered number formats for a rectilinear `/Measure` dictionary. |
 | `RedactAnnotation` | A /Redact annotation (PDF 32000-1 §12.5.6.23): a *mark* over a region, plus the overlay to paint when it is applied. |
 | `ReplyType` | `'R'` for a reply or `'Group'` for a group member. |
 | `StampAnnotation` | A /Stamp (rubber-stamp) annotation. |
@@ -4568,6 +4597,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.AddLine(opts)` | Add a `/Line` annotation between two points, with optional end arrowheads |
 | `page.AddPolygon(opts)` | Add a closed `/Polygon` annotation with a stroked/filled appearance |
 | `page.AddPolyline(opts)` | Add an open `/PolyLine` annotation, with optional end arrowheads |
+| `lineAnnotation.Measure` / `polyAnnotation.Measure` | Read or set rectilinear calibration metadata for lines, polylines, and polygons |
 | `page.AddInk(opts)` | Add an `/Ink` annotation of one or more freehand strokes |
 | `page.AddFreeText(opts)` | Add a `/FreeText` annotation: on-page text with a generated appearance, optionally with a callout leader |
 | `page.AddCaret(opts)` | Add a `/Caret` text-insertion mark, optionally with a paragraph sign (`/Sy`) |

@@ -16,6 +16,21 @@ function assemble(objects: string[], maxObj: number, rootNum: number): Uint8Arra
   return enc(body + xref + trailer);
 }
 
+/** A measured line with a default /RL subtype and indirect calibration entries. */
+export function buildMeasureReadTarget(): Uint8Array {
+  const objects: string[] = [];
+  objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objects[2] = '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 300 200] >>';
+  objects[3] = '<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>';
+  objects[4] = '<< /Type /Annot /Subtype /Line /L [0 0 16 16] /Rect [0 0 18 18] /Measure 5 0 R >>';
+  objects[5] = '<< /R 6 0 R /X 7 0 R /D [8 0 R << /U (in) /C 12 /F /F /D 8 >>] /A [<< /U (sq ft) /C 1 >>] /O [9 0 R -2] >>';
+  objects[6] = '(8 pt = 1 ft)';
+  objects[7] = '[<< /Type /NumberFormat /U (ft) /C 0.125 >>]';
+  objects[8] = '<< /U (ft) /C 1 /O /S >>';
+  objects[9] = '10';
+  return assemble(objects, 9, 1);
+}
+
 /** One page carrying two existing annotations: a /Text note and a /Link. */
 export function buildAnnotTarget(): Uint8Array {
   const objects: string[] = [];

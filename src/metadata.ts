@@ -1,22 +1,28 @@
 import { PdfDict, PdfObject, isString } from './types.js';
 import { pdfDateToIso, isoToPdfDate } from './pdfdate.js';
 
-/** Decode a PDF text-string's bytes: UTF-16BE when a FE FF BOM is present, else Latin1. */
-export function decodePdfText(bytes: Uint8Array): string {
+/** Decode UTF-16BE when a FE FF BOM is present, or use the supplied byte encoding. */
+export function decodePdfText(bytes: Uint8Array, singleByteEncoding?: readonly (string | undefined)[]): string {
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     let s = '';
     for (let i = 2; i + 1 < bytes.length; i += 2) s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
     return s;
   }
   let s = '';
-  for (const b of bytes) s += String.fromCharCode(b);
+  for (const b of bytes) s += singleByteEncoding?.[b] ?? String.fromCharCode(b);
   return s;
 }
 
-/** Encode a JS string for a PDF text string: Latin1 when pure ASCII, else UTF-16BE with FE FF BOM. */
-export function encodePdfText(s: string): Uint8Array {
+/** Use ASCII bytes when they match the requested encoding, or UTF-16BE with a BOM. */
+export function encodePdfText(s: string, singleByteEncoding?: readonly (string | undefined)[]): Uint8Array {
   let ascii = true;
-  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) { ascii = false; break; }
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code > 0x7f || (singleByteEncoding !== undefined && singleByteEncoding[code] !== s[i])) {
+      ascii = false;
+      break;
+    }
+  }
   if (ascii) {
     const out = new Uint8Array(s.length);
     for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);

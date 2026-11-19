@@ -4760,6 +4760,15 @@ Source (`src/`):
   PDF text strings on the new `/Text` reply. It uses `/T` for the reviewer and
   the same `/IRT` link as `AddReply`. A model-only record reads as `Unmarked`
   or `None`. Setting an explicit state writes its matching model.
+  **measure.ts** reads and builds rectilinear `/Measure` dictionaries for line,
+  polyline, and polygon annotations. `/R` is display text. `/X` converts from
+  default user space, while the first format in `/D` and `/A` starts from the
+  largest X unit and its square, respectively. Preserve the order of every
+  format array. Builders validate the entire dictionary before attaching an
+  annotation. Writing annotation `/Measure` raises an older effective version
+  to 1.7 through the catalog, so incremental saves can keep the original header.
+  Measurement text uses the PDFDocEncoding table for single-byte strings and
+  the shared UTF-16BE codec for Unicode strings.
   **Note (`6t2v.5`), a SCOPE DECISION rather than a gap — do not "finish" it:**
   MULTIMEDIA is out of scope. `/Screen` annotations and `/Rendition` actions
   embed audio and video; almost no viewer honours them and Node has nothing to
