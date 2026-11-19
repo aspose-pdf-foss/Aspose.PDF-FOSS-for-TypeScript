@@ -96,7 +96,14 @@ export class PsGraphics {
 
   initialize(): void {
     this.assertColorAllowed();
-    this.current = this.defaultState(this.defaultBox, this.defaultMatrix, this.current.discarding);
+    const previous = this.current;
+    const reset = this.defaultState(this.defaultBox, this.defaultMatrix, previous.discarding);
+    // PLRM p. 612 resets the active clip and drawing defaults while retaining these parameters.
+    reset.clipSaves = previous.clipSaves;
+    reset.flatness = previous.flatness;
+    reset.strokeAdjust = previous.strokeAdjust;
+    reset.overprint = previous.overprint;
+    this.current = reset;
   }
 
   private publish(output: PsPageOutput): void {

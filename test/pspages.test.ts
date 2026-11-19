@@ -33,6 +33,13 @@ describe('PostScript page lifecycle', () => {
     expect(vm.stack).toMatchObject([{ value: 0 }, { value: 0 }]);
   });
 
+  it.each(['showpage', '<< /PageSize [20 30] >> setpagedevice', 'nulldevice'])
+    ('keeps the established graphics-parameter defaults after %s', transition => {
+      const { vm } = runGraphics('7 setflat true setstrokeadjust true setoverprint '
+        + `${transition} currentflat currentstrokeadjust currentoverprint`);
+      expect(vm.stack).toMatchObject([{ value: 1 }, { value: false }, { value: false }]);
+    });
+
   it('continues pages and definitions across repeated run calls', () => {
     const { vm, graphics } = runGraphics('/x 7 def 0 0 1 1 rectfill showpage');
     vm.run(new TextEncoder().encode('x 0 0 2 2 rectfill showpage'));

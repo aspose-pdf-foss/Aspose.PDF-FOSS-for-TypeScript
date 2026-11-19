@@ -10233,6 +10233,10 @@ Source (`src/`):
   gstate or VM save can escape a form and reinstall its mutable state later.
   initmatrix/defaultmatrix/initgraphics still use the active device's defaults,
   while explicit CTM and clip restoration retains its ordinary meaning.
+  **Invariant (`k421`):** `initgraphics` resets the drawing defaults while
+  preserving flatness, stroke adjustment, overprint, the clipping path stack,
+  and the selected font. Page publication and device transitions keep their
+  own initialization behavior.
   Finalization counts the trailing marked page against the same page-list bound
   as explicit page publication.
   The device box/default matrix participate in saved state. Vector painting

@@ -561,6 +561,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PostScript `initgraphics` preserves graphics parameters.** Flatness,
+  stroke adjustment, overprint, and saved clipping paths now survive the
+  operator. It still resets the active clip to the device default, and
+  `cliprestore` can restore each saved clip afterward. (k421)
+
 - **Duplicate EPS prolog terminators.** Import now raises `PdfParseError`
   before appending any pages when the outer prolog closes twice. The first
   closure can be explicit or use the implicit boundary found in older

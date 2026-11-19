@@ -35,6 +35,34 @@ describe('PostScript graphics state objects', () => {
     expect(vm.stack.map(value => 'value' in value ? value.value : value.kind === 'name' ? value.text : value.kind)).toEqual(expected);
   });
 
+  it.each([
+    ['7 setflat initgraphics currentflat', 7],
+    ['true setstrokeadjust initgraphics currentstrokeadjust', true],
+    ['true setoverprint initgraphics currentoverprint', true],
+  ])('preserves the graphics parameter in %s', (source, value) => {
+    expect(runGraphics(source).vm.stack).toMatchObject([{ value }]);
+  });
+
+  it('resets the active clip while retaining each saved clip', () => {
+    const { vm } = runGraphics('10 20 30 40 rectclip clipsave 12 24 7 8 rectclip clipsave '
+      + '13 25 1 1 rectclip initgraphics clippath pathbbox '
+      + 'cliprestore clippath pathbbox cliprestore clippath pathbbox');
+    expect(vm.stack).toMatchObject([
+      0, 0, 595, 842,
+      12, 24, 19, 32,
+      10, 20, 40, 60,
+    ].map(value => ({ value })));
+  });
+
+  it('resets the matrix, current point, color and line properties with initgraphics', () => {
+    const { vm } = runGraphics('6 7 translate 1 2 moveto 1 0 0 setrgbcolor 3 setlinewidth '
+      + '1 setlinecap 2 setlinejoin 5 setmiterlimit [2 4] 3 setdash initgraphics '
+      + '{ currentpoint } stopped 0 0 transform currentcolorspace 0 get currentgray '
+      + 'currentlinewidth currentlinecap currentlinejoin currentmiterlimit currentdash exch length');
+    expect(vm.stack.map(value => 'value' in value ? value.value : value.kind === 'name' ? value.text : value.kind))
+      .toEqual([true, 0, 0, 'DeviceGray', 0, 1, 0, 0, 10, 0, 0]);
+  });
+
   it('restores journaled older gstate objects', () => {
     const { vm } = runGraphics('1 2 moveto /g gstate def /s save def 9 9 moveto g currentgstate pop s restore g setgstate currentpoint');
     expect(vm.stack).toMatchObject([{ value: 1 }, { value: 2 }]);
