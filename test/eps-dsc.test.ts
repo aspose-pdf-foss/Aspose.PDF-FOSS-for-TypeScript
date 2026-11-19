@@ -10,6 +10,19 @@ describe('outer EPS DSC bounds',()=>{
  it('accepts an implicit outer prolog boundary',()=>{
    expect(read(epsSource('%%EndProlog\nshowpage'))).toEqual([-10,20,90,70]);
  });
+ it.each([
+   ['explicit then implicit', '%%BeginProlog\n%%EndProlog\n%%EndProlog'],
+   ['two implicit ends', '%%EndProlog\n%%EndProlog'],
+   ['implicit then explicit', '%%EndProlog\n%%BeginProlog\n%%EndProlog'],
+   ['two explicit pairs', '%%BeginProlog\n%%EndProlog\n%%BeginProlog\n%%EndProlog'],
+ ])('rejects duplicate outer prolog boundaries with %s', (_kind, body)=>{
+   expect(()=>read(epsSource(body))).toThrow(/duplicate outer EndProlog/);
+ });
+ it('accepts nested prolog pairs on both sides of a single outer prolog end',()=>{
+   const child = '%%BeginDocument: child.eps\n%%BeginProlog\n%%EndProlog\n%%EndDocument';
+   const body = `%%BeginProlog\n${child}\n%%EndProlog\n${child}\nshowpage`;
+   expect(read(epsSource(body))).toEqual([-10,20,90,70]);
+ });
  it.each(['%ordinary', '%%Ignored: ordinary'])('does not promote string metadata after a form-feed-terminated %s comment', comment=>{
    const fake = `${comment}\f(label\n%%Trailer\n%%BoundingBox: 0 0 999 999\n) pop\n`;
    expect(()=>read(epsSource(fake,'%%BoundingBox: (atend)'))).toThrow(PdfParseError);

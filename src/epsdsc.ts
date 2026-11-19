@@ -11,6 +11,7 @@ export function readEpsBox(source: Uint8Array, budget: PsBudget): PsBox {
   let at = 0, bol = true, literal = 0;
   let lexical: 'code' | 'hex' | 'ascii85' = 'code';
   let region: 'header' | 'body' | 'trailer' = 'header';
+  let outerPrologClosed = false;
   const stack: string[] = [];
   const declarations = new Map<string, BoxDeclaration>(), resolved = new Map<string, PsBox>();
   const fail = (message: string): never => { throw new PdfParseError(`EPS: ${message}`, at); };
@@ -137,10 +138,15 @@ export function readEpsBox(source: Uint8Array, budget: PsBudget): PsBox {
         continue;
       }
       if (key.startsWith('End') && key !== 'EndComments') {
-        // Older Illustrator EPS uses an implicit outer prolog. A nested end
-        // still has to match its opener; only this outer boundary is optional.
-        if (key === 'EndProlog' && stack.length === 0 && region !== 'trailer') { region = 'body'; continue; }
-        if (stack.pop() !== key.slice(3)) fail('mismatched DSC region');
+        const type = key.slice(3);
+        // Older Illustrator EPS can close the outer prolog without an opener.
+        const implicitPrologEnd = type === 'Prolog' && stack.length === 0 && region !== 'trailer';
+        if (!implicitPrologEnd && stack.pop() !== type) fail('mismatched DSC region');
+        if (type === 'Prolog' && stack.length === 0) {
+          if (outerPrologClosed) fail('duplicate outer EndProlog');
+          outerPrologClosed = true;
+        }
+        if (implicitPrologEnd) region = 'body';
         continue;
       }
       if (stack.length) continue;

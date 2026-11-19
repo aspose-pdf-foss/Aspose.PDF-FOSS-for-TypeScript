@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Document } from '../src/index.js';
+import { Document, PdfParseError } from '../src/index.js';
 import { epsSource, dosEps } from './helpers/build-eps.js';
 import { psBytes, joinPs, encryptedPs } from './helpers/ps-font-program.js';
 import { parseContentStream } from '../src/content.js';
@@ -12,6 +12,13 @@ function reopen(bytes: Uint8Array): Document {
   const doc = Document.New(); doc.AddPostScript(bytes); return Document.Open(doc.Save());
 }
 describe('EPS saved output', () => {
+  it('rejects a duplicate outer prolog terminator before appending a page', () => {
+    const doc = reopen(epsSource('-10 20 5 5 rectfill'));
+    const before = doc.Save();
+    const malformed = epsSource('%%BeginProlog\n%%EndProlog\n%%EndProlog\n-10 20 5 5 rectfill');
+    expect(() => doc.AddPostScript(malformed)).toThrow(PdfParseError);
+    expect(doc.Save()).toEqual(before);
+  });
   it('isolates imported crop and rotation from an existing root without changing old inheritance', () => {
     const doc = Document.New(); doc.AddPostScript(psBytes('showpage'));
     const root = doc.resolve(doc.catalog().get('Pages')); if (!isDict(root)) throw new Error('root');

@@ -173,6 +173,7 @@ Tiger exposed a valid implicit outer `EndProlog` emitted without `BeginProlog`.
 The focused DSC regression failed before the correction. The scanner now accepts
 that outer boundary before the trailer while preserving nested matching and
 counted-data refusals. The real untouched tiger import is required too.
+The scanner reports a second outer terminator as malformed (`lw8w.8`).
 
 Mutation evidence and final verification are recorded with this issue in Beads.
 The mutations target page width, omitted clipping, removed clipped paint,
@@ -195,5 +196,4 @@ copies now detect that mutation, and normal imports pass after restoration.
 
 The generator uses the host platform's separator for Ghostscript's read
 permission list (`lw8w.7`). The executable capture and generation instructions
-here are verified on Windows. Duplicate outer EndProlog handling is tracked
-separately as `lw8w.8`.
+here are verified on Windows.

@@ -561,6 +561,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Duplicate EPS prolog terminators.** Import now raises `PdfParseError`
+  before appending any pages when the outer prolog closes twice. The first
+  closure can be explicit or use the implicit boundary found in older
+  Illustrator EPS files. Nested prolog pairs remain valid. (lw8w.8)
+
 - **Older Illustrator EPS prologs.** Import accepts an outer `%%EndProlog`
   without `%%BeginProlog`, as Adobe Illustrator 1.2d4's tiger example emits.
   Nested DSC boundaries still require matching openers. (lw8w.5)

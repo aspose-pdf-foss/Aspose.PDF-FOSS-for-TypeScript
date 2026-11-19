@@ -10285,8 +10285,10 @@ Source (`src/`):
   `pageSize` configures plain PS only; EPS uses normalized outer bounds.
 - **epsdsc.ts** — metered outer DSC bounding boxes with lexical, nested-region
   and counted-data exclusion; executable source bytes remain unchanged.
-  An implicit outer EndProlog before the trailer is accepted (`lw8w.5`), as
-  Illustrator 1.2d4 emits; a nested end still must match its opener.
+  Illustrator 1.2d4's implicit outer `%%EndProlog` is accepted before the
+  trailer (`lw8w.5`). An explicit or implicit end consumes the one outer
+  prolog closure (`lw8w.8`). Nested ends must match their openers and belong
+  to their own regions.
   Ordinary PS comments (including DSC argument text) end at form feed as the
   VM scanner's do, but only CR/LF establish physical DSC column zero. Counted
   Lines and preview rows keep physical line semantics. Fixed argument parsers
