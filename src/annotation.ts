@@ -16,6 +16,7 @@ import { enc } from './serialize.js';
 import { STAMP_FONT, stampCaption, stampLabelBody } from './annotstamp.js';
 import { parseDA } from './da.js';
 import { flattenAnnotation } from './flatten.js';
+import { clearReplyLink } from './annotlinks.js';
 import { removeField } from './formremove.js';
 import { num } from './pagecontent.js';
 import { buildImageXObject, type BuiltImage } from './imageembed.js';
@@ -47,10 +48,11 @@ function numArray(doc: Document, o: PdfObject | undefined, n: number): number[] 
 
 /** Validate an array of exactly `n` finite numbers; returns a defensive copy. */
 export function checkNums(key: string, v: number[], n: number): number[] {
-  if (!Array.isArray(v) || v.length !== n || !v.every((x) => typeof x === 'number' && Number.isFinite(x))) {
-    throw new TypeError(`${key} must be ${n} finite numbers`);
-  }
-  return [...v];
+  const error = () => new TypeError(`${key} must be ${n} finite numbers`);
+  if (!Array.isArray(v) || v.length !== n) throw error();
+  const numbers = [...v];
+  if (!numbers.every(Number.isFinite)) throw error();
+  return numbers;
 }
 
 /** A PdfString tagged object carrying a PDF text string. */
@@ -76,6 +78,41 @@ function writeTextString(dict: PdfDict, key: string, v: string | undefined, labe
   if (v === undefined) { dict.delete(key); return; }
   if (typeof v !== 'string') throw new TypeError(`${label} must be a string`);
   dict.set(key, pdfText(v));
+}
+
+/** The relationship between a markup annotation and its /IRT parent. */
+export type ReplyType = 'R' | 'Group';
+
+export interface AnnotationReplyOptions {
+  contents: string;
+  author?: string;
+  /** Defaults to the parent annotation's rectangle, or [0, 0, 0, 0]. */
+  rect?: [number, number, number, number];
+}
+
+// PDF markup annotation subtypes. MarkupAnnotation is the text-markup subset.
+const REPLY_MARKUP_SUBTYPES = new Set([
+  'Text', 'FreeText', 'Line', 'Square', 'Circle', 'Polygon', 'PolyLine',
+  'Highlight', 'Underline', 'Squiggly', 'StrikeOut', 'Stamp', 'Caret',
+  'Ink', 'FileAttachment', 'Sound', 'Redact',
+]);
+
+function requireReplyMarkup(doc: Document, dict: PdfDict): void {
+  const subtype = doc.resolve(dict.get('Subtype'));
+  if (!isName(subtype) || !REPLY_MARKUP_SUBTYPES.has(subtype.name)) {
+    throw new UnsupportedFeatureError('a reply relationship must be written on a markup annotation');
+  }
+}
+
+function isAnnotationDict(doc: Document, object: PdfObject | undefined): object is PdfDict {
+  if (!isDict(object) || !isName(doc.resolve(object.get('Subtype')))) return false;
+  const type = doc.resolve(object.get('Type'));
+  return type === null || (isName(type) && type.name === 'Annot');
+}
+
+function replyParentDict(doc: Document, dict: PdfDict): PdfDict | undefined {
+  const parent = doc.resolve(dict.get('IRT'));
+  return isAnnotationDict(doc, parent) ? parent : undefined;
 }
 
 /** A live, mutable handle over an annotation dictionary. */
@@ -154,6 +191,83 @@ export class Annotation {
     if (v === undefined) { this.Dict.delete('Contents'); return; }
     if (typeof v !== 'string') throw new TypeError('Contents must be a string');
     this.Dict.set('Contents', pdfText(v));
+  }
+
+  /** The annotation this markup replies to or is grouped under (/IRT). */
+  get InReplyTo(): Annotation | undefined {
+    const parent = replyParentDict(this.doc, this.Dict);
+    return parent === undefined ? undefined : wrapAnnotation(this.doc, parent);
+  }
+
+  set InReplyTo(parent: Annotation | undefined) {
+    if (parent === undefined) {
+      clearReplyLink(this.Dict);
+      this.touch();
+      return;
+    }
+    if (!(parent instanceof Annotation)) throw new TypeError('InReplyTo must be an Annotation');
+    requireReplyMarkup(this.doc, this.Dict);
+    const { annots } = requireAttachedAnnotation(this.doc, this.Dict);
+    const parentIndex = parent.doc === this.doc ? annotationIndex(this.doc, annots, parent.Dict) : -1;
+    if (parentIndex < 0 || !isAnnotationDict(this.doc, parent.Dict)) {
+      throw new UnsupportedFeatureError('reply parent must be an annotation on the same page');
+    }
+
+    const seen = new Set([this.Dict]);
+    for (let ancestor: PdfDict | undefined = parent.Dict; ancestor; ancestor = replyParentDict(this.doc, ancestor)) {
+      if (seen.has(ancestor)) throw new UnsupportedFeatureError('InReplyTo would create a reply cycle');
+      seen.add(ancestor);
+    }
+    const type = this.doc.resolve(this.Dict.get('RT'));
+    if (isName(type) && type.name === 'Group') requireGroupPrimary(this.doc, parent.Dict);
+    if (hasGroupMembers(this.doc, annots, this.Dict)) {
+      throw new UnsupportedFeatureError('a primary group annotation cannot have a reply parent');
+    }
+    this.Dict.set('IRT', makeIndirectAnnotation(this.doc, annots, parentIndex, parent.Dict));
+    this.touch();
+  }
+
+  /** /RT relationship. A reply with no explicit /RT defaults to 'R'. */
+  get ReplyType(): ReplyType | undefined {
+    if (replyParentDict(this.doc, this.Dict) === undefined) return undefined;
+    const type = this.doc.resolve(this.Dict.get('RT'));
+    if (type === null) return 'R';
+    return isName(type) && (type.name === 'R' || type.name === 'Group') ? type.name : undefined;
+  }
+
+  set ReplyType(type: ReplyType | undefined) {
+    if (type === undefined) {
+      this.Dict.delete('RT');
+      this.touch();
+      return;
+    }
+    if (type !== 'R' && type !== 'Group') throw new TypeError('ReplyType must be R or Group');
+    requireReplyMarkup(this.doc, this.Dict);
+    const parent = replyParentDict(this.doc, this.Dict);
+    const { annots } = requireAttachedAnnotation(this.doc, this.Dict);
+    const parentIndex = parent === undefined ? -1 : annotationIndex(this.doc, annots, parent);
+    if (parent === undefined || parentIndex < 0) {
+      throw new UnsupportedFeatureError('ReplyType requires a reply parent on the same page');
+    }
+    if (type === 'Group') requireGroupPrimary(this.doc, parent);
+    this.Dict.set('IRT', makeIndirectAnnotation(this.doc, annots, parentIndex, parent));
+    this.Dict.set('RT', name(type));
+    this.touch();
+  }
+
+  /** Create a /Text reply on this annotation's page. */
+  AddReply(options: AnnotationReplyOptions): TextAnnotation {
+    const { contents, author, rect } = options;
+    if (typeof contents !== 'string') throw new TypeError('contents must be a string');
+    if (author !== undefined && typeof author !== 'string') throw new TypeError('author must be a string');
+    const { page, annots, index } = requireAttachedAnnotation(this.doc, this.Dict);
+    const reply = addTextNote(this.doc, page, {
+      rect: rect === undefined ? (this.Rect ?? [0, 0, 0, 0]) : rect,
+      contents,
+      author,
+    });
+    reply.Dict.set('IRT', makeIndirectAnnotation(this.doc, annots, index, this.Dict));
+    return reply;
   }
 
   /** /NM annotation name; undefined when absent. */
@@ -1712,12 +1826,62 @@ function defaultPopupRect(doc: Document, parentDict: PdfDict): [number, number, 
   return [x1, yTop - 100, x1 + 200, yTop];
 }
 
-/** Find the /Annots ref that resolves to `dict` on `page`; throws when `dict`
- *  is not an indirect annotation on this page. */
-function refForAnnot(doc: Document, page: Page, dict: PdfDict): PdfRef {
+/** Find the /Annots ref that resolves to `dict` on `page`. */
+function annotationRefOnPage(doc: Document, page: Page, dict: PdfDict): PdfRef | undefined {
   const arr = doc.resolve(page.Dict.get('Annots'));
-  if (isArray(arr)) for (const e of arr) { if (isRef(e) && doc.resolve(e) === dict) return e; }
-  throw new UnsupportedFeatureError('popup parent must be an indirect annotation on this page');
+  if (!isArray(arr)) return undefined;
+  return arr.find((e): e is PdfRef => isRef(e) && doc.resolve(e) === dict);
+}
+
+interface AttachedAnnotation {
+  page: Page;
+  annots: PdfObject[];
+  index: number;
+}
+
+/** /P is optional. Use current page membership for older PDFs and stale handles. */
+function requireAttachedAnnotation(doc: Document, dict: PdfDict): AttachedAnnotation {
+  if (!isAnnotationDict(doc, dict)) throw new UnsupportedFeatureError('invalid annotation dictionary');
+  let found: AttachedAnnotation | undefined;
+  for (const page of doc.Pages) {
+    const annots = doc.resolve(page.Dict.get('Annots'));
+    if (!isArray(annots)) continue;
+    const index = annotationIndex(doc, annots, dict);
+    if (index < 0) continue;
+    if (found !== undefined) throw new UnsupportedFeatureError('annotation is shared by multiple pages');
+    found = { page, annots, index };
+  }
+  if (found === undefined) throw new UnsupportedFeatureError('expected an annotation attached to a page');
+  return found;
+}
+
+function annotationIndex(doc: Document, annots: PdfObject[], dict: PdfDict): number {
+  return annots.findIndex((entry) => doc.resolve(entry) === dict);
+}
+
+/** Older page copies contain inline entries. Promote a parent in its slot so
+ *  the reply and the page continue to refer to the same annotation. */
+function makeIndirectAnnotation(doc: Document, annots: PdfObject[], index: number, dict: PdfDict): PdfRef {
+  const entry = annots[index];
+  if (isRef(entry)) return entry;
+  const ref = doc.allocObject(dict);
+  annots[index] = ref;
+  return ref;
+}
+
+function requireGroupPrimary(doc: Document, parent: PdfDict): void {
+  if (doc.resolve(parent.get('IRT')) !== null) {
+    throw new UnsupportedFeatureError('Group requires a primary annotation without a reply parent');
+  }
+}
+
+function hasGroupMembers(doc: Document, annots: PdfObject[], parent: PdfDict): boolean {
+  return annots.some((entry) => {
+    const dict = doc.resolve(entry);
+    if (!isDict(dict) || doc.resolve(dict.get('IRT')) !== parent) return false;
+    const type = doc.resolve(dict.get('RT'));
+    return isName(type) && type.name === 'Group';
+  });
 }
 
 /** @internal Build a /Popup dict, attach it to the page, link it to its parent
@@ -1742,7 +1906,10 @@ function createPopup(
 export function addPopup(doc: Document, page: Page, opts: PopupOptions): PopupAnnotation {
   const parentDict = opts.parent instanceof Annotation ? opts.parent.Dict : opts.parent;
   if (!isDict(parentDict)) throw new TypeError('parent must be an annotation dict');
-  const parentRef = refForAnnot(doc, page, parentDict);
+  const parentRef = annotationRefOnPage(doc, page, parentDict);
+  if (parentRef === undefined) {
+    throw new UnsupportedFeatureError('popup parent must be an indirect annotation on this page');
+  }
   return createPopup(doc, page, parentRef, { rect: opts.rect, open: opts.open }, parentDict);
 }
 

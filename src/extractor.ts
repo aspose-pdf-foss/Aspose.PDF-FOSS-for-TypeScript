@@ -1,37 +1,126 @@
 import type { Document } from './document.js';
 import { PageFormat } from './pageformat.js';
+import { clearReplyLink } from './annotlinks.js';
 import {
-  PdfObject, PdfDict, PdfArray, isRef, isDict, isArray, isStream, isName, PdfRef,
+  PdfObject, PdfDict, PdfArray, isRef, isDict, isArray, isStream, isName, PdfRef, ref,
 } from './types.js';
 
 export interface PrunePolicy {
   /** Page-dict keys removed from the emitted page object entirely. */
   dropPageKeys: Set<string>;
-  /** Sanitize the /Annots array; return a new array (resolved annotation dicts). */
-  sanitizeAnnots(doc: Document, annots: PdfArray): PdfArray;
+  /** Sanitize /Annots. During a page copy, `registerCopy` allocates a copy and
+   *  lets other annotations on that page refer to it. */
+  sanitizeAnnots(
+    doc: Document, annots: PdfArray,
+    registerCopy?: (source: PdfObject, copy: PdfDict) => PdfRef,
+  ): PdfArray;
 }
 
 export function defaultPrunePolicy(): PrunePolicy {
   return {
     dropPageKeys: new Set(['Parent', 'B', 'StructParents']),
-    sanitizeAnnots(doc, annots) {
-      const out: PdfArray = [];
-      for (const a of annots) {
-        const annot = doc.resolve(a);
-        if (!isDict(annot)) continue;
-        const copy: PdfDict = new Map(annot);
-        copy.delete('P'); // back-reference to the page object
-        // Strip same-document GoTo actions; keep URI / GoToR (self-contained).
-        const action = doc.resolve(copy.get('A'));
-        const isGoTo = isDict(action) && isName(action.get('S')) && (action.get('S') as any).name === 'GoTo';
-        if (isGoTo) copy.delete('A');
-        // A /Dest leaves the page; strip it.
-        if (copy.has('Dest')) copy.delete('Dest');
-        out.push(copy);
-      }
-      return out;
-    },
+    sanitizeAnnots: sanitizeAnnotationCopies,
   };
+}
+
+function sanitizeAnnotationCopies(
+  doc: Document, annots: PdfArray,
+  registerCopy?: (source: PdfObject, copy: PdfDict) => PdfRef, sameDocumentPage?: PdfRef,
+): PdfArray {
+  const localRefs = new Set<number>();
+  if (registerCopy !== undefined) {
+    for (const a of annots) {
+      if (isRef(a) && isDict(doc.resolve(a))) localRefs.add(a.num);
+    }
+  }
+  const out: PdfArray = [];
+  for (const a of annots) {
+    const annot = doc.resolve(a);
+    if (!isDict(annot)) continue;
+    const subtype = doc.resolve(annot.get('Subtype'));
+    // Keep the field's existing widget reference when repeating a page in place.
+    if (sameDocumentPage !== undefined && isRef(a) && isName(subtype) && subtype.name === 'Widget') {
+      out.push(a);
+      continue;
+    }
+    const copy: PdfDict = new Map(annot);
+    if (sameDocumentPage === undefined) {
+      copy.delete('P');
+      // Strip same-document destinations and keep self-contained actions.
+      const action = doc.resolve(copy.get('A'));
+      const kind = isDict(action) ? action.get('S') : undefined;
+      if (isName(kind) && kind.name === 'GoTo') copy.delete('A');
+      copy.delete('Dest');
+    } else if (copy.has('P')) {
+      copy.set('P', sameDocumentPage);
+    }
+    if (registerCopy === undefined) {
+      out.push(copy);
+      continue;
+    }
+    if (!isLocalAnnotationRef(copy.get('IRT'), localRefs)) clearReplyLink(copy);
+    if (!isLocalAnnotationRef(copy.get('Popup'), localRefs)) copy.delete('Popup');
+    if (isName(subtype) && subtype.name === 'Popup' && !isLocalAnnotationRef(copy.get('Parent'), localRefs)) {
+      copy.delete('Parent');
+    }
+    out.push(registerCopy(a, copy));
+  }
+  return out;
+}
+
+function isLocalAnnotationRef(value: PdfObject | undefined, refs: ReadonlySet<number>): boolean {
+  return isRef(value) && refs.has(value.num);
+}
+
+/** Copy a page's annotation graph in its own reference namespace. The ordinary
+ *  remapper can still share resources across pages, including repeated copies
+ *  of the same source page. */
+export function rewritePageRefs(
+  doc: Document, page: PdfDict, policy: PrunePolicy,
+  allocate: (object: PdfDict) => PdfRef, remap: (source: PdfRef) => PdfRef,
+): void {
+  const sourceAnnots = page.get('Annots');
+  page.delete('Annots');
+  rewriteRefs(page, remap);
+  if (sourceAnnots === undefined) return;
+  const annots = copyAnnots(doc, sourceAnnots, policy.sanitizeAnnots.bind(policy), allocate, remap);
+  page.set('Annots', annots);
+}
+
+/** Give a repeated page in the same document its own annotations. */
+export function duplicatePageAnnots(
+  doc: Document, page: PdfDict, pageRef: PdfRef, allocate: (object: PdfDict) => PdfRef,
+): void {
+  const sourceAnnots = page.get('Annots');
+  if (sourceAnnots === undefined) return;
+  const annots = copyAnnots(doc, sourceAnnots, (source, entries, register) => {
+    return sanitizeAnnotationCopies(source, entries, register, pageRef);
+  }, allocate, (r) => r);
+  page.set('Annots', annots);
+}
+
+function copyAnnots(
+  doc: Document, sourceAnnots: PdfObject, sanitize: PrunePolicy['sanitizeAnnots'],
+  allocate: (object: PdfDict) => PdfRef, remap: (source: PdfRef) => PdfRef,
+): PdfArray {
+  const annots = doc.resolve(sourceAnnots);
+  if (!isArray(annots)) return [];
+  const localRefs = new Map<number, PdfRef>();
+  const registered = new Map<PdfRef, PdfDict>();
+  const copies = sanitize(doc, annots, (source, copy) => {
+    const dict = new Map(copy);
+    const dest = allocate(dict);
+    if (isRef(source)) localRefs.set(source.num, dest);
+    registered.set(dest, dict);
+    return dest;
+  });
+  const remapAnnotationRef = (r: PdfRef): PdfRef => localRefs.get(r.num) ?? remap(r);
+  for (const copy of registered.values()) rewriteRefs(copy, remapAnnotationRef);
+  // A custom policy may still return source refs or inline objects.
+  return copies.map((value) => {
+    if (isRef(value)) return registered.has(value) ? value : remapAnnotationRef(value);
+    return passthrough(value, remapAnnotationRef);
+  });
 }
 
 export interface Extraction { objects: Map<number, PdfObject>; pageNum: number; }
@@ -93,17 +182,12 @@ export function extractPage(doc: Document, pageDict: PdfDict, policy: PrunePolic
   // Materialize inheritance before dropping /Parent; then apply pruning.
   const page = clonePageDict(doc, pageDict);
   for (const k of policy.dropPageKeys) page.delete(k);
-  if (page.has('Annots')) {
-    const annots = doc.resolve(page.get('Annots'));
-    page.set('Annots', isArray(annots) ? policy.sanitizeAnnots(doc, annots) : []);
-  }
-
   const newNumByOld = new Map<number, number>();
   let next = 1;
   const pageNum = next++;
   objects.set(pageNum, page);
 
-  const queue: PdfObject[] = [page];
+  const queue: PdfObject[] = [];
   const enqueueRef = (r: PdfRef): PdfRef => {
     let nn = newNumByOld.get(r.num);
     if (nn === undefined) {
@@ -116,6 +200,11 @@ export function extractPage(doc: Document, pageDict: PdfDict, policy: PrunePolic
     return { kind: 'ref', num: nn, gen: 0 };
   };
 
+  rewritePageRefs(doc, page, policy, (copy) => {
+    const num = next++;
+    objects.set(num, copy);
+    return ref(num);
+  }, enqueueRef);
   for (let i = 0; i < queue.length; i++) rewriteRefs(queue[i], enqueueRef);
   return { objects, pageNum };
 }

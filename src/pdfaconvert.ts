@@ -5,6 +5,7 @@ import {
   PdfObject, PdfDict, PdfRef, isName, isDict, isArray, isRef, isStream, isString, name,
 } from './types.js';
 import type { Page } from './page.js';
+import { unlinkRemovedReplyParents } from './annotlinks.js';
 import { type ValidationIssue } from './validation.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
@@ -575,11 +576,15 @@ const actionsPass: Pass = (ctx) => {
 
 /** Remove an annotation ref from every page's /Annots array. */
 function removeAnnot(ctx: Cctx, target: PdfDict): void {
+  const removed = new Set([target]);
   for (const page of ctx.doc.Pages) {
     const arr = ctx.R(page.Dict.get('Annots'));
     if (!isArray(arr)) continue;
     const idx = arr.findIndex((a) => ctx.R(a) === target);
-    if (idx >= 0) { arr.splice(idx, 1); if (arr.length === 0) page.Dict.delete('Annots'); }
+    if (idx < 0) continue;
+    arr.splice(idx, 1);
+    if (arr.length === 0) page.Dict.delete('Annots');
+    else unlinkRemovedReplyParents(ctx.doc, arr, removed);
   }
 }
 

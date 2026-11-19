@@ -2930,8 +2930,10 @@ const page = doc.Pages[0];
 // Read: typed handles, chosen by /Subtype (.Dict is the raw escape hatch).
 for (const a of page.Annotations) console.log(a.Subtype, a.Rect, a.Contents);
 
-// Sticky note.
-page.AddTextNote({ rect: [72, 700, 96, 724], contents: 'Please review', icon: 'Comment', author: 'QA' });
+// Sticky note and reply.
+const review = page.AddTextNote({ rect: [72, 700, 96, 724], contents: 'Please review', icon: 'Comment', author: 'QA' });
+const reply = review.AddReply({ contents: 'Reviewed', author: 'Ada' });
+console.log(reply.InReplyTo?.Contents, reply.ReplyType); // Please review, R
 
 // Rubber stamps: standard name, custom text, or an image.
 page.AddStamp({ rect: [400, 700, 540, 740], name: 'Approved' });
@@ -3775,7 +3777,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 504 public types plus 161
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 506 public types plus 161
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4266,6 +4268,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | Class | Description |
 |---|---|
 | `Annotation` | A live, mutable handle over an annotation dictionary. |
+| `AnnotationReplyOptions` | Required `contents` and optional `author` and `rect` for `annotation.AddReply`. |
 | `AnnotationTextKey` | The annotation entries that count as carried text. |
 | `AuthoringFont` | A font for the text-authoring API: one of the 12 Latin Standard-14 faces (by name) or an embedded font handle from AddFont. |
 | `CaretAnnotation` | A /Caret annotation (PDF 32000-1 §12.5.6.11): a text-insertion mark, drawn as a wedge at the point where text should be added, optionally with a paragraph sign. |
@@ -4275,6 +4278,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `MarkupAnnotation` | A text-markup annotation (/Highlight, /Underline, /StrikeOut, /Squiggly) positioned by /QuadPoints (8 numbers per marked quad). |
 | `MarkupType` | The four text-markup subtypes, lower-cased. |
 | `RedactAnnotation` | A /Redact annotation (PDF 32000-1 §12.5.6.23): a *mark* over a region, plus the overlay to paint when it is applied. |
+| `ReplyType` | `'R'` for a reply or `'Group'` for a group member. |
 | `StampAnnotation` | A /Stamp (rubber-stamp) annotation. |
 | `StampPosition` | Where a stamp anchors in the page's visual frame. |
 | `TextAnnotation` | A /Text (sticky-note) annotation: an icon-and-popup markup with no appearance stream. |
@@ -4541,8 +4545,11 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.Scale(factor)` | Uniformly scale content and every present boundary box by `factor > 0` |
 | `page.Contents` | Decoded content stream bytes |
 | `page.Annotations` | Typed `Annotation[]` handles (`.Dict` for the raw dict) |
-| `page.RemoveAnnotation(a)` | Remove an annotation from the page |
+| `page.RemoveAnnotation(a)` | Remove an annotation from the page and detach its surviving replies |
 | `page.AddTextNote(opts)` | Add a `/Text` sticky-note annotation (icon/open/color/author) |
+| `annotation.AddReply(opts)` | Create a text reply on the annotation's page. Its rectangle defaults to the parent's rectangle or `[0, 0, 0, 0]` |
+| `annotation.InReplyTo` | Read or set a markup annotation's parent on the same page. Set `undefined` to clear both the parent and reply type |
+| `annotation.ReplyType` | Read or set the relationship. A linked annotation defaults to `'R'` when `/RT` is absent. `'Group'` requires a parent with no `/IRT` |
 | `page.AddStamp(opts)` | Add a `/Stamp` annotation (standard name, custom text, or image) with a generated appearance |
 | `page.AddHighlight(opts)` | Add a `/Highlight` markup over `/QuadPoints` with a fill appearance (translucent by default; pass `opacity` to override) |
 | `page.AddUnderline(opts)` | Add an `/Underline` markup over `/QuadPoints` |

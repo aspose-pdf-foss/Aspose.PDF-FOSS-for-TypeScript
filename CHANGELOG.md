@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Annotation reply threads.** `Annotation.AddReply` creates a text reply on
+  the parent annotation's page. `InReplyTo` and `ReplyType` read and edit reply
+  and group relationships, including documents whose annotations omit `/P`.
+  Links are checked against live page membership and survive saving or copying
+  pages. Removing a parent detaches surviving replies. (k4h1.1)
+
 - **PostScript and EPS page import.** `Document.AddPostScript(bytes, options?)`
   synchronously appends vector, image and extractable-text output from the
   bounded interpreter, with explicit supplied fonts and a fresh job budget on

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
+import { defaultPrunePolicy } from '../src/extractor.js';
 import {
   Annotation, createAnnotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation,
   SquareCircleAnnotation, LineAnnotation, FreeTextAnnotation, PopupAnnotation,
@@ -9,7 +10,8 @@ import {
   buildAnnotTarget, buildBlankPage, buildStampReadTarget, buildMarkupReadTarget, buildLinkReadTarget,
   buildShapeReadTarget, buildFreeTextReadTarget, buildPopupReadTarget, buildPathReadTarget,
 } from './helpers/build-annot-target.js';
-import { isStream, isName, name, PdfDict, PdfStream } from '../src/types.js';
+import { buildAnnotRoundtrip } from './helpers/build-annot-roundtrip.js';
+import { isStream, isName, isRef, name, ref, PdfDict, PdfStream } from '../src/types.js';
 import { inflateStream } from '../src/flate.js';
 import { parseContentStream } from '../src/content.js';
 import { collectImages } from '../src/image.js';
@@ -34,6 +36,285 @@ describe('Annotation read model', () => {
     expect(annots[1].Subtype).toBe('Link');
     expect(annots[1].Color).toBeUndefined();
     expect(annots[1].Dict).toBeInstanceOf(Map); // raw escape hatch present
+  });
+});
+
+describe('Annotation reply threads', () => {
+  it('resolves a typed parent and defaults a missing /RT to R', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const [parent, , reply] = doc.Pages[0].Annotations;
+    expect(parent.ReplyType).toBeUndefined();
+    expect(reply.InReplyTo).toBeInstanceOf(TextAnnotation);
+    expect(reply.InReplyTo?.Dict).toBe(parent.Dict);
+    expect(reply.ReplyType).toBe('R');
+  });
+
+  it('distinguishes malformed relationships from the default reply type', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const reply = doc.Pages[0].Annotations[2];
+    reply.Dict.set('RT', name('Unknown'));
+    expect(reply.ReplyType).toBeUndefined();
+    reply.Dict.set('RT', name('Group'));
+    reply.Dict.set('IRT', ref(9000));
+    expect(reply.InReplyTo?.Dict).toBeUndefined();
+    expect(reply.ReplyType).toBeUndefined();
+  });
+
+  it('accepts an omitted /Type and treats PDF null as an absent /RT', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const [parent, , reply] = doc.Pages[0].Annotations;
+    parent.Dict.delete('Type');
+    reply.Dict.delete('Type');
+    expect(reply.InReplyTo?.Dict).toBe(parent.Dict);
+    reply.Dict.set('RT', null);
+    expect(reply.ReplyType).toBe('R');
+    expect(parent.AddReply({ contents: 'Reply' }).InReplyTo?.Dict).toBe(parent.Dict);
+    parent.Dict.set('IRT', null);
+    reply.ReplyType = 'Group';
+    const [savedParent, , savedReply] = Document.Open(doc.Save()).Pages[0].Annotations;
+    expect(savedReply.InReplyTo?.Dict).toBe(savedParent.Dict);
+    expect(savedReply.ReplyType).toBe('Group');
+  });
+
+  it('creates a nested text reply on the page of a parent without /P', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const page = doc.Pages[0];
+    const parent = page.Annotations[2];
+    expect(parent.Dict.has('P')).toBe(false);
+
+    const reply = parent.AddReply({ contents: 'Готово', author: 'Ada' });
+    expect(reply).toBeInstanceOf(TextAnnotation);
+    expect(reply.Rect).toEqual([0, 0, 100, 20]);
+    expect(isRef(reply.Dict.get('IRT'))).toBe(true);
+    expect(page.Annotations.at(-1)?.Dict).toBe(reply.Dict);
+    expect(doc.Pages[1].Annotations).toHaveLength(1);
+
+    const reopened = Document.Open(doc.Save());
+    const savedReply = reopened.Pages[0].Annotations.at(-1) as TextAnnotation;
+    expect(savedReply.Contents).toBe('Готово');
+    expect(savedReply.Author).toBe('Ada');
+    expect(savedReply.ReplyType).toBe('R');
+    expect(savedReply.InReplyTo?.Name).toBe('hi-1');
+    expect(savedReply.InReplyTo?.InReplyTo?.Name).toBe('note-1');
+  });
+
+  it('links an existing annotation and persists its explicit Group type', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const page = doc.Pages[0];
+    const parent = page.Annotations[0];
+    const member = page.AddSquare({ rect: [10, 20, 30, 40] });
+    member.InReplyTo = parent;
+    member.ReplyType = 'Group';
+
+    const [savedParent, , , , savedMember] = Document.Open(doc.Save()).Pages[0].Annotations;
+    expect(savedMember.InReplyTo?.Dict).toBe(savedParent.Dict);
+    expect(savedMember.ReplyType).toBe('Group');
+    expect(savedMember.Dict.get('RT')).toEqual(name('Group'));
+    savedMember.ReplyType = undefined;
+    expect(savedMember.ReplyType).toBe('R');
+    savedMember.ReplyType = 'Group';
+    savedMember.InReplyTo = undefined;
+    expect(savedMember.InReplyTo).toBeUndefined();
+    expect(savedMember.Dict.has('RT')).toBe(false);
+  });
+
+  it('rejects links outside the page or document and keeps the original parent', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const [parent, , reply] = doc.Pages[0].Annotations;
+    const otherPage = doc.Pages[1].Annotations[0];
+    const otherDoc = Document.Open(buildAnnotRoundtrip()).Pages[0].Annotations[0];
+    expect(() => { reply.InReplyTo = otherPage; }).toThrow();
+    expect(() => { reply.InReplyTo = otherDoc; }).toThrow();
+    expect(reply.InReplyTo?.Dict).toBe(parent.Dict);
+  });
+
+  it('rejects self-links and cycles', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const [parent, , reply] = doc.Pages[0].Annotations;
+    expect(() => { parent.InReplyTo = parent; }).toThrow();
+    expect(() => { parent.InReplyTo = reply; }).toThrow();
+    expect(parent.InReplyTo).toBeUndefined();
+  });
+
+  it('only writes reply links on markup annotations', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const [parent, popup] = doc.Pages[0].Annotations;
+    expect(() => { popup.InReplyTo = parent; }).toThrow();
+    expect(popup.Dict.has('IRT')).toBe(false);
+  });
+
+  it('requires a parent for an explicit type and keeps grouped primaries unlinked', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const page = doc.Pages[0];
+    const [parent, , reply] = page.Annotations;
+    const third = page.AddTextNote({ rect: [3, 4, 5, 6] });
+    const independent = page.AddTextNote({ rect: [7, 8, 9, 10] });
+    expect(() => { parent.ReplyType = 'Group'; }).toThrow();
+    third.InReplyTo = reply;
+    expect(() => { third.ReplyType = 'Group'; }).toThrow();
+    third.InReplyTo = parent;
+    third.ReplyType = 'Group';
+    expect(() => { parent.InReplyTo = independent; }).toThrow();
+    expect(() => { third.InReplyTo = reply; }).toThrow();
+    expect(third.InReplyTo?.Dict).toBe(parent.Dict);
+  });
+
+  it('validates reply options before attaching an annotation', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const page = doc.Pages[0];
+    const parent = page.Annotations[0];
+    expect(() => parent.AddReply({ contents: 'Reply', author: 42 as never })).toThrow(TypeError);
+    expect(() => parent.AddReply({ contents: 'Reply', rect: [1, 2, 3, Infinity] })).toThrow(TypeError);
+    expect(() => parent.AddReply({ contents: 'Reply', rect: Array(4) as [number, number, number, number] })).toThrow(TypeError);
+    expect(() => parent.AddReply({ contents: 42 as never })).toThrow(TypeError);
+    expect(page.Annotations).toHaveLength(4);
+    expect(parent.AddReply({ contents: 'Reply', rect: [3, 4, 5, 6] }).Rect).toEqual([3, 4, 5, 6]);
+  });
+
+  it('rejects a stale annotation handle after removal', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const page = doc.Pages[0];
+    const [parent, , reply] = page.Annotations;
+    page.RemoveAnnotation(parent);
+    expect(() => parent.AddReply({ contents: 'Detached' })).toThrow();
+    expect(() => { reply.InReplyTo = parent; }).toThrow();
+    expect(page.Annotations).toHaveLength(3);
+  });
+
+  it('detaches surviving replies when the parent is removed', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    const parent = page.AddTextNote({ rect: [1, 2, 3, 4], contents: 'removed note' });
+    const reply = parent.AddReply({ contents: 'still here' });
+    const nested = reply.AddReply({ contents: 'still linked' });
+    reply.ReplyType = 'Group';
+    page.RemoveAnnotation(parent);
+
+    expect(reply.InReplyTo).toBeUndefined();
+    expect(reply.Dict.has('RT')).toBe(false);
+    expect(nested.InReplyTo?.Dict).toBe(reply.Dict);
+    expect(new TextDecoder().decode(doc.Save())).not.toContain('removed note');
+  });
+
+  it('detaches a reply from its flattened parent', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    const parent = page.AddSquare({ rect: [1, 2, 3, 4] });
+    const reply = parent.AddReply({ contents: 'still here' });
+    expect(parent.Flatten()).toBe(true);
+    expect(page.Annotations).toHaveLength(1);
+    expect(reply.InReplyTo).toBeUndefined();
+  });
+
+  it('keeps a surviving reply from retaining a sanitized attachment', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    const parent = page.AddFileAttachment({
+      name: 'removed-attachment.txt', bytes: Uint8Array.of(12, 34, 56), rect: [1, 2, 3, 4],
+    });
+    parent.AddReply({ contents: 'still here' });
+    expect(doc.Sanitize({ annotations: false }).attachments?.fileAttachmentAnnotations).toBe(1);
+    const bytes = doc.Save();
+    const [reply] = Document.Open(bytes).Pages[0].Annotations;
+    expect(reply.Contents).toBe('still here');
+    expect(reply.InReplyTo).toBeUndefined();
+    expect(new TextDecoder().decode(bytes)).not.toContain('removed-attachment.txt');
+  });
+
+  const copyPage = [
+    ['ExtractPages', (doc: Document) => doc.ExtractPages([1])],
+    ['Split', (doc: Document) => doc.Split()[0]],
+    ['AddPage', (doc: Document) => {
+      const copy = Document.New();
+      copy.AddPage(doc.Pages[0]);
+      return copy;
+    }],
+  ] as const;
+
+  it.each(copyPage)('preserves reply identity with %s and excludes the other page', (_name, copy) => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    const note = page.AddTextNote({ rect: [1, 2, 3, 4], popup: {}, contents: 'copied note' });
+    note.AddReply({ contents: 'copied reply' }).ReplyType = 'Group';
+    doc.AddPage().page.AddTextNote({ rect: [1, 2, 3, 4], contents: 'excluded note' });
+
+    const bytes = copy(doc).Save();
+    expect(new TextDecoder().decode(bytes)).not.toContain('excluded note');
+    const [parent, popup, reply] = Document.Open(bytes).Pages[0].Annotations;
+    expect(reply.Contents).toBe('copied reply');
+    expect(reply.InReplyTo?.Dict).toBe(parent.Dict);
+    expect(reply.ReplyType).toBe('Group');
+    expect((popup as PopupAnnotation).Parent?.Dict).toBe(parent.Dict);
+    expect(parent.AddReply({ contents: 'new reply' }).InReplyTo?.Dict).toBe(parent.Dict);
+  });
+
+  it('copies the reply thread separately for each repeated page', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const repeated = doc.ExtractPages([1, 1]);
+    const [first, second] = repeated.Pages;
+    expect(first.Annotations[0].Dict).not.toBe(second.Annotations[0].Dict);
+    expect(second.Annotations[2].InReplyTo?.Dict).toBe(second.Annotations[0].Dict);
+    second.Annotations[0].AddReply({ contents: 'on the second copy' });
+    expect(first.Annotations).toHaveLength(4);
+    expect(second.Annotations).toHaveLength(5);
+  });
+
+  it('creates replies on the requested copy of a reordered page', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    page.AddTextNote({ rect: [1, 2, 3, 4] });
+    page.AddLink({ rect: [1, 2, 3, 4], action: { type: 'goto', page: 1 } });
+    doc.Reorder([1, 1]);
+
+    const [first, second] = doc.Pages;
+    const [parent, link] = second.Annotations;
+    parent.AddReply({ contents: 'on the second page' });
+    expect(first.Annotations).toHaveLength(2);
+    expect(second.Annotations).toHaveLength(3);
+    expect(second.Annotations[2].InReplyTo?.Dict).toBe(parent.Dict);
+    expect((link as LinkAnnotation).Action).toMatchObject({ type: 'goto', page: 1 });
+  });
+
+  it('keeps form widgets bound to their field when repeating a page', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    doc.Reorder([1, 1]);
+    const [first, second] = doc.Pages;
+    const widget = second.Annotations.find((annotation) => annotation.Subtype === 'Widget')!;
+    expect(widget.Dict).toBe(doc.Form.Get('field1')?.Dict);
+    expect(() => widget.AddReply({ contents: 'Ambiguous page' })).toThrow();
+    expect(first.Annotations).toHaveLength(4);
+    expect(second.Annotations).toHaveLength(4);
+  });
+
+  it('protects source annotation dictionaries when a custom copy policy registers them', () => {
+    const doc = Document.Open(buildAnnotRoundtrip());
+    const [parent, , reply] = doc.Pages[0].Annotations;
+    const originalParentRef = reply.Dict.get('IRT');
+    const policy = defaultPrunePolicy();
+    policy.sanitizeAnnots = (source, annots, registerCopy) => annots.map((entry) => {
+      return registerCopy!(entry, source.resolve(entry) as PdfDict);
+    });
+
+    const [copy] = doc.Split({ prunePolicy: policy });
+    expect(copy.Pages[0].Annotations[2].Dict).not.toBe(reply.Dict);
+    expect(reply.Dict.get('IRT')).toBe(originalParentRef);
+    expect(reply.InReplyTo?.Dict).toBe(parent.Dict);
+  });
+
+  it('can link replies to inline annotations in older page copies', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    const parent = page.AddTextNote({ rect: [1, 2, 3, 4] });
+    const child = page.AddTextNote({ rect: [1, 2, 3, 4] });
+    page.Dict.set('Annots', [parent.Dict, child.Dict]);
+
+    const reopened = Document.Open(doc.Save()).Pages[0];
+    const [inlineParent, inlineChild] = reopened.Annotations;
+    inlineChild.InReplyTo = inlineParent;
+    inlineChild.ReplyType = 'Group';
+    expect(isRef(inlineChild.Dict.get('IRT'))).toBe(true);
+    expect(inlineChild.InReplyTo?.Dict).toBe(inlineParent.Dict);
+    expect(inlineChild.AddReply({ contents: 'nested reply' }).InReplyTo?.Dict).toBe(inlineChild.Dict);
   });
 });
 

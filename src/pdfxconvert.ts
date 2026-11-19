@@ -3,6 +3,7 @@ import { runOperation, runOperationAsync, type OperationContext, type OperationS
 import type { Document } from './document.js';
 import { PdfObject, PdfDict, PdfRef, isName, isDict, isArray, isRef, isStream, name } from './types.js';
 import type { Page } from './page.js';
+import { unlinkRemovedReplyParents } from './annotlinks.js';
 import type { ConvertAction, ConversionReport } from './conversion.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
 import type { ConvertCategory } from './pdfaconvert.js';
@@ -221,7 +222,9 @@ function eachAnnotation(ctx: XCctx): { ref?: PdfRef; dict: PdfDict; page: Page }
 function removeAnnot(ctx: XCctx, page: Page, target: PdfDict): void {
   const arr = ctx.R(page.Dict.get('Annots'));
   if (!isArray(arr)) return;
-  page.Dict.set('Annots', arr.filter((e) => ctx.R(e) !== target));
+  const kept = arr.filter((e) => ctx.R(e) !== target);
+  unlinkRemovedReplyParents(ctx.doc, kept, new Set([target]));
+  page.Dict.set('Annots', kept);
 }
 
 const PROHIBITED_ANNOTS = new Set(['Movie', 'Sound', 'Screen', '3D', 'RichMedia']);

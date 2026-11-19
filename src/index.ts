@@ -55,7 +55,7 @@ export type { FlattenLayersReport } from './ocflatten.js';
 export type { PagesToImagesOptions, SanitizeOptions, SanitizeReport } from './sanitize.js';
 export { Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation, RedactAnnotation, CaretAnnotation } from './annotation.js';
 export type {
-  TextNoteOptions, StampAnnotationOptions, MarkupOptions, MarkupType,
+  TextNoteOptions, AnnotationReplyOptions, ReplyType, StampAnnotationOptions, MarkupOptions, MarkupType,
   LinkOptions, LinkAction, FileAttachmentOptions, RedactAnnotationOptions, CaretOptions,
 } from './annotation.js';
 export { Attachment } from './embeddedfile.js';

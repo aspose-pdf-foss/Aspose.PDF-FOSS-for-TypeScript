@@ -13,6 +13,7 @@ import {
   readUsage, writeUsage, applyUsageEntry, combineUsageStates, usageCategoryEvent,
 } from './ocusage.js';
 import { budgetFor } from './decodebudget.js';
+import { unlinkRemovedReplyParents } from './annotlinks.js';
 
 export type { LayerUsage, UsageContext, UsageEvent } from './ocusage.js';
 
@@ -996,11 +997,17 @@ export class OptionalContent {
     for (const page of this.doc.Pages) {
       const annots = this.doc.resolve(page.Dict.get('Annots'));
       if (isArray(annots)) {
+        const removed = new Set<PdfDict>();
         const kept = annots.filter((a) => {
           const ad = resolveDict(this.doc, a);
-          return !(ad && refMatchesLayer(this.doc, ad.get('OC'), target));
+          if (!ad || !refMatchesLayer(this.doc, ad.get('OC'), target)) return true;
+          removed.add(ad);
+          return false;
         });
-        if (kept.length !== annots.length) page.Dict.set('Annots', kept);
+        if (removed.size > 0) {
+          unlinkRemovedReplyParents(this.doc, kept, removed);
+          page.Dict.set('Annots', kept);
+        }
       }
     }
 

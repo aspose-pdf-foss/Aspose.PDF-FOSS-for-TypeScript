@@ -1,6 +1,7 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict } from './types.js';
 import { untagObjects } from './structwrite.js';
+import { unlinkRemovedReplyParents } from './annotlinks.js';
 
 /** One step of the path from /AcroForm /Fields down to a field: the live array
  *  the node sits in, and where in it. */
@@ -56,6 +57,7 @@ function detachWidgets(doc: Document, dead: Set<PdfDict>): void {
       const d = doc.resolve(annots[i]);
       if (isDict(d) && dead.has(d)) annots.splice(i, 1);
     }
+    unlinkRemovedReplyParents(doc, annots, dead);
   }
 }
 

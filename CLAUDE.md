@@ -460,6 +460,14 @@ Source (`src/`):
   indirect reference, so it is held by agreeing with `buildPages` rather than
   by the suite. Do not read the green suite as covering it.
 - **extractor.ts** — single-page / object-graph extraction with a `PrunePolicy`.
+  **Invariant (`k4h1.1`):** copied annotations have a per-page reference map.
+  `/IRT`, `/Popup`, and a popup's `/Parent` resolve to the annotation copies on
+  that page. The shared resource walk must never follow an original annotation's
+  `/P` into the source page tree. Repeated page copies each get their own
+  annotation dictionaries while other resources can still be shared.
+  A `Reorder` repeat keeps existing widget references so the form's field tree
+  still owns them. Creating a reply through a handle shared by multiple pages
+  would have ambiguous placement, so the API rejects it.
   **Invariant (`ld4w`):** `clonePageDict` materializes inherited `MediaBox`,
   `CropBox`, `Resources` and `Rotate` BEFORE `/Parent` is dropped or changed.
   `extractPage` (Split and single-page imports) and `importPages` share it;
@@ -4739,6 +4747,15 @@ Source (`src/`):
   `regenerateAppearance`, which builds an appearance from an existing dict
   rather than from an options object); appearance *resolution* for rendering and
   flattening lives in **annotappearance.ts**.
+  **Invariant (`k4h1.1`):** authoring a reply relationship uses the current
+  `/Annots` array for page membership. `/P` is optional, and a removed
+  annotation can still have a page reference. `/IRT` reuses the parent's
+  indirect reference, a linked annotation without `/RT` defaults to `R`, and
+  clearing `/IRT` also clears `/RT`. Earlier page copies could contain inline
+  entries, which become indirect in their existing slot when used as parents.
+  **annotlinks.ts** clears the incoming links from surviving annotations when
+  their parents are removed. Leaving `/IRT` reachable would keep a removed
+  annotation's contents in the saved bytes.
   **Note (`6t2v.5`), a SCOPE DECISION rather than a gap — do not "finish" it:**
   MULTIMEDIA is out of scope. `/Screen` annotations and `/Rendition` actions
   embed audio and video; almost no viewer honours them and Node has nothing to

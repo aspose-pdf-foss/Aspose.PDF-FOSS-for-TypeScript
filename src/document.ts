@@ -119,7 +119,7 @@ import {
 } from './collection.js';
 import { PageLabel, parsePageLabels, buildPageLabels, resolvePageLabel } from './pagelabels.js';
 import {
-  extractPage, defaultPrunePolicy, PrunePolicy, cloneShallow, rewriteRefs,
+  extractPage, defaultPrunePolicy, PrunePolicy, cloneShallow, rewriteRefs, rewritePageRefs, duplicatePageAnnots,
   INHERITABLE_PAGE_KEYS, clonePageDict,
 } from './extractor.js';
 import { preserveStructure, PageOrigin } from './structpreserve.js';
@@ -660,6 +660,11 @@ export class Document {
         const clone: PdfDict = isDict(src) ? new Map(src) : new Map<string, PdfObject>();
         num = ++maxObjNum;
         this.install(num, clone);
+        duplicatePageAnnots(this, clone, ref(num), (annotation) => {
+          const annotNum = ++maxObjNum;
+          this.install(annotNum, annotation);
+          return ref(annotNum);
+        });
       }
       used.add(num);
       const pageDict = this.objects.get(num);
@@ -4145,19 +4150,19 @@ export class Document {
     };
 
     // Prepare each leaf: flatten inheritance (from the live source chain), drop
-    // page keys, sanitize annots. Install with a fresh number; defer /Parent until
-    // after the rewrite so rootNum (a THIS-document ref) is never remapped.
+    // page keys, and copy each page's annotations independently. Defer /Parent
+    // until after rewriting the source refs.
     const leafNums: number[] = [];
     for (const page of pages) {
       const leaf = clonePageDict(other, page.Dict);
       for (const k of policy.dropPageKeys) leaf.delete(k);
-      if (leaf.has('Annots')) {
-        const annots = other.resolve(leaf.get('Annots'));
-        leaf.set('Annots', isArray(annots) ? policy.sanitizeAnnots(other, annots) : []);
-      }
       const leafNum = ++next;
       this.install(leafNum, leaf);
-      queue.push(leaf);
+      rewritePageRefs(other, leaf, policy, (annotation) => {
+        const num = ++next;
+        this.install(num, annotation);
+        return ref(num);
+      }, remap);
       leafNums.push(leafNum);
     }
 

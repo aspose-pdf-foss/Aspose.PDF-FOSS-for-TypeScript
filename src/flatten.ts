@@ -14,6 +14,7 @@ import {
 } from './pagecontent.js';
 import { isAnnotVisible, resolveAppearance } from './annotappearance.js';
 import { retagAsContent, untagObjects } from './structwrite.js';
+import { unlinkRemovedReplyParents } from './annotlinks.js';
 import { removeField } from './formremove.js';
 import { enc } from './serialize.js';
 import { refreshBarcodeFields } from './paperbarcode.js';
@@ -93,6 +94,7 @@ function flattenPageAnnots(doc: Document, page: Page, accept: (a: PdfDict) => bo
     const d = doc.resolve(e);
     if (isDict(d)) dead.add(d);
   }
+  unlinkRemovedReplyParents(doc, kept, dead);
   page.Dict.set('Annots', kept);
 
   // Every annotation that just left /Annots must also leave the structure tree.

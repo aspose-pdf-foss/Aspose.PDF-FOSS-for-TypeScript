@@ -62,6 +62,7 @@ import {
 import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from './formfield.js';
 import { addBarcodeField, type BarcodeFieldInit } from './paperbarcode.js';
 import { registerStructIds, untagObjects } from './structwrite.js';
+import { unlinkRemovedReplyParents } from './annotlinks.js';
 import { checkOnSkipped, markdownElementsSteps, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElementsSteps, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
 import { docxElementsSteps, checkDocxOptions, type AddDocxResult, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
@@ -309,10 +310,12 @@ export class Page {
     for (let i = 0; i < arr.length; i++) {
       if (this.doc.resolve(arr[i]) === target) {
         arr.splice(i, 1);
+        const removed = new Set([target]);
+        unlinkRemovedReplyParents(this.doc, arr, removed);
         // A tagged annotation is also named by an OBJR in the structure tree,
         // which is reachable from /Root — leaving it there keeps the annotation
         // in the saved bytes with no /Annots entry anywhere.
-        untagObjects(this.doc, new Set([target]));
+        untagObjects(this.doc, removed);
         this.doc.markModified();
         return;
       }
