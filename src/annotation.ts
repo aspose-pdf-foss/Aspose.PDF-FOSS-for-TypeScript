@@ -90,6 +90,26 @@ export interface AnnotationReplyOptions {
   rect?: [number, number, number, number];
 }
 
+// PDF 32000-1 §12.5.6.3, Table 171.
+const STATE_MODELS = {
+  Marked: 'Marked', Unmarked: 'Marked',
+  Accepted: 'Review', Rejected: 'Review', Cancelled: 'Review', Completed: 'Review', None: 'Review',
+} as const;
+
+export type AnnotationState = keyof typeof STATE_MODELS;
+export type AnnotationStateModel = (typeof STATE_MODELS)[AnnotationState];
+
+/** Options for a state reply. The author identifies whose state is changing. */
+export interface AnnotationStateReplyOptions extends Partial<AnnotationReplyOptions> {
+  state: AnnotationState;
+  author: string;
+}
+
+function modelForState(state: unknown): AnnotationStateModel | undefined {
+  if (typeof state !== 'string' || !Object.hasOwn(STATE_MODELS, state)) return undefined;
+  return STATE_MODELS[state as AnnotationState];
+}
+
 // PDF markup annotation subtypes. MarkupAnnotation is the text-markup subset.
 const REPLY_MARKUP_SUBTYPES = new Set([
   'Text', 'FreeText', 'Line', 'Square', 'Circle', 'Polygon', 'PolyLine',
@@ -270,6 +290,18 @@ export class Annotation {
     return reply;
   }
 
+  /** Append a state record. Call on a reviewer's previous record to continue its history. */
+  AddStateReply(options: AnnotationStateReplyOptions): TextAnnotation {
+    const { state, author, contents = '', rect } = options;
+    if (modelForState(state) === undefined) throw new TypeError('invalid annotation state');
+    if (typeof author !== 'string' || author.trim().length === 0) {
+      throw new TypeError('state reply author must be a non-empty string');
+    }
+    const reply = this.AddReply({ author, contents, rect });
+    reply.State = state;
+    return reply;
+  }
+
   /** /NM annotation name; undefined when absent. */
   get Name(): string | undefined {
     const s = this.doc.resolve(this.Dict.get('NM'));
@@ -343,6 +375,48 @@ export class Annotation {
 /** A /Text (sticky-note) annotation: an icon-and-popup markup with no appearance
  *  stream. Adds the note-specific entries to the base Annotation handle. */
 export class TextAnnotation extends Annotation {
+  /** /State on this record. An omitted state falls back to the model's default. */
+  get State(): AnnotationState | undefined {
+    const model = this.StateModel;
+    if (model === undefined) return undefined;
+    const raw = this.doc.resolve(this.Dict.get('State'));
+    if (raw === null) return model === 'Marked' ? 'Unmarked' : 'None';
+    if (!isString(raw)) return undefined;
+    const state = decodePdfText(raw.bytes);
+    return modelForState(state) === model ? state as AnnotationState : undefined;
+  }
+
+  set State(state: AnnotationState | undefined) {
+    if (state === undefined) {
+      this.Dict.delete('State');
+    } else {
+      const model = modelForState(state);
+      if (model === undefined) throw new TypeError('invalid annotation state');
+      this.Dict.set('State', pdfText(state));
+      this.Dict.set('StateModel', pdfText(model));
+    }
+    this.touch();
+  }
+
+  /** /StateModel on this record. Clearing it also clears /State. */
+  get StateModel(): AnnotationStateModel | undefined {
+    const model = readTextString(this.doc, this.Dict, 'StateModel');
+    return model === 'Marked' || model === 'Review' ? model : undefined;
+  }
+
+  set StateModel(model: AnnotationStateModel | undefined) {
+    if (model === undefined) {
+      this.Dict.delete('State');
+      this.Dict.delete('StateModel');
+    } else {
+      if (model !== 'Marked' && model !== 'Review') throw new TypeError('invalid annotation state model');
+      const state = readTextString(this.doc, this.Dict, 'State');
+      if (modelForState(state) !== model) this.Dict.delete('State');
+      this.Dict.set('StateModel', pdfText(model));
+    }
+    this.touch();
+  }
+
   /** /Name icon (e.g. Note, Comment, Help, Insert, Key, NewParagraph, Paragraph);
    *  undefined when absent. */
   get Icon(): string | undefined {

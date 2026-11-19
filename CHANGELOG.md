@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Annotation review states.** `Annotation.AddStateReply` creates an authored
+  state record on the same page. `TextAnnotation.State` and `StateModel`
+  read and edit the record, including the defaults for the Marked and Review
+  models. Each update can link to the preceding reply to retain the reviewer's
+  history. (k4h1.2)
+
 - **Annotation reply threads.** `Annotation.AddReply` creates a text reply on
   the parent annotation's page. `InReplyTo` and `ReplyType` read and edit reply
   and group relationships, including documents whose annotations omit `/P`.

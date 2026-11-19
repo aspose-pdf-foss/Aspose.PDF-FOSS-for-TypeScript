@@ -4756,6 +4756,10 @@ Source (`src/`):
   **annotlinks.ts** clears the incoming links from surviving annotations when
   their parents are removed. Leaving `/IRT` reachable would keep a removed
   annotation's contents in the saved bytes.
+  **Invariant (`k4h1.2`):** `AddStateReply` writes `/State` and `/StateModel` as
+  PDF text strings on the new `/Text` reply. It uses `/T` for the reviewer and
+  the same `/IRT` link as `AddReply`. A model-only record reads as `Unmarked`
+  or `None`. Setting an explicit state writes its matching model.
   **Note (`6t2v.5`), a SCOPE DECISION rather than a gap — do not "finish" it:**
   MULTIMEDIA is out of scope. `/Screen` annotations and `/Rendition` actions
   embed audio and video; almost no viewer honours them and Node has nothing to

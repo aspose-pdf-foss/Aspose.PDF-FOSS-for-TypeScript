@@ -56,6 +56,7 @@ export type { PagesToImagesOptions, SanitizeOptions, SanitizeReport } from './sa
 export { Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation, RedactAnnotation, CaretAnnotation } from './annotation.js';
 export type {
   TextNoteOptions, AnnotationReplyOptions, ReplyType, StampAnnotationOptions, MarkupOptions, MarkupType,
+  AnnotationState, AnnotationStateModel, AnnotationStateReplyOptions,
   LinkOptions, LinkAction, FileAttachmentOptions, RedactAnnotationOptions, CaretOptions,
 } from './annotation.js';
 export { Attachment } from './embeddedfile.js';

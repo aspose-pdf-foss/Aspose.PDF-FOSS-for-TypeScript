@@ -2934,6 +2934,8 @@ for (const a of page.Annotations) console.log(a.Subtype, a.Rect, a.Contents);
 const review = page.AddTextNote({ rect: [72, 700, 96, 724], contents: 'Please review', icon: 'Comment', author: 'QA' });
 const reply = review.AddReply({ contents: 'Reviewed', author: 'Ada' });
 console.log(reply.InReplyTo?.Contents, reply.ReplyType); // Please review, R
+const accepted = review.AddStateReply({ state: 'Accepted', author: 'Ada' });
+accepted.AddStateReply({ state: 'Completed', author: 'Ada' });
 
 // Rubber stamps: standard name, custom text, or an image.
 page.AddStamp({ rect: [400, 700, 540, 740], name: 'Approved' });
@@ -2976,7 +2978,7 @@ page.RemoveAnnotation(page.Annotations[0]);
 ```
 
 `page.Annotations` returns `Annotation` handles whose subclass follows
-`/Subtype`: `TextAnnotation` (`Icon`/`Open`/`Author`), `StampAnnotation`
+`/Subtype`: `TextAnnotation` (`Icon`/`Open`/`Author`/`State`/`StateModel`), `StampAnnotation`
 (`StampName`), `MarkupAnnotation` (`MarkupType`/`QuadPoints`), `LinkAnnotation`
 (`Action`/`Dest`), `FileAttachmentAnnotation` (`Icon`/`FileName`/`GetBytes()`),
 `SquareCircleAnnotation` (`ShapeType`/`InteriorColor`/`BorderWidth`),
@@ -3777,7 +3779,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 506 public types plus 161
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 509 public types plus 161
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4269,6 +4271,9 @@ for work-unit boundaries and mutation/lifetime rules.
 |---|---|
 | `Annotation` | A live, mutable handle over an annotation dictionary. |
 | `AnnotationReplyOptions` | Required `contents` and optional `author` and `rect` for `annotation.AddReply`. |
+| `AnnotationState` | `Marked` or `Unmarked`, or one of `Accepted`, `Rejected`, `Cancelled`, `Completed`, and `None`. |
+| `AnnotationStateModel` | `Marked` or `Review`. |
+| `AnnotationStateReplyOptions` | Required `state` and `author` with optional `contents` and `rect` for `annotation.AddStateReply`. |
 | `AnnotationTextKey` | The annotation entries that count as carried text. |
 | `AuthoringFont` | A font for the text-authoring API: one of the 12 Latin Standard-14 faces (by name) or an embedded font handle from AddFont. |
 | `CaretAnnotation` | A /Caret annotation (PDF 32000-1 §12.5.6.11): a text-insertion mark, drawn as a wedge at the point where text should be added, optionally with a paragraph sign. |
@@ -4548,8 +4553,11 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.RemoveAnnotation(a)` | Remove an annotation from the page and detach its surviving replies |
 | `page.AddTextNote(opts)` | Add a `/Text` sticky-note annotation (icon/open/color/author) |
 | `annotation.AddReply(opts)` | Create a text reply on the annotation's page. Its rectangle defaults to the parent's rectangle or `[0, 0, 0, 0]` |
+| `annotation.AddStateReply(opts)` | Create a same-page state reply for an author. Call on the previous state reply to extend that author's history |
 | `annotation.InReplyTo` | Read or set a markup annotation's parent on the same page. Set `undefined` to clear both the parent and reply type |
 | `annotation.ReplyType` | Read or set the relationship. A linked annotation defaults to `'R'` when `/RT` is absent. `'Group'` requires a parent with no `/IRT` |
+| `textAnnotation.State` | Read or set a state record's value. Setting a value infers its model. Setting `undefined` restores the model's default |
+| `textAnnotation.StateModel` | Read or set a state record's model. Switching models clears an incompatible state. Setting `undefined` clears both entries |
 | `page.AddStamp(opts)` | Add a `/Stamp` annotation (standard name, custom text, or image) with a generated appearance |
 | `page.AddHighlight(opts)` | Add a `/Highlight` markup over `/QuadPoints` with a fill appearance (translucent by default; pass `opacity` to override) |
 | `page.AddUnderline(opts)` | Add an `/Underline` markup over `/QuadPoints` |
