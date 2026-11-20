@@ -3,7 +3,7 @@ import { encodePdfText, decodePdfText, formatPdfDate, parsePdfDate, readMetadata
 import { PdfDict, PdfObject, isString } from '../src/types.js';
 
 describe('pdf text codecs', () => {
-  it('round-trips ASCII as latin1 (no BOM)', () => {
+  it('round-trips printable ASCII without a BOM', () => {
     const bytes = encodePdfText('Hello');
     expect(Array.from(bytes)).toEqual([72, 101, 108, 108, 111]);
     expect(decodePdfText(bytes)).toBe('Hello');
@@ -16,8 +16,19 @@ describe('pdf text codecs', () => {
     expect(decodePdfText(bytes)).toBe('Café—Ω');
   });
 
-  it('decodes latin1 when no BOM present', () => {
-    expect(decodePdfText(new Uint8Array([0x41, 0x42]))).toBe('AB');
+  it('decodes PDFDocEncoding bytes when no BOM is present', () => {
+    // Fixed byte expectations from ISO 32000-1 Annex D.3.
+    expect(decodePdfText(new Uint8Array([0x41, 0x18, 0x80, 0x84, 0x93, 0xa0, 0xe9])))
+      .toBe('A˘•—ﬁ€é');
+  });
+
+  it('retains unassigned bytes and honors a UTF-16BE BOM', () => {
+    expect(decodePdfText(new Uint8Array([0x7f, 0x9f, 0xad]))).toBe('\u007f\u009f\u00ad');
+    expect(decodePdfText(new Uint8Array([0xfe, 0xff, 0x00, 0x84, 0x00, 0xa0]))).toBe('\u0084\u00a0');
+  });
+
+  it('writes a Unicode control as UTF-16BE when its byte would name a glyph', () => {
+    expect(encodePdfText('A\u0018')).toEqual(new Uint8Array([0xfe, 0xff, 0, 0x41, 0, 0x18]));
   });
 });
 

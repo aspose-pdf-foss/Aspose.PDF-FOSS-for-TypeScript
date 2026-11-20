@@ -87,6 +87,21 @@ describe('Document.Sign (invisible signing)', () => {
     expect(Number(acro.get('SigFlags'))).toBeGreaterThanOrEqual(1);
   });
 
+  it('writes a non-ASCII signature field name and reason as PDF text strings', async () => {
+    const doc = Document.Open(buildClassicPdf(1));
+    await doc.Sign(signerOf(buildSigner({ type: 'ec' })), { fieldName: 'Review—€', reason: '—€' });
+    const bytes = doc.Save();
+    const reopened = Document.Open(bytes);
+    const signature = reopened.Signatures[0];
+    expect(signature.name).toBe('Review—€');
+    const reason = signature.valueDict.get('Reason');
+    expect(isString(reason)).toBe(true);
+    if (isString(reason)) {
+      expect(reason.bytes).toEqual(new Uint8Array([0xfe, 0xff, 0x20, 0x14, 0x20, 0xac]));
+    }
+    expect(verifyFirstSignature(bytes).signatureValid).toBe(true);
+  });
+
   it('reports tampered content as an invalid digest', async () => {
     const doc = Document.Open(buildClassicPdf(1));
     doc.SetMetadata({ title: 'X' });

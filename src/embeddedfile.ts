@@ -3,7 +3,7 @@ import {
   PdfDict, PdfObject, PdfRef, PdfStream, name,
   isArray, isDict, isName, isRef, isString, isStream,
 } from './types.js';
-import { decodePdfText, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
 import { md5 } from './crypto.js';
 import { inflateStream } from './flate.js';
 import { collectNameTree, removeNameTreeEntry, upsertNameTreeEntry } from './nametree.js';
@@ -56,7 +56,7 @@ export function buildFilespec(
 
   const fs: PdfDict = new Map<string, PdfObject>();
   fs.set('Type', name('Filespec'));
-  fs.set('F', pdfStr(fileName));
+  fs.set('F', { kind: 'string', bytes: encodePdfByteString(fileName) });
   fs.set('UF', pdfStr(fileName));
   if (opts.description) fs.set('Desc', pdfStr(opts.description));
   fs.set('EF', new Map<string, PdfObject>([['F', efRef], ['UF', efRef]]));
@@ -68,7 +68,7 @@ export function filespecName(doc: Document, fs: PdfDict): string {
   const uf = fs.get('UF');
   if (isString(uf)) return decodePdfText(uf.bytes);
   const f = fs.get('F');
-  if (isString(f)) return decodePdfText(f.bytes);
+  if (isString(f)) return decodePdfByteString(f.bytes);
   return '';
 }
 
@@ -139,7 +139,7 @@ export class Attachment {
 
   private paramDate(key: string): Date | undefined {
     const v = this.params()?.get(key);
-    if (isString(v)) { const d = parsePdfDate(decodePdfText(v.bytes)); if (d instanceof Date) return d; }
+    if (isString(v)) { const d = parsePdfDate(decodePdfByteString(v.bytes)); if (d instanceof Date) return d; }
     return undefined;
   }
 

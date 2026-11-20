@@ -8,7 +8,7 @@
 // only one of its three branches.
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict, isString } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, encodePdfByteString } from './metadata.js';
 
 /** Look up `key` in a /Names name-tree node (honoring /Limits when present). */
 export function lookupNameTree(
@@ -25,7 +25,7 @@ export function lookupNameTree(
   if (isArray(names)) {
     for (let i = 0; i + 1 < names.length; i += 2) {
       const k = doc.resolve(names[i]);
-      if (isString(k) && decodePdfText(k.bytes) === key) return names[i + 1];
+      if (isString(k) && decodePdfByteString(k.bytes) === key) return names[i + 1];
     }
   }
   const kids = doc.resolve(n.get('Kids'));
@@ -35,7 +35,7 @@ export function lookupNameTree(
       if (!isDict(kd)) continue;
       const limits = doc.resolve(kd.get('Limits'));
       if (isArray(limits) && isString(limits[0]) && isString(limits[1])) {
-        const lo = decodePdfText(limits[0].bytes), hi = decodePdfText(limits[1].bytes);
+        const lo = decodePdfByteString(limits[0].bytes), hi = decodePdfByteString(limits[1].bytes);
         if (key < lo || key > hi) continue;
       }
       const found = lookupNameTree(doc, kd, key, depth + 1, seen);
@@ -59,7 +59,7 @@ export function collectNameTree(
   if (isArray(names))
     for (let i = 0; i + 1 < names.length; i += 2) {
       const k = doc.resolve(names[i]);
-      if (isString(k)) out.push([decodePdfText(k.bytes), names[i + 1]]);
+      if (isString(k)) out.push([decodePdfByteString(k.bytes), names[i + 1]]);
     }
   const kids = doc.resolve(n.get('Kids'));
   if (isArray(kids)) for (const kid of kids) collectNameTree(doc, kid, out, depth + 1, seen);
@@ -70,7 +70,7 @@ export function collectNameTree(
 export function flatNameNode(entries: Map<string, PdfObject>): PdfDict {
   const keys = [...entries.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const names: PdfObject[] = [];
-  for (const k of keys) names.push({ kind: 'string', bytes: encodePdfText(k) }, entries.get(k)!);
+  for (const k of keys) names.push({ kind: 'string', bytes: encodePdfByteString(k) }, entries.get(k)!);
   return new Map<string, PdfObject>([['Names', names]]);
 }
 

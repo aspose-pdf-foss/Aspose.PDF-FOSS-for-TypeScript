@@ -1,5 +1,4 @@
 import type { Document } from './document.js';
-import { pdfDocEncoding } from './encoding.js';
 import { decodePdfText, encodePdfText } from './metadata.js';
 import { isArray, isDict, isName, isString, name, type PdfDict, type PdfObject, type PdfString } from './types.js';
 
@@ -47,7 +46,7 @@ const FORMAT_TEXT = [
 const OPTIONAL_FORMATS = [['yAxis', 'Y'], ['angle', 'T'], ['slope', 'S']] as const;
 
 function pdfText(value: string): PdfString {
-  return { kind: 'string', bytes: encodePdfText(value, pdfDocEncoding) };
+  return { kind: 'string', bytes: encodePdfText(value) };
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -75,7 +74,7 @@ function readFormat(doc: Document, input: PdfObject): MeasureNumberFormat | unde
   const unit = doc.resolve(dict.get('U'));
   const conversionFactor = doc.resolve(dict.get('C'));
   if (!isString(unit) || !isFiniteNumber(conversionFactor)) return undefined;
-  const format: MeasureNumberFormat = { unit: decodePdfText(unit.bytes, pdfDocEncoding), conversionFactor };
+  const format: MeasureNumberFormat = { unit: decodePdfText(unit.bytes), conversionFactor };
 
   const fraction = doc.resolve(dict.get('F'));
   if (fraction !== null) {
@@ -96,7 +95,7 @@ function readFormat(doc: Document, input: PdfObject): MeasureNumberFormat | unde
     const value = doc.resolve(dict.get(key));
     if (value === null) continue;
     if (!isString(value)) return undefined;
-    format[field] = decodePdfText(value.bytes, pdfDocEncoding);
+    format[field] = decodePdfText(value.bytes);
   }
   const position = doc.resolve(dict.get('O'));
   if (position !== null) {
@@ -132,7 +131,7 @@ export function readRectilinearMeasure(doc: Document, input: PdfObject | undefin
   const area = readFormats(doc, doc.resolve(dict.get('A')));
   if (xAxis === undefined || distance === undefined || area === undefined) return undefined;
   const measure: RectilinearMeasure = {
-    scaleRatio: decodePdfText(ratio.bytes, pdfDocEncoding), xAxis, distance, area,
+    scaleRatio: decodePdfText(ratio.bytes), xAxis, distance, area,
   };
 
   for (const [field, key] of OPTIONAL_FORMATS) {

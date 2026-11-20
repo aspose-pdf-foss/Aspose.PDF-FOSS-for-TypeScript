@@ -21,6 +21,7 @@ import { parseRdfPacket } from './xmprdf.js';
 import { readPdfaIdentification } from './xmpid.js';
 import { extensionSchemaIssues, type PacketUnderTest } from './pdfaext.js';
 import { valueTypeIssues } from './pdfavaluetypes.js';
+import { decodePdfText } from './metadata.js';
 
 export type { PageScan } from './validatectx.js';
 export { memo, filterNames, allObjects, pageScans } from './validatectx.js';
@@ -991,7 +992,7 @@ const ocConfigRule: Rule = (ctx) => {
         message: 'Optional-content configuration has no /Name.' });
       continue;
     }
-    const key = new TextDecoder('latin1').decode(nm.bytes);
+    const key = decodePdfText(nm.bytes);
     if (seen.has(key)) {
       issues.push({ rule: 'OcConfig', severity: 'error', clause: 'ISO 19005-4 §6.10',
         message: `Optional-content configuration name '${key}' is not unique.` });

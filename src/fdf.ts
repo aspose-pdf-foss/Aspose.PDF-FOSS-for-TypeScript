@@ -3,7 +3,7 @@ import { ObjectParser } from './object-parser.js';
 import { PdfParseError, rethrowLimit } from './errors.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isRef, isString, name } from './types.js';
 import { enc, serializeObject, serializeValue } from './serialize.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import type { FormData, FormDataField, SkippedAnnot } from './formdata.js';
 import { readFdfAnnots, writeFdfAnnots } from './fdfannot.js';
 
@@ -39,7 +39,8 @@ export function writeFdf(data: FormData): Uint8Array {
 
   const fdf: PdfDict = new Map<string, PdfObject>();
   fdf.set('Fields', fields);
-  if (data.file !== undefined) fdf.set('F', str(data.file));
+  if (data.file !== undefined)
+    fdf.set('F', { kind: 'string', bytes: encodePdfByteString(data.file) });
   if (data.id !== undefined)
     fdf.set('ID', [hexString(data.id[0]), hexString(data.id[1])]);
 
@@ -81,14 +82,16 @@ const toHex = (b: Uint8Array): string =>
   Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
 /** Values as strings, whatever PDF type they arrived as. */
-function valueStrings(v: PdfObject, resolve: (o: PdfObject) => PdfObject): string[] {
-  if (isString(v)) return [decodePdfText(v.bytes)];
+function valueStrings(
+  v: PdfObject, resolve: (o: PdfObject) => PdfObject, decodeFieldText: typeof decodePdfText,
+): string[] {
+  if (isString(v)) return [decodeFieldText(v.bytes)];
   if (isName(v)) return [v.name];
   if (isArray(v)) {
     const out: string[] = [];
     for (const e of v) {
       const r = resolve(e);
-      if (isString(r)) out.push(decodePdfText(r.bytes));
+      if (isString(r)) out.push(decodeFieldText(r.bytes));
       else if (isName(r)) out.push(r.name);
     }
     return out;
@@ -102,19 +105,20 @@ function walkFields(
   node: PdfObject,
   path: string,
   resolve: (o: PdfObject) => PdfObject,
+  decodeFieldText: typeof decodePdfText,
   out: FormDataField[],
 ): void {
   const d = resolve(node);
   if (!isDict(d)) return;
   const t = resolve(d.get('T') ?? null);
-  const seg = isString(t) ? decodePdfText(t.bytes) : '';
+  const seg = isString(t) ? decodeFieldText(t.bytes) : '';
   const full = seg === '' ? path : path === '' ? seg : `${path}.${seg}`;
 
   if (d.has('V') || d.has('RV')) {
     const entry: FormDataField = {
       name: full,
       type: 'unknown',
-      values: valueStrings(resolve(d.get('V') ?? null), resolve),
+      values: valueStrings(resolve(d.get('V') ?? null), resolve, decodeFieldText),
     };
     const rv = resolve(d.get('RV') ?? null);
     if (isString(rv)) entry.richText = decodePdfText(rv.bytes);
@@ -122,7 +126,7 @@ function walkFields(
   }
 
   const kids = resolve(d.get('Kids') ?? null);
-  if (isArray(kids)) for (const k of kids) walkFields(k, full, resolve, out);
+  if (isArray(kids)) for (const k of kids) walkFields(k, full, resolve, decodeFieldText, out);
 }
 
 /** Parse an FDF file into the format-neutral model. Objects are scanned
@@ -155,7 +159,7 @@ export function readFdf(bytes: Uint8Array): FormData {
 
   const data: FormData = { fields: [] };
   const f = resolve(fdf.get('F') ?? null);
-  if (isString(f)) data.file = decodePdfText(f.bytes);
+  if (isString(f)) data.file = decodePdfByteString(f.bytes);
   const id = resolve(fdf.get('ID') ?? null);
   if (isArray(id) && id.length >= 2) {
     const a = resolve(id[0]);
@@ -163,7 +167,12 @@ export function readFdf(bytes: Uint8Array): FormData {
     if (isString(a) && isString(b)) data.id = [toHex(a.bytes), toHex(b.bytes)];
   }
   const fields = resolve(fdf.get('Fields') ?? null);
-  if (isArray(fields)) for (const e of fields) walkFields(e, '', resolve, data.fields);
+  // A declared alternate encoding applies to /T and /V, independently of
+  // annotation text strings. Preserve the fallback for encodings we don't read.
+  const encoding = resolve(fdf.get('Encoding') ?? null);
+  const decodeFieldText = isName(encoding) && encoding.name !== 'PDFDocEncoding'
+    ? decodePdfByteString : decodePdfText;
+  if (isArray(fields)) for (const e of fields) walkFields(e, '', resolve, decodeFieldText, data.fields);
 
   const annotSkips: SkippedAnnot[] = [];
   const annots = readFdfAnnots(resolve(fdf.get('Annots') ?? null), resolve, annotSkips);

@@ -1,6 +1,6 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isStream, isString, name } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import { encodeDest, parseDest, resolvePageDest, type OutlineView } from './outline.js';
 import { decodeStream } from './filters.js';
 import type { StructElement } from './struct.js';
@@ -119,7 +119,8 @@ export function encodeAction(doc: Document, a: PdfAction, structTarget?: StructE
     case 'uri': {
       if (typeof a.uri !== 'string' || a.uri.length === 0)
         throw new TypeError('action.uri must be a non-empty string');
-      return new Map<string, PdfObject>([['S', name('URI')], ['URI', pdfText(a.uri)]]);
+      const uri: PdfObject = { kind: 'string', bytes: encodePdfByteString(a.uri) };
+      return new Map<string, PdfObject>([['S', name('URI')], ['URI', uri]]);
     }
     case 'submit': {
       if (typeof a.url !== 'string' || a.url.length === 0)
@@ -135,7 +136,8 @@ export function encodeAction(doc: Document, a: PdfAction, structTarget?: StructE
         default: throw new TypeError("action.format must be 'fdf', 'html', 'xfdf' or 'pdf'");
       }
       // A URL needs the /FS /URL file-specification form, not a bare string.
-      const fs: PdfDict = new Map<string, PdfObject>([['FS', name('URL')], ['F', pdfText(a.url)]]);
+      const url: PdfObject = { kind: 'string', bytes: encodePdfByteString(a.url) };
+      const fs: PdfDict = new Map<string, PdfObject>([['FS', name('URL')], ['F', url]]);
       const d: PdfDict = new Map<string, PdfObject>([['S', name('SubmitForm')], ['F', fs]]);
       if (names) d.set('Fields', names);
       if (flags !== 0) d.set('Flags', flags);
@@ -172,10 +174,10 @@ function strings(doc: Document, o: PdfObject | undefined): string[] | undefined 
  *  some producers write. */
 function urlOf(doc: Document, o: PdfObject | undefined): string | undefined {
   const f = doc.resolve(o);
-  if (isString(f)) return decodePdfText(f.bytes);
+  if (isString(f)) return decodePdfByteString(f.bytes);
   if (isDict(f)) {
     const inner = doc.resolve((f as PdfDict).get('F'));
-    if (isString(inner)) return decodePdfText(inner.bytes);
+    if (isString(inner)) return decodePdfByteString(inner.bytes);
   }
   return undefined;
 }
@@ -211,7 +213,7 @@ function parseActionDict(
   switch (s.name) {
     case 'URI': {
       const u = doc.resolve((a as PdfDict).get('URI'));
-      return isString(u) ? { type: 'uri', uri: decodePdfText(u.bytes) } : undefined;
+      return isString(u) ? { type: 'uri', uri: decodePdfByteString(u.bytes) } : undefined;
     }
     case 'GoTo': {
       // Resolved here, unlike an outline or link read: the modelled GoTo action

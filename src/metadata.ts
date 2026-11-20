@@ -1,8 +1,8 @@
 import { PdfDict, PdfObject, isString } from './types.js';
 import { pdfDateToIso, isoToPdfDate } from './pdfdate.js';
+import { pdfDocEncoding } from './encoding.js';
 
-/** Decode UTF-16BE when a FE FF BOM is present, or use the supplied byte encoding. */
-export function decodePdfText(bytes: Uint8Array, singleByteEncoding?: readonly (string | undefined)[]): string {
+function decodePdfString(bytes: Uint8Array, singleByteEncoding?: readonly (string | undefined)[]): string {
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     let s = '';
     for (let i = 2; i + 1 < bytes.length; i += 2) s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
@@ -13,8 +13,21 @@ export function decodePdfText(bytes: Uint8Array, singleByteEncoding?: readonly (
   return s;
 }
 
-/** Use ASCII bytes when they match the requested encoding, or UTF-16BE with a BOM. */
-export function encodePdfText(s: string, singleByteEncoding?: readonly (string | undefined)[]): Uint8Array {
+/** Decode a PDF text string (ISO 32000-1 §7.9.2.2). Retain unassigned bytes
+ *  verbatim so a malformed single-byte string still has a readable value. */
+export function decodePdfText(bytes: Uint8Array): string {
+  return decodePdfString(bytes, pdfDocEncoding);
+}
+
+/** Read a byte-oriented field exposed as a string, such as a name-tree key
+ *  or URI. Keep the earlier one-to-one byte mapping and accept its UTF-16BE
+ *  form for compatibility with files already written by the library.
+ *  Truly binary fields continue to use the original byte array. */
+export function decodePdfByteString(bytes: Uint8Array): string {
+  return decodePdfString(bytes);
+}
+
+function encodePdfString(s: string, singleByteEncoding?: readonly (string | undefined)[]): Uint8Array {
   let ascii = true;
   for (let i = 0; i < s.length; i++) {
     const code = s.charCodeAt(i);
@@ -36,6 +49,16 @@ export function encodePdfText(s: string, singleByteEncoding?: readonly (string |
     out[2 + i * 2 + 1] = c & 0xff;
   }
   return out;
+}
+
+/** Use PDFDocEncoding-compatible ASCII bytes or write UTF-16BE with a BOM. */
+export function encodePdfText(s: string): Uint8Array {
+  return encodePdfString(s, pdfDocEncoding);
+}
+
+/** Preserve the existing ASCII and UTF-16BE forms for byte-oriented fields. */
+export function encodePdfByteString(s: string): Uint8Array {
+  return encodePdfString(s);
 }
 
 /** Format a Date as a PDF date string in UTC, e.g. D:20240603123045+00'00'. */
@@ -108,12 +131,13 @@ export function readMetadata(
   for (const [key, raw] of info) {
     const val = resolve(raw);
     if (!isString(val)) continue; // metadata values are text strings; ignore anything else
-    const text = decodePdfText(val.bytes);
     const field = fieldByKey.get(key);
     if (field) {
-      (meta as unknown as Record<string, unknown>)[field] = DATE_FIELDS.has(field) ? parsePdfDate(text) : text;
+      (meta as unknown as Record<string, unknown>)[field] = DATE_FIELDS.has(field)
+        ? parsePdfDate(decodePdfByteString(val.bytes))
+        : decodePdfText(val.bytes);
     } else {
-      meta.custom[key] = text;
+      meta.custom[key] = decodePdfText(val.bytes);
     }
   }
   return meta;
@@ -134,8 +158,10 @@ export function applyUpdate(info: PdfDict, update: MetadataUpdate): void {
     const v = (update as unknown as Record<string, string | Date | null | undefined>)[field];
     if (v === undefined) continue;
     if (v === null) { info.delete(key); continue; }
-    const text = DATE_FIELDS.has(field) ? pdfDateText(v as Date | string) : String(v);
-    info.set(key, { kind: 'string', bytes: encodePdfText(text) });
+    const bytes = DATE_FIELDS.has(field)
+      ? encodePdfByteString(pdfDateText(v as Date | string))
+      : encodePdfText(String(v));
+    info.set(key, { kind: 'string', bytes });
   }
   if (update.custom) {
     for (const [k, v] of Object.entries(update.custom)) {

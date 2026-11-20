@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import {
   PdfDict, PdfObject, PdfRef, isArray, isDict, isName, isRef, isString, name, ref,
 } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import { collectNameTree, lookupNameTree } from './nametree.js';
 
 /** A node in the document outline (bookmark) tree. */
@@ -124,7 +124,7 @@ export function parseDest(doc: Document, item: PdfDict, pageOf: PageOf): Outline
       if (isName(s) && s.name === 'GoTo') dest = doc.resolve(a.get('D'));
     }
   }
-  if (isString(dest)) return { name: decodePdfText(dest.bytes) };
+  if (isString(dest)) return { name: decodePdfByteString(dest.bytes) };
   if (isName(dest)) return { name: dest.name };
   return decodeDest(doc, dest, pageOf);
 }
@@ -298,7 +298,7 @@ export function buildOutlineObjects(items: OutlineItem[], ctx: OutlineBuildCtx):
         // A string, not a name object: that is what the /Names /Dests tree keys
         // on, so a bookmark and Document.SetNamedDestination agree.
         d.set('Dest', isNamedDest(item.Dest)
-          ? { kind: 'string', bytes: encodePdfText(item.Dest.name) }
+          ? { kind: 'string', bytes: encodePdfByteString(item.Dest.name) }
           : encodeDest(ctx.pageRef(item.Dest.page), item.Dest.view));
       }
       if (item.Color) d.set('C', [...item.Color]);

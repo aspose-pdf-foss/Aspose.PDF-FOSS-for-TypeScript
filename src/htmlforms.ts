@@ -7,7 +7,7 @@ import { resolveDA } from './da.js';
 import { parseOptions, displayOf } from './choiceopt.js';
 import { escapeHtml } from './html.js';
 import { parseAction } from './actions.js';
-import { decodePdfText, parsePdfDate } from './metadata.js';
+import { decodePdfByteString, decodePdfText, parsePdfDate } from './metadata.js';
 import { rethrowLimit } from './errors.js';
 import { readPmd } from './pmd.js';
 
@@ -220,7 +220,7 @@ function controlFor(
       if (isString(when)) {
         // parsePdfDate returns the raw string when it cannot parse, so a
         // malformed date degrades to showing itself rather than throwing.
-        const d = parsePdfDate(decodePdfText(when.bytes));
+        const d = parsePdfDate(decodePdfByteString(when.bytes));
         parts.push(d instanceof Date ? d.toISOString().slice(0, 10) : d);
       }
       if (parts.length) value = parts.join(', ');

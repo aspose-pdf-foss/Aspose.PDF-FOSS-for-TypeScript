@@ -22,6 +22,7 @@ import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
 import { describeXmpPackets, repairXmpValueTypes } from './pdfaextfix.js';
 import { embedStandard14 } from './pdfastd14.js';
+import { decodePdfByteString, decodePdfText, encodePdfText } from './metadata.js';
 
 export type ConvertCategory =
   | 'javascript' | 'multimedia' | 'embeddedFiles' | 'xfa' | 'optionalContent'
@@ -655,8 +656,8 @@ const embeddedFilesPass: Pass = (ctx) => {
       }
       const f = ctx.R(obj.get('F'));
       if (obj.get('UF') === undefined && isString(f)) {
-        obj.set('UF', { kind: 'string' as const, bytes: f.bytes });
-        actions.push({ rule: 'EmbeddedFileSpec', action: 'Copied /F to /UF on a file spec.', object });
+        obj.set('UF', { kind: 'string', bytes: encodePdfText(decodePdfByteString(f.bytes)) });
+        actions.push({ rule: 'EmbeddedFileSpec', action: 'Set Unicode /UF from /F on a file spec.', object });
       }
       const ef = ctx.R(obj.get('EF'));
       if (!isDict(ef)) continue;
@@ -973,7 +974,7 @@ const ocConfigPass: Pass = (ctx) => {
   const used = new Set<string>();
   for (const cfg of configs) {
     const nm = ctx.R(cfg.get('Name'));
-    if (isString(nm)) used.add(new TextDecoder('latin1').decode(nm.bytes));
+    if (isString(nm)) used.add(decodePdfText(nm.bytes));
   }
 
   const actions: ConvertAction[] = [];
@@ -982,7 +983,7 @@ const ocConfigPass: Pass = (ctx) => {
     let label = 'Default';
     for (let i = 2; used.has(label); i++) label = `Default ${i}`;
     used.add(label);
-    cfg.set('Name', { kind: 'string' as const, bytes: new TextEncoder().encode(label) });
+    cfg.set('Name', { kind: 'string', bytes: encodePdfText(label) });
     actions.push({ rule: 'OcConfig', action: `Named an optional-content configuration '${label}'.` });
   }
   return actions;

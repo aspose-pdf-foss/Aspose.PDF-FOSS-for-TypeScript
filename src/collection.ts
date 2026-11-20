@@ -1,5 +1,5 @@
 import { PdfDict, PdfObject, name, isArray, isDict, isName, isString } from './types.js';
-import { encodePdfText, decodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import type { Document } from './document.js';
 
 /** How a viewer presents the portfolio. */
@@ -88,7 +88,8 @@ export function buildCollection(settings: CollectionSettings): PdfDict {
     sort.set('A', settings.sortAscending ?? true);
     col.set('Sort', sort);
   }
-  if (settings.initialFile !== undefined) col.set('D', pdfStr(settings.initialFile));
+  if (settings.initialFile !== undefined)
+    col.set('D', { kind: 'string', bytes: encodePdfByteString(settings.initialFile) });
   return col;
 }
 
@@ -130,6 +131,6 @@ export function readCollection(doc: Document): CollectionSettings | undefined {
     settings.sortAscending = typeof a === 'boolean' ? a : (isArray(a) && typeof a[0] === 'boolean' ? a[0] : true);
   }
   const d = col.get('D');
-  if (isString(d)) settings.initialFile = decodePdfText(d.bytes);
+  if (isString(d)) settings.initialFile = decodePdfByteString(d.bytes);
   return settings;
 }

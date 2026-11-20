@@ -3,7 +3,7 @@ import { PdfDict, PdfObject, isArray, isDict, isName, isString, name } from './t
 import { PAD, buildAppearanceXObject, installAP, widgetGeom, wrapTextBody, type WidgetGeom } from './appearance.js';
 import { num } from './pagecontent.js';
 import { cloudPath, type CloudPath } from './cloudborder.js';
-import { decodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText } from './metadata.js';
 import { parseDA } from './da.js';
 import { measure, normalizeFont, type StdFont } from './metrics.js';
 import { parseRichText, richTextBody, styleFromFace, type RichAlign, type RichParagraph } from './richlayout.js';
@@ -555,7 +555,7 @@ function freeTextBody(
   color: RGB, fill: RGB | undefined, width: number,
 ): { body: string; faces: Map<string, StdFont> } | undefined {
   const daRaw = doc.resolve(dict.get('DA'));
-  const da = isString(daRaw) ? parseDA(decodePdfText(daRaw.bytes)) : undefined;
+  const da = isString(daRaw) ? parseDA(decodePdfByteString(daRaw.bytes)) : undefined;
   const fontSize = da !== undefined && da.size > 0 ? da.size : 12;
   const textColor: RGB = da !== undefined ? da.color : [0, 0, 0];
 

@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import type { StructElement } from './struct.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfObject, PdfRef, PdfStream, isArray, isDict, isName, isRef, isStream, isString, name } from './types.js';
-import { decodePdfText, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
 import { widgetGeom, buildAppearanceXObject, installAP, type WidgetGeom } from './appearance.js';
 import {
   quadsBBox, offsetQuads, installShapeAP, drawRect, drawEllipse, drawHighlight,
@@ -325,14 +325,14 @@ export class Annotation {
   /** /M modification date (parsed Date, or raw string when unparseable). */
   get ModDate(): Date | string | undefined {
     const s = this.doc.resolve(this.Dict.get('M'));
-    return isString(s) ? parsePdfDate(decodePdfText(s.bytes)) : undefined;
+    return isString(s) ? parsePdfDate(decodePdfByteString(s.bytes)) : undefined;
   }
 
   set ModDate(v: Date | string | undefined) {
     this.touch();
     if (v === undefined) { this.Dict.delete('M'); return; }
     const text = v instanceof Date ? formatPdfDate(v) : String(v);
-    this.Dict.set('M', pdfText(text));
+    this.Dict.set('M', { kind: 'string', bytes: encodePdfByteString(text) });
   }
 
   /** /F flag bitfield; 0 when absent. */

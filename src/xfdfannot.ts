@@ -1,6 +1,6 @@
 import { XmlNode } from './xml.js';
 import { PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isStream, isString, name as pdfName } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import { Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
 import { serializeObject } from './serialize.js';
@@ -90,8 +90,10 @@ function nums(o: PdfObject | undefined): number[] | undefined {
 function format(kind: AttrKind, v: PdfObject | undefined): string | undefined {
   if (v === undefined || v === null) return undefined;
   switch (kind) {
-    case 'text': case 'date':
+    case 'text':
       return isString(v) ? decodePdfText(v.bytes) : undefined;
+    case 'date':
+      return isString(v) ? decodePdfByteString(v.bytes) : undefined;
     case 'name':
       return isName(v) ? v.name : undefined;
     case 'num':
@@ -172,7 +174,7 @@ function writeOne(a: AnnotData): XmlNode | undefined {
     const v = a.dict.get(key);
     if (!isString(v)) continue;
     const child = el(childName);
-    child.text = decodePdfText(v.bytes);
+    child.text = key === 'DA' ? decodePdfByteString(v.bytes) : decodePdfText(v.bytes);
     node.children.push(child);
   }
   // /RC is markup: emitted verbatim rather than escaped.
@@ -311,8 +313,10 @@ function parseFlags(text: string): number {
 /** Turn one attribute into its dict value. */
 function parseAttr(spec: AttrSpec, text: string): PdfObject {
   switch (spec.kind) {
-    case 'text': case 'date':
+    case 'text':
       return { kind: 'string', bytes: encodePdfText(text) };
+    case 'date':
+      return { kind: 'string', bytes: encodePdfByteString(text) };
     case 'name':
       return pdfName(text);
     case 'num': {
@@ -365,8 +369,11 @@ function readOne(node: XmlNode, subtype: string): AnnotData {
   }
 
   for (const child of node.children) {
-    for (const { el: elName, key } of TEXT_CHILDREN)
-      if (child.name === elName) dict.set(key, { kind: 'string', bytes: encodePdfText(child.text) });
+    for (const { el: elName, key } of TEXT_CHILDREN) {
+      if (child.name !== elName) continue;
+      const bytes = key === 'DA' ? encodePdfByteString(child.text) : encodePdfText(child.text);
+      dict.set(key, { kind: 'string', bytes });
+    }
     if (child.name === 'contents-richtext')
       dict.set('RC', { kind: 'string', bytes: encodePdfText(child.raw ?? child.text) });
     if (child.name === 'appearance') {

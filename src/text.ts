@@ -14,8 +14,7 @@ import {
 // textrank.ts imports this module type-only, so this value edge closes no cycle.
 import { dominantFragmentSize, roundSize } from './textrank.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
-// The one owner of the PDFDocEncoding/UTF-16 rule; `metadata.ts` imports only
-// `types.js`, so this closes no cycle.
+// metadata.ts owns PDF text-string decoding and depends on the encoding table.
 import { decodePdfText } from './metadata.js';
 import { rethrowLimit } from './errors.js';
 

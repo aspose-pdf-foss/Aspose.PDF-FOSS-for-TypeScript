@@ -3,7 +3,7 @@ import type { Page } from './page.js';
 import {
   PdfObject, PdfDict, PdfRef, isDict, isRef, isName, isArray, isString, name,
 } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import { visitContent, assembleLines, runFromGlyph, scriptByGlyph, type GlyphEvent, type Run, type Rect } from './text.js';
 import type { Annotation } from './annotation.js';
 import {
@@ -191,7 +191,10 @@ export class StructElement {
   /** Abbreviation expansion (/E). */
   get Expansion(): string | undefined { return textValue(this.doc, this.Dict.get('E')); }
   /** Element identifier (/ID). */
-  get ID(): string | undefined { return textValue(this.doc, this.Dict.get('ID')); }
+  get ID(): string | undefined {
+    const id = this.doc.resolve(this.Dict.get('ID'));
+    return isString(id) ? decodePdfByteString(id.bytes) : undefined;
+  }
 
   /** The structure elements this one REFERENCES — the `/Ref` key
    *  (ISO 32000-2 14.7.5.4), an array of references to other structure
@@ -448,7 +451,7 @@ export class StructElement {
 
   private setText(key: string, v: string | undefined): void {
     if (v === undefined) this.Dict.delete(key);
-    else this.Dict.set(key, { kind: 'string', bytes: encodePdfText(v) });
+    else this.Dict.set(key, { kind: 'string', bytes: key === 'ID' ? encodePdfByteString(v) : encodePdfText(v) });
     this.doc.markModified();
   }
 

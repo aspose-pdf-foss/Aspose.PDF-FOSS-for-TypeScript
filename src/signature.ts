@@ -7,6 +7,7 @@ import type { DigestAlgorithm } from './sigalg.js';
 import type { TimestampProvider } from './rfc3161.js';
 import type { SeedValue } from './sigseed.js';
 import type { FieldLock } from './siglock.js';
+import { encodePdfText } from './metadata.js';
 
 /** Digital-signature field/value-dict model and signing orchestration helpers
  *  shared by {@link Document.Sign}. The byte-level placeholder mechanics live in
@@ -165,9 +166,9 @@ export function buildSigValueDict(opts: SignOptions, signingTime: Date): PdfDict
   return d;
 }
 
-/** A literal PDF string from a JS string (UTF-8 bytes; serializer escapes them). */
+/** A PDF text string for signature metadata or a field name. */
 export function pdfString(s: string): PdfString {
-  return { kind: 'string', bytes: new TextEncoder().encode(s) };
+  return { kind: 'string', bytes: encodePdfText(s) };
 }
 
 /** Format a `Date` as a PDF date string `D:YYYYMMDDHHmmSSZ` (UTC). */

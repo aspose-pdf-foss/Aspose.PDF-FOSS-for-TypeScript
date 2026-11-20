@@ -584,6 +584,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PDFDocEncoding for PDF text strings.** Metadata, annotation text, labels,
+  bookmarks, and form values now decode characters such as em dashes and
+  euro symbols in existing single-byte strings. Named destination keys and
+  structure identifiers retain their byte interpretation. New signatures
+  write non-ASCII names and reasons as UTF-16BE PDF text. (hcb2)
+
 - **PDF/X printer-mark validation uses the finished-page boundary.** A
   `/PrinterMark` may overlap the bleed margin when its rectangle stays outside
   the `TrimBox` or `ArtBox`. (k4h1.4)

@@ -1,5 +1,5 @@
 import { isString, type PdfDict, type PdfObject } from './types.js';
-import { decodePdfText, type MetadataUpdate } from './metadata.js';
+import { decodePdfByteString, decodePdfText, type MetadataUpdate } from './metadata.js';
 import { NS, readXmp, splitAuthors, xmpScalar, type XmpUpdate } from './xmp.js';
 import { parseRdfPacket, type RdfValue } from './xmprdf.js';
 import { pdfDateToIso, isoToPdfDate, sameInstant } from './pdfdate.js';
@@ -52,9 +52,9 @@ export function mirroredField(ns: string, name: string): MetadataField | undefin
 export function infoSide(info: PdfDict | undefined, resolve: (o: PdfObject | undefined) => PdfObject): SideText {
   const out: SideText = {};
   if (!info) return out;
-  for (const [field, key] of MAP) {
+  for (const [field, key, , , , kind] of MAP) {
     const v = resolve(info.get(key));
-    if (isString(v)) out[field] = decodePdfText(v.bytes);
+    if (isString(v)) out[field] = kind === 'date' ? decodePdfByteString(v.bytes) : decodePdfText(v.bytes);
     else if (v !== null) out[field] = null;
   }
   return out;

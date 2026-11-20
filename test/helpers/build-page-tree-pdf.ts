@@ -3,8 +3,8 @@
  *  shared kid exactly as a damaged file would carry it — which no Document
  *  API will produce. */
 
-/** Object i (0-based) is written as `i+1 0 obj`; the trailer's /Root is 1. */
-export function buildRawPdf(objects: string[]): Uint8Array {
+/** Object i (0-based) is written as `i+1 0 obj`. Trailer object numbers are one-based. */
+export function buildRawPdf(objects: string[], opts: { info?: number } = {}): Uint8Array {
   let s = '%PDF-1.7\n';
   const offsets: number[] = [];
   objects.forEach((body, i) => {
@@ -14,7 +14,8 @@ export function buildRawPdf(objects: string[]): Uint8Array {
   const xref = s.length;
   s += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
   for (const o of offsets) s += `${String(o).padStart(10, '0')} 00000 n \n`;
-  s += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  const info = opts.info === undefined ? '' : ` /Info ${opts.info} 0 R`;
+  s += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R${info} >>\nstartxref\n${xref}\n%%EOF\n`;
   return new TextEncoder().encode(s);
 }
 

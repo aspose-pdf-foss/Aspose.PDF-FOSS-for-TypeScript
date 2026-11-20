@@ -23,7 +23,7 @@
 import { isArray, isName, isStream, isString, type PdfDict, type PdfObject } from './types.js';
 import { parseXml, type XmlNode } from './xml.js';
 import type { Inflate, Resolve } from './colorimage.js';
-import { decodePdfText } from './metadata.js';
+import { decodePdfByteString } from './metadata.js';
 import { rethrowLimit } from './errors.js';
 
 export interface XfaPacketSet {
@@ -38,7 +38,7 @@ export interface XfaPacketSet {
 /** A packet name from a /XFA array entry: a name object or a string. */
 function entryName(o: PdfObject): string | undefined {
   if (isName(o)) return o.name;
-  if (isString(o)) return decodePdfText(o.bytes);
+  if (isString(o)) return decodePdfByteString(o.bytes);
   return undefined;
 }
 

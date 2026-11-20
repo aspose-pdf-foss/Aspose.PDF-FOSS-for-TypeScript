@@ -4,7 +4,7 @@ import type { StructElement } from './struct.js';
 import type { Annotation } from './annotation.js';
 import { PdfObject, PdfDict, PdfRef, isDict, isArray, isName, isRef, name } from './types.js';
 import { UnsupportedFeatureError } from './errors.js';
-import { encodePdfText } from './metadata.js';
+import { encodePdfByteString, encodePdfText } from './metadata.js';
 import { EditableContent } from './editcontent.js';
 import { visitContent, type Rect } from './text.js';
 import type { ContentAddr } from './editcontent.js';
@@ -81,12 +81,12 @@ const OPT_KEYS: ReadonlyArray<[keyof ElemOpts, string]> = [
   ['title', 'T'], ['expansion', 'E'], ['id', 'ID'],
 ];
 
-/** Write the given ElemOpts onto a struct-element dict as PDF text strings. */
+/** Write the given ElemOpts onto a struct-element dict. */
 export function applyElemOpts(dict: PdfDict, opts?: ElemOpts): void {
   if (!opts) return;
   for (const [field, key] of OPT_KEYS) {
     const v = opts[field];
-    if (v !== undefined) dict.set(key, { kind: 'string', bytes: encodePdfText(v) });
+    if (v !== undefined) dict.set(key, { kind: 'string', bytes: key === 'ID' ? encodePdfByteString(v) : encodePdfText(v) });
   }
 }
 

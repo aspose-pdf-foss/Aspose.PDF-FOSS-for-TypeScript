@@ -3,6 +3,7 @@ import { runOperation, runOperationAsync, type OperationContext, type OperationS
 import type { Document } from './document.js';
 import { PdfObject, PdfDict, isDict, isName, isArray, isStream, isString } from './types.js';
 import { ValidationReport, type ValidationIssue } from './validation.js';
+import { decodePdfText } from './metadata.js';
 import {
   type Ctx, memo, nameOf, xmpText, allObjects, filterNames, pageScans,
   enumerateFonts, descendantFont, hasFontProgram, extGStates, blendModeName, eachAnnotation,
@@ -189,7 +190,7 @@ const outputIntentRule: Rule = (ctx) => {
   const profile = ctx.R(oi.get('DestOutputProfile'));
   const external = ctx.R(oi.get('DestOutputProfileRef'));
   const idValue = ctx.R(oi.get('OutputConditionIdentifier'));
-  const id = isString(idValue) ? new TextDecoder('latin1').decode(idValue.bytes).trim() : undefined;
+  const id = isString(idValue) ? decodePdfText(idValue.bytes).trim() : undefined;
 
   if (isStream(profile)) return [];
   if (ctx.level === '4p') {

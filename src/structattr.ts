@@ -3,7 +3,7 @@ import type { StructTreeRoot } from './struct.js';
 import {
   PdfObject, PdfDict, isDict, isArray, isName, isString, name,
 } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 
 export type RGB = [number, number, number];
 /** A single value, or one-per-edge [top, right, bottom, left]. */
@@ -22,11 +22,11 @@ function decStr(doc: Document, o: PdfObject): string | undefined {
   const v = doc.resolve(o);
   return isString(v) ? decodePdfText(v.bytes) : undefined;
 }
-function decStrList(doc: Document, o: PdfObject): string[] | undefined {
+function decByteStringList(doc: Document, o: PdfObject): string[] | undefined {
   const v = doc.resolve(o);
   if (!isArray(v)) return undefined;
   const out: string[] = [];
-  for (const e of v) { const s = doc.resolve(e); if (isString(s)) out.push(decodePdfText(s.bytes)); }
+  for (const e of v) { const s = doc.resolve(e); if (isString(s)) out.push(decodePdfByteString(s.bytes)); }
   return out;
 }
 function decEnum(values: readonly string[]) {
@@ -40,7 +40,9 @@ function decEnum(values: readonly string[]) {
 function encNum(v: number): PdfObject { return v; }
 function encName(v: string): PdfObject { return name(v); }
 function encStr(v: string): PdfObject { return { kind: 'string', bytes: encodePdfText(v) }; }
-function encStrList(v: string[]): PdfObject { return v.map((s) => ({ kind: 'string', bytes: encodePdfText(s) })); }
+function encByteStringList(v: string[]): PdfObject {
+  return v.map((s) => ({ kind: 'string', bytes: encodePdfByteString(s) }));
+}
 
 // ---- Layout codecs ----
 function decRgb(doc: Document, o: PdfObject): RGB | undefined {
@@ -135,7 +137,7 @@ export interface TableAttributes {
 const TABLE_FIELDS: Record<string, Field> = {
   rowSpan: { key: 'RowSpan', dec: decNum, enc: encNum },
   colSpan: { key: 'ColSpan', dec: decNum, enc: encNum },
-  headers: { key: 'Headers', dec: decStrList, enc: encStrList },
+  headers: { key: 'Headers', dec: decByteStringList, enc: encByteStringList },
   scope: { key: 'Scope', dec: decEnum(SCOPES), enc: encName },
   summary: { key: 'Summary', dec: decStr, enc: encStr },
 };

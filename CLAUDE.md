@@ -4767,8 +4767,17 @@ Source (`src/`):
   format array. Builders validate the entire dictionary before attaching an
   annotation. Writing annotation `/Measure` raises an older effective version
   to 1.7 through the catalog, so incremental saves can keep the original header.
-  Measurement text uses the PDFDocEncoding table for single-byte strings and
-  the shared UTF-16BE codec for Unicode strings.
+  Measurement labels use the same codec as other PDF text strings.
+  **Invariant (`hcb2`):** `metadata.ts` reads UTF-16BE with its BOM, then
+  uses `encoding.ts`'s PDFDocEncoding table for unmarked text strings.
+  The write path uses ASCII only where its bytes agree with that table.
+  Name-tree keys and destination references share the same one-to-one byte
+  decoder, with UTF-16BE support for keys already written by the library.
+  URI, dates, appearance operators, structure IDs and table header references
+  also keep their byte interpretation. PDF/A conversion transcodes a legacy
+  attachment name when it supplies the Unicode filespec entry.
+  FDF's default applies to field names and values. A different declared FDF
+  encoding keeps the prior byte fallback. Binary payloads stay byte arrays.
   **printermarks.ts** lays out prepress marks and builds their normal
   appearance forms. Both annotation and content output use the same form.
   Registration strokes use `/Separation /All` so they reach spot plates as

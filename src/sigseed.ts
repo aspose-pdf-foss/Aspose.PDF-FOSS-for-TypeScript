@@ -17,7 +17,7 @@
  *  two that agree, and the public type spells the answer as a word
  *  (`'approval'`) so no caller has to know which reading 0 carries. */
 import { PdfDict, PdfObject, isArray, isDict, isName, isString, name } from './types.js';
-import { decodePdfText, encodePdfText } from './metadata.js';
+import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
 import type { DocMdpPermission } from './signature.js';
 import type { DigestAlgorithm } from './sigalg.js';
 import { SeedValueError } from './errors.js';
@@ -210,7 +210,7 @@ export function encodeSeedValue(sv: SeedValue): PdfDict {
     const url = checkName('timestamp.url', ts.url);
     if (ts.required !== undefined && typeof ts.required !== 'boolean')
       throw new TypeError('seedValue.timestamp.required must be a boolean');
-    const t: PdfDict = new Map<string, PdfObject>([['URL', text(url)]]);
+    const t: PdfDict = new Map<string, PdfObject>([['URL', { kind: 'string', bytes: encodePdfByteString(url) }]]);
     if (ts.required) t.set('Ff', 1);
     d.set('TimeStamp', t);
   }
@@ -270,7 +270,8 @@ function encodeSeedCert(cert: SeedCertValue): PdfDict {
       throw new RangeError('seedValue.cert.keyUsage must be a non-empty array');
     d.set('KeyUsage', cert.keyUsage.map((ku) => text(keyUsageString(ku))));
   }
-  if (cert.url !== undefined) d.set('URL', text(checkName('cert.url', cert.url)));
+  if (cert.url !== undefined)
+    d.set('URL', { kind: 'string', bytes: encodePdfByteString(checkName('cert.url', cert.url)) });
   if (cert.urlType !== undefined) {
     if (cert.url === undefined) throw new RangeError('seedValue.cert.urlType needs a url');
     d.set('URLType', name(checkName('cert.urlType', cert.urlType)));
@@ -350,14 +351,14 @@ function readSeedCert(resolve: (o: PdfObject) => PdfObject, raw: PdfObject): See
   const ku = get('KeyUsage');
   if (isArray(ku)) {
     const good = ku.map(resolve).flatMap((s) => {
-      const r = isString(s) ? readKeyUsage(decodePdfText(s.bytes)) : undefined;
+      const r = isString(s) ? readKeyUsage(decodePdfByteString(s.bytes)) : undefined;
       return r === undefined ? [] : [r];
     });
     if (good.length > 0) out.keyUsage = good;
   }
   const url = get('URL');
   if (isString(url)) {
-    out.url = decodePdfText(url.bytes);
+    out.url = decodePdfByteString(url.bytes);
     const ut = get('URLType');
     if (isName(ut)) out.urlType = ut.name;
   }
@@ -403,7 +404,7 @@ export function readSeedValue(
   const dm = get('DigestMethod');
   if (isArray(dm)) {
     const list = dm.map(resolve).flatMap((o): SeedDigestMethod[] => {
-      const s = isName(o) ? o.name : isString(o) ? decodePdfText(o.bytes) : undefined;
+      const s = isName(o) ? o.name : isString(o) ? decodePdfByteString(o.bytes) : undefined;
       const up = s?.toUpperCase();
       return up !== undefined && DIGESTS.includes(up as SeedDigestMethod) ? [up as SeedDigestMethod] : [];
     });
@@ -432,7 +433,7 @@ export function readSeedValue(
     const url = resolve(ts.get('URL') ?? null);
     const ff = resolve(ts.get('Ff') ?? null);
     if (isString(url))
-      out.timestamp = { url: decodePdfText(url.bytes), required: typeof ff === 'number' && (ff & 1) === 1 };
+      out.timestamp = { url: decodePdfByteString(url.bytes), required: typeof ff === 'number' && (ff & 1) === 1 };
   }
   if (d.has('Cert')) {
     const cert = readSeedCert(resolve, d.get('Cert') ?? null);
