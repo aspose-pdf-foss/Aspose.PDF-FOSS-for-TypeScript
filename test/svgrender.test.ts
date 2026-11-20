@@ -45,6 +45,14 @@ describe('Page.ToSvg — paths', () => {
     // the fill path must not also carry a stroke
     expect(svg).toMatch(/<path[^>]*fill="#ff0000"[^>]*stroke="none"/);
   });
+
+  it('starts a shorthand curve at the closing point of the latest subpath', () => {
+    const page = Document.Open(buildSvgPdf({
+      mediaBox: [0, 0, 100, 100],
+      content: '5 5 m 8 5 l 10 10 m 90 10 l 90 50 l h h 20 65 30 70 v S',
+    })).Pages[0];
+    expect(page.ToSvg()).toContain('d="M5 95L8 95M10 90L90 90L90 50ZM10 90C10 90 20 35 30 30"');
+  });
 });
 
 describe('Page.PathsToSvg', () => {

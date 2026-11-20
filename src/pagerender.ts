@@ -542,9 +542,26 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
   let pendingClip: { path: Path; evenOdd: boolean } | undefined;
 
   let path: Path = [];
-  let started = false;
-  let cx = 0, cy = 0;          // current point (for v/re; y needs no current point)
-  const resetPath = () => { path = []; started = false; };
+  let subpathStart: { x: number; y: number } | undefined;
+  let cx = 0, cy = 0;          // current point, including the implicit first control point of v
+  const resetPath = () => { path = []; subpathStart = undefined; };
+  const moveTo = (x: number, y: number) => {
+    const move = { op: 'M' as const, x, y };
+    path.push(move);
+    subpathStart = move;
+    cx = x; cy = y;
+  };
+  const closeSubpath = () => {
+    if (!subpathStart || path.at(-1)?.op === 'Z') return;
+    path.push({ op: 'Z' });
+    cx = subpathStart.x; cy = subpathStart.y;
+  };
+  const appendSegment = (segment: Extract<Seg, { op: 'L' | 'C' }>) => {
+    // A segment after h or re begins a new subpath at the closing point.
+    if (path.at(-1)?.op === 'Z') moveTo(cx, cy);
+    path.push(segment);
+    cx = segment.x; cy = segment.y;
+  };
 
   const flushClip = () => {
     if (pendingClip) { sink.addClip(pendingClip.path, gs.ctm, pendingClip.evenOdd); pendingClip = undefined; }
@@ -630,13 +647,31 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
       case 'cm': { const m = numbers(o); if (m.length === 6) gs.ctm = mul(m as Matrix, gs.ctm); break; }
 
       // path construction (user space, absolute segments)
-      case 'm': { const [x, y] = numbers(o); path.push({ op: 'M', x, y }); cx = x; cy = y; started = true; break; }
-      case 'l': { const [x, y] = numbers(o); if (started) { path.push({ op: 'L', x, y }); cx = x; cy = y; } break; }
-      case 'c': { const n = numbers(o); if (n.length === 6) { path.push({ op: 'C', x1: n[0], y1: n[1], x2: n[2], y2: n[3], x: n[4], y: n[5] }); cx = n[4]; cy = n[5]; } break; }
-      case 'v': { const n = numbers(o); if (n.length === 4) { path.push({ op: 'C', x1: cx, y1: cy, x2: n[0], y2: n[1], x: n[2], y: n[3] }); cx = n[2]; cy = n[3]; } break; }
-      case 'y': { const n = numbers(o); if (n.length === 4) { path.push({ op: 'C', x1: n[0], y1: n[1], x2: n[2], y2: n[3], x: n[2], y: n[3] }); cx = n[2]; cy = n[3]; } break; }
-      case 're': { const [x, y, ww, hh] = numbers(o); path.push({ op: 'M', x, y }, { op: 'L', x: x + ww, y }, { op: 'L', x: x + ww, y: y + hh }, { op: 'L', x, y: y + hh }, { op: 'Z' }); cx = x; cy = y; started = true; break; }
-      case 'h': { if (started) path.push({ op: 'Z' }); break; }
+      case 'm': { const [x, y] = numbers(o); moveTo(x, y); break; }
+      case 'l': { const [x, y] = numbers(o); if (subpathStart) appendSegment({ op: 'L', x, y }); break; }
+      case 'c': {
+        const n = numbers(o);
+        if (n.length === 6) appendSegment({ op: 'C', x1: n[0], y1: n[1], x2: n[2], y2: n[3], x: n[4], y: n[5] });
+        break;
+      }
+      case 'v': {
+        const n = numbers(o);
+        if (n.length === 4) appendSegment({ op: 'C', x1: cx, y1: cy, x2: n[0], y2: n[1], x: n[2], y: n[3] });
+        break;
+      }
+      case 'y': {
+        const n = numbers(o);
+        if (n.length === 4) appendSegment({ op: 'C', x1: n[0], y1: n[1], x2: n[2], y2: n[3], x: n[2], y: n[3] });
+        break;
+      }
+      case 're': {
+        const [x, y, ww, hh] = numbers(o);
+        moveTo(x, y);
+        path.push({ op: 'L', x: x + ww, y }, { op: 'L', x: x + ww, y: y + hh }, { op: 'L', x, y: y + hh });
+        closeSubpath();
+        break;
+      }
+      case 'h': closeSubpath(); break;
 
       // painting
       case 'S': case 's': element(() => doStroke()); resetPath(); break;

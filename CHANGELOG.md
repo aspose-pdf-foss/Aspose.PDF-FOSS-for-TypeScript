@@ -603,6 +603,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Render segments after a closed PDF subpath correctly.** Shorthand curves
+  now use the closing point as their first control point. Lines and curves
+  after a closed shape start a fresh subpath, preventing stray closing strokes
+  in raster output. (r0z8)
+
 - **Name-tree lookups use PDF byte order.** Named destinations now resolve
   when the raw key lies within a child node's `/Limits`, even if its decoded
   text sorts outside those bounds. GoTo actions distinguish keys whose bytes

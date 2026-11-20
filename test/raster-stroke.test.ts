@@ -33,6 +33,14 @@ describe('Page.ToImage — basic stroke', () => {
 const render = (content: string, w = 200, h = 200) =>
   decodePng(Document.Open(buildSvgPdf({ mediaBox: [0, 0, w, h], content })).Pages[0].ToImage());
 
+describe('Page.ToImage — closed subpaths', () => {
+  it('keeps lines after a closed rectangle open', () => {
+    const png = render('1 0 0 RG 8 w 20 20 50 40 re 100 100 l 130 180 l S');
+    expect(isRed(png.at(85, 115))).toBe(true);   // the continuation from (20,20)
+    expect(isWhite(png.at(75, 100))).toBe(true); // a closing edge would cross this point
+  });
+});
+
 describe('Page.ToImage — line caps', () => {
   // Blue horizontal line user (50,100)→(150,100), width 20 (hw 10).
   // user (155,100) → device (155,100) is 5 units past the right endpoint.
