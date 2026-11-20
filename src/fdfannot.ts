@@ -1,5 +1,5 @@
 import { PdfDict, PdfObject, PdfRef, isArray, isDict, isName, isRef, isStream, isString } from './types.js';
-import { decodePdfText } from './metadata.js';
+import { decodePdfText, encodePdfText } from './metadata.js';
 import type { AnnotData } from './annotdata.js';
 import type { SkippedAnnot } from './formdata.js';
 
@@ -21,7 +21,7 @@ function nameOf(dict: PdfDict): string | undefined {
 
 /** Serialize annotations as an FDF /Annots subgraph, numbering objects from
  *  `firstObj`. Inline streams become their own objects (PDF has no inline
- *  stream syntax) and name links become real refs between the emitted dicts. */
+ *  stream syntax). /Popup is an object reference and /IRT is the parent's /NM. */
 export function writeFdfAnnots(annots: AnnotData[], firstObj: number): FdfObjects {
   const objects = new Map<number, PdfObject>();
   let next = firstObj;
@@ -33,7 +33,7 @@ export function writeFdfAnnots(annots: AnnotData[], firstObj: number): FdfObject
   const byName = new Map<string, number>();
   for (const a of annots) {
     const nm = nameOf(a.dict);
-    if (nm !== undefined) byName.set(nm, slot.get(a)!);
+    if (nm !== undefined) byName.set(`${a.page}:${nm}`, slot.get(a)!);
   }
 
   const alloc = (o: PdfObject): PdfRef => { const n = next++; objects.set(n, o); return ref(n); };
@@ -61,12 +61,11 @@ export function writeFdfAnnots(annots: AnnotData[], firstObj: number): FdfObject
     for (const [k, v] of a.dict) dict.set(k, promote(v));
     dict.set('Page', a.page);   // FDF's own record of the target page, 0-based
     if (a.popupName !== undefined) {
-      const target = byName.get(a.popupName);
+      const target = byName.get(`${a.page}:${a.popupName}`);
       if (target !== undefined) dict.set('Popup', ref(target));
     }
     if (a.inReplyTo !== undefined) {
-      const target = byName.get(a.inReplyTo);
-      if (target !== undefined) dict.set('IRT', ref(target));
+      dict.set('IRT', { kind: 'string', bytes: encodePdfText(a.inReplyTo) });
     }
     const n = slot.get(a)!;
     objects.set(n, dict);
@@ -112,6 +111,12 @@ export function readFdfAnnots(
     return v;
   };
 
+  const nameOnPage = (target: PdfObject, page: number): string | undefined => {
+    if (!isDict(target)) return undefined;
+    const targetPage = resolve(target.get('Page') ?? null);
+    return targetPage === null || targetPage === page ? nameOf(target) : undefined;
+  };
+
   const out: AnnotData[] = [];
   for (const entry of arr) {
     const d = resolve(entry);
@@ -128,8 +133,9 @@ export function readFdfAnnots(
     // Lift the sibling links to names before inlining, so no cycle is possible.
     const popupTarget = resolve(d.get('Popup') ?? null);
     const irtTarget = resolve(d.get('IRT') ?? null);
-    const popupName = isDict(popupTarget) ? nameOf(popupTarget) : undefined;
-    const inReplyTo = isDict(irtTarget) ? nameOf(irtTarget) : undefined;
+    const popupName = nameOnPage(popupTarget, pageRaw);
+    // Accept the indirect dictionary form written by older library versions.
+    const inReplyTo = isString(irtTarget) ? decodePdfText(irtTarget.bytes) : nameOnPage(irtTarget, pageRaw);
 
     const dict: PdfDict = new Map<string, PdfObject>();
     for (const [k, v] of d) {

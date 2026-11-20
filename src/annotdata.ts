@@ -2,6 +2,7 @@ import type { Document } from './document.js';
 import { PdfDict, PdfObject, PdfRef, isArray, isDict, isName, isRef, isStream, isString } from './types.js';
 import { decodePdfText, encodePdfText } from './metadata.js';
 import { regenerateAppearance } from './annotdraw.js';
+import { clearReplyLink, hasReplyCycle, isAnnotationDict } from './annotlinks.js';
 import type { ImportReport, ImportedAnnot } from './formdata.js';
 
 /** Deep-copy `o`, resolving every reference to the object it points at, so the
@@ -88,6 +89,8 @@ export interface AnnotData {
   dict: PdfDict;
   /** /NM of this annotation's popup, when it has one. */
   popupName?: string;
+  /** An unnamed nested XFDF popup, identified by its owner during import. */
+  anonymousPopup?: AnnotData;
   /** /NM of the annotation this one replies to, when it is a reply. */
   inReplyTo?: string;
 }
@@ -148,40 +151,141 @@ export function collectAnnots(doc: Document): AnnotData[] {
   return out;
 }
 
-/** Index a page's existing annotations by /NM, for replace-on-import. */
-function namedOnPage(doc: Document, pageDict: PdfDict): Map<string, PdfObject> {
-  const out = new Map<string, PdfObject>();
-  const arr = doc.resolve(pageDict.get('Annots'));
-  if (!isArray(arr)) return out;
-  for (const e of arr) {
-    const d = doc.resolve(e);
-    if (!isDict(d)) continue;
-    const nm = nameOf(doc, d);
-    if (nm !== undefined) out.set(nm, e);
-  }
-  return out;
+interface PageImport {
+  entries: PdfObject[];
+  names: Map<string, number>;
+  replaced: Map<PdfDict, number>;
+  incoming: Map<number, AnnotData>;
+  anonymousPopups: Map<AnnotData, number>;
 }
 
-/** The page's /Annots array, created and attached when absent. */
-function annotsArray(doc: Document, pageDict: PdfDict): PdfObject[] {
-  const arr = doc.resolve(pageDict.get('Annots'));
-  if (isArray(arr)) return arr;
-  const made: PdfObject[] = [];
-  pageDict.set('Annots', made);
-  return made;
+function indexPage(doc: Document, page: PdfDict): PageImport {
+  const annots = doc.resolve(page.get('Annots'));
+  const entries = isArray(annots) ? annots : [];
+  if (entries !== annots) page.set('Annots', entries);
+  const names = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    const dict = doc.resolve(entry);
+    if (!isDict(dict)) return;
+    const nm = nameOf(doc, dict);
+    if (nm !== undefined) names.set(nm, index);
+  });
+  return { entries, names, replaced: new Map(), incoming: new Map(), anonymousPopups: new Map() };
+}
+
+function isPopup(doc: Document, dict: PdfDict): boolean {
+  const sub = doc.resolve(dict.get('Subtype'));
+  return isName(sub) && sub.name === 'Popup';
+}
+
+function ownedPopupIndex(doc: Document, page: PageImport, owner: AnnotData): number | undefined {
+  const nm = nameOf(doc, owner.dict);
+  const ownerIndex = nm === undefined ? undefined : page.names.get(nm);
+  if (ownerIndex === undefined) return undefined;
+  const existing = doc.resolve(page.entries[ownerIndex]);
+  if (!isDict(existing)) return undefined;
+  const popup = doc.resolve(existing.get('Popup'));
+  if (!isDict(popup) || !isPopup(doc, popup)) return undefined;
+  const parent = doc.resolve(popup.get('Parent'));
+  if (isDict(parent) && parent !== existing && page.replaced.get(parent) !== ownerIndex) return undefined;
+  const index = page.entries.findIndex((entry) => doc.resolve(entry) === popup);
+  return index < 0 ? undefined : index;
+}
+
+/** Keep links carried by an earlier version when this import omits them. */
+function preserveLinks(doc: Document, previous: PdfDict, dict: PdfDict, incoming: AnnotData): void {
+  const keys: string[] = [];
+  if (incoming.inReplyTo === undefined && previous.has('IRT')) keys.push('IRT', 'RT');
+  keys.push('Popup');
+  if (isPopup(doc, previous) && isPopup(doc, dict)) keys.push('Parent');
+  for (const key of keys) {
+    const value = previous.get(key);
+    if (value !== undefined && !dict.has(key)) dict.set(key, value);
+  }
+}
+
+function restorePageLinks(doc: Document, page: PageImport): void {
+  const { entries, names, replaced, incoming, anonymousPopups } = page;
+  const siblings = new Set<PdfDict>();
+  for (const entry of entries) {
+    const dict = doc.resolve(entry);
+    if (isDict(dict)) siblings.add(dict);
+  }
+
+  // A link must point to the final indirect object in the page's /Annots array.
+  const refAt = (index: number): PdfRef => {
+    const entry = entries[index];
+    if (isRef(entry)) return entry;
+    const ref = doc.allocObject(entry);
+    entries[index] = ref;
+    return ref;
+  };
+
+  const isGroup = (dict: PdfDict): boolean => {
+    const type = doc.resolve(dict.get('RT'));
+    return isName(type) && type.name === 'Group';
+  };
+  const groupParents = new Set<PdfDict>();
+  for (const dict of siblings) {
+    for (const key of isPopup(doc, dict) ? ['Parent'] : ['IRT', 'Popup']) {
+      const previous = doc.resolve(dict.get(key));
+      if (!isDict(previous)) continue;
+      const index = replaced.get(previous);
+      if (index !== undefined) dict.set(key, refAt(index));
+    }
+    if (isGroup(dict)) {
+      const parent = doc.resolve(dict.get('IRT'));
+      if (isDict(parent)) groupParents.add(parent);
+    }
+  }
+
+  for (const [index, data] of incoming) {
+    const dict = doc.resolve(entries[index]) as PdfDict;
+    if (data.inReplyTo !== undefined) {
+      const parent = names.get(data.inReplyTo);
+      const parentDict = parent === undefined ? null : doc.resolve(entries[parent]);
+      const group = isGroup(dict);
+      if (parent !== undefined && isAnnotationDict(doc, parentDict) && !groupParents.has(dict) &&
+          (!group || doc.resolve(parentDict.get('IRT')) === null) && !hasReplyCycle(doc, dict, parentDict)) {
+        dict.set('IRT', refAt(parent));
+        if (group) groupParents.add(parentDict);
+      } else {
+        clearReplyLink(dict);
+      }
+    }
+
+    const target = data.anonymousPopup !== undefined ? anonymousPopups.get(data.anonymousPopup)
+      : data.popupName !== undefined ? names.get(data.popupName) : undefined;
+    if (target === undefined || target === index) continue;
+    const popup = doc.resolve(entries[target]);
+    if (!isDict(popup) || !isPopup(doc, popup)) continue;
+    const previousPopup = doc.resolve(dict.get('Popup'));
+    if (previousPopup !== popup && isDict(previousPopup) && isPopup(doc, previousPopup) &&
+        siblings.has(previousPopup) && doc.resolve(previousPopup.get('Parent')) === dict) {
+      previousPopup.delete('Parent');
+    }
+    const previousParent = doc.resolve(popup.get('Parent'));
+    if (isDict(previousParent) && siblings.has(previousParent) && doc.resolve(previousParent.get('Popup')) === popup) {
+      previousParent.delete('Popup');
+    }
+    dict.set('Popup', refAt(target));
+    popup.set('Parent', refAt(index));
+  }
 }
 
 /** Graft annotations into the document, reporting what landed and what did not.
  *
  *  An annotation whose /NM matches one already on the target page replaces it,
  *  so importing the same data twice is idempotent rather than doubling every
- *  comment. Name links (/Popup, /IRT) are resolved in a second pass, once every
- *  dict has a reference to point at. */
+ *  comment. Resolve name links on their own page after all replacements land,
+ *  including links to and from annotations omitted from the import. */
 export function applyAnnots(doc: Document, annots: AnnotData[], report: ImportReport): void {
   const pages = doc.Pages;
-  /** /NM → the ref of the dict we grafted for it, for the second pass. */
-  const grafted = new Map<string, PdfObject>();
-  const pending: { data: AnnotData; dict: PdfDict }[] = [];
+  const imports = new Map<number, PageImport>();
+  const popupOwners = new Map<AnnotData, AnnotData>();
+  for (const a of annots) {
+    if (a.anonymousPopup !== undefined) popupOwners.set(a.anonymousPopup, a);
+  }
 
   for (const a of annots) {
     const sub = a.dict.get('Subtype');
@@ -196,39 +300,40 @@ export function applyAnnots(doc: Document, annots: AnnotData[], report: ImportRe
       continue;
     }
 
-    const pageDict = pages[a.page].Dict;
+    let page = imports.get(a.page);
+    if (page === undefined) {
+      page = indexPage(doc, pages[a.page].Dict);
+      imports.set(a.page, page);
+    }
     const dict = allocStreams(doc, a.dict) as PdfDict;
     if (!dict.has('AP')) regenerateAppearance(doc, dict);
 
-    const ref = doc.allocObject(dict);
-    const arr = annotsArray(doc, pageDict);
-    const nm = nameOf(doc, dict);
-    const existing = nm === undefined ? undefined : namedOnPage(doc, pageDict).get(nm);
-    if (existing !== undefined) {
-      const at = arr.findIndex((e) => e === existing);
-      if (at >= 0) arr[at] = ref; else arr.push(ref);
-    } else {
-      arr.push(ref);
+    let nm = nameOf(doc, dict);
+    const owner = popupOwners.get(a);
+    const existing = owner === undefined
+      ? (nm === undefined ? undefined : page.names.get(nm))
+      : ownedPopupIndex(doc, page, owner);
+    const index = existing ?? page.entries.length;
+    const previous = doc.resolve(page.entries[index]);
+    if (isDict(previous)) {
+      preserveLinks(doc, previous, dict, a);
+      page.replaced.set(previous, index);
+      if (owner !== undefined) {
+        nm = nameOf(doc, previous);
+        if (nm !== undefined) dict.set('NM', pdfString(nm));
+      }
     }
+    page.entries[index] = doc.allocObject(dict);
+    if (nm !== undefined) page.names.set(nm, index);
+    if (owner !== undefined) page.anonymousPopups.set(a, index);
+    page.incoming.set(index, a);
 
-    if (nm !== undefined) grafted.set(nm, ref);
-    pending.push({ data: a, dict });
     const entry: ImportedAnnot = { page: a.page, subtype };
     if (nm !== undefined) entry.name = nm;
     report.importedAnnots.push(entry);
   }
 
-  // Second pass: rebuild the sibling links now that every target has a ref.
-  for (const { data, dict } of pending) {
-    if (data.popupName !== undefined) {
-      const target = grafted.get(data.popupName);
-      if (target !== undefined) dict.set('Popup', target);
-    }
-    if (data.inReplyTo !== undefined) {
-      const target = grafted.get(data.inReplyTo);
-      if (target !== undefined) dict.set('IRT', target);
-    }
-  }
+  for (const page of imports.values()) restorePageLinks(doc, page);
 
   if (report.importedAnnots.length > 0) doc.markModified();
 }

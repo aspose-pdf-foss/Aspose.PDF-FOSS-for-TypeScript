@@ -4,6 +4,15 @@ import { buildAnnotRoundtrip } from './helpers/build-annot-roundtrip.js';
 import { PdfDict, isDict, isStream } from '../src/types.js';
 
 type Format = 'fdf' | 'xfdf';
+const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+function replyOnly(format: Format, page: number, name: string, parent: string): Uint8Array {
+  return encode(format === 'fdf'
+    ? `%FDF-1.2\n1 0 obj\n<< /FDF << /Annots [<< /Subtype /Text /Page ${page} ` +
+      `/NM (${name}) /Rect [0 0 20 20] /IRT (${parent}) >>] >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF`
+    : `<xfdf><annots><text page="${page}" name="${name}" rect="0,0,20,20" inreplyto="${parent}"/>` +
+      `</annots></xfdf>`);
+}
 
 const exportData = (doc: Document, format: Format, annotations: boolean): Uint8Array =>
   format === 'fdf'
@@ -120,6 +129,110 @@ for (const format of ['fdf', 'xfdf'] as const) {
       expect(dst.resolve(hi.Dict.get('IRT'))).toBe(note.Dict);
     });
 
+    it('reconnects existing replies and the popup when importing only their parent', () => {
+      const src = Document.New();
+      const { page } = src.AddPage();
+      const update = page.AddTextNote({ rect: [10, 20, 30, 40], contents: 'updated note' });
+      update.Name = 'note-1';
+
+      const dst = Document.Open(buildAnnotRoundtrip());
+      dst.Pages[0].Annotations.find((a) => a.Name === 'hi-1')!.ReplyType = 'Group';
+      const originalPopup = dst.Pages[0].Annotations.find((a) => a.Name === 'popup-1')!;
+      originalPopup.Dict.set('Subtype', dst.allocObject(originalPopup.Dict.get('Subtype')!));
+      importData(dst, format, exportData(src, format, true), true);
+      for (const doc of [dst, Document.Open(dst.Save())]) {
+        const annots = doc.Pages[0].Annotations;
+        const note = annots.find((a) => a.Name === 'note-1')!;
+        const reply = annots.find((a) => a.Name === 'hi-1')!;
+        const popup = annots.find((a) => a.Name === 'popup-1')!;
+        expect(note.Contents).toBe('updated note');
+        expect(reply.InReplyTo?.Dict).toBe(note.Dict);
+        expect(reply.ReplyType).toBe('Group');
+        expect(doc.resolve(note.Dict.get('Popup'))).toBe(popup.Dict);
+        expect(doc.resolve(popup.Dict.get('Parent'))).toBe(note.Dict);
+      }
+    });
+
+    it('imports a reply alone and resolves its parent on the same page', () => {
+      const doc = Document.Open(buildAnnotRoundtrip());
+      importData(doc, format, replyOnly(format, 0, 'incoming', 'note-1'), true);
+      importData(doc, format, replyOnly(format, 1, 'incoming', 'note-1'), true);
+
+      const note = doc.Pages[0].Annotations.find((a) => a.Name === 'note-1')!;
+      const local = doc.Pages[0].Annotations.find((a) => a.Name === 'incoming')!;
+      const remote = doc.Pages[1].Annotations.find((a) => a.Name === 'incoming')!;
+      expect(local.InReplyTo?.Dict).toBe(note.Dict);
+      expect(remote.InReplyTo).toBeUndefined();
+    });
+
+    it('omits an incoming reply link that would create a cycle with an existing reply', () => {
+      const doc = Document.Open(buildAnnotRoundtrip());
+      importData(doc, format, replyOnly(format, 0, 'note-1', 'hi-1'), true);
+
+      const annots = doc.Pages[0].Annotations;
+      const note = annots.find((a) => a.Name === 'note-1')!;
+      const reply = annots.find((a) => a.Name === 'hi-1')!;
+      expect(note.Rect).toEqual([0, 0, 20, 20]);
+      expect(note.InReplyTo?.Name).toBeUndefined();
+      expect(reply.InReplyTo?.Dict).toBe(note.Dict);
+    });
+
+    it('keeps an existing group primary from becoming a reply', () => {
+      const doc = Document.Open(buildAnnotRoundtrip());
+      const page = doc.Pages[0];
+      page.Annotations.find((a) => a.Name === 'hi-1')!.ReplyType = 'Group';
+      page.AddTextNote({ rect: [0, 0, 20, 20], contents: 'another note' }).Name = 'other-note';
+      importData(doc, format, replyOnly(format, 0, 'note-1', 'other-note'), true);
+
+      const note = page.Annotations.find((a) => a.Name === 'note-1')!;
+      const member = page.Annotations.find((a) => a.Name === 'hi-1')!;
+      expect(note.InReplyTo?.Name).toBeUndefined();
+      expect(member.InReplyTo?.Dict).toBe(note.Dict);
+      expect(member.ReplyType).toBe('Group');
+    });
+
+    it('reconnects an existing parent when importing only its popup', () => {
+      const bytes = encode(format === 'fdf'
+        ? `%FDF-1.2\n1 0 obj\n<< /FDF << /Annots [<< /Subtype /Popup /Page 0 ` +
+          `/NM (popup-1) /Rect [40 20 160 90] >>] >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF`
+        : `<xfdf><annots><popup page="0" name="popup-1" rect="40,20,160,90"/></annots></xfdf>`);
+      const doc = Document.Open(buildAnnotRoundtrip());
+      importData(doc, format, bytes, true);
+
+      const note = doc.Pages[0].Annotations.find((a) => a.Name === 'note-1')!;
+      const popup = doc.Pages[0].Annotations.find((a) => a.Name === 'popup-1')!;
+      expect(popup.Rect).toEqual([40, 20, 160, 90]);
+      expect(doc.resolve(note.Dict.get('Popup'))).toBe(popup.Dict);
+      expect(doc.resolve(popup.Dict.get('Parent'))).toBe(note.Dict);
+    });
+
+    it('round-trips annotations that reuse parent, popup, and reply names across pages', () => {
+      const src = Document.New();
+      for (const index of [0, 1]) {
+        const { page } = src.AddPage();
+        const note = page.AddTextNote({ rect: [10, 20, 30, 40], contents: `note ${index}`,
+          popup: { rect: [40, 20, 200, 90 + index] } });
+        note.Name = 'note-1';
+        page.Annotations.find((a) => a.Subtype === 'Popup')!.Name = 'popup-1';
+        note.AddReply({ contents: `reply ${index}` }).Name = 'reply-1';
+      }
+
+      const dst = clearedTarget();
+      importData(dst, format, exportData(src, format, true), true);
+      for (const [index, page] of dst.Pages.entries()) {
+        const annots = page.Annotations;
+        const localNote = annots.find((a) => a.Name === 'note-1')!;
+        const localPopup = annots.find((a) => a.Name === 'popup-1')!;
+        const localReply = annots.find((a) => a.Name === 'reply-1')!;
+        expect(annots.map((a) => a.Name).sort()).toEqual(['note-1', 'popup-1', 'reply-1']);
+        expect(localNote.Contents).toBe(`note ${index}`);
+        expect(localPopup.Rect).toEqual([40, 20, 200, 90 + index]);
+        expect(localReply.InReplyTo?.Dict).toBe(localNote.Dict);
+        expect(dst.resolve(localNote.Dict.get('Popup'))).toBe(localPopup.Dict);
+        expect(dst.resolve(localPopup.Dict.get('Parent'))).toBe(localNote.Dict);
+      }
+    });
+
     it('is idempotent: importing twice does not duplicate', () => {
       const src = Document.Open(buildAnnotRoundtrip());
       const bytes = exportData(src, format, true);
@@ -177,3 +290,25 @@ for (const format of ['fdf', 'xfdf'] as const) {
     });
   });
 }
+
+it('imports an unnamed XFDF popup by its owner and leaves another note’s popup attached', () => {
+  const doc = Document.Open(buildAnnotRoundtrip());
+  const bytes = encode('<xfdf><annots><text page="0" name="other-note" rect="0,0,20,20">' +
+    '<popup page="0" rect="30,20,55,90"/></text></annots></xfdf>');
+  importData(doc, 'xfdf', bytes, true);
+  importData(doc, 'xfdf', bytes, true);
+
+  const reopened = Document.Open(doc.Save());
+  const annots = reopened.Pages[0].Annotations;
+  const note = annots.find((a) => a.Name === 'note-1')!;
+  const otherNote = annots.find((a) => a.Name === 'other-note')!;
+  const namedPopup = annots.find((a) => a.Name === 'popup-1')!;
+  const popups = annots.filter((a) => a.Subtype === 'Popup');
+  expect(popups).toHaveLength(2);
+  const otherPopup = popups.find((a) => a !== namedPopup)!;
+  expect(otherPopup.Rect).toEqual([30, 20, 55, 90]);
+  expect(reopened.resolve(note.Dict.get('Popup')) === namedPopup.Dict).toBe(true);
+  expect(reopened.resolve(namedPopup.Dict.get('Parent')) === note.Dict).toBe(true);
+  expect(reopened.resolve(otherNote.Dict.get('Popup')) === otherPopup.Dict).toBe(true);
+  expect(reopened.resolve(otherPopup.Dict.get('Parent')) === otherNote.Dict).toBe(true);
+});

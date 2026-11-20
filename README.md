@@ -2571,8 +2571,9 @@ report.skippedAnnots;   // [{ page?, subtype?, reason }]
 Each annotation is added to the page index it carries, replacing any annotation
 already on that page with the same `/NM` — so importing the same file twice
 leaves one copy, not two. Widget annotations are never carried this way; they
-are form fields and travel as `/Fields`. Popup and reply (`/IRT`) links between
-exported annotations are preserved.
+are form fields and travel as `/Fields`. Popup and reply (`/IRT`) links resolve
+on the annotation's page. Updating a named annotation keeps its existing
+replies attached, and a reply can be imported separately from its parent.
 
 Export omits fields with no value; pass `{ includeEmpty: true }` for a complete
 snapshot. Signature and pushbutton fields are never exported. Import sets values

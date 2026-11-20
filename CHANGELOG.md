@@ -578,6 +578,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **FDF and XFDF annotation imports preserve page-local links.** Updating a
+  named annotation keeps its replies and popup attached. A reply imported
+  alone can attach to an existing parent on the same page, and reused names
+  on other pages do not affect either link. (htvs)
+
 - **PostScript `initgraphics` preserves graphics parameters.** Flatness,
   stroke adjustment, overprint, and saved clipping paths now survive the
   operator. It still resets the active clip to the device default, and

@@ -49,7 +49,7 @@ describe('writeFdfAnnots', () => {
     expect(objects.size).toBe(2);
   });
 
-  it('writes popup and reply links as refs between the emitted objects', () => {
+  it('writes a popup reference to the object on the same page', () => {
     const note: AnnotData = {
       page: 0,
       dict: new Map<string, PdfObject>([
@@ -63,20 +63,20 @@ describe('writeFdfAnnots', () => {
         ['Subtype', name('Popup')], ['Rect', [0, 0, 1, 1]], ['NM', encStr('p1')],
       ]),
     };
-    const { objects } = writeFdfAnnots([note, popup], 1);
+    const { objects } = writeFdfAnnots([note, popup, { ...popup, page: 1 }], 1);
     const noteDict = objects.get(1) as PdfDict;
     expect(isRef(noteDict.get('Popup'))).toBe(true);
     expect((noteDict.get('Popup') as { num: number }).num).toBe(2);
   });
 
-  it('drops a link whose target is not in the same export', () => {
+  it('writes the reply parent name even when the parent is absent from the export', () => {
     const orphan: AnnotData = {
       page: 0,
       dict: new Map<string, PdfObject>([['Subtype', name('Text')], ['Rect', [0, 0, 1, 1]]]),
-      inReplyTo: 'nobody',
+      inReplyTo: 'parent',
     };
     const { objects } = writeFdfAnnots([orphan], 1);
-    expect((objects.get(1) as PdfDict).has('IRT')).toBe(false);
+    expect((objects.get(1) as PdfDict).get('IRT')).toEqual(encStr('parent'));
   });
 });
 
@@ -92,7 +92,7 @@ describe('readFdfAnnots', () => {
     expect(skipped).toEqual([]);
   });
 
-  it('lifts /Popup and /IRT refs back into name links', () => {
+  it('lifts a popup ref back into a name link', () => {
     const note: AnnotData = {
       page: 0,
       dict: new Map<string, PdfObject>([
@@ -111,6 +111,16 @@ describe('readFdfAnnots', () => {
     const n = back.find((a) => subtypeOf(a) === 'Text')!;
     expect(n.popupName).toBe('p1');
     expect(n.dict.has('Popup')).toBe(false);
+  });
+
+  it('reads legacy /IRT refs only when the referenced parent is on the same page', () => {
+    const reply = square([['IRT', { kind: 'ref', num: 3, gen: 0 }]]);
+    const parent = square([['NM', encStr('parent')]]);
+    const { array, objects } = writeFdfAnnots([reply, { ...reply, page: 0 }, parent], 1);
+    const samePage = readFdfAnnots(array, resolverFor(objects), []);
+    expect(samePage[0].inReplyTo).toBe('parent');
+    expect(samePage[0].dict.has('IRT')).toBe(false);
+    expect(samePage[1].inReplyTo).toBeUndefined();
   });
 
   it('round-trips an appearance stream byte-for-byte', () => {

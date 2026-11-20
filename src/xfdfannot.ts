@@ -197,12 +197,12 @@ export function writeAnnots(annots: AnnotData[]): XmlNode {
   const byName = new Map<string, AnnotData>();
   for (const a of annots) {
     const nm = nameOf(a);
-    if (nm !== undefined) byName.set(nm, a);
+    if (nm !== undefined) byName.set(`${a.page}:${nm}`, a);
   }
   const nested = new Set<AnnotData>();
   for (const a of annots) {
     if (a.popupName === undefined) continue;
-    const p = byName.get(a.popupName);
+    const p = byName.get(`${a.page}:${a.popupName}`);
     if (p !== undefined) nested.add(p);
   }
 
@@ -211,7 +211,7 @@ export function writeAnnots(annots: AnnotData[]): XmlNode {
     const node = writeOne(a);
     if (node === undefined) continue;
     if (a.popupName !== undefined) {
-      const p = byName.get(a.popupName);
+      const p = byName.get(`${a.page}:${a.popupName}`);
       const pn = p === undefined ? undefined : writeOne(p);
       if (pn !== undefined) node.children.push(pn);
     }
@@ -383,7 +383,7 @@ function readOne(node: XmlNode, subtype: string): AnnotData {
 
 /** Read the <annots> element into the format-neutral model. Accepts either the
  *  <annots> element itself or a root containing one. A nested <popup> becomes
- *  its own entry, linked from its parent by name. Problems are reported per
+ *  its own entry, linked from its parent. Problems are reported per
  *  annotation; nothing here throws. */
 export function readAnnots(root: XmlNode, skipped: SkippedAnnot[]): AnnotData[] {
   const out: AnnotData[] = [];
@@ -392,7 +392,6 @@ export function readAnnots(root: XmlNode, skipped: SkippedAnnot[]): AnnotData[] 
     : root.children.find((c) => c.name === 'annots');
   if (annots === undefined) return out;
 
-  let seq = 0;
   for (const node of annots.children) {
     const subtype = XFDF_SUBTYPE.get(node.name);
     if (subtype === undefined) {
@@ -418,12 +417,11 @@ export function readAnnots(root: XmlNode, skipped: SkippedAnnot[]): AnnotData[] 
     if (popupEl !== undefined) {
       try {
         const popup = readOne(popupEl, 'Popup');
-        let nm = popup.dict.get('NM');
-        if (!isString(nm)) {
-          nm = { kind: 'string', bytes: encodePdfText(`popup-${++seq}`) };
-          popup.dict.set('NM', nm);
+        if (popup.page === entry.page) {
+          const nm = popup.dict.get('NM');
+          if (isString(nm)) entry.popupName = decodePdfText(nm.bytes);
+          else entry.anonymousPopup = popup;
         }
-        entry.popupName = decodePdfText((nm as { bytes: Uint8Array }).bytes);
         out.push(popup);
       } catch (caught) { rethrowLimit(caught);
         // A malformed popup loses the popup, not the annotation that owns it.

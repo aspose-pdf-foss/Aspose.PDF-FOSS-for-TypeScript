@@ -16,7 +16,7 @@ import { enc } from './serialize.js';
 import { STAMP_FONT, stampCaption, stampLabelBody } from './annotstamp.js';
 import { parseDA } from './da.js';
 import { flattenAnnotation } from './flatten.js';
-import { clearReplyLink } from './annotlinks.js';
+import { clearReplyLink, hasReplyCycle, isAnnotationDict, replyParentDict } from './annotlinks.js';
 import { removeField } from './formremove.js';
 import { num } from './pagecontent.js';
 import { buildImageXObject, type BuiltImage } from './imageembed.js';
@@ -125,17 +125,6 @@ function requireReplyMarkup(doc: Document, dict: PdfDict): void {
   }
 }
 
-function isAnnotationDict(doc: Document, object: PdfObject | undefined): object is PdfDict {
-  if (!isDict(object) || !isName(doc.resolve(object.get('Subtype')))) return false;
-  const type = doc.resolve(object.get('Type'));
-  return type === null || (isName(type) && type.name === 'Annot');
-}
-
-function replyParentDict(doc: Document, dict: PdfDict): PdfDict | undefined {
-  const parent = doc.resolve(dict.get('IRT'));
-  return isAnnotationDict(doc, parent) ? parent : undefined;
-}
-
 /** A live, mutable handle over an annotation dictionary. */
 export class Annotation {
   constructor(
@@ -234,10 +223,8 @@ export class Annotation {
       throw new UnsupportedFeatureError('reply parent must be an annotation on the same page');
     }
 
-    const seen = new Set([this.Dict]);
-    for (let ancestor: PdfDict | undefined = parent.Dict; ancestor; ancestor = replyParentDict(this.doc, ancestor)) {
-      if (seen.has(ancestor)) throw new UnsupportedFeatureError('InReplyTo would create a reply cycle');
-      seen.add(ancestor);
+    if (hasReplyCycle(this.doc, this.Dict, parent.Dict)) {
+      throw new UnsupportedFeatureError('InReplyTo would create a reply cycle');
     }
     const type = this.doc.resolve(this.Dict.get('RT'));
     if (isName(type) && type.name === 'Group') requireGroupPrimary(this.doc, parent.Dict);
