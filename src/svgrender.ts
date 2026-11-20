@@ -2,6 +2,7 @@ import type { Document } from './document.js';
 import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { OperationControlOptions } from './checkpoint.js';
 import type { Page } from './page.js';
+import type { PagePath, PathSubpath } from './paths.js';
 import { Matrix, mul, translate, invert, apply } from './text.js';
 import { PdfDict, PdfObject, PdfStream, isStream } from './types.js';
 import { inflateStream } from './flate.js';
@@ -90,6 +91,44 @@ function pathToD(path: Path, m: Matrix = [1, 0, 0, 1, 0, 0]): string {
     } else d += 'Z';
   }
   return d;
+}
+
+function snapshotOutline(subpaths: readonly PathSubpath[]): Path {
+  const outline: Path = [];
+  for (const { segments, closed } of subpaths) {
+    for (const segment of segments) {
+      const [x, y] = segment.pt;
+      if (segment.op === 'cubic') {
+        const [x1, y1] = segment.c1;
+        const [x2, y2] = segment.c2;
+        outline.push({ op: 'C', x1, y1, x2, y2, x, y });
+      } else {
+        outline.push({ op: segment.op === 'move' ? 'M' : 'L', x, y });
+      }
+    }
+    if (closed && segments.length) outline.push({ op: 'Z' });
+  }
+  return outline;
+}
+
+/** Export the recorded geometry and paint in caller-supplied order. @internal */
+export function renderPathsToSvg(page: Page, paths: readonly PagePath[]): string {
+  const { matrix, width, height } = baseMatrix(page, 'crop');
+  const writer = new SvgWriter();
+  for (const { subpaths, ctm, fill, stroke, fillRule, lineWidth } of paths) {
+    if (!fill && !stroke) continue;
+    const d = pathToD(snapshotOutline(subpaths), mul(ctm, matrix));
+    if (!d) continue;
+    const attrs = [`d="${d}"`, `fill="${fill ? rgbHex(fill.rgb) : 'none'}"`];
+    if (fill && fillRule === 'evenodd') attrs.push('fill-rule="evenodd"');
+    if (stroke) {
+      const hairline = lineWidth === 0;
+      attrs.push(`stroke="${rgbHex(stroke.rgb)}"`, `stroke-width="${hairline ? '1' : fmt(lineWidth)}"`);
+      if (hairline) attrs.push('vector-effect="non-scaling-stroke"');
+    }
+    writer.emit(`<path ${attrs.join(' ')}/>`);
+  }
+  return writer.finish(width, height);
 }
 
 /** Uniform device-space scale of an affine matrix, for mapping user-space

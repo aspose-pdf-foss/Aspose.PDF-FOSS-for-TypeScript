@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
 import { buildSvgPdf, VECTOR_CONTENT, TEXT_CONTENT, HELV_RESOURCES, flateImagePdf, jpegImagePdf, CLIP_CONTENT, axialShadingPdf, shadingPatternPdf, patternTextPdf, formXObjectPdf } from './helpers/build-svg-fixtures.js';
 import { strokePatternPdf, tilingPatternOffsetClipPdf } from './helpers/build-transparency-fixtures.js';
+import { enc } from '../src/serialize.js';
 
 describe('Page.ToSvg — geometry', () => {
   it('returns a standalone <svg> sized to the CropBox', () => {
@@ -43,6 +44,78 @@ describe('Page.ToSvg — paths', () => {
     expect(svg).toMatch(/<path[^>]*stroke-dasharray="6 3"/);
     // the fill path must not also carry a stroke
     expect(svg).toMatch(/<path[^>]*fill="#ff0000"[^>]*stroke="none"/);
+  });
+});
+
+describe('Page.PathsToSvg', () => {
+  it('exports only the selected painted geometry in the rotated CropBox', () => {
+    const page = Document.Open(buildSvgPdf({
+      mediaBox: [0, 0, 300, 400], cropBox: [50, 60, 250, 360], rotate: 90,
+      resources: HELV_RESOURCES,
+      content: [
+        '1 0 0 rg 55 70 12 12 re f',
+        '70 80 130 140 re W n',
+        '0 1 0 rg 0 0 1 RG 3 w 80 90 m 90 120 100 110 120 135 c 128 85 l h 98 96 5 5 re B*',
+        TEXT_CONTENT,
+      ].join('\n'),
+    })).Pages[0];
+    const [, clip, curve] = page.GetPaths();
+    const svg = page.PathsToSvg([clip, curve]);
+    expect(svg).toContain('viewBox="0 0 300 200"');
+    expect(svg.match(/<path\b/g)).toHaveLength(1);
+    expect(svg).toContain('d="M30 30C60 40 50 50 75 70L25 78ZM36 48L36 53L41 53L41 48Z"');
+    expect(svg).toContain('fill="#00ff00"');
+    expect(svg).toContain('fill-rule="evenodd"');
+    expect(svg).toContain('stroke="#0000ff"');
+    expect(svg).toContain('stroke-width="3"');
+    expect(svg).not.toMatch(/<clipPath\b|<text\b|#ff0000/);
+  });
+
+  it('places repeated Form draws in the supplied order and exports saved snapshots', () => {
+    const raw = enc('0 0 1 rg 0 0 0 RG 2 w 0 0 20 20 re B');
+    const form = {
+      dict: `<< /Type /XObject /Subtype /Form /BBox [-2 -2 22 22] /Matrix [1 0 0 1 5 10] /Length ${raw.length} >>`,
+      raw,
+    };
+    const doc = Document.Open(buildSvgPdf({
+      resources: '<< /XObject << /Fm0 5 0 R >> >>',
+      content: 'q 2 0 0 2 100 100 cm /Fm0 Do Q q 1 0 0 1 20 20 cm /Fm0 Do Q',
+      extra: { 5: form },
+    }));
+    const [page] = doc.Pages;
+    const [first, second] = page.GetPaths();
+    second.Remove();
+    const before = doc.Save();
+    const svg = page.PathsToSvg([second, first]);
+    const draws = [...svg.matchAll(/<path d="([^"]+)"[^>]*stroke-width="([^"]+)"/g)];
+    expect(draws.map(([, d, width]) => [d, width])).toEqual([
+      ['M25 170L45 170L45 150L25 150Z', '2'],
+      ['M110 80L150 80L150 40L110 40Z', '4'],
+    ]);
+    expect(doc.Save()).toEqual(before);
+    expect(page.GetPaths()).toHaveLength(1);
+  });
+
+  it.each([
+    ['10 10 m 90 10 l 90 50 l h 20 65 30 70 v S', 'M10 90L90 90L90 50ZM10 90C10 90 20 35 30 30'],
+    ['10 10 80 40 re 30 70 l S', 'M10 90L90 90L90 50L10 50ZM10 90L30 30'],
+  ])('starts a new subpath after a close in %s', (content, d) => {
+    const page = Document.Open(buildSvgPdf({ mediaBox: [0, 0, 100, 100], content })).Pages[0];
+    expect(page.PathsToSvg(page.GetPaths())).toContain(`d="${d}"`);
+  });
+
+  it('keeps an empty viewport and emits a PDF hairline as a non-scaling stroke', () => {
+    const page = Document.Open(buildSvgPdf({
+      mediaBox: [0, 0, 200, 100], content: '0 w 10 10 m 90 10 l S',
+    })).Pages[0];
+    expect(page.PathsToSvg([])).toBe(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"></svg>',
+    );
+    const svg = page.PathsToSvg(page.GetPaths());
+    expect(svg).toContain('d="M10 90L90 90"');
+    expect(svg).toContain('fill="none"');
+    expect(svg).toContain('stroke-width="1"');
+    expect(svg).toContain('vector-effect="non-scaling-stroke"');
   });
 });
 

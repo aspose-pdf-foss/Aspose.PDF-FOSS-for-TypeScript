@@ -9502,6 +9502,13 @@ Source (`src/`):
 - **svgrender.ts**, **raster.ts**, **pagerender.ts** — rendering (`ToSvg` /
   `ToImage`): a shared content-stream interpreter, a pure-TS scanline rasterizer,
   and glyph-outline drawing.
+  **Invariant (`s2i2.3`):** `PathsToSvg` serializes the supplied path snapshots
+  in order, using the same CropBox matrix and SVG writer as `ToSvg`. A path's
+  CTM runs before that matrix. Its recorded stroke width is already in page
+  space. Skipping clip-only snapshots leaves each painted snapshot independent
+  of the original graphics-state stack. `paths.ts` starts a new subpath from
+  the closing point when a segment follows `h` or `re`, so export places the
+  closure before the continuation.
   **Invariant (`4gtd.4`):** `RenderSink.shading` takes `PdfDict | PdfStream`,
   because a MESH keeps its vertex data in the stream and `.dict` alone loses it.
   **Note the trap, and the typecheck gave FALSE ASSURANCE:** widening the

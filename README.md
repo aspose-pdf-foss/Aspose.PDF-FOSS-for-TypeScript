@@ -1855,6 +1855,23 @@ requiring a Form copy with structure-parent entries throws `UnsupportedFeatureEr
 Shadings/gradients are not evaluated (reported as `space:'Pattern'`); dash, cap,
 and join are out of scope.
 
+### Export Selected Paths to SVG
+
+```ts
+const page = doc.Pages[0];
+const selected = page.GetPaths().filter((path) => path.stroke);
+const svg = page.PathsToSvg(selected);
+```
+
+`PathsToSvg()` returns one standalone SVG with the page's rotated CropBox
+viewport. It draws the supplied snapshots in array order, using their geometry,
+RGB colors, fill rule, and page-space stroke width. A snapshot can still be
+exported after editing its source. An empty selection produces an empty SVG
+with the same viewport.
+
+The export skips clip-only paths. For full-page clipping, patterns,
+transparency, and stroke styles such as dashes, use `page.ToSvg()`.
+
 ### Search Text
 
 ```ts
@@ -4794,6 +4811,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.AutoTag(opts?)` | Infer a `/StructTreeRoot` (headings/paragraphs/figures/tables) from layout; marks Tagged; returns per-type counts |
 | `element.MarkContent(page, region)` | Tag existing page content under a structure element (returns the MCID) |
 | `page.ToSvg(options?)` | Render the page to a standalone `<svg>` string (paths, `<text>`, images, clipping, gradients, annotation `/AP` appearances; honors `/Rotate` + `CropBox`; `{ box: 'media' }` for the MediaBox, `{ annotations: false }` for content only) |
+| `page.PathsToSvg(paths)` | Export selected `PagePath` snapshots as one standalone SVG in the page's rotated CropBox viewport. |
 | `page.ToImage(options?)` | Rasterize the page to PNG bytes (`Uint8Array`); anti-aliased vector fills at `scale`/`width`/`height`; composites annotation `/AP` appearances (`{ annotations: false }` for content only); `{ background: 'transparent' }` for RGBA; honors `/Rotate` + crop/media box. `{ format }` selects the encoding — `'png'` (default), `'jpeg'`, `'tiff'`, `'bmp'` or `'gif'`, with `{ quality }` (1..100, default 75) read by the lossy ones and `{ compression }` (`'deflate'` default, `'none'`, or `'g4'` for bilevel frames) read by TIFF; an unsupported value throws `UnsupportedFeatureError` rather than returning PNG bytes under the wrong name (`IMAGE_FORMATS` lists what is supported), as does `{ format: 'jpeg', background: 'transparent' }`, JPEG having no alpha channel. `{ mode }` selects the colour mode — `'rgb'` (default), `'gray'` (Rec. 601 luminance) or `'bilevel'` (a plain cut at `{ threshold }`, 0..255, default 128) — which is what makes `{ format: 'tiff', compression: 'g4', mode: 'bilevel' }` possible; `'jpeg'` refuses bilevel and any non-rgb mode refuses a transparent background (`IMAGE_MODES` lists what is supported) |
 | `doc.ToHtml(options?)` | Export every page to one standalone HTML document. `mode: 'semantic'` (default, reflowable; `/StructTree`-driven when tagged, font-size heuristics otherwise) or `mode: 'fixed'` (positioned text over a `backdrop: 'vector'` SVG (default), a `'raster'` glyph-less PNG, or a `'page'` full-page PNG with transparent selectable text; `backdropScale` defaults to 2; `forms: true` for fillable AcroForm controls; with optional `fonts: 'embed'` \| `'embed-all'` `@font-face` embedding); `{ fragment: true }` for body markup only |
 | `page.ToHtml(options?)` | Export one page to a standalone HTML document (same options; a tagged semantic tree is filtered to this page's content, ancestors intact) |

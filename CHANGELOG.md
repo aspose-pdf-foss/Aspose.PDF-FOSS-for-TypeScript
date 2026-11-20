@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Export selected page paths to SVG.** `page.PathsToSvg(paths)` draws the
+  supplied snapshots in one standalone SVG. It preserves their page positions
+  in the rotated CropBox and uses their recorded geometry and paint. Path
+  extraction also preserves the closing edge when a segment follows a closed
+  subpath. (s2i2.3)
+
 - **Edit individual page paths.** `GetPaths()` returns `EditablePagePath` handles
   with `Remove`, `Recolor`, and `Transform`. Recoloring preserves the surrounding
   graphics state and clipping. Transforms use the path's local coordinates.

@@ -240,6 +240,17 @@ function walk(
     subpaths = []; cur = undefined; curPt = undefined; startPt = undefined; startAddr = undefined; pendingClip = null;
   };
 
+  const startSubpath = (x: number, y: number) => {
+    cur = { closed: false, segments: [{ op: 'move', pt: [x, y] }] };
+    subpaths.push(cur);
+    curPt = [x, y];
+    startPt = curPt;
+  };
+  const continueSubpath = () => {
+    // A segment after h or re starts a new subpath at the closing point.
+    if (cur?.closed && curPt) startSubpath(curPt[0], curPt[1]);
+  };
+
   const setColor = (operands: readonly PdfObject[], isStroke: boolean) => {
     const hasPattern = operands.length > 0 && isName(operands[operands.length - 1]);
     const comps = nums(operands);
@@ -297,13 +308,28 @@ function walk(
         // path construction
         case 'm':
           startAddr ??= Object.freeze(addr);
-          cur = { closed: false, segments: [{ op: 'move', pt: [n[0], n[1]] }] };
-          subpaths.push(cur); curPt = [n[0], n[1]]; startPt = [n[0], n[1]];
+          startSubpath(n[0], n[1]);
           break;
-        case 'l': if (cur && n.length >= 2) { cur.segments.push({ op: 'line', pt: [n[0], n[1]] }); curPt = [n[0], n[1]]; } break;
-        case 'c': if (cur && n.length >= 6) { cur.segments.push({ op: 'cubic', c1: [n[0], n[1]], c2: [n[2], n[3]], pt: [n[4], n[5]] }); curPt = [n[4], n[5]]; } break;
-        case 'v': if (cur && curPt && n.length >= 4) { cur.segments.push({ op: 'cubic', c1: [curPt[0], curPt[1]], c2: [n[0], n[1]], pt: [n[2], n[3]] }); curPt = [n[2], n[3]]; } break;
-        case 'y': if (cur && n.length >= 4) { cur.segments.push({ op: 'cubic', c1: [n[0], n[1]], c2: [n[2], n[3]], pt: [n[2], n[3]] }); curPt = [n[2], n[3]]; } break;
+        case 'l': if (cur && n.length >= 2) {
+          continueSubpath();
+          cur.segments.push({ op: 'line', pt: [n[0], n[1]] });
+          curPt = [n[0], n[1]];
+        } break;
+        case 'c': if (cur && n.length >= 6) {
+          continueSubpath();
+          cur.segments.push({ op: 'cubic', c1: [n[0], n[1]], c2: [n[2], n[3]], pt: [n[4], n[5]] });
+          curPt = [n[4], n[5]];
+        } break;
+        case 'v': if (cur && curPt && n.length >= 4) {
+          continueSubpath();
+          cur.segments.push({ op: 'cubic', c1: [curPt[0], curPt[1]], c2: [n[0], n[1]], pt: [n[2], n[3]] });
+          curPt = [n[2], n[3]];
+        } break;
+        case 'y': if (cur && n.length >= 4) {
+          continueSubpath();
+          cur.segments.push({ op: 'cubic', c1: [n[0], n[1]], c2: [n[2], n[3]], pt: [n[2], n[3]] });
+          curPt = [n[2], n[3]];
+        } break;
         case 're': if (n.length >= 4) {
           startAddr ??= Object.freeze(addr);
           const [x, y, w, h] = n;

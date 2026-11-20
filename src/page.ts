@@ -16,7 +16,7 @@ import { PageFormat } from './pageformat.js';
 import {
   readTransition, readDuration, setTransition, setDuration, type PageTransition,
 } from './pagetransition.js';
-import { renderPageToSvg, renderPageToSvgAsync, SvgOptions } from './svgrender.js';
+import { renderPageToSvg, renderPageToSvgAsync, renderPathsToSvg, SvgOptions } from './svgrender.js';
 import { renderPageToHtml, renderPageToHtmlAsync, HtmlOptions } from './html.js';
 import { renderPageToDocx, renderPageToDocxAsync, type DocxOptions } from './docxexport.js';
 import {
@@ -37,7 +37,7 @@ import { flattenAnnotations } from './flatten.js';
 import { stampWith, StampWithOptions, resizePage, scalePage, ResizeOptions } from './compose.js';
 import type { Rect } from './text.js';
 import { extractTables, type Table, type TableExtractOptions } from './table.js';
-import { extractPaths, type EditablePagePath } from './paths.js';
+import { extractPaths, type EditablePagePath, type PagePath } from './paths.js';
 import { extractArtifacts, removeArtifacts, type PageArtifact, type ArtifactFilter } from './artifact.js';
 import type { PrinterMarksOptions } from './printermarks.js';
 import {
@@ -869,6 +869,11 @@ export class Page {
    *  content degrades (gray fallback / placeholder) rather than throwing. */
   ToSvg(options?: SvgOptions): string {
     return renderPageToSvg(this.doc, this, options);
+  }
+
+  /** Export selected path snapshots as a standalone SVG in CropBox coordinates. */
+  PathsToSvg(paths: readonly PagePath[]): string {
+    return renderPathsToSvg(this, paths);
   }
 
   /** Yield between rendering and assembly; a page render itself is atomic. */
