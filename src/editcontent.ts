@@ -1,10 +1,14 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { PdfDict, PdfStream, PdfRef, isArray, isDict, isStream, isRef } from './types.js';
-import { ContentOp, parseContentStream, serializeContentStream, type ContentTokenBudget } from './content.js';
-import { streamOf, ensureUnsharedResources, ensureOwnSubdict, pageContentStreams } from './pagecontent.js';
+import { PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isStream, isRef, name } from './types.js';
+import {
+  ContentOp, parseContentStream, readContentForSplice, serializeContentStream,
+  type ContentOpSource, type ContentTokenBudget,
+} from './content.js';
+import { streamOf, ensureUnsharedResources, ensureOwnSubdict, freshKey, pageContentStreams } from './pagecontent.js';
 import { inflateStream } from './flate.js';
 import { budgetFor } from './decodebudget.js';
+import { UnsupportedFeatureError } from './errors.js';
 
 /** Address of an operator within a page's content. */
 export interface ContentAddr {
@@ -56,6 +60,64 @@ export class EditableContent {
       throw new RangeError(`no content stream at index ${streamIndex}`);
     this.parsed[streamIndex] = ops.slice();
     this.dirty.add(streamIndex);
+  }
+
+  /** Read a top-level stream for byte-local edits. @internal */
+  topSource(streamIndex: number): ContentOpSource {
+    const stream = this.streams[streamIndex];
+    if (!stream) throw new RangeError(`no content stream at index ${streamIndex}`);
+    return readContentForSplice(inflateStream(stream), budgetFor(stream).limits, this.tokens);
+  }
+
+  /** Immediately edit one Form occurrence in a verified chain of `Do` ops.
+   *  Prepare copies of every scope before publishing any stream or resource.
+   *  @internal */
+  editFormOccurrence(invocations: readonly ContentAddr[], edit: (source: ContentOpSource) => Uint8Array): void {
+    if (invocations.length === 0) throw new RangeError('missing Form invocation');
+    const top = invocations[0].streamIndex;
+    let source = this.topSource(top);
+    const pageResources = new Map(this.page.Resources);
+    let xobjects = ensureOwnSubdict(this.doc, pageResources, 'XObject');
+    const forms: { form: PdfStream; ownResources?: PdfDict }[] = [];
+    const owners: { xobjects: PdfDict; key: string; bytes: Uint8Array }[] = [];
+
+    for (let i = 0; i < invocations.length; i++) {
+      const { opIndex } = invocations[i];
+      const draw = source.ops[opIndex];
+      const target = draw?.operands[0];
+      if (draw?.operator !== 'Do' || !isName(target)) throw new RangeError('missing Form draw');
+      const form = this.doc.resolve(xobjects.get(target.name));
+      if (!isStream(form)) throw new RangeError(`missing Form /${target.name}`);
+      if (form.dict.has('StructParents') || form.dict.has('StructParent'))
+        throw new UnsupportedFeatureError('cannot edit a Form occurrence with a structure-parent entry');
+
+      const key = freshKey(xobjects, 'PathEdit');
+      xobjects.set(key, null); // reserve it for other draws sharing this staged owner
+      const bytes = source.replace(opIndex, opIndex + 1, [{ operator: 'Do', operands: [name(key)] }]);
+      owners.push({ xobjects, key, bytes });
+      const ownResources = this.doc.resolve(form.dict.get('Resources'));
+      const ownCopy = i + 1 < invocations.length && isDict(ownResources) ? new Map(ownResources) : undefined;
+      forms.push({ form, ownResources: ownCopy });
+      if (ownCopy) xobjects = ensureOwnSubdict(this.doc, ownCopy, 'XObject');
+      source = readContentForSplice(inflateStream(form), budgetFor(form).limits, this.tokens);
+    }
+
+    const leafBytes = edit(source);
+    const clones = forms.map(({ form, ownResources }, i): PdfStream => {
+      const owner = owners[i + 1];
+      const raw = owner?.bytes ?? leafBytes;
+      const dict = new Map(form.dict);
+      for (const key of ['Filter', 'DecodeParms', 'F', 'FFilter', 'FDecodeParms', 'DL']) dict.delete(key);
+      dict.set('Length', raw.length);
+      if (ownResources) dict.set('Resources', ownResources);
+      return { kind: 'stream', dict, raw };
+    });
+    for (let i = clones.length - 1; i >= 0; i--) {
+      const { xobjects, key } = owners[i];
+      xobjects.set(key, this.doc.allocObject(clones[i]));
+    }
+    this.writeTopStreams(new Map([[top, owners[0].bytes]]));
+    this.page.Dict.set('Resources', pageResources);
   }
 
   xobjectOps(path: readonly string[]): readonly ContentOp[] {
@@ -153,6 +215,8 @@ export class EditableContent {
 
   /** Write modified streams back into fresh page-owned stream objects. */
   commit(): void {
+    const topBytes = new Map<number, Uint8Array>();
+    for (const i of this.dirty) topBytes.set(i, serializeContentStream(this.parsed[i]!));
     // Flush copy-on-written XObject streams: repoint each owner to a fresh,
     // uncompressed clone carrying the edited ops (PdfStream.raw is immutable).
     for (const e of this.xobj.values()) {
@@ -167,23 +231,26 @@ export class EditableContent {
       e.dirty = false;
     }
     // Flush top-level streams.
-    if (this.dirty.size > 0) {
-      const refs = this.contentRefs();
-      for (const i of this.dirty) {
-        const bytes = serializeContentStream(this.parsed[i]!);
-        refs[i] = this.doc.allocObject(streamOf(bytes)); // fresh page-owned object
-      }
-      this.page.Dict.set('Contents', refs);
+    if (topBytes.size > 0) {
+      this.writeTopStreams(topBytes);
       this.dirty.clear();
     }
   }
 
-  /** Current /Contents as a stream-ref array aligned with `this.streams`. */
-  private contentRefs(): PdfRef[] {
-    const c = this.page.Dict.get('Contents');
-    const out: PdfRef[] = [];
-    if (isRef(c)) out.push(c);
-    else if (isArray(c)) for (const e of c) if (isRef(e)) out.push(e);
-    return out;
+  /** Replace resolved stream slots in a page-owned array. Contents may itself
+   *  reference an array. Non-stream entries occupy no ContentAddr index. @internal */
+  writeTopStreams(bytes: ReadonlyMap<number, Uint8Array>): void {
+    const original = this.page.Dict.get('Contents');
+    const contents = this.doc.resolve(original);
+    const entries: PdfObject[] = isArray(contents) ? contents : original === undefined ? [] : [original];
+    let index = 0;
+    const copy = entries.map((entry) => {
+      const stream = this.doc.resolve(entry);
+      if (!isStream(stream)) return entry;
+      const raw = bytes.get(index++);
+      if (raw !== undefined) return this.doc.allocObject(streamOf(raw));
+      return isRef(entry) ? entry : this.doc.allocObject(stream);
+    });
+    this.page.Dict.set('Contents', copy);
   }
 }

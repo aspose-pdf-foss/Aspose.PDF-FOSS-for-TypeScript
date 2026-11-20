@@ -51,28 +51,55 @@ export interface ContentOp {
   readonly inlineImage?: { readonly dict: PdfDict; readonly data: Uint8Array };
 }
 
+/** Parsed operators with a byte-local replacement for an exclusive index range. @internal */
+export interface ContentOpSource {
+  readonly ops: readonly ContentOp[];
+  replace(first: number, end: number, ops: ContentOp[]): Uint8Array;
+}
+
+interface OpSpan { start: number; end: number; }
+
 const WS = new Set([0, 9, 10, 12, 13, 32]);
 
 /** Tokenize decoded content-stream bytes into an op stream. */
 export function parseContentStream(
   buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults, budget: ContentTokenBudget = { tokens: 0 },
 ): ContentOp[] {
+  return parseOps(buf, limits, budget);
+}
+
+/** Preserve bytes outside the edited operators, including cross-stream operands. @internal */
+export function readContentForSplice(buf: Uint8Array, limits: LoadLimits, budget: ContentTokenBudget): ContentOpSource {
+  const spans: OpSpan[] = [];
+  const ops = parseOps(buf, limits, budget, spans);
+  return {
+    ops,
+    replace(first, end, replacement) {
+      const start = spans[first], last = spans[end - 1];
+      if (!start || !last || first >= end) throw new RangeError('no content operators in the requested span');
+      const newline = enc('\n');
+      return concat([buf.subarray(0, start.start), newline, serializeContentStream(replacement), newline, buf.subarray(last.end)]);
+    },
+  };
+}
+
+function parseOps(buf: Uint8Array, limits: LoadLimits, budget: ContentTokenBudget, spans?: OpSpan[]): ContentOp[] {
   const lx = new ContentLexer(buf, limits, budget);
   const ops: ContentOp[] = [];
   let operands: PdfObject[] = [];
+  let operandStart: number | undefined;
   for (;;) {
     const tok = lx.next();
     if (tok.t === 'eof') break;
-    if (tok.t === 'kw') {
-      if (tok.v === 'true') { operands.push(true); continue; }
-      if (tok.v === 'false') { operands.push(false); continue; }
-      if (tok.v === 'null') { operands.push(null); continue; }
-      if (tok.v === 'BI') { ops.push(readInlineImage(lx)); operands = []; continue; }
-      ops.push({ operator: tok.v, operands });
+    if (tok.t === 'kw' && tok.v !== 'true' && tok.v !== 'false' && tok.v !== 'null') {
+      ops.push(tok.v === 'BI' ? readInlineImage(lx) : { operator: tok.v, operands });
+      spans?.push({ start: operandStart ?? tok.pos, end: lx.pos });
       operands = [];
+      operandStart = undefined;
       continue;
     }
     if (tok.t === 'delim' && (tok.v === ']' || tok.v === '>>')) continue; // stray close
+    operandStart ??= tok.pos;
     operands.push(valueFromToken(lx, tok));
   }
   return ops;

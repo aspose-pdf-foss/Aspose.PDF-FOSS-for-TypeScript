@@ -15,6 +15,7 @@ import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisi
 import type { ContentWalkOptions } from './text.js';
 import { rethrowLimit } from './errors.js';
 import { decodePageContentStreams, pageContentStreams } from './pagecontent.js';
+import { editPagePath, preparePathEdit, type PathEdit, type PathRecolorOptions } from './pathedit.js';
 
 export type PathSegment =
   | { op: 'move'; pt: [number, number] }
@@ -48,6 +49,16 @@ export interface PagePath {
   readonly Addr: PagePathAddr;
   /** The paint or end-path operator, also available as `Addr.end`. */
   addr: ContentAddr;
+}
+
+/** A path snapshot with methods that edit its source draw while it remains current. */
+export interface EditablePagePath extends PagePath {
+  /** Remove the path's paint, or remove clipping if the path only clips. */
+  Remove(): void;
+  /** Replace fill and/or stroke color on this draw. */
+  Recolor(options: PathRecolorOptions): void;
+  /** Apply an affine matrix in the same local coordinates as `subpaths`. */
+  Transform(matrix: Readonly<Matrix>): void;
 }
 
 const MAX_XOBJECT_DEPTH = 8;
@@ -166,8 +177,30 @@ const origins = new WeakMap<PagePath, Origin>();
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const snapshot = (stream: PdfStream, bytes: Uint8Array): Source => ({ stream: new WeakRef(stream), digest: digest(bytes) });
 
+function stalePath(): RangeError {
+  return new RangeError('PagePath no longer addresses the page content. Call page.GetPaths() again.');
+}
+
+function editVerifiedPath(path: PagePath, edit: PathEdit): void {
+  const request = preparePathEdit(edit);
+  const source = origins.get(path)?.page;
+  const doc = source?.doc.deref();
+  const dict = source?.dict.deref();
+  if (!doc || !dict) throw stalePath();
+  const pageNumber = doc.pageNumberOf(dict);
+  if (pageNumber === undefined) throw stalePath();
+  const page = doc.Pages[pageNumber - 1];
+  editPagePath(doc, page, verifyPagePath(doc, page, path), request);
+}
+
+class PathEditor {
+  Remove(this: PagePath): void { editVerifiedPath(this, { kind: 'remove' }); }
+  Recolor(this: PagePath, options: PathRecolorOptions): void { editVerifiedPath(this, { kind: 'recolor', options }); }
+  Transform(this: PagePath, matrix: Readonly<Matrix>): void { editVerifiedPath(this, { kind: 'transform', matrix }); }
+}
+
 interface Ctx {
-  doc: Document; source: PageSource; out: PagePath[]; oc?: OcVisibility;
+  doc: Document; source: PageSource; out: EditablePagePath[]; oc?: OcVisibility;
   /** The `maxContentTokens` count for this page walk, shared by every stream it
    *  parses rather than counted afresh per stream (`ibzo.8`, `ibzo.9`). */
   tokens: ContentTokenBudget;
@@ -230,7 +263,7 @@ function walk(
     // `PagePath.clip`.
     if (oc.hidden) { reset(); return; }
     const address: PagePathAddr = Object.freeze({ start: startAddr, end: Object.freeze(addr), invocations });
-    const result: PagePath = {
+    const result: EditablePagePath = Object.assign(new PathEditor(), {
       subpaths: subpaths.map((sp) => ({ closed: sp.closed, segments: sp.segments.slice() })),
       ctm,
       bbox: deviceBbox(subpaths, ctm),
@@ -243,7 +276,7 @@ function walk(
       artifact: inArtifact || undefined,
       Addr: address,
       addr: address.end,
-    };
+    });
     origins.set(result, { page: ctx.source, trail, addr: address });
     ctx.out.push(result);
     reset();
@@ -346,7 +379,7 @@ function walk(
 
 /** Extract painted vector paths from a page (top-level content and nested Form
  *  XObjects). Never throws; returns [] on decode failure. */
-export function extractPaths(doc: Document, page: Page, opts: ContentWalkOptions = {}): PagePath[] {
+export function extractPaths(doc: Document, page: Page, opts: ContentWalkOptions = {}): EditablePagePath[] {
   let streams: PdfStream[];
   let bytes: Uint8Array[];
   try {
@@ -374,7 +407,7 @@ export function verifyPagePath(doc: Document, page: Page, path: PagePath): PageP
       rethrowLimit(caught);
     }
   }
-  throw new RangeError('PagePath no longer addresses the page content. Call page.GetPaths() again.');
+  throw stalePath();
 }
 
 function sourcesMatch(doc: Document, page: Page, origin: Origin): boolean {

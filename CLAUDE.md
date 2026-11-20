@@ -6782,6 +6782,16 @@ Source (`src/`):
   follows the page dictionary across page-tree rebuilds and requires that it
   still be a live page. Provenance uses weak references to the document and
   streams so a path snapshot can outlive the PDF without retaining it.
+  **pathedit.ts** edits the source operators of a verified path (`s2i2.2`).
+  Recoloring scopes DeviceRGB overrides with `q` and `Q`. A painted clip is
+  replayed after `Q` so the clip still applies to later artwork. Transforms
+  rewrite coordinates in the drawing stream and expand non-axis-aligned
+  rectangles into closed subpaths. Byte-local splices retain untouched
+  operands even when they continue across a stream boundary.
+  `EditableContent.editFormOccurrence` stages new names and streams from the
+  selected `Do` chain while retaining each Form's resource inheritance.
+  Other occurrences continue to resolve the original Forms. The top-level
+  writer uses resolved stream slots, including indirect `/Contents` arrays.
   **Invariant (`q1g2.3`):** it hides optional content through `ocvisible.ts`
   like the other two walkers, and a hidden paint still RESETS the accumulated
   subpaths and pending clip — carrying them forward gives the next VISIBLE path

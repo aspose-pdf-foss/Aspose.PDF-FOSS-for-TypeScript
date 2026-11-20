@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Edit individual page paths.** `GetPaths()` returns `EditablePagePath` handles
+  with `Remove`, `Recolor`, and `Transform`. Recoloring preserves the surrounding
+  graphics state and clipping. Transforms use the path's local coordinates.
+  Editing a repeated Form draw copies only the selected invocation chain.
+  (s2i2.2)
+
 - **Addressable page paths.** `PagePath.Addr` gives the inclusive operator
   span, including paths built across content streams, and records which
   Form XObject draws led to the path. Repeated draws can be identified

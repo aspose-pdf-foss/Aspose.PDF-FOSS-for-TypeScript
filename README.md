@@ -1828,6 +1828,30 @@ end address names its resource chain and `Addr.invocations` lists the enclosing
 distinct invocation addresses. Call `GetPaths()` again after editing the
 source content to get current addresses.
 
+### Edit Vector Paths
+
+```ts
+const page = doc.Pages[0];
+const filled = page.GetPaths().find((path) => path.fill);
+filled?.Recolor({ fill: [0.2, 0.4, 0.8] });
+```
+
+`path.Recolor({ fill, stroke })` accepts one or both painted channels as
+DeviceRGB components from 0 to 1. `path.Transform([a, b, c, d, e, f])` changes
+the geometry in its drawing stream's local coordinates, keeping the stroke
+width. For a clipping path it changes the clip geometry too. `path.Remove()`
+removes the paint and keeps a clip that shares the painted path. For a path
+that only clips, it removes the clip.
+
+`GetPaths()` returns `EditablePagePath` handles with these methods and the
+`PagePath` snapshot fields. The methods edit the page while the fields describe
+the original draw. Call `GetPaths()` again before another edit. A stale handle
+throws `RangeError`. After recoloring a path that also clips, the returned
+painted path is followed by a clip-only path. Edit that clip-only path to change
+the clipping applied to subsequent artwork.
+Repeated Form draws are edited individually. A malformed path or an edit
+requiring a Form copy with structure-parent entries throws `UnsupportedFeatureError`.
+
 Shadings/gradients are not evaluated (reported as `space:'Pattern'`); dash, cap,
 and join are out of scope.
 
@@ -3848,7 +3872,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 514 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 516 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4184,8 +4208,10 @@ for work-unit boundaries and mutation/lifetime rules.
 | `OptimizeReport` | Per-concern savings and skips, including lossless `jbig2` results and the JPEG pass's `lossy` flag. |
 | `OverlayOptions` | Interface with 5 properties. |
 | `PageLabel` | A logical page-label range in the /Root /PageLabels number tree. |
-| `PagePath` | A drawn or clipping path with geometry, paint state, and its `Addr` operator span. |
+| `PagePath` | Snapshot of a drawn or clipping path with geometry, paint state, and its `Addr` operator span. |
+| `EditablePagePath` | A `PagePath` returned by `GetPaths()` that can edit its source draw with `Remove()`, `Recolor(options)`, and `Transform(matrix)`. |
 | `PagePathAddr` | Inclusive path construction-to-paint span and enclosing Form draw addresses. |
+| `PathRecolorOptions` | Fill and/or stroke as DeviceRGB components from 0 to 1. |
 | `PathEvent` | A painted vector path, its subpaths flattened to page-space segments. |
 | `PathPaint` | Interface with 2 properties. |
 | `PathSubpath` | Interface with 2 properties. |
@@ -4725,7 +4751,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.GetText(options?)` | Extract visible text as a `string` (encoding/ToUnicode/Type0 aware; `""` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
 | `page.GetTextFragments(options?)` | Extract positioned text as `TextFragment[]` (`text`, page-space `quad`, `fontSize`, `fontName`, `bold`/`italic`, and `script: 'sub' \| 'super'` for a run that reads as a sub/superscript of its line; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
 | `page.GetStructuredText(options?)` | Extract text as a `TextBlock[]` tree (blocks → lines → fragments, each with `text` + page-space `quad`; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
-| `page.GetPaths(options?)` | Extract painted vector paths as `PagePath[]` (user-space `subpaths` of line/cubic segments + `ctm`, device `bbox`, resolved `fill`/`stroke` `{rgb, space}`, `fillRule`, `lineWidth`, `clip`, `mcid`/`artifact`; descends into Form XObjects; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
+| `page.GetPaths(options?)` | Extract painted vector paths as `EditablePagePath[]` (user-space `subpaths` of line/cubic segments + `ctm`, device `bbox`, resolved `fill`/`stroke` `{rgb, space}`, `fillRule`, `lineWidth`, `clip`, `mcid`/`artifact`; descends into Form XObjects; `[]` if none). Pass `{ includeHidden: true }` to include paths on switched-off optional-content layers. |
 | `page.Artifacts` | The `/Artifact` marked-content scopes the page declares as `PageArtifact[]` (`type`/`subtype`/`attached`/`properties` from the property list, `bbox` + `bboxSource` declared or measured, `addr`, `parent`; descends into Form XObjects; `[]` if none); each entry's `Remove()` deletes it |
 | `page.RemoveArtifacts(filter)` | Delete every artifact a predicate or `{ type, subtype }` selects — the span, its contents, and any resource only it used; a filter is required. Returns how many were selected |
 | `page.GetTables(options?)` | Reconstruct tables as `Table[]` (`rowCount`, `colCount`, `rows` → `TableCell[]` with `row`/`col`/`rowSpan`/`colSpan`/`quad`/`text`/`tables`), each with `toHtml()` / `toMarkdown()`. Tagged PDFs are read from the `/Table` structure tree automatically (adding `isHeader`/`scope`/`id`/`headers` per cell, section per row, table `summary`, and `tables` for nested tables inside a cell, with `toHtml()` emitting `<thead>`/`<tbody>`/`<th scope>`/`<caption>` and nested `<table>`s); untagged pages fall back to geometry. `options.region` limits extraction, `options.structure = 'off'` forces geometry-only, `options.includeHidden` detects from content a hidden optional-content layer covers; `[]` if none. Rotated/skewed tables (ruled and borderless) are detected too: the geometry runs in the table's upright frame and `Table.angle` (radians, 0 for axis-aligned) records the rotation |

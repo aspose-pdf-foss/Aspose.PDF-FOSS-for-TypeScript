@@ -37,7 +37,7 @@ import { flattenAnnotations } from './flatten.js';
 import { stampWith, StampWithOptions, resizePage, scalePage, ResizeOptions } from './compose.js';
 import type { Rect } from './text.js';
 import { extractTables, type Table, type TableExtractOptions } from './table.js';
-import { extractPaths, type PagePath } from './paths.js';
+import { extractPaths, type EditablePagePath } from './paths.js';
 import { extractArtifacts, removeArtifacts, type PageArtifact, type ArtifactFilter } from './artifact.js';
 import type { PrinterMarksOptions } from './printermarks.js';
 import {
@@ -573,7 +573,7 @@ export class Page {
    *  Content the document's default optional-content configuration HIDES is
    *  absent; pass `{ includeHidden: true }` to read what the file contains
    *  rather than what it shows. */
-  GetPaths(options?: ExtractOptions): PagePath[] {
+  GetPaths(options?: ExtractOptions): EditablePagePath[] {
     return extractPaths(this.doc, this, walkOpts(options));
   }
 
