@@ -17,6 +17,7 @@ import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisi
 // metadata.ts owns PDF text-string decoding and depends on the encoding table.
 import { decodePdfText } from './metadata.js';
 import { rethrowLimit } from './errors.js';
+import { decodePageContentStreams, pageContentStreams } from './pagecontent.js';
 
 /** 2x3 affine matrix [a b c d e f] with row-vector convention:
  *  x' = a*x + c*y + e ; y' = b*x + d*y + f. */
@@ -1013,15 +1014,7 @@ type PdfStreamLike = Parameters<typeof inflateStream>[0];
 
 /** The inflated bytes of each /Contents stream, in order. */
 export function contentStreamBytes(doc: Document, page: Page): Uint8Array[] {
-  const c = doc.resolve(page.Dict.get('Contents'));
-  const out: Uint8Array[] = [];
-  // (ibzo.4) A running total, as Page.Contents keeps: the array is bounded as a
-  // whole, and the crossing stream is stopped at the cap.
-  let soFar = 0;
-  const take = (s: PdfStreamLike) => { const b = inflateStream(s, { contentSoFar: soFar }); soFar += b.length; out.push(b); };
-  if (isStream(c)) take(c);
-  else if (isArray(c)) for (const e of c) { const s = doc.resolve(e); if (isStream(s)) take(s); }
-  return out;
+  return decodePageContentStreams(pageContentStreams(doc, page));
 }
 
 function lineMove(st: TextState, tx: number, ty: number): void {

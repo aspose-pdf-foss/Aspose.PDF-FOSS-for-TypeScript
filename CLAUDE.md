@@ -6772,6 +6772,16 @@ Source (`src/`):
   (`page.GetPaths`): a focused content walker (cf. `imageusage.ts`, separate from
   `text.ts`'s `visitContent`) that tracks CTM/paint/clip and emits one positioned
   `PagePath` per paint op.
+  **Invariant (`s2i2.1`):** `PagePath.Addr` records the first construction
+  operator through the terminal paint or `n`, inclusive. The start survives
+  stream boundaries and resets with the geometry. Each enclosing `Do` is
+  recorded individually, so repeated Form draws can share a source span and
+  still be distinguished. `verifyPagePath` checks the live page and source
+  stream identities and decoded bytes before any copy-on-write. It resolves
+  inherited Form resources through the same rules as extraction. Ownership
+  follows the page dictionary across page-tree rebuilds and requires that it
+  still be a live page. Provenance uses weak references to the document and
+  streams so a path snapshot can outlive the PDF without retaining it.
   **Invariant (`q1g2.3`):** it hides optional content through `ocvisible.ts`
   like the other two walkers, and a hidden paint still RESETS the accumulated
   subpaths and pending clip — carrying them forward gives the next VISIBLE path

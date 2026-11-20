@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
+import type { Page } from '../src/page.js';
+import { verifyPagePath } from '../src/paths.js';
+import { enc } from '../src/serialize.js';
+import { streamOf } from '../src/pagecontent.js';
+import { name, type PdfDict, type PdfStream } from '../src/types.js';
 import { buildPathsPdf, buildSeparationPathPdf, buildXObjectPathPdf, buildTaggedPathPdf } from './helpers/build-paths-pdf.js';
 
 const paths = (bytes: Uint8Array) => Document.Open(bytes).Pages[0].GetPaths();
@@ -103,5 +108,99 @@ describe('GetPaths — round-trip', () => {
     expect(after.length).toBe(before.length);
     expect(after.map((x) => x.bbox)).toEqual(before.map((x) => x.bbox));
     expect(after.map((x) => x.fill?.rgb ?? null)).toEqual(before.map((x) => x.fill?.rgb ?? null));
+  });
+});
+
+function setContents(doc: Document, page: Page, ...contents: string[]): void {
+  page.Dict.set('Contents', contents.map((content) => doc.allocObject(streamOf(enc(content)))));
+}
+
+describe('GetPaths — addresses', () => {
+  it('names construction through paint and includes clip termination', () => {
+    const page = Document.Open(buildPathsPdf()).Pages[0];
+    const [rect, , , clip] = page.GetPaths();
+    const at = (opIndex: number) => ({ path: [], streamIndex: 0, opIndex });
+    expect(rect.Addr).toEqual({ start: at(1), end: at(2), invocations: [] });
+    expect(rect.addr).toEqual(rect.Addr.end);
+    expect(clip.Addr).toEqual({ start: at(14), end: at(16), invocations: [] });
+  });
+
+  it('tracks a path across streams and resets the start at each paint', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    setContents(doc, page, '1 w 0 0 m 20 0 l', '20 20 l h S 1 1 4 4 re f');
+    const [line, box] = page.GetPaths();
+    expect(line.Addr.start).toEqual({ path: [], streamIndex: 0, opIndex: 1 });
+    expect(line.Addr.end).toEqual({ path: [], streamIndex: 1, opIndex: 2 });
+    expect(box.Addr.start).toEqual({ path: [], streamIndex: 1, opIndex: 3 });
+    expect(verifyPagePath(doc, page, line)).toBe(line.Addr);
+  });
+
+  it('distinguishes repeated draws of a nested Form with inherited resources', () => {
+    const doc = Document.Open(buildXObjectPathPdf());
+    const [page] = doc.Pages;
+    const xobjects = doc.resolve(page.Resources!.get('XObject')) as PdfDict;
+    const outer = streamOf(enc('/Fm0 Do'));
+    outer.dict.set('Subtype', name('Form'));
+    outer.dict.set('BBox', [0, 0, 20, 20]);
+    xobjects.set('Outer', doc.allocObject(outer));
+    setContents(doc, page, '/Outer Do', 'q 1 0 0 1 30 0 cm /Outer Do Q');
+
+    const [first, second] = page.GetPaths();
+    expect(first.Addr.start).toEqual({ path: ['Outer', 'Fm0'], streamIndex: 0, opIndex: 1 });
+    expect(second.Addr.end).toEqual(first.Addr.end);
+    expect(first.Addr.invocations).toEqual([
+      { path: [], streamIndex: 0, opIndex: 0 },
+      { path: ['Outer'], streamIndex: 0, opIndex: 0 },
+    ]);
+    expect(second.Addr.invocations).toEqual([
+      { path: [], streamIndex: 1, opIndex: 2 },
+      { path: ['Outer'], streamIndex: 0, opIndex: 0 },
+    ]);
+    expect(verifyPagePath(doc, page, second)).toBe(second.Addr);
+
+    const inner = doc.resolve(xobjects.get('Fm0')) as PdfStream;
+    xobjects.set('Fm0', doc.allocObject({ ...inner, dict: new Map(inner.dict) }));
+    const resources = page.Resources;
+    const objectCount = [...doc.objectEntries()].length;
+    expect(() => verifyPagePath(doc, page, second)).toThrow(RangeError);
+    expect(page.Resources).toBe(resources);
+    expect([...doc.objectEntries()]).toHaveLength(objectCount);
+    expect(verifyPagePath(doc, page, page.GetPaths()[1])).toEqual(second.Addr);
+  });
+
+  it('rejects a replaced stream even if the same operations occupy its old span', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    setContents(doc, page, '0 0 10 10 re f 0 0 10 10 re f');
+    const [first] = page.GetPaths();
+    setContents(doc, page, '0 0 10 10 re f');
+    expect(() => verifyPagePath(doc, page, first)).toThrow(RangeError);
+  });
+
+  it('rejects an in-place byte change and paths from another page', () => {
+    const doc = Document.New();
+    const { page } = doc.AddPage();
+    const other = doc.AddPage().page;
+    const stream = streamOf(enc('0 0 10 10 re f'));
+    const ref = doc.allocObject(stream);
+    page.Dict.set('Contents', ref);
+    other.Dict.set('Contents', ref);
+    const [path] = page.GetPaths();
+    expect(() => verifyPagePath(doc, other, path)).toThrow(RangeError);
+    stream.raw[0] = 0x31;
+    expect(() => verifyPagePath(doc, page, path)).toThrow(RangeError);
+  });
+
+  it('tracks the live page across wrapper replacement and rejects a removed page', () => {
+    const doc = Document.Open(buildPathsPdf());
+    const [original] = doc.Pages;
+    const [path] = original.GetPaths();
+    doc.AddPage();
+    const [current] = doc.Pages;
+    expect(verifyPagePath(doc, current, path)).toBe(path.Addr);
+
+    doc.RemovePage(current);
+    expect(() => verifyPagePath(doc, original, path)).toThrow(RangeError);
   });
 });

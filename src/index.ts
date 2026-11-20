@@ -84,7 +84,7 @@ export { extractTaggedTables } from './tablestruct.js';
 export { stitchTables } from './tablestitch.js';
 export type { TableCell, TableRow, TableExtractOptions } from './table.js';
 export { extractPaths } from './paths.js';
-export type { PagePath, PathSubpath, PathSegment, PathPaint } from './paths.js';
+export type { PagePath, PagePathAddr, PathSubpath, PathSegment, PathPaint } from './paths.js';
 export type { PageMode, PageLayout } from './pagemode.js';
 export { extractArtifacts } from './artifact.js';
 export { imageKey } from './imagehref.js';

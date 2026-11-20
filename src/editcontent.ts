@@ -2,7 +2,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import { PdfDict, PdfStream, PdfRef, isArray, isDict, isStream, isRef } from './types.js';
 import { ContentOp, parseContentStream, serializeContentStream, type ContentTokenBudget } from './content.js';
-import { streamOf, ensureUnsharedResources, ensureOwnSubdict } from './pagecontent.js';
+import { streamOf, ensureUnsharedResources, ensureOwnSubdict, pageContentStreams } from './pagecontent.js';
 import { inflateStream } from './flate.js';
 import { budgetFor } from './decodebudget.js';
 
@@ -14,15 +14,6 @@ export interface ContentAddr {
   readonly streamIndex: number;
   /** Index of the operator within that parsed stream. */
   readonly opIndex: number;
-}
-
-/** The resolved stream objects of a page's /Contents, in order. */
-function contentStreams(doc: Document, page: Page): PdfStream[] {
-  const c = doc.resolve(page.Dict.get('Contents'));
-  const out: PdfStream[] = [];
-  if (isStream(c)) out.push(c);
-  else if (isArray(c)) for (const e of c) { const s = doc.resolve(e); if (isStream(s)) out.push(s); }
-  return out;
 }
 
 /** Editable per-stream view of a page's content (Phase 4 foundation, F1). */
@@ -44,7 +35,7 @@ export class EditableContent {
   constructor(doc: Document, page: Page) {
     this.doc = doc;
     this.page = page;
-    this.streams = contentStreams(doc, page);
+    this.streams = pageContentStreams(doc, page);
     this.parsed = new Array(this.streams.length).fill(undefined);
   }
 

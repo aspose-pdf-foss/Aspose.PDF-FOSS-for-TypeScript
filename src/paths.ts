@@ -2,17 +2,19 @@
 // XObjects), tracking the CTM, paint color, line width and clip, and emit one
 // positioned path per paint operation. A focused walker (cf. imageusage.ts),
 // deliberately separate from text.ts's shared visitContent.
+import { createHash } from 'node:crypto';
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { ContentAddr } from './editcontent.js';
-import { PdfDict, PdfObject, isName, isArray, isDict, isStream } from './types.js';
+import { PdfDict, PdfObject, PdfStream, isName, isArray, isDict, isStream } from './types.js';
 import { parseContentStream, type ContentTokenBudget } from './content.js';
-import { Matrix, IDENTITY, mul, apply, vscale, contentStreamBytes } from './text.js';
+import { Matrix, IDENTITY, mul, apply, vscale } from './text.js';
 import { Rgb, cmykToRgb, resolveColorSpace, deviceGray, ColorConverter } from './colorspace.js';
 import { inflateStream } from './flate.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 import type { ContentWalkOptions } from './text.js';
 import { rethrowLimit } from './errors.js';
+import { decodePageContentStreams, pageContentStreams } from './pagecontent.js';
 
 export type PathSegment =
   | { op: 'move'; pt: [number, number] }
@@ -21,6 +23,16 @@ export type PathSegment =
 
 export interface PathSubpath { closed: boolean; segments: PathSegment[]; }
 export interface PathPaint { rgb: Rgb; space: string; }
+
+/** Inclusive operator span of a path drawn on a page. */
+export interface PagePathAddr {
+  /** The first path construction operator. */
+  readonly start: ContentAddr;
+  /** The paint or end-path operator. */
+  readonly end: ContentAddr;
+  /** The enclosing Form draws, as `Do` addresses ordered from the page inward. */
+  readonly invocations: readonly ContentAddr[];
+}
 
 export interface PagePath {
   subpaths: PathSubpath[];
@@ -33,6 +45,8 @@ export interface PagePath {
   clip: 'nonzero' | 'evenodd' | null;
   mcid?: number;
   artifact?: boolean;
+  readonly Addr: PagePathAddr;
+  /** The paint or end-path operator, also available as `Addr.end`. */
   addr: ContentAddr;
 }
 
@@ -47,6 +61,18 @@ const cl255 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 25
 function resolveDict(doc: Document, o: PdfObject | undefined): PdfDict | undefined {
   const r = doc.resolve(o);
   return isDict(r) ? r : undefined;
+}
+
+function resolveForm(doc: Document, resources: PdfDict | undefined, key: string): PdfStream | undefined {
+  const xobjects = resolveDict(doc, resources?.get('XObject'));
+  const stream = doc.resolve(xobjects?.get(key));
+  if (!isStream(stream)) return undefined;
+  const subtype = doc.resolve(stream.dict.get('Subtype'));
+  return isName(subtype) && subtype.name === 'Form' ? stream : undefined;
+}
+
+function formResources(doc: Document, form: PdfStream, inherited: PdfDict | undefined): PdfDict | undefined {
+  return resolveDict(doc, form.dict.get('Resources')) ?? inherited;
 }
 
 /** The colorspace family label for a /ColorSpace operand (name or array). */
@@ -124,8 +150,24 @@ function deviceBbox(subpaths: PathSubpath[], ctm: Matrix): [number, number, numb
   return x0 === Infinity ? [0, 0, 0, 0] : [x0, y0, x1, y1];
 }
 
+interface Source { stream: WeakRef<PdfStream>; digest: string; }
+interface Invocation { addr: ContentAddr; source: Source; }
+interface PageSource {
+  doc: WeakRef<Document>;
+  dict: WeakRef<PdfDict>;
+  top: readonly Source[];
+}
+interface Origin {
+  page: PageSource;
+  trail: readonly Invocation[];
+  addr: PagePathAddr;
+}
+const origins = new WeakMap<PagePath, Origin>();
+const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+const snapshot = (stream: PdfStream, bytes: Uint8Array): Source => ({ stream: new WeakRef(stream), digest: digest(bytes) });
+
 interface Ctx {
-  doc: Document; out: PagePath[]; oc?: OcVisibility;
+  doc: Document; source: PageSource; out: PagePath[]; oc?: OcVisibility;
   /** The `maxContentTokens` count for this page walk, shared by every stream it
    *  parses rather than counted afresh per stream (`ibzo.8`, `ibzo.9`). */
   tokens: ContentTokenBudget;
@@ -134,7 +176,7 @@ interface Stream { bytes: Uint8Array; streamIndex: number; }
 
 function walk(
   ctx: Ctx, streams: Stream[], resources: PdfDict | undefined,
-  path: string[], baseCtm: Matrix, depth: number, seen: Set<object>,
+  path: readonly string[], trail: readonly Invocation[], baseCtm: Matrix, seen: Set<object>,
 ): void {
   let ctm = baseCtm;
   let lineWidth = 1;
@@ -148,6 +190,7 @@ function walk(
   let cur: PathSubpath | undefined;
   let curPt: Pt | undefined;
   let startPt: Pt | undefined;
+  let startAddr: ContentAddr | undefined;
   let pendingClip: 'nonzero' | 'evenodd' | null = null;
 
   const properties = resolveDict(ctx.doc, resources?.get('Properties'));
@@ -159,7 +202,10 @@ function walk(
   // `pagerender.ts` use. Inert unless the caller asked to skip.
   const oc = new OcStack(ctx.oc);
 
-  const reset = () => { subpaths = []; cur = undefined; curPt = undefined; startPt = undefined; pendingClip = null; };
+  const invocations = Object.freeze(trail.map(({ addr }) => addr));
+  const reset = () => {
+    subpaths = []; cur = undefined; curPt = undefined; startPt = undefined; startAddr = undefined; pendingClip = null;
+  };
 
   const setColor = (operands: readonly PdfObject[], isStroke: boolean) => {
     const hasPattern = operands.length > 0 && isName(operands[operands.length - 1]);
@@ -174,7 +220,7 @@ function walk(
 
   const emit = (addr: ContentAddr, f: boolean, s: boolean, rule: 'nonzero' | 'evenodd' | null) => {
     if (!f && !s && !pendingClip) { reset(); return; }
-    if (subpaths.length === 0) { reset(); return; }
+    if (!startAddr) { reset(); return; }
     // Hidden: report nothing, but RESET as always — the accumulated subpaths and
     // the pending clip belong to this paint op, and carrying them forward would
     // give the next VISIBLE path the hidden one's geometry. That is the analogue
@@ -183,7 +229,8 @@ function walk(
     // PAINTS, a hidden `W n` paints nothing, and no consumer in src/ reads
     // `PagePath.clip`.
     if (oc.hidden) { reset(); return; }
-    ctx.out.push({
+    const address: PagePathAddr = Object.freeze({ start: startAddr, end: Object.freeze(addr), invocations });
+    const result: PagePath = {
       subpaths: subpaths.map((sp) => ({ closed: sp.closed, segments: sp.segments.slice() })),
       ctm,
       bbox: deviceBbox(subpaths, ctm),
@@ -194,8 +241,11 @@ function walk(
       clip: pendingClip,
       mcid: activeMcid,
       artifact: inArtifact || undefined,
-      addr,
-    });
+      Addr: address,
+      addr: address.end,
+    };
+    origins.set(result, { page: ctx.source, trail, addr: address });
+    ctx.out.push(result);
     reset();
   };
 
@@ -204,7 +254,7 @@ function walk(
     try { ops = parseContentStream(bytes, ctx.doc.loadLimits, ctx.tokens); } catch (caught) { rethrowLimit(caught); continue; }
     for (let opIndex = 0; opIndex < ops.length; opIndex++) {
       const op = ops[opIndex];
-      const addr: ContentAddr = { path: [...path], streamIndex, opIndex };
+      const addr: ContentAddr = { path, streamIndex, opIndex };
       const n = nums(op.operands);
       switch (op.operator) {
         case 'q': gsStack.push({ ctm, lineWidth, fill, stroke, fillConv, strokeConv }); break;
@@ -212,12 +262,17 @@ function walk(
         case 'cm': if (n.length === 6) ctm = mul(n as Matrix, ctm); break;
         case 'w': lineWidth = num(op.operands[0]); break;
         // path construction
-        case 'm': cur = { closed: false, segments: [{ op: 'move', pt: [n[0], n[1]] }] }; subpaths.push(cur); curPt = [n[0], n[1]]; startPt = [n[0], n[1]]; break;
+        case 'm':
+          startAddr ??= Object.freeze(addr);
+          cur = { closed: false, segments: [{ op: 'move', pt: [n[0], n[1]] }] };
+          subpaths.push(cur); curPt = [n[0], n[1]]; startPt = [n[0], n[1]];
+          break;
         case 'l': if (cur && n.length >= 2) { cur.segments.push({ op: 'line', pt: [n[0], n[1]] }); curPt = [n[0], n[1]]; } break;
         case 'c': if (cur && n.length >= 6) { cur.segments.push({ op: 'cubic', c1: [n[0], n[1]], c2: [n[2], n[3]], pt: [n[4], n[5]] }); curPt = [n[4], n[5]]; } break;
         case 'v': if (cur && curPt && n.length >= 4) { cur.segments.push({ op: 'cubic', c1: [curPt[0], curPt[1]], c2: [n[0], n[1]], pt: [n[2], n[3]] }); curPt = [n[2], n[3]]; } break;
         case 'y': if (cur && n.length >= 4) { cur.segments.push({ op: 'cubic', c1: [n[0], n[1]], c2: [n[2], n[3]], pt: [n[2], n[3]] }); curPt = [n[2], n[3]]; } break;
         case 're': if (n.length >= 4) {
+          startAddr ??= Object.freeze(addr);
           const [x, y, w, h] = n;
           cur = { closed: true, segments: [
             { op: 'move', pt: [x, y] }, { op: 'line', pt: [x + w, y] },
@@ -264,23 +319,22 @@ function walk(
         case 'n': emit(addr, false, false, null); break;
         case 'Do': {
           const xn = op.operands[0];
-          const xobjects = resolveDict(ctx.doc, resources?.get('XObject'));
-          if (!isName(xn) || !xobjects) break;
-          const xo = ctx.doc.resolve(xobjects.get(xn.name));
-          if (!isStream(xo)) break;
-          const sub = ctx.doc.resolve(xo.dict.get('Subtype'));
-          if (!(isName(sub) && sub.name === 'Form')) break;   // images/others: no paths
+          if (!isName(xn)) break;
+          const xo = resolveForm(ctx.doc, resources, xn.name);
+          if (!xo) break;
           if (oc.hidden || !ocVisible(ctx.oc, xo.dict.get('OC'))) break;
-          if (depth >= MAX_XOBJECT_DEPTH || seen.has(xo.dict)) break;
+          if (trail.length >= MAX_XOBJECT_DEPTH || seen.has(xo.dict)) break;
           seen.add(xo.dict);
           const mo = ctx.doc.resolve(xo.dict.get('Matrix'));
           const mat = isArray(mo) ? nums(mo) : [];
           const childCtm = mat.length === 6 ? mul(mat as Matrix, ctm) : ctm;
-          const childRes = resolveDict(ctx.doc, xo.dict.get('Resources')) ?? resources;
+          const childRes = formResources(ctx.doc, xo, resources);
           let childBytes: Uint8Array;
-          try { childBytes = inflateStream(xo as Parameters<typeof inflateStream>[0]); }
+          try { childBytes = inflateStream(xo); }
           catch (caught) { rethrowLimit(caught); seen.delete(xo.dict); break; }
-          walk(ctx, [{ bytes: childBytes, streamIndex: 0 }], childRes, [...path, xn.name], childCtm, depth + 1, seen);
+          const draw: Invocation = { addr: Object.freeze(addr), source: snapshot(xo, childBytes) };
+          walk(ctx, [{ bytes: childBytes, streamIndex: 0 }], childRes,
+            Object.freeze([...path, xn.name]), [...trail, draw], childCtm, seen);
           seen.delete(xo.dict);
           break;
         }
@@ -293,9 +347,49 @@ function walk(
 /** Extract painted vector paths from a page (top-level content and nested Form
  *  XObjects). Never throws; returns [] on decode failure. */
 export function extractPaths(doc: Document, page: Page, opts: ContentWalkOptions = {}): PagePath[] {
-  const ctx: Ctx = { doc, out: [], tokens: { tokens: 0 }, oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined };
+  let streams: PdfStream[];
   let bytes: Uint8Array[];
-  try { bytes = contentStreamBytes(doc, page); } catch (caught) { rethrowLimit(caught); return []; }
-  walk(ctx, bytes.map((b, i) => ({ bytes: b, streamIndex: i })), page.Resources, [], IDENTITY, 0, new Set());
+  try {
+    streams = pageContentStreams(doc, page);
+    bytes = decodePageContentStreams(streams);
+  } catch (caught) { rethrowLimit(caught); return []; }
+  const source: PageSource = {
+    doc: new WeakRef(doc),
+    dict: new WeakRef(page.Dict),
+    top: streams.map((stream, i) => snapshot(stream, bytes[i])),
+  };
+  const ctx: Ctx = { doc, source, out: [], tokens: { tokens: 0 }, oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined };
+  walk(ctx, bytes.map((b, i) => ({ bytes: b, streamIndex: i })), page.Resources, Object.freeze([]), [], IDENTITY, new Set());
   return ctx.out;
+}
+
+/** Verify the live source before entering EditableContent's copy-on-write path. @internal */
+export function verifyPagePath(doc: Document, page: Page, path: PagePath): PagePathAddr {
+  const origin = origins.get(path);
+  if (origin && origin.page.doc.deref() === doc && origin.page.dict.deref() === page.Dict
+      && origin.addr === path.Addr && page.Document === doc && doc.pageNumberOf(page.Dict) !== undefined) {
+    try {
+      if (sourcesMatch(doc, page, origin)) return origin.addr;
+    } catch (caught) {
+      rethrowLimit(caught);
+    }
+  }
+  throw new RangeError('PagePath no longer addresses the page content. Call page.GetPaths() again.');
+}
+
+function sourcesMatch(doc: Document, page: Page, origin: Origin): boolean {
+  const streams = pageContentStreams(doc, page);
+  const top = origin.page.top;
+  if (streams.length !== top.length || streams.some((stream, i) => stream !== top[i].stream.deref())) return false;
+  const bytes = decodePageContentStreams(streams);
+  if (bytes.some((value, i) => digest(value) !== top[i].digest)) return false;
+
+  let resources = page.Resources;
+  for (let i = 0; i < origin.trail.length; i++) {
+    const { source } = origin.trail[i];
+    const form = resolveForm(doc, resources, origin.addr.end.path[i]);
+    if (!form || form !== source.stream.deref() || digest(inflateStream(form)) !== source.digest) return false;
+    resources = formResources(doc, form, resources);
+  }
+  return true;
 }

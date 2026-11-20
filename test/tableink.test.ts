@@ -8,6 +8,7 @@ const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 const BLACK: Rgb = [0, 0, 0];
 const GREY: Rgb = [238, 238, 238];
 const ADDR = { path: [], streamIndex: 0, opIndex: 0 };
+const SPAN = { start: ADDR, end: ADDR, invocations: [] };
 
 /** A stroked path of axis-aligned lines, in user space, under `ctm`. */
 function stroked(
@@ -28,6 +29,7 @@ function stroked(
     fillRule: null,
     lineWidth: width,
     clip: null,
+    Addr: SPAN,
     addr: ADDR,
   };
 }
@@ -52,6 +54,7 @@ function filled(rect: [number, number, number, number], rgb: Rgb): PagePath {
     fillRule: 'nonzero',
     lineWidth: 0,
     clip: null,
+    Addr: SPAN,
     addr: ADDR,
   };
 }

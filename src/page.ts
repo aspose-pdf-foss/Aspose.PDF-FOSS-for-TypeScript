@@ -568,8 +568,8 @@ export class Page {
   /** Extract painted vector paths (fills/strokes/clips) as positioned shapes:
    *  each carries its subpaths in user space, the CTM at paint time, a
    *  device-space bounding box, resolved fill/stroke color + colorspace family,
-   *  fill rule, stroke line width, and clip usage. Descends into Form XObjects.
-   *  Returns [] for pages with no painted paths.   *
+   *  fill rule, stroke line width, clip usage, and `Addr` operator span.
+   *  Descends into Form XObjects. Returns [] for pages with no painted paths.
    *  Content the document's default optional-content configuration HIDES is
    *  absent; pass `{ includeHidden: true }` to read what the file contains
    *  rather than what it shows. */

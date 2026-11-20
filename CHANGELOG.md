@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Addressable page paths.** `PagePath.Addr` gives the inclusive operator
+  span, including paths built across content streams, and records which
+  Form XObject draws led to the path. Repeated draws can be identified
+  individually. The existing `addr` still identifies the terminal operator.
+  TypeScript callers constructing `PagePath` objects supply `Addr` as well.
+  (s2i2.1)
+
 - **Prepress printer marks.** `Page.AddPrinterMarks` adds trim and bleed
   marks, all-colorant registration targets, and CMYK tint bars as printable
   annotations or page content. Individual constructors place marks by

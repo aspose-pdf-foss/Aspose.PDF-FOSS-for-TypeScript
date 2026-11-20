@@ -7,6 +7,29 @@ import {
 import { enc, escapeName } from './serialize.js';
 import type { Matrix } from './text.js';
 import { parseContentStream } from './content.js';
+import { inflateStream } from './flate.js';
+
+/** Resolved page content streams, in the order used by ContentAddr. */
+export function pageContentStreams(doc: Document, page: Page): PdfStream[] {
+  const contents = doc.resolve(page.Dict.get('Contents'));
+  if (isStream(contents)) return [contents];
+  const streams: PdfStream[] = [];
+  if (isArray(contents)) for (const item of contents) {
+    const stream = doc.resolve(item);
+    if (isStream(stream)) streams.push(stream);
+  }
+  return streams;
+}
+
+/** Decode /Contents under the cumulative page-content limit. */
+export function decodePageContentStreams(streams: readonly PdfStream[]): Uint8Array[] {
+  let contentSoFar = 0;
+  return streams.map((stream) => {
+    const bytes = inflateStream(stream, { contentSoFar });
+    contentSoFar += bytes.length;
+    return bytes;
+  });
+}
 
 /** Format a number compactly for a content stream (no exponent, no float noise). */
 export function num(n: number): string {

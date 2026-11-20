@@ -1818,8 +1818,16 @@ becomes a closed move+3×line subpath; `v`/`y` become full cubics). `fill` and
 through the page's colorspaces (Device\*, ICCBased, Indexed, Separation, DeviceN,
 Lab), and `space` names the family. `fillRule` is `'nonzero'`/`'evenodd'`,
 `lineWidth` is in device units (0 when not stroked), and `clip` flags a path used
-as a clip (`W`/`W*`). Paths inside Form XObjects are included, with `addr.path`
-naming the XObject chain and `mcid`/`artifact` reflecting the marked-content scope.
+as a clip (`W`/`W*`). `mcid` and `artifact` reflect the marked-content scope.
+
+`PagePath.Addr` gives the inclusive `start` and `end` operator addresses,
+which can span multiple page content streams. `addr` is the paint or end-path
+address, also available as `Addr.end`. For a path inside a Form XObject, the
+end address names its resource chain and `Addr.invocations` lists the enclosing
+`Do` operators in page-to-form order. Repeated draws of the same form have
+distinct invocation addresses. Call `GetPaths()` again after editing the
+source content to get current addresses.
+
 Shadings/gradients are not evaluated (reported as `space:'Pattern'`); dash, cap,
 and join are out of scope.
 
@@ -3840,7 +3848,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 513 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 514 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4176,7 +4184,8 @@ for work-unit boundaries and mutation/lifetime rules.
 | `OptimizeReport` | Per-concern savings and skips, including lossless `jbig2` results and the JPEG pass's `lossy` flag. |
 | `OverlayOptions` | Interface with 5 properties. |
 | `PageLabel` | A logical page-label range in the /Root /PageLabels number tree. |
-| `PagePath` | Interface with 11 properties. |
+| `PagePath` | A drawn or clipping path with geometry, paint state, and its `Addr` operator span. |
+| `PagePathAddr` | Inclusive path construction-to-paint span and enclosing Form draw addresses. |
 | `PathEvent` | A painted vector path, its subpaths flattened to page-space segments. |
 | `PathPaint` | Interface with 2 properties. |
 | `PathSubpath` | Interface with 2 properties. |
