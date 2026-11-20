@@ -510,11 +510,13 @@ const annotationsRule: Rule = (ctx) => {
     }
     if (sub === 'Popup' || sub === 'Link') continue; // no printed mark of their own
     const r = rect(ctx, dict.get('Rect'));
-    const zone = rect(ctx, page.Dict.get('BleedBox')) ?? rect(ctx, page.Dict.get('TrimBox'))
-      ?? rect(ctx, page.Dict.get('ArtBox'));
+    const finished = rect(ctx, page.Dict.get('TrimBox')) ?? rect(ctx, page.Dict.get('ArtBox'));
+    // ISO 15930-7 §6.17 allows a printer's mark in the bleed margin.
+    const zone = sub === 'PrinterMark' ? finished : rect(ctx, page.Dict.get('BleedBox')) ?? finished;
     if (r && zone && overlaps(r, zone)) {
       issues.push({ rule: 'Annotations', severity: 'error', clause: 'ISO 15930-4 §6.5', object, page,
-        message: 'Annotation /Rect overlaps the trim/bleed area; PDF/X requires annotations outside it.' });
+        message: sub === 'PrinterMark' ? 'Printer mark /Rect overlaps the finished page area.'
+          : 'Annotation /Rect overlaps the trim/bleed area; PDF/X requires annotations outside it.' });
     }
   }
   return issues;

@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Prepress printer marks.** `Page.AddPrinterMarks` adds trim and bleed
+  marks, all-colorant registration targets, and CMYK tint bars as printable
+  annotations or page content. Individual constructors place marks by
+  corner, side, or rectangle. The media grows around the original artwork
+  and retains the trim and bleed boundaries. (k4h1.4)
+
 - **Rectilinear annotation measurements.** Lines, polylines, and polygons accept
   a `measure` creation option and expose a writable `Measure` property. The
   PDF dictionary carries the scale ratio, separate axis calibrations, and
@@ -577,6 +583,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pixels and content streams are not bounded yet. (ibzo.2)
 
 ### Fixed
+
+- **PDF/X printer-mark validation uses the finished-page boundary.** A
+  `/PrinterMark` may overlap the bleed margin when its rectangle stays outside
+  the `TrimBox` or `ArtBox`. (k4h1.4)
 
 - **FDF and XFDF annotation imports preserve page-local links.** Updating a
   named annotation keeps its replies and popup attached. A reply imported

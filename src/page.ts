@@ -39,8 +39,10 @@ import type { Rect } from './text.js';
 import { extractTables, type Table, type TableExtractOptions } from './table.js';
 import { extractPaths, type PagePath } from './paths.js';
 import { extractArtifacts, removeArtifacts, type PageArtifact, type ArtifactFilter } from './artifact.js';
+import type { PrinterMarksOptions } from './printermarks.js';
 import {
   Annotation, wrapAnnotation, addTextNote, TextAnnotation, TextNoteOptions,
+  addPrinterMarks, type PrinterMarkAnnotation,
   addStamp, StampAnnotation, StampAnnotationOptions,
   addHighlight, addUnderline, addStrikeOut, addSquiggly, MarkupAnnotation, MarkupOptions,
   addLink, LinkAnnotation, LinkOptions,
@@ -331,6 +333,13 @@ export class Page {
    *  `name` (standard stamp), `text` (custom text), or `image` (JPEG/PNG bytes). */
   AddStamp(opts: StampAnnotationOptions): StampAnnotation {
     return addStamp(this.doc, this, opts);
+  }
+
+  /** Add prepress trim, bleed, registration, and color-bar marks. The page
+   *  boxes grow around the existing artwork. Returns the annotation handles,
+   *  or an empty array for marks written directly into page content. */
+  AddPrinterMarks(options: PrinterMarksOptions = {}): PrinterMarkAnnotation[] {
+    return addPrinterMarks(this, options);
   }
 
   /** Add a /Highlight markup annotation over the given /QuadPoints. */

@@ -29,10 +29,17 @@ import {
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import type { Layer } from './ocg.js';
 import { buildRectilinearMeasure, readRectilinearMeasure, type RectilinearMeasure } from './measure.js';
+import {
+  colorBarMark, cornerMark, fitPrinterMarks, paintPrinterMarks, planPrinterMarks,
+  printerMarkBoxes, printerMarkForm, registrationMark, type ColorsOfCMYK, type MarkDrawing,
+  type PrinterMarkCornerPosition, type PrinterMarkSidePosition, type PrinterMarksOptions,
+} from './printermarks.js';
+import type { Rect } from './text.js';
 
 // Annotation flag bits (/F), PDF 32000-1 §12.5.3.
 const FLAG_HIDDEN = 1 << 1; // bit 2, value 2
 const FLAG_PRINT = 1 << 2;  // bit 3, value 4
+const FLAG_READ_ONLY = 1 << 6; // bit 7, value 64
 
 /** Read an n-length array of resolved numbers from `o`, or undefined. */
 function numArray(doc: Document, o: PdfObject | undefined, n: number): number[] | undefined {
@@ -1016,6 +1023,81 @@ export class FileAttachmentAnnotation extends Annotation {
 
 /** Wrap an annotation dict in its typed handle, dispatching on /Subtype. Unknown
  *  subtypes fall back to the base `Annotation`. */
+/** A printable /PrinterMark annotation with a normal appearance. */
+export class PrinterMarkAnnotation extends Annotation {
+  /** Mark identifier (/MN), which may be absent on an imported PDF. */
+  get MarkName(): string | undefined {
+    const mark = this.doc.resolve(this.Dict.get('MN'));
+    return isName(mark) ? mark.name : undefined;
+  }
+}
+
+/** Add one trim mark at the given corner of the finished page. */
+export class TrimMarkAnnotation extends PrinterMarkAnnotation {
+  constructor(page: Page, position: PrinterMarkCornerPosition) {
+    const boxes = printerMarkBoxes(page);
+    const mark = cornerMark(boxes, 'trim', position);
+    fitPrinterMarks(page, boxes, [mark], true);
+    super(page.Document, attachPrinterMark(page, mark));
+  }
+}
+
+/** Add one bleed mark at the given corner of the bleed or finished boundary. */
+export class BleedMarkAnnotation extends PrinterMarkAnnotation {
+  constructor(page: Page, position: PrinterMarkCornerPosition) {
+    const boxes = printerMarkBoxes(page);
+    const mark = cornerMark(boxes, 'bleed', position);
+    fitPrinterMarks(page, boxes, [mark], true);
+    super(page.Document, attachPrinterMark(page, mark));
+  }
+}
+
+/** Add one all-colorant registration target beside the given page edge. */
+export class RegistrationMarkAnnotation extends PrinterMarkAnnotation {
+  constructor(page: Page, position: PrinterMarkSidePosition) {
+    const boxes = printerMarkBoxes(page);
+    const mark = registrationMark(boxes, position);
+    fitPrinterMarks(page, boxes, [mark], true);
+    super(page.Document, attachPrinterMark(page, mark));
+  }
+}
+
+/** Add an eleven-step tint bar for one of the four CMYK process channels. */
+export class ColorBarAnnotation extends PrinterMarkAnnotation {
+  constructor(page: Page, rect: Rect, colorOfCMYK: ColorsOfCMYK = 'Black') {
+    const boxes = printerMarkBoxes(page);
+    const mark = colorBarMark(boxes, rect, colorOfCMYK);
+    fitPrinterMarks(page, boxes, [mark], true);
+    super(page.Document, attachPrinterMark(page, mark));
+  }
+}
+
+function attachPrinterMark(page: Page, mark: MarkDrawing): PdfDict {
+  const doc = page.Document;
+  const dict = createAnnotation(doc, page, { subtype: 'PrinterMark', rect: mark.rect });
+  dict.set('MN', name(mark.markName));
+  dict.set('F', FLAG_PRINT | FLAG_READ_ONLY);
+  installAP(doc, dict, printerMarkForm(mark));
+  doc.markModified();
+  return dict;
+}
+
+/** @internal Shared page-level layout for annotation and content output. */
+export function addPrinterMarks(page: Page, options: PrinterMarksOptions): PrinterMarkAnnotation[] {
+  const { mode = 'annotation', expandCropBox = true, kinds } = options;
+  if (mode !== 'annotation' && mode !== 'content') throw new RangeError('invalid printer mark output mode');
+  if (typeof expandCropBox !== 'boolean') throw new TypeError('expandCropBox must be a boolean');
+  const boxes = printerMarkBoxes(page);
+  const marks = planPrinterMarks(boxes, kinds);
+  if (marks.length === 0) return [];
+  fitPrinterMarks(page, boxes, marks, expandCropBox);
+  if (mode === 'content') {
+    paintPrinterMarks(page, marks);
+    return [];
+  }
+  return marks.map((mark) => new PrinterMarkAnnotation(page.Document, attachPrinterMark(page, mark)));
+}
+
 export function wrapAnnotation(doc: Document, dict: PdfDict): Annotation {
   const st = dict.get('Subtype');
   const subtype = isName(st) ? st.name : '';
@@ -1038,6 +1120,7 @@ export function wrapAnnotation(doc: Document, dict: PdfDict): Annotation {
     case 'Redact': return new RedactAnnotation(doc, dict);
     case 'Caret': return new CaretAnnotation(doc, dict);
     case 'Popup': return new PopupAnnotation(doc, dict);
+    case 'PrinterMark': return new PrinterMarkAnnotation(doc, dict);
     default: return new Annotation(doc, dict);
   }
 }

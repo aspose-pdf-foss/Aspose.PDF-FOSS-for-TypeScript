@@ -2988,7 +2988,8 @@ page.RemoveAnnotation(page.Annotations[0]);
 `InkAnnotation` (`InkList`/`BorderWidth`),
 `FreeTextAnnotation`
 (`Alignment`/`FontSize`/`TextColor`/`BorderWidth`/`InteriorColor`/`Intent`/`CalloutLine`/`CalloutEnding`),
-and `PopupAnnotation` (`Open`/`Parent`). Any markup-family `Add*` method accepts
+`PopupAnnotation` (`Open`/`Parent`), and `PrinterMarkAnnotation` (`MarkName`).
+Any markup-family `Add*` method accepts
 a `popup` option to attach a companion popup in one call.
 Every handle shares the base accessors
 (`Rect`, `Color`, `Contents`, `Name`, `ModDate`, `Flags`, `Print`, `Hidden`,
@@ -3021,6 +3022,40 @@ conversion. `Measure` reads a snapshot and assigning `undefined` removes the
 metadata. Writing a measurement declares PDF 1.7 in an older document's
 catalog, including when saving incrementally. Fractional display options apply
 to the final format in each array.
+
+### Add Printer Marks
+
+```ts
+import { PrinterMarkCornerPosition, TrimMarkAnnotation } from '@asposefoss/pdf';
+
+const page = doc.Pages[0];
+page.AddPrinterMarks({
+  kinds: ['bleed', 'registration', 'colorBar'],
+  mode: 'content',
+});
+
+// Place a single trim mark when the job calls for an individual annotation.
+const mark = new TrimMarkAnnotation(page, PrinterMarkCornerPosition.TopLeft);
+```
+
+`AddPrinterMarks()` defaults to all four families and returns printable
+`PrinterMarkAnnotation` handles. Content mode writes the same vector marks as
+page artifacts and returns an empty array. Registration targets use the PDF
+`/Separation /All` colorant and color bars show 0% through 100% process tints.
+
+Coordinates are in default PDF user space. The media and crop grow to fit the
+marks while preserving the original artwork, trim, and bleed. Pass
+`expandCropBox: false` to keep the original crop when preparing a separate
+print view. Marks outside that crop may be clipped by a viewer.
+An explicit `ArtBox` supplies the finished boundary when the page omits `TrimBox`.
+Without an explicit `BleedBox`, bleed marks align with the finished boundary.
+
+`BleedMarkAnnotation(page, corner)`, `RegistrationMarkAnnotation(page, side)`,
+and `ColorBarAnnotation(page, rect, colorOfCMYK?)` attach one mark each. A bar
+defaults to black. If its rectangle overlaps the protected print area, it moves
+outward along its short axis. After reopening a PDF, `page.Annotations` exposes
+its printer marks as `PrinterMarkAnnotation` handles, with the optional PDF
+`/MN` identifier available through `MarkName`.
 
 ### Embed Files and Attachments
 
@@ -3805,7 +3840,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 511 public types plus 163
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 513 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4302,7 +4337,10 @@ for work-unit boundaries and mutation/lifetime rules.
 | `AnnotationStateReplyOptions` | Required `state` and `author` with optional `contents` and `rect` for `annotation.AddStateReply`. |
 | `AnnotationTextKey` | The annotation entries that count as carried text. |
 | `AuthoringFont` | A font for the text-authoring API: one of the 12 Latin Standard-14 faces (by name) or an embedded font handle from AddFont. |
+| `BleedMarkAnnotation(page, corner)` | Attach one bleed mark aligned to the requested corner of the bleed or finished boundary. |
 | `CaretAnnotation` | A /Caret annotation (PDF 32000-1 §12.5.6.11): a text-insertion mark, drawn as a wedge at the point where text should be added, optionally with a paragraph sign. |
+| `ColorBarAnnotation(page, rect, colorOfCMYK?)` | Attach a CMYK tint bar outside the protected print area. |
+| `ColorsOfCMYK` | The `Cyan`, `Magenta`, `Yellow`, and `Black` process channels. |
 | `FileAttachmentAnnotation` | A /FileAttachment annotation: an icon on the page whose /FS embeds a file. |
 | `LineAnnotation` | A `/Line` annotation with endpoints, endings, and optional measurement metadata. |
 | `LinkAction` | @deprecated Use PdfAction. |
@@ -4311,12 +4349,19 @@ for work-unit boundaries and mutation/lifetime rules.
 | `MarkupType` | The four text-markup subtypes, lower-cased. |
 | `MeasureNumberFormat` | Unit label, conversion factor, and optional display formatting for one entry in a number-format array. |
 | `PolyAnnotation` | A `/Polygon` or `/PolyLine` annotation with vertices and optional measurement metadata. |
+| `PrinterMarkAnnotation` | A `/PrinterMark` annotation with an optional `MarkName` read from `/MN`. |
+| `PrinterMarkCornerPosition` | The four corners available to trim and bleed mark constructors. |
+| `PrinterMarkKind` | A trim, bleed, registration, or color-bar family. |
+| `PrinterMarkSidePosition` | The four sides available to registration mark constructors. |
+| `PrinterMarksOptions` | Select mark families, annotation or page content output, and whether to expand the crop. |
 | `RectilinearMeasure` | Scale ratio, axis calibrations, and ordered number formats for a rectilinear `/Measure` dictionary. |
 | `RedactAnnotation` | A /Redact annotation (PDF 32000-1 §12.5.6.23): a *mark* over a region, plus the overlay to paint when it is applied. |
+| `RegistrationMarkAnnotation(page, side)` | Attach one all-colorant registration target beside the requested side. |
 | `ReplyType` | `'R'` for a reply or `'Group'` for a group member. |
 | `StampAnnotation` | A /Stamp (rubber-stamp) annotation. |
 | `StampPosition` | Where a stamp anchors in the page's visual frame. |
 | `TextAnnotation` | A /Text (sticky-note) annotation: an icon-and-popup markup with no appearance stream. |
+| `TrimMarkAnnotation(page, corner)` | Attach one trim mark aligned to the requested finished-page corner. |
 | `AnnotData` | Interface with 4 properties. |
 | `AnnotationMatch` | A match in the text one annotation's appearance stream draws. |
 | `AnnotationTextMatch` | A match in the text an annotation CARRIES, rather than the text it draws. |
@@ -4589,6 +4634,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `textAnnotation.State` | Read or set a state record's value. Setting a value infers its model. Setting `undefined` restores the model's default |
 | `textAnnotation.StateModel` | Read or set a state record's model. Switching models clears an incompatible state. Setting `undefined` clears both entries |
 | `page.AddStamp(opts)` | Add a `/Stamp` annotation (standard name, custom text, or image) with a generated appearance |
+| `page.AddPrinterMarks(opts?)` | Add prepress marks as separate annotations or artifact-marked page content and grow the page around them |
 | `page.AddHighlight(opts)` | Add a `/Highlight` markup over `/QuadPoints` with a fill appearance (translucent by default; pass `opacity` to override) |
 | `page.AddUnderline(opts)` | Add an `/Underline` markup over `/QuadPoints` |
 | `page.AddStrikeOut(opts)` | Add a `/StrikeOut` markup over `/QuadPoints` |

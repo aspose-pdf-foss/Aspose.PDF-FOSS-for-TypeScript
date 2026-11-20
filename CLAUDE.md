@@ -4769,6 +4769,17 @@ Source (`src/`):
   to 1.7 through the catalog, so incremental saves can keep the original header.
   Measurement text uses the PDFDocEncoding table for single-byte strings and
   the shared UTF-16BE codec for Unicode strings.
+  **printermarks.ts** lays out prepress marks and builds their normal
+  appearance forms. Both annotation and content output use the same form.
+  Registration strokes use `/Separation /All` so they reach spot plates as
+  well as CMYK plates. A `/PrinterMark` carries exactly the Print and
+  ReadOnly flags and a single normal appearance. Keep the finished boundary
+  when growing the crop, including when it was implicit. An explicit ArtBox
+  can supply it on its own. Keep a declared BleedBox and use the finished
+  boundary for bleed layout when the page omits it. PDF/X checks printer
+  mark rectangles against the finished boundary,
+  so the strokes' inward edges align with the cut. Page content output paints
+  each form inside an artifact scope using the page's own resource dictionary.
   **Note (`6t2v.5`), a SCOPE DECISION rather than a gap — do not "finish" it:**
   MULTIMEDIA is out of scope. `/Screen` annotations and `/Rendition` actions
   embed audio and video; almost no viewer honours them and Node has nothing to

@@ -56,6 +56,7 @@ export type { PagesToImagesOptions, SanitizeOptions, SanitizeReport } from './sa
 export {
   Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation,
   RedactAnnotation, CaretAnnotation, LineAnnotation, PolyAnnotation,
+  PrinterMarkAnnotation, TrimMarkAnnotation, BleedMarkAnnotation, RegistrationMarkAnnotation, ColorBarAnnotation,
 } from './annotation.js';
 export type {
   TextNoteOptions, AnnotationReplyOptions, ReplyType, StampAnnotationOptions, MarkupOptions, MarkupType,
@@ -63,6 +64,8 @@ export type {
   LinkOptions, LinkAction, FileAttachmentOptions, RedactAnnotationOptions, CaretOptions,
 } from './annotation.js';
 export type { RectilinearMeasure, MeasureNumberFormat } from './measure.js';
+export { PrinterMarkCornerPosition, PrinterMarkSidePosition, ColorsOfCMYK } from './printermarks.js';
+export type { PrinterMarkKind, PrinterMarksOptions } from './printermarks.js';
 export { Attachment } from './embeddedfile.js';
 export type { AttachmentOptions } from './embeddedfile.js';
 export type { CollectionSettings, CollectionFieldDef, CollectionFieldType, CollectionView } from './collection.js';
