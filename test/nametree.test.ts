@@ -80,10 +80,13 @@ describe('lookupNameTree', () => {
     const low = pdfKey(0xfe, 0xff, 0, 0x41, 0x80);
     const high = pdfKey(0xfe, 0xff, 0, 0x41, 0xff);
     const outside = doc.allocObject(pdfKey(0x42));
-    const deeper = new Map<string, PdfObject>([['Names', [pdfKey(0x42), 42]]]);
+    const deeper = new Map<string, PdfObject>([['Limits', [outside, outside]], ['Names', [outside, 42]]]);
     const disjoint = new Map<string, PdfObject>([['Limits', [outside, outside]], ['Kids', [deeper]]]);
+    const longerKey = pdfKey(0xfe, 0xff, 0, 0x41, 0, 0x42);
+    const longerLeaf = new Map<string, PdfObject>([['Limits', [longerKey, longerKey]], ['Names', [longerKey, 3]]]);
+    const longer = new Map<string, PdfObject>([['Limits', [longerKey, longerKey]], ['Kids', [longerLeaf]]]);
     const leaf = new Map<string, PdfObject>([['Limits', [low, high]], ['Names', [low, 1, high, 2]]]);
-    const tree = new Map<string, PdfObject>([['Kids', [disjoint, leaf]]]);
+    const tree = new Map<string, PdfObject>([['Kids', [disjoint, longer, leaf]]]);
     expect(lookupNameTree(doc, tree, 'A')).toBe(1);
     expect(lookupNameTree(doc, tree, Uint8Array.of(0xfe, 0xff, 0, 0x41, 0xff))).toBe(2);
     expect(lookupNameTree(doc, tree, 'absent')).toBeUndefined();

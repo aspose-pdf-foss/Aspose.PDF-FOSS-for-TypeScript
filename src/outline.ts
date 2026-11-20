@@ -90,13 +90,14 @@ export type PageOf = (o: PdfObject) => number | undefined;
 export function resolveNamedDest(doc: Document, key: string | Uint8Array): PdfObject | undefined {
   const catalog = doc.catalog();
   const legacy = doc.resolve(catalog.get('Dests'));
-  const fallback = isDict(legacy) ? legacy.get(typeof key === 'string' ? key : decodePdfByteString(key)) : undefined;
-  if (typeof key === 'string' && fallback !== undefined) return doc.resolve(fallback);
+  if (typeof key === 'string' && isDict(legacy) && legacy.has(key)) return doc.resolve(legacy.get(key));
   const names = doc.resolve(catalog.get('Names'));
   if (isDict(names)) {
     const found = lookupNameTree(doc, names.get('Dests') ?? null, key);
     if (found !== undefined) return doc.resolve(found);
   }
+  if (typeof key === 'string' || !isDict(legacy)) return undefined;
+  const fallback = legacy.get(decodePdfByteString(key));
   return fallback === undefined ? undefined : doc.resolve(fallback);
 }
 

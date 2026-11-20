@@ -10,28 +10,44 @@ import type { Document } from './document.js';
 import { PdfDict, PdfObject, PdfString, isArray, isDict, isString } from './types.js';
 import { decodePdfByteString, encodePdfByteString } from './metadata.js';
 
-type KeyRange = readonly [min: Uint8Array, max: Uint8Array];
+interface KeySpelling { bytes: Uint8Array; allowTrailingByte: boolean; }
 
 /** A decoded name can match both the single-byte and UTF-16BE spellings. */
-function keyRanges(key: string | Uint8Array): KeyRange[] {
-  if (typeof key !== 'string') return [[key, key]];
+function keySpellings(key: string | Uint8Array): KeySpelling[] {
+  if (typeof key !== 'string') return [{ bytes: key, allowTrailingByte: false }];
 
   const utf16 = Buffer.from(`\ufeff${key}`, 'utf16le').swap16();
   // The byte-string decoder tolerates one incomplete trailing UTF-16 code unit.
-  const ranges: KeyRange[] = [[utf16, Buffer.concat([utf16, Uint8Array.of(0xff)])]];
+  const spellings: KeySpelling[] = [{ bytes: utf16, allowTrailingByte: true }];
   const single = Buffer.from(key, 'latin1');
   if (single.toString('latin1') === key && !(single[0] === 0xfe && single[1] === 0xff))
-    ranges.push([single, single]);
-  return ranges;
+    spellings.push({ bytes: single, allowTrailingByte: false });
+  return spellings;
+}
+
+/** Check the exact spelling and its allowed one-byte extensions. A plain
+ *  interval would also admit keys containing additional complete characters. */
+function spellingInRange({ bytes, allowTrailingByte }: KeySpelling, low: Uint8Array, high: Uint8Array): boolean {
+  if (Buffer.compare(bytes, high) > 0) return false;
+  if (Buffer.compare(bytes, low) >= 0) return true;
+
+  const length = bytes.length;
+  if (!allowTrailingByte || low.length <= length || Buffer.compare(low.subarray(0, length), bytes) !== 0) return false;
+  // A lower bound with more than one trailing byte sorts after its own
+  // one-byte prefix. Start with the next byte in that case.
+  const firstTail = low[length] + (low.length > length + 1 ? 1 : 0);
+  if (firstTail > 0xff) return false;
+  const upperPrefix = Buffer.compare(high.subarray(0, length), bytes);
+  return upperPrefix > 0 || (upperPrefix === 0 && high.length > length && high[length] >= firstTail);
 }
 
 /** Look up a raw PDF key or a decoded API name, pruning children by byte order. */
 export function lookupNameTree(doc: Document, node: PdfObject, key: string | Uint8Array): PdfObject | undefined {
-  return lookup(doc, node, key, keyRanges(key), 1, new Set<PdfDict>());
+  return lookup(doc, node, key, keySpellings(key), 1, new Set<PdfDict>());
 }
 
 function lookup(
-  doc: Document, node: PdfObject, key: string | Uint8Array, ranges: readonly KeyRange[],
+  doc: Document, node: PdfObject, key: string | Uint8Array, spellings: readonly KeySpelling[],
   depth: number, seen: Set<PdfDict>,
 ): PdfObject | undefined {
   const n = doc.resolve(node);
@@ -59,10 +75,9 @@ function lookup(
       if (isArray(limits)) {
         const lo = doc.resolve(limits[0]);
         const hi = doc.resolve(limits[1]);
-        if (isString(lo) && isString(hi) && !ranges.some(([min, max]) =>
-          Buffer.compare(max, lo.bytes) >= 0 && Buffer.compare(min, hi.bytes) <= 0)) continue;
+        if (isString(lo) && isString(hi) && !spellings.some((spelling) => spellingInRange(spelling, lo.bytes, hi.bytes))) continue;
       }
-      const found = lookup(doc, kd, key, ranges, depth + 1, seen);
+      const found = lookup(doc, kd, key, spellings, depth + 1, seen);
       if (found !== undefined) return found;
     }
   }
