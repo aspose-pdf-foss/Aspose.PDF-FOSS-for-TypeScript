@@ -55,7 +55,11 @@ export interface ContentOp {
 export interface ContentOpSource {
   readonly ops: readonly ContentOp[];
   replace(first: number, end: number, ops: ContentOp[]): Uint8Array;
+  replaceAll(splices: readonly ContentSplice[]): Uint8Array;
 }
+
+/** Replace an exclusive range of original operator indexes. @internal */
+export interface ContentSplice { first: number; end: number; ops: ContentOp[]; }
 
 interface OpSpan { start: number; end: number; }
 
@@ -72,14 +76,24 @@ export function parseContentStream(
 export function readContentForSplice(buf: Uint8Array, limits: LoadLimits, budget: ContentTokenBudget): ContentOpSource {
   const spans: OpSpan[] = [];
   const ops = parseOps(buf, limits, budget, spans);
+  const replaceAll = (splices: readonly ContentSplice[]): Uint8Array => {
+    const chunks: Uint8Array[] = [];
+    const newline = enc('\n');
+    let offset = 0;
+    for (const splice of [...splices].sort((a, b) => a.first - b.first)) {
+      const start = spans[splice.first], last = spans[splice.end - 1];
+      if (!start || !last || splice.first >= splice.end || start.start < offset)
+        throw new RangeError('invalid or overlapping content operator spans');
+      chunks.push(buf.subarray(offset, start.start), newline, serializeContentStream(splice.ops), newline);
+      offset = last.end;
+    }
+    chunks.push(buf.subarray(offset));
+    return concat(chunks);
+  };
   return {
     ops,
-    replace(first, end, replacement) {
-      const start = spans[first], last = spans[end - 1];
-      if (!start || !last || first >= end) throw new RangeError('no content operators in the requested span');
-      const newline = enc('\n');
-      return concat([buf.subarray(0, start.start), newline, serializeContentStream(replacement), newline, buf.subarray(last.end)]);
-    },
+    replace: (first, end, ops) => replaceAll([{ first, end, ops }]),
+    replaceAll,
   };
 }
 

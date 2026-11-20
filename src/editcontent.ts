@@ -1,14 +1,14 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import { PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isStream, isRef, name } from './types.js';
+import { PdfDict, PdfObject, PdfRef, PdfStream, isArray, isDict, isStream, isRef } from './types.js';
 import {
   ContentOp, parseContentStream, readContentForSplice, serializeContentStream,
-  type ContentOpSource, type ContentTokenBudget,
+  type ContentOpSource, type ContentSplice, type ContentTokenBudget,
 } from './content.js';
-import { streamOf, ensureUnsharedResources, ensureOwnSubdict, freshKey, pageContentStreams } from './pagecontent.js';
+import { streamOf, ensureUnsharedResources, ensureOwnSubdict, pageContentStreams } from './pagecontent.js';
 import { inflateStream } from './flate.js';
 import { budgetFor } from './decodebudget.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { planFormEdit } from './formedit.js';
 
 /** Address of an operator within a page's content. */
 export interface ContentAddr {
@@ -72,52 +72,18 @@ export class EditableContent {
   /** Immediately edit one Form occurrence in a verified chain of `Do` ops.
    *  Prepare copies of every scope before publishing any stream or resource.
    *  @internal */
-  editFormOccurrence(invocations: readonly ContentAddr[], edit: (source: ContentOpSource) => Uint8Array): void {
+  editFormOccurrence(invocations: readonly ContentAddr[], edit: (source: ContentOpSource) => ContentSplice): void {
     if (invocations.length === 0) throw new RangeError('missing Form invocation');
     const top = invocations[0].streamIndex;
-    let source = this.topSource(top);
-    const pageResources = new Map(this.page.Resources);
-    let xobjects = ensureOwnSubdict(this.doc, pageResources, 'XObject');
-    const forms: { form: PdfStream; ownResources?: PdfDict }[] = [];
-    const owners: { xobjects: PdfDict; key: string; bytes: Uint8Array }[] = [];
-
-    for (let i = 0; i < invocations.length; i++) {
-      const { opIndex } = invocations[i];
-      const draw = source.ops[opIndex];
-      const target = draw?.operands[0];
-      if (draw?.operator !== 'Do' || !isName(target)) throw new RangeError('missing Form draw');
-      const form = this.doc.resolve(xobjects.get(target.name));
-      if (!isStream(form)) throw new RangeError(`missing Form /${target.name}`);
-      if (form.dict.has('StructParents') || form.dict.has('StructParent'))
-        throw new UnsupportedFeatureError('cannot edit a Form occurrence with a structure-parent entry');
-
-      const key = freshKey(xobjects, 'PathEdit');
-      xobjects.set(key, null); // reserve it for other draws sharing this staged owner
-      const bytes = source.replace(opIndex, opIndex + 1, [{ operator: 'Do', operands: [name(key)] }]);
-      owners.push({ xobjects, key, bytes });
-      const ownResources = this.doc.resolve(form.dict.get('Resources'));
-      const ownCopy = i + 1 < invocations.length && isDict(ownResources) ? new Map(ownResources) : undefined;
-      forms.push({ form, ownResources: ownCopy });
-      if (ownCopy) xobjects = ensureOwnSubdict(this.doc, ownCopy, 'XObject');
-      source = readContentForSplice(inflateStream(form), budgetFor(form).limits, this.tokens);
+    const { bytes, resources, additions } = planFormEdit(this.doc, this.page, this.topSource(top), invocations, edit, this.tokens);
+    const refs = new Map<PdfStream, PdfRef>();
+    for (const { owner, key, form } of additions) {
+      let ref = refs.get(form);
+      if (!ref) { ref = this.doc.allocObject(form); refs.set(form, ref); }
+      owner.set(key, ref);
     }
-
-    const leafBytes = edit(source);
-    const clones = forms.map(({ form, ownResources }, i): PdfStream => {
-      const owner = owners[i + 1];
-      const raw = owner?.bytes ?? leafBytes;
-      const dict = new Map(form.dict);
-      for (const key of ['Filter', 'DecodeParms', 'F', 'FFilter', 'FDecodeParms', 'DL']) dict.delete(key);
-      dict.set('Length', raw.length);
-      if (ownResources) dict.set('Resources', ownResources);
-      return { kind: 'stream', dict, raw };
-    });
-    for (let i = clones.length - 1; i >= 0; i--) {
-      const { xobjects, key } = owners[i];
-      xobjects.set(key, this.doc.allocObject(clones[i]));
-    }
-    this.writeTopStreams(new Map([[top, owners[0].bytes]]));
-    this.page.Dict.set('Resources', pageResources);
+    this.writeTopStreams(new Map([[top, bytes]]));
+    this.page.Dict.set('Resources', resources);
   }
 
   xobjectOps(path: readonly string[]): readonly ContentOp[] {

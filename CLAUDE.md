@@ -6792,6 +6792,14 @@ Source (`src/`):
   selected `Do` chain while retaining each Form's resource inheritance.
   Other occurrences continue to resolve the original Forms. The top-level
   writer uses resolved stream slots, including indirect `/Contents` arrays.
+  **formedit.ts** plans occurrence-specific Form copies and resource aliases
+  before publishing them (`ivik`). It reserves drawing names in the joined and
+  per-stream page views and follows reachable resource scopes. A recursive
+  `Do` along a Form chain uses the original active ancestor identity to find
+  the corresponding copy. The forward and recursive aliases must share the
+  same indirect object so the cycle guard still works after reopening. Keep
+  the skipped `Do` in the content, because it can flush a clip inside hidden
+  marked content. Only a branch referring to a copied ancestor needs repair.
   **Invariant (`q1g2.3`):** it hides optional content through `ocvisible.ts`
   like the other two walkers, and a hidden paint still RESETS the accumulated
   subpaths and pending clip — carrying them forward gives the next VISIBLE path

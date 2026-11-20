@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Document } from '../src/index.js';
+import { Document, LoadLimits } from '../src/index.js';
 import { UnsupportedFeatureError } from '../src/errors.js';
 import { buildRawPdf } from './helpers/build-page-tree-pdf.js';
 import { decodePng } from './helpers/decode-png.js';
@@ -29,6 +29,20 @@ function openForms(tagged = false, ownsResources = false): Document {
     stream('/Inner Do q 1 0 0 1 0 30 cm /Inner Do Q', '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'
       + (ownsResources ? ' /Resources << /XObject << /Inner 8 0 R >> >>' : '')),
     stream('0 0 1 rg 1 1 10 10 re f', '/Type /XObject /Subtype /Form /BBox [0 0 20 20]' + (tagged ? ' /StructParents 4' : '')),
+  ]));
+}
+
+function openRecoveredForms(
+  pageBodies: string[], outer: string, inner: string, innerResources = '', outerResources = '',
+): Document {
+  const refs = pageBodies.map((_, i) => `${7 + i} 0 R`).join(' ');
+  const form = '/Type /XObject /Subtype /Form /BBox [0 0 120 100]';
+  return Document.Open(buildRawPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 120 100] /Resources << /XObject << /Outer 5 0 R /Inner 6 0 R >> >> >>',
+    '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+    `[${refs}]`, stream(outer, `${form} ${outerResources}`), stream(inner, `${form} ${innerResources}`),
+    ...pageBodies.map((body) => stream(body)),
   ]));
 }
 
@@ -154,6 +168,121 @@ describe('editing one PagePath', () => {
     const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
     expect(after.at(10, 89)).toEqual(before.at(10, 89));
     expect(after.at(65, 35)).toEqual([255, 0, 0, 255]);
+  });
+
+  it.each(['direct', 'nested'] as const)('preserves a skipped %s recursive Form call', (recursion) => {
+    const nested = recursion === 'nested';
+    const doc = openRecoveredForms(
+      ['/Outer Do q 1 0 0 1 0 50 cm /Outer Do Q'],
+      `1 0 0 rg 5 5 10 10 re f 0 0 1 rg 25 5 10 10 re f q 1 0 0 1 40 0 cm /${nested ? 'Inner' : 'Outer'} Do Q`,
+      '0 1 0 rg 5 25 10 10 re f /Return Do q 1 0 0 1 0 20 cm /Self Do Q',
+      '/Resources << /XObject << /Return 5 0 R /Self 6 0 R >> >>',
+    );
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    expect(before.at(50, 90)).toEqual([255, 255, 255, 255]);
+    page.GetPaths()[0].Recolor({ fill: [1, 0, 1] });
+    const [reopened] = Document.Open(doc.Save()).Pages;
+    const after = decodePng(reopened.ToImage());
+    expect(after.at(10, 90)).toEqual([255, 0, 255, 255]);
+    expect(after.at(30, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(50, 90)).toEqual(before.at(50, 90));
+    expect(after.at(10, 40)).toEqual([255, 0, 0, 255]);
+    if (nested) expect(after.at(50, 70)).toEqual([0, 255, 0, 255]);
+    expect(reopened.GetPaths()).toHaveLength(nested ? 6 : 4);
+  });
+
+  it('keeps unresolved draws skipped across Contents streams and inherited Form resources', () => {
+    const doc = openRecoveredForms(
+      ['/Outer Do q 1 0 0 1 0 55 cm /PathEdit0', 'Do Q /Inner Do'],
+      '1 0 0 rg 5 5 10 10 re f',
+      'q 1 0 0 1 45 55 cm /Path#45dit1 Do Q',
+    );
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    expect(before.at(10, 35)).toEqual([255, 255, 255, 255]);
+    expect(before.at(55, 35)).toEqual([255, 255, 255, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(10, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(10, 35)).toEqual(before.at(10, 35));
+    expect(after.at(55, 35)).toEqual(before.at(55, 35));
+  });
+
+  it('leaves an unrelated tagged Form with its own skipped self-call in place', () => {
+    const doc = openRecoveredForms(
+      ['/Outer Do'],
+      '1 0 0 rg 5 5 10 10 re f /Inner Do',
+      '0 1 0 rg 25 25 10 10 re f q 1 0 0 1 45 0 cm /Self Do Q',
+      '/StructParents 4 /Resources << /XObject << /Self 6 0 R >> >>',
+    );
+    doc.Pages[0].GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(10, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(30, 70)).toEqual([0, 255, 0, 255]);
+    expect(after.at(75, 70)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('reserves unresolved names in the per-stream addresses used by path extraction', () => {
+    const doc = openRecoveredForms(['/Outer Do /Missing', '/PathEdit0 Do'], '1 0 0 rg 5 5 10 10 re f', '');
+    const [page] = doc.Pages;
+    expect(page.GetPaths()).toHaveLength(1);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const [reopened] = Document.Open(doc.Save()).Pages;
+    expect(reopened.GetPaths().map((path) => path.fill?.rgb)).toEqual([[0, 0, 255]]);
+  });
+
+  it('keeps the pending clip at a skipped recursive draw in hidden marked content', () => {
+    const form = [
+      '1 0 0 rg 75 5 10 10 re f',
+      'q 0 0 20 20 re W /OC /Hidden BDC /Outer Do EMC',
+      '1 0 0 1 40 0 cm n 0 1 0 rg -40 5 100 10 re f Q',
+    ].join('\n');
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R] /D << /OFF [6 0 R] >> >> >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /Properties << /Hidden 6 0 R >> >> >>',
+      stream('/Outer Do'), stream(form, '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'),
+      '<< /Type /OCG /Name (Hidden) >>',
+    ]));
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    expect(before.at(10, 90)).toEqual([0, 255, 0, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(10, 90)).toEqual(before.at(10, 90));
+    expect(after.at(50, 90)).toEqual(before.at(50, 90));
+  });
+
+  it('does not spend the content token allowance on an unused Form resource', () => {
+    const fixture = openRecoveredForms(
+      ['/Outer Do'], '1 0 0 rg 5 5 10 10 re f', 'q Q '.repeat(80),
+      '', '/Resources << /XObject << /Outer 6 0 R >> >>',
+    );
+    const [page] = Document.Open(fixture.Save(), {
+      limits: LoadLimits.defaults.with({ maxContentTokens: 32 }),
+    }).Pages;
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    expect(decodePng(page.ToImage()).at(10, 90)).toEqual([0, 0, 255, 255]);
+  });
+
+  it('keeps Form editing within the same drawing-depth limit as rendering', () => {
+    const xobjects = Array.from({ length: 9 }, (_, i) => `/F${i + 1} ${i + 5} 0 R`).join(' ');
+    const forms = Array.from({ length: 9 }, (_, i) => {
+      const paint = i === 0 ? '1 0 0 rg 5 5 10 10 re f ' : '';
+      const body = i === 8 ? 'n '.repeat(100) : `${paint}/F${i + 2} Do`;
+      return stream(body, '/Type /XObject /Subtype /Form /BBox [0 0 100 100]');
+    });
+    const [page] = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      `<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << ${xobjects} >> >> >>`,
+      stream('/F1 Do'), ...forms,
+    ]), { limits: LoadLimits.defaults.with({ maxContentTokens: 60 }) }).Pages;
+    expect(decodePng(page.ToImage()).at(10, 90)).toEqual([255, 0, 0, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    expect(decodePng(page.ToImage()).at(10, 90)).toEqual([0, 0, 255, 255]);
   });
 
   it('refuses invalid operations before changing page objects or resources', () => {

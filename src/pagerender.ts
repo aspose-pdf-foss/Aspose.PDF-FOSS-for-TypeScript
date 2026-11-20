@@ -14,6 +14,7 @@ import { BlendMode, blendModeFromName } from './blend.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 import { rethrowLimit } from './errors.js';
 import { registerStream } from './decodebudget.js';
+import { MAX_XOBJECT_DEPTH } from './pagecontent.js';
 
 export type { Matrix } from './text.js';
 export type { Rgb } from './colorspace.js';
@@ -525,8 +526,6 @@ function isBarcodeWidget(doc: Document, annot: PdfDict): boolean {
   const parent = doc.resolve(annot.get('Parent'));
   return isDict(parent) && parent.has('PMD');
 }
-
-const MAX_XOBJECT_DEPTH = 8;
 
 function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = false): void {
   const sink = ctx.sink;

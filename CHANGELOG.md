@@ -603,6 +603,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Keep skipped Form draws from reappearing during a path edit.** Copying a
+  Form occurrence keeps recursive calls along Form draw chains pointed at the
+  active copy. New resource names also avoid existing drawing operands, so
+  unresolved calls stay unresolved after saving. (ivik)
+
 - **Render segments after a closed PDF subpath correctly.** Shorthand curves
   now use the closing point as their first control point. Lines and curves
   after a closed shape start a fresh subpath, preventing stray closing strokes

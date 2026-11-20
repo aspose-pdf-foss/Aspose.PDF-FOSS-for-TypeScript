@@ -9,6 +9,9 @@ import type { Matrix } from './text.js';
 import { parseContentStream } from './content.js';
 import { inflateStream } from './flate.js';
 
+/** Limit for a content walk descending through nested Form XObjects. */
+export const MAX_XOBJECT_DEPTH = 8;
+
 /** Resolved page content streams, in the order used by ContentAddr. */
 export function pageContentStreams(doc: Document, page: Page): PdfStream[] {
   const contents = doc.resolve(page.Dict.get('Contents'));

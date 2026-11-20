@@ -40,7 +40,7 @@ export function editPagePath(doc: Document, page: Page, address: PagePathAddr, e
   if (invocations.length) {
     ec.editFormOccurrence(invocations, (source) => {
       const replacement = rewritePath(source.ops.slice(start.opIndex, end.opIndex + 1), edit);
-      return source.replace(start.opIndex, end.opIndex + 1, replacement);
+      return { first: start.opIndex, end: end.opIndex + 1, ops: replacement };
     });
     return;
   }

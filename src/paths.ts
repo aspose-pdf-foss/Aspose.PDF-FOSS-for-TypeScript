@@ -14,7 +14,7 @@ import { inflateStream } from './flate.js';
 import { ocVisibilityFor, ocVisible, OcStack, type OcVisibility } from './ocvisible.js';
 import type { ContentWalkOptions } from './text.js';
 import { rethrowLimit } from './errors.js';
-import { decodePageContentStreams, pageContentStreams } from './pagecontent.js';
+import { decodePageContentStreams, pageContentStreams, MAX_XOBJECT_DEPTH } from './pagecontent.js';
 import { editPagePath, preparePathEdit, type PathEdit, type PathRecolorOptions } from './pathedit.js';
 
 export type PathSegment =
@@ -61,7 +61,6 @@ export interface EditablePagePath extends PagePath {
   Transform(matrix: Readonly<Matrix>): void;
 }
 
-const MAX_XOBJECT_DEPTH = 8;
 type Pt = [number, number];
 
 const nums = (ops: readonly PdfObject[]): number[] =>
