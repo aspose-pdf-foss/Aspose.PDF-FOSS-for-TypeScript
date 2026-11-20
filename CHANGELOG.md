@@ -591,6 +591,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Name-tree lookups use PDF byte order.** Named destinations now resolve
+  when the raw key lies within a child node's `/Limits`, even if its decoded
+  text sorts outside those bounds. GoTo actions distinguish keys whose bytes
+  differ but whose decoded names match. (dh84)
+
+- **Name-tree edits preserve existing key bytes.** Adding, updating, or
+  removing entries keeps the byte spellings of surviving keys, so bookmarks
+  and other byte-based references still resolve after saving. Rewritten
+  trees sort keys by unsigned bytes. (loki)
+
 - **Small PDF numbers retain their value when saved.** Tiny positive and
   negative values, such as measurement conversion factors, used to round to
   zero. Standard, compressed, and incremental saves now write these values

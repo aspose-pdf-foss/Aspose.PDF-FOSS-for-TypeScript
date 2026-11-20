@@ -6,7 +6,7 @@ import {
 import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
 import { md5 } from './crypto.js';
 import { inflateStream } from './flate.js';
-import { collectNameTree, removeNameTreeEntry, upsertNameTreeEntry } from './nametree.js';
+import { collectNameTree, nameTreeEntries, removeNameTreeEntries, upsertNameTreeEntry } from './nametree.js';
 import { PdfParseError } from './errors.js';
 import type { Document } from './document.js';
 
@@ -208,14 +208,22 @@ function addAssociatedFile(doc: Document, fsRef: PdfRef): void {
   if (!af.some((r) => isRef(r) && r.num === fsRef.num)) af.push(fsRef);
 }
 
-/** Remove a filespec ref from /AF, dropping the array when it empties. */
-function removeAssociatedFile(doc: Document, fsRef: PdfRef): void {
+/** Remove the deleted filespec refs from /AF, dropping the array when it empties. */
+function removeAssociatedFiles(doc: Document, removed: readonly PdfObject[]): void {
+  const numbers = new Set(removed.filter(isRef).map((ref) => ref.num));
+  if (numbers.size === 0) return;
   const catalog = doc.catalog();
   const af = doc.resolve(catalog.get('AF'));
   if (!isArray(af)) return;
-  const i = af.findIndex((r) => isRef(r) && r.num === fsRef.num);
-  if (i >= 0) af.splice(i, 1);
-  if (af.length === 0) catalog.delete('AF');
+  const names = doc.resolve(catalog.get('Names'));
+  if (isDict(names)) for (const [, value] of nameTreeEntries(doc, names.get('EmbeddedFiles'))) {
+    if (isRef(value)) numbers.delete(value.num);
+  }
+  if (numbers.size === 0) return;
+  let kept = 0;
+  for (const value of af) if (!isRef(value) || !numbers.has(value.num)) af[kept++] = value;
+  af.length = kept;
+  if (kept === 0) catalog.delete('AF');
 }
 
 /** Upsert `key` → `fsRef` into /Root /Names /EmbeddedFiles (single flat node,
@@ -230,8 +238,7 @@ export function upsertEmbeddedFile(doc: Document, key: string, fsRef: PdfRef): v
 /** Remove `key` from /EmbeddedFiles (collapsing empty containers) and from /AF.
  *  Returns false when the name was absent. */
 export function removeEmbeddedFile(doc: Document, key: string): boolean {
-  const removed = removeNameTreeEntry(doc, 'EmbeddedFiles', key);
-  if (removed === undefined) return false;
-  if (isRef(removed)) removeAssociatedFile(doc, removed);
-  return true;
+  const removed = removeNameTreeEntries(doc, 'EmbeddedFiles', key);
+  removeAssociatedFiles(doc, removed);
+  return removed.length > 0;
 }

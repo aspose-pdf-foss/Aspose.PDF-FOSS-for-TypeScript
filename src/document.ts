@@ -96,7 +96,7 @@ import {
   OutlineItem, PageDest, readOutlineTree, buildOutlineObjects, validateOutlineItems,
   NamedDestination, readNamedDestinations, encodeDest,
 } from './outline.js';
-import { removeNameTreeEntry, upsertNameTreeEntry } from './nametree.js';
+import { removeNameTreeEntries, upsertNameTreeEntry } from './nametree.js';
 import type { PdfAction } from './actions.js';
 import {
   OpenAction, readOpenAction, removeOpenAction, setOpenAction, setOpenDestination,
@@ -2008,7 +2008,7 @@ export class Document {
    *  Stays void and ignores the tree removal's result: the name may live in the
    *  tree, in the legacy dict, or in both, so the legacy pass runs either way. */
   RemoveNamedDestination(name: string): void {
-    removeNameTreeEntry(this, 'Dests', name);
+    removeNameTreeEntries(this, 'Dests', name);
     const catalog = this.catalog();
     const legacy = this.resolve(catalog.get('Dests'));
     if (isDict(legacy) && legacy.delete(name) && legacy.size === 0) catalog.delete('Dests');
@@ -2087,7 +2087,7 @@ export class Document {
   /** Write (or replace) the /Root /Collection portfolio settings. Throws on an
    *  invalid schema before mutating the document. */
   SetCollection(settings: CollectionSettings): void {
-    const col = buildCollection(settings); // validates first
+    const col = buildCollection(this, settings); // validates first
     this.catalog().set('Collection', this.allocObject(col));
     this.markModified();
   }

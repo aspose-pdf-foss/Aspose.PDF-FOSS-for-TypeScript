@@ -84,18 +84,20 @@ export function decodeView(parts: PdfObject[]): OutlineView {
 export type PageOf = (o: PdfObject) => number | undefined;
 
 
-/** Resolve a named destination (`key`) via the legacy catalog /Dests dict, then
- *  the /Names /Dests name tree. Returns the raw dest array, or undefined. */
-export function resolveNamedDest(doc: Document, key: string): PdfObject | undefined {
+/** Resolve a named destination through the catalog dictionary and name tree.
+ *  A PDF string uses its exact name-tree key first. Decoded names use the
+ *  legacy catalog dictionary first. */
+export function resolveNamedDest(doc: Document, key: string | Uint8Array): PdfObject | undefined {
   const catalog = doc.catalog();
   const legacy = doc.resolve(catalog.get('Dests'));
-  if (isDict(legacy) && legacy.has(key)) return doc.resolve(legacy.get(key));
+  const fallback = isDict(legacy) ? legacy.get(typeof key === 'string' ? key : decodePdfByteString(key)) : undefined;
+  if (typeof key === 'string' && fallback !== undefined) return doc.resolve(fallback);
   const names = doc.resolve(catalog.get('Names'));
   if (isDict(names)) {
     const found = lookupNameTree(doc, names.get('Dests') ?? null, key);
     if (found !== undefined) return doc.resolve(found);
   }
-  return undefined;
+  return fallback === undefined ? undefined : doc.resolve(fallback);
 }
 
 /** Decode a raw destination value (a dest array or a `<< /D [...] >>` dict) to an
@@ -109,13 +111,8 @@ export function decodeDest(doc: Document, value: PdfObject | undefined, pageOf: 
   return { page, view: decodeView(dest.slice(1).map((p) => doc.resolve(p))) };
 }
 
-/** Resolve an outline item's destination: explicit /Dest, then an /A GoTo
- *  action. A target given by name is reported as `{ name }` and deliberately
- *  NOT resolved to a page — resolution is the viewer's job at view time, and
- *  collapsing it here would lose the very indirection that makes a named
- *  destination survive page insertion. Use `Document.GetNamedDestinations` to
- *  resolve one. Returns undefined when unresolvable or for non-GoTo actions. */
-export function parseDest(doc: Document, item: PdfDict, pageOf: PageOf): OutlineDest | undefined {
+/** The explicit /Dest, or the /D of a local GoTo action. */
+function destinationObject(doc: Document, item: PdfDict): PdfObject {
   let dest = doc.resolve(item.get('Dest'));
   if (dest === null) {
     const a = doc.resolve(item.get('A'));
@@ -124,6 +121,13 @@ export function parseDest(doc: Document, item: PdfDict, pageOf: PageOf): Outline
       if (isName(s) && s.name === 'GoTo') dest = doc.resolve(a.get('D'));
     }
   }
+  return dest;
+}
+
+/** Read an outline or link target. A named target is exposed as `{ name }`
+ *  to preserve the indirection that makes it survive page insertion. */
+export function parseDest(doc: Document, item: PdfDict, pageOf: PageOf): OutlineDest | undefined {
+  const dest = destinationObject(doc, item);
   if (isString(dest)) return { name: decodePdfByteString(dest.bytes) };
   if (isName(dest)) return { name: dest.name };
   return decodeDest(doc, dest, pageOf);
@@ -136,16 +140,14 @@ export interface NamedDestination {
   dest: PageDest;
 }
 
-/** Resolve a destination to a page one, following a name through the document's
- *  tables. Undefined when the name is dangling. For consumers that can only
- *  express a page — a `/GoTo` action's modelled form — rather than for outline
- *  or link reads, which report the name as written. */
+/** Resolve a GoTo action's destination to a page, keeping raw string keys. */
 export function resolvePageDest(
-  doc: Document, d: OutlineDest | undefined, pageOf: PageOf,
+  doc: Document, item: PdfDict, pageOf: PageOf,
 ): PageDest | undefined {
-  if (d === undefined) return undefined;
-  if (!isNamedDest(d)) return d;
-  return decodeDest(doc, resolveNamedDest(doc, d.name), pageOf);
+  let dest = destinationObject(doc, item);
+  if (isString(dest)) dest = resolveNamedDest(doc, dest.bytes) ?? null;
+  else if (isName(dest)) dest = resolveNamedDest(doc, dest.name) ?? null;
+  return decodeDest(doc, dest, pageOf);
 }
 
 /** Read all named destinations, merging the /Root /Names /Dests name tree with

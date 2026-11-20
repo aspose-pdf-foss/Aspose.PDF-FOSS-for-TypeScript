@@ -1,5 +1,6 @@
-import { PdfDict, PdfObject, name, isArray, isDict, isName, isString } from './types.js';
+import { PdfDict, PdfObject, PdfString, name, isArray, isDict, isName, isString } from './types.js';
 import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
+import { nameTreeEntries } from './nametree.js';
 import type { Document } from './document.js';
 
 /** How a viewer presents the portfolio. */
@@ -50,9 +51,21 @@ const NAME_TO_VIEW: Record<string, CollectionView> = { D: 'details', T: 'tile', 
 
 const pdfStr = (s: string): PdfObject => ({ kind: 'string', bytes: encodePdfText(s) });
 
+/** An initial-file reference uses an existing byte key when possible. */
+function initialFileKey(doc: Document, key: string): PdfString {
+  const bytes = encodePdfByteString(key);
+  const names = doc.resolve(doc.catalog().get('Names'));
+  let existing: PdfString | undefined;
+  if (isDict(names)) for (const [candidate] of nameTreeEntries(doc, names.get('EmbeddedFiles'))) {
+    if (Buffer.compare(candidate.bytes, bytes) === 0) return { kind: 'string', bytes };
+    if (!existing && decodePdfByteString(candidate.bytes) === key) existing = candidate;
+  }
+  return { kind: 'string', bytes: existing ? new Uint8Array(existing.bytes) : bytes };
+}
+
 /** Build the /Collection dict as one nested direct dict. Validates first so a
  *  bad `settings` throws before any document mutation. */
-export function buildCollection(settings: CollectionSettings): PdfDict {
+export function buildCollection(doc: Document, settings: CollectionSettings): PdfDict {
   const known = new Set<string>();
   for (const f of settings.fields) {
     if (typeof f.name !== 'string' || f.name === '') throw new TypeError('collection field name must be a non-empty string');
@@ -89,7 +102,7 @@ export function buildCollection(settings: CollectionSettings): PdfDict {
     col.set('Sort', sort);
   }
   if (settings.initialFile !== undefined)
-    col.set('D', { kind: 'string', bytes: encodePdfByteString(settings.initialFile) });
+    col.set('D', initialFileKey(doc, settings.initialFile));
   return col;
 }
 

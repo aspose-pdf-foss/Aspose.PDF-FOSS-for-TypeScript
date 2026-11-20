@@ -1,7 +1,7 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isStream, isString, name } from './types.js';
 import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText } from './metadata.js';
-import { encodeDest, parseDest, resolvePageDest, type OutlineView } from './outline.js';
+import { encodeDest, resolvePageDest, type OutlineView } from './outline.js';
 import { decodeStream } from './filters.js';
 import type { StructElement } from './struct.js';
 import { rethrowLimit } from './errors.js';
@@ -193,8 +193,7 @@ export function parseAction(doc: Document, annot: PdfDict): PdfAction | undefine
 
 /** Parse an action dict that is not an annotation's /A — a field's /AA /F, say.
  *  A GoTo destination then has nowhere to fall back to but the action's own /D,
- *  which the one-key host expresses without giving parseDest a second shape to
- *  understand. */
+ *  which the one-key host expresses for the shared destination reader. */
 export function parseStandaloneAction(
   doc: Document, value: PdfObject | undefined,
 ): PdfAction | undefined {
@@ -220,7 +219,7 @@ function parseActionDict(
       // carries a page number and has nowhere to put a name, so a dangling name
       // is an unmodelled action rather than a target with no page.
       const pageOf = (o: PdfObject) => doc.pageNumberOf(o);
-      const d = resolvePageDest(doc, parseDest(doc, annot, pageOf), pageOf);
+      const d = resolvePageDest(doc, annot, pageOf);
       return d ? { type: 'goto', page: d.page, view: d.view } : undefined;
     }
     case 'SubmitForm': {

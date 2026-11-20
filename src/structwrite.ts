@@ -12,7 +12,7 @@ import type { ContentOp } from './content.js';
 import { wrapMarkedContent, wrapArtifact } from './pagecontent.js';
 import { checkStructType } from './structtype.js';
 import { ensureNamespace } from './structns.js';
-import { collectNameTree, flatNameNode } from './nametree.js';
+import { nameTreeEntries, flatNameNode } from './nametree.js';
 
 const asNum = (o: PdfObject): number | undefined => (typeof o === 'number' ? o : undefined);
 
@@ -708,10 +708,8 @@ export function registerStructIds(
   doc: Document, rootDict: PdfDict, entries: ReadonlyArray<[string, PdfRef]>,
 ): void {
   if (entries.length === 0) return;
-  const collected: Array<[string, PdfObject]> = [];
-  collectNameTree(doc, rootDict.get('IDTree'), collected);
-  const map = new Map<string, PdfObject>(collected);
-  for (const [id, ref] of entries) map.set(id, ref);
-  rootDict.set('IDTree', doc.allocObject(flatNameNode(map)));
+  const pairs = [...nameTreeEntries(doc, rootDict.get('IDTree'))];
+  for (const [id, ref] of entries) pairs.push([{ kind: 'string', bytes: encodePdfByteString(id) }, ref]);
+  rootDict.set('IDTree', doc.allocObject(flatNameNode(pairs)));
   doc.markModified();
 }

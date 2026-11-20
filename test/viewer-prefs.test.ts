@@ -216,7 +216,7 @@ describe('SetViewerPreferences (write)', () => {
   });
 
   // An empty << >> says nothing, and leaving one behind gives a document that
-  // "has viewer preferences" and does not — the shape removeNameTreeEntry
+  // "has viewer preferences" and does not — the shape removeNameTreeEntries
   // already prunes.
   it('prunes the dict when the last entry is deleted', () => {
     const doc = docWith(1);

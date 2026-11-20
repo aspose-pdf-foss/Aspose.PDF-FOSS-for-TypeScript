@@ -12,7 +12,7 @@ import { PdfObject, isDict, isName } from './types.js';
 import { encodeAction, parseStandaloneAction, type PdfAction } from './actions.js';
 import { decodeDest, encodeDest, type PageDest } from './outline.js';
 import {
-  collectNameTree, removeNameTreeEntry, upsertNameTreeEntry,
+  collectNameTree, removeNameTreeEntries, upsertNameTreeEntry,
 } from './nametree.js';
 
 /** What a document does when it is opened: go to a view, or run an action.
@@ -113,5 +113,5 @@ export function setDocumentJavaScript(doc: Document, key: string, script: string
 
 /** Remove `key` from the tree, pruning the empty containers. False when absent. */
 export function removeDocumentJavaScript(doc: Document, key: string): boolean {
-  return removeNameTreeEntry(doc, 'JavaScript', key) !== undefined;
+  return removeNameTreeEntries(doc, 'JavaScript', key).length > 0;
 }
