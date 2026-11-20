@@ -491,6 +491,11 @@ Source (`src/`):
   unchanged; the complexity follows from the cursor, not a timing assertion.
 - **serializer.ts**, **serialize.ts** — output: classic xref table (default) and
   compressed (cross-reference stream + `/ObjStm`) via `Save({ compressed: true })`.
+  **Invariant (`kbm9`):** PDF numbers use plain decimal. Expand a negative
+  exponent by shifting the decimal point in JavaScript's round-trippable
+  digits. A fixed fractional precision rounded values such as `1e-22` to
+  zero, which also made a zero-to-small edit invisible to the incremental
+  writer's serialized comparison.
   **Invariant (`909q`):** the `%PDF-x.y` header is `headerVersion()`'s answer —
   the catalog `/Version`, else 1.7 — in EVERY write path, the sign-on-save one
   included. It is threaded as a `ver` parameter rather than read inside each

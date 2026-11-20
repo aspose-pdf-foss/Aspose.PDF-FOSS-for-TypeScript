@@ -14,10 +14,14 @@ export function serializeObject(o: PdfObject): Uint8Array {
  *  output moves; only the exponent forms are spelled out in plain decimal. */
 function numberText(n: number): string {
   const s = String(n);
-  if (!/e/i.test(s) || !Number.isFinite(n)) return s;
-  if (Math.abs(n) >= 1) return BigInt(Math.round(n)).toString();
-  const t = n.toFixed(20).replace(/0+$/, '').replace(/\.$/, '');
-  return t === '-0' || t === '' ? '0' : t;
+  const exponent = s.indexOf('e');
+  if (exponent === -1) return s;
+  if (s[exponent + 1] === '+') return BigInt(n).toString();
+
+  const sign = n < 0 ? '-' : '';
+  const digits = s.slice(sign.length, exponent).replace('.', '');
+  const leadingZeros = -Number(s.slice(exponent + 1)) - 1;
+  return `${sign}0.${'0'.repeat(leadingZeros)}${digits}`;
 }
 
 export function serializeValue(o: PdfObject): string {

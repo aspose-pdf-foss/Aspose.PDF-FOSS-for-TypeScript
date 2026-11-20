@@ -584,6 +584,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Small PDF numbers retain their value when saved.** Tiny positive and
+  negative values, such as measurement conversion factors, used to round to
+  zero. Standard, compressed, and incremental saves now write these values
+  in plain decimal with enough digits to read them back exactly. (kbm9)
+
 - **PDFDocEncoding for PDF text strings.** Metadata, annotation text, labels,
   bookmarks, and form values now decode characters such as em dashes and
   euro symbols in existing single-byte strings. Named destination keys and
