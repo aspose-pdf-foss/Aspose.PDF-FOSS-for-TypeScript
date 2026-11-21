@@ -246,34 +246,33 @@ function lookupCs(ctx: RenderCtx, operand: PdfObject | undefined): ColorConverte
 
 /** Resolve a named pattern to either a shading (type 2) or tiling (type 1)
  *  pattern. Unresolvable names return undefined (caller keeps the gray fallback). */
-function resolvePattern(ctx: RenderCtx, name: string): ShadingPattern | TilingPattern | undefined {
-  const patDict = resDict(ctx, 'Pattern');
-  if (!patDict) return undefined;
-  const p = ctx.doc.resolve(patDict.get(name));
+export function resolvePattern(doc: Document, resources: PdfDict | undefined, name: string): ShadingPattern | TilingPattern | undefined {
+  const patDict = doc.resolve(resources?.get('Pattern'));
+  const p = isDict(patDict) ? doc.resolve(patDict.get(name)) : undefined;
   const pd = isStream(p) ? p.dict : isDict(p) ? p : undefined;
   if (!pd) return undefined;
-  const mat = arrNums(ctx.doc, pd.get('Matrix'));
+  const mat = arrNums(doc, pd.get('Matrix'));
   const matrix = mat.length === 6 ? (mat as Matrix) : IDENTITY;
-  const type = num(ctx.doc.resolve(pd.get('PatternType')));
+  const type = num(doc.resolve(pd.get('PatternType')));
 
   if (type === 2) {
-    const sh = ctx.doc.resolve(pd.get('Shading'));
+    const sh = doc.resolve(pd.get('Shading'));
     const shading = isStream(sh) ? sh : isDict(sh) ? sh : undefined;
     return shading ? { kind: 'shading', shading, matrix } : undefined;
   }
   if (type === 1 && isStream(p)) {
-    const bbox = arrNums(ctx.doc, pd.get('BBox'));
+    const bbox = arrNums(doc, pd.get('BBox'));
     if (bbox.length !== 4) return undefined;
     // Degenerate or missing steps fall back to the BBox extent (§8.7.3.1).
-    const rawX = num(ctx.doc.resolve(pd.get('XStep')));
-    const rawY = num(ctx.doc.resolve(pd.get('YStep')));
+    const rawX = num(doc.resolve(pd.get('XStep')));
+    const rawY = num(doc.resolve(pd.get('YStep')));
     const xstep = Number.isFinite(rawX) && Math.abs(rawX) > 1e-6 ? Math.abs(rawX) : Math.abs(bbox[2] - bbox[0]);
     const ystep = Number.isFinite(rawY) && Math.abs(rawY) > 1e-6 ? Math.abs(rawY) : Math.abs(bbox[3] - bbox[1]);
     if (!(xstep > 0) || !(ystep > 0)) return undefined;
-    const res = ctx.doc.resolve(pd.get('Resources'));
+    const res = doc.resolve(pd.get('Resources'));
     return {
       kind: 'tiling', stream: p, matrix, bbox, xstep, ystep,
-      paintType: num(ctx.doc.resolve(pd.get('PaintType'))) === 2 ? 2 : 1,
+      paintType: num(doc.resolve(pd.get('PaintType'))) === 2 ? 2 : 1,
       resources: isDict(res) ? res : undefined,
     };
   }
@@ -724,14 +723,14 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
       case 'scn': {
         gs.fillPattern = undefined;
         const last = o[o.length - 1];
-        if (isName(last)) { gs.fillPattern = resolvePattern(ctx, last.name); gs.fill = [128, 128, 128]; }
+        if (isName(last)) { gs.fillPattern = resolvePattern(ctx.doc, ctx.resources, last.name); gs.fill = [128, 128, 128]; }
         else gs.fill = gs.fillCs.toRgb(numbers(o));
         break;
       }
       case 'SCN': {
         const last = o[o.length - 1];
         gs.strokePattern = undefined;
-        if (isName(last)) { gs.strokePattern = resolvePattern(ctx, last.name); gs.stroke = [128, 128, 128]; }
+        if (isName(last)) { gs.strokePattern = resolvePattern(ctx.doc, ctx.resources, last.name); gs.stroke = [128, 128, 128]; }
         else gs.stroke = gs.strokeCs.toRgb(numbers(o));
         break;
       }

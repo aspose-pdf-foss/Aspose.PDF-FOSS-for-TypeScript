@@ -54,12 +54,16 @@ export interface ContentOp {
 /** Parsed operators with a byte-local replacement for an exclusive index range. @internal */
 export interface ContentOpSource {
   readonly ops: readonly ContentOp[];
+  endOffset(index: number): number | undefined;
   replace(first: number, end: number, ops: ContentOp[]): Uint8Array;
-  replaceAll(splices: readonly ContentSplice[]): Uint8Array;
+  replaceAll(splices: readonly (ContentSplice | ContentWrap)[]): Uint8Array;
 }
 
 /** Replace an exclusive range of original operator indexes. @internal */
 export interface ContentSplice { first: number; end: number; ops: ContentOp[]; }
+
+/** Bracket an exclusive operator range without changing its original bytes. @internal */
+export interface ContentWrap { first: number; end: number; before: ContentOp[]; after: ContentOp[]; }
 
 interface OpSpan { start: number; end: number; }
 
@@ -76,7 +80,7 @@ export function parseContentStream(
 export function readContentForSplice(buf: Uint8Array, limits: LoadLimits, budget: ContentTokenBudget): ContentOpSource {
   const spans: OpSpan[] = [];
   const ops = parseOps(buf, limits, budget, spans);
-  const replaceAll = (splices: readonly ContentSplice[]): Uint8Array => {
+  const replaceAll = (splices: readonly (ContentSplice | ContentWrap)[]): Uint8Array => {
     const chunks: Uint8Array[] = [];
     const newline = enc('\n');
     let offset = 0;
@@ -84,7 +88,12 @@ export function readContentForSplice(buf: Uint8Array, limits: LoadLimits, budget
       const start = spans[splice.first], last = spans[splice.end - 1];
       if (!start || !last || splice.first >= splice.end || start.start < offset)
         throw new RangeError('invalid or overlapping content operator spans');
-      chunks.push(buf.subarray(offset, start.start), newline, serializeContentStream(splice.ops), newline);
+      chunks.push(buf.subarray(offset, start.start), newline);
+      if ('ops' in splice) chunks.push(serializeContentStream(splice.ops), newline);
+      else {
+        chunks.push(serializeContentStream(splice.before), newline, buf.subarray(start.start, last.end), newline,
+          serializeContentStream(splice.after), newline);
+      }
       offset = last.end;
     }
     chunks.push(buf.subarray(offset));
@@ -92,6 +101,7 @@ export function readContentForSplice(buf: Uint8Array, limits: LoadLimits, budget
   };
   return {
     ops,
+    endOffset: (index) => spans[index]?.end,
     replace: (first, end, ops) => replaceAll([{ first, end, ops }]),
     replaceAll,
   };

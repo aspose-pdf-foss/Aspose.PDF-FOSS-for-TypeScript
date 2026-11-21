@@ -6800,6 +6800,12 @@ Source (`src/`):
   same indirect object so the cycle guard still works after reopening. Keep
   the skipped `Do` in the content, because it can flush a clip inside hidden
   marked content. Only a branch referring to a copied ancestor needs repair.
+  **formpattern.ts** tracks tiling paint across graphics-state saves and Form
+  entry (`4dk0`). The Form edit planner follows the cell only where the pattern
+  paints. It selects the copied cell before the path and restores the original
+  after paint in the painter's resource scope. Restoring with `Q` would discard
+  persistent clipping. When a painter shadows the original pattern name, the
+  restoration alias binds the original resource reference.
   **Invariant (`q1g2.3`):** it hides optional content through `ocvisible.ts`
   like the other two walkers, and a hidden paint still RESETS the accumulated
   subpaths and pending clip — carrying them forward gives the next VISIBLE path

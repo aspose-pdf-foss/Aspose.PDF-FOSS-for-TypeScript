@@ -603,6 +603,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Keep recursive Form draws skipped inside tiling patterns after a path edit.**
+  An affected fill or stroke uses its own copied pattern, preserving inherited
+  paint, clipping, and the original pattern's other draws after saving. (4dk0)
+
 - **Keep skipped Form draws from reappearing during a path edit.** Copying a
   Form occurrence keeps recursive calls along Form draw chains pointed at the
   active copy. New resource names also avoid existing drawing operands, so

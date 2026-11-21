@@ -3,13 +3,14 @@ import type { Page } from './page.js';
 import type { ContentAddr } from './editcontent.js';
 import {
   parseContentStream, readContentForSplice, type ContentOp, type ContentOpSource,
-  type ContentSplice, type ContentTokenBudget,
+  type ContentSplice, type ContentTokenBudget, type ContentWrap,
 } from './content.js';
 import { inflateStream } from './flate.js';
 import { decodePageContentStreams, ensureOwnSubdict, MAX_XOBJECT_DEPTH, pageContentStreams } from './pagecontent.js';
 import { isArray, isDict, isName, isStream, name, type PdfDict, type PdfObject, type PdfStream } from './types.js';
 import { rethrowLimit, UnsupportedFeatureError } from './errors.js';
 import { referencedNames } from './resprune.js';
+import { pagePatternPaint, pathConstruction, trackPatternPaint, trackPatternSites, type PatternBinding, type PatternPaintState } from './formpattern.js';
 
 const ALIAS_PREFIX = 'PathEdit';
 
@@ -76,6 +77,7 @@ function reserveDrawNames(doc: Document, page: Page, pageResources: PdfDict | un
     }
     const patterns = dictOf(doc, scope?.get('Pattern'));
     for (const key of refs.get('Pattern') ?? []) {
+      if (key.startsWith(ALIAS_PREFIX)) names.add(key);
       const pattern = doc.resolve(patterns?.get(key));
       if (isStream(pattern)) queueProgram(pattern, dictOf(doc, pattern.dict.get('Resources')), depth + 1);
     }
@@ -138,17 +140,23 @@ interface ResourceScope {
   original?: PdfDict;
   copy?: PdfDict;
   xobjects?: PdfDict;
+  patterns?: PdfDict;
 }
 
-interface FormOccurrence {
-  form: PdfStream;
+type Invocation = { kind: 'form'; opIndex: number }
+  | { kind: 'pattern'; site: ContentWrap; binding: PatternBinding };
+
+interface Occurrence {
+  stream: PdfStream;
   source: ContentOpSource;
   scope: ResourceScope;
   ownsResources: boolean;
-  parent?: FormOccurrence;
-  opIndex: number;
-  splices: ContentSplice[];
-  backEdges: { caller: FormOccurrence; opIndex: number }[];
+  parent?: Occurrence;
+  invocation: Invocation;
+  editedPath?: ContentSplice;
+  splices: (ContentSplice | ContentWrap)[];
+  sites: ContentWrap[];
+  backEdges: { caller: Occurrence; invocation: Invocation }[];
   clone?: PdfStream;
 }
 
@@ -170,20 +178,48 @@ export function planFormEdit(
   if (!selected) throw new RangeError('missing Form draw');
 
   const reserved = reserveDrawNames(doc, page, pageScope.original);
-  const aliases: { owner: PdfDict; key: string; target: FormOccurrence }[] = [];
+  const aliases: { owner: PdfDict; key: string; target: Occurrence }[] = [];
   let aliasIndex = 0;
-  const replacement = (scope: ResourceScope, opIndex: number, target: FormOccurrence): ContentSplice => {
+  const newAlias = (scope: ResourceScope, category: 'XObject' | 'Pattern') => {
     const copy = scope.copy ??= new Map(scope.original);
-    const owner = scope.xobjects ??= ensureOwnSubdict(doc, copy, 'XObject');
+    const owner = category === 'XObject' ? (scope.xobjects ??= ensureOwnSubdict(doc, copy, category))
+      : (scope.patterns ??= ensureOwnSubdict(doc, copy, category));
     let key: string;
     do { key = `${ALIAS_PREFIX}${aliasIndex++}`; } while (owner.has(key) || reserved.has(key));
+    return { owner, key };
+  };
+  const aliasCopy = (scope: ResourceScope, category: 'XObject' | 'Pattern', target: Occurrence): string => {
+    const { owner, key } = newAlias(scope, category);
     aliases.push({ owner, key, target });
+    return key;
+  };
+  const replacement = (scope: ResourceScope, opIndex: number, target: Occurrence): ContentSplice => {
+    const key = aliasCopy(scope, 'XObject', target);
     return { first: opIndex, end: opIndex + 1, ops: [{ operator: 'Do', operands: [name(key)] }] };
+  };
+  const selectPattern = (op: ContentOp, key: string): ContentOp =>
+    ({ operator: op.operator, operands: [...op.operands.slice(0, -1), name(key)] });
+  const redirect = (caller: Occurrence, invocation: Invocation, target: Occurrence) => {
+    if (invocation.kind === 'form') {
+      caller.splices.push(replacement(caller.scope, invocation.opIndex, target));
+      return;
+    }
+    const { binding, site } = invocation;
+    site.before.push(selectPattern(binding.selection, aliasCopy(caller.scope, 'Pattern', target)));
+    const originalName = binding.selection.operands.at(-1);
+    const originalPatterns = dictOf(doc, caller.scope.original?.get('Pattern'));
+    if (isName(originalName) && doc.resolve(originalPatterns?.get(originalName.name)) === binding.stream) {
+      site.after.push(binding.selection);
+    } else {
+      const { owner, key } = newAlias(caller.scope, 'Pattern');
+      owner.set(key, binding.resource);
+      site.after.push(selectPattern(binding.selection, key));
+    }
   };
 
   const parsed = new Map<PdfStream, { source: ContentOpSource; tokens: number }>();
-  const active = new Map<PdfDict, FormOccurrence>();
-  const copies = new Set<FormOccurrence>();
+  const active = new Map<PdfDict, Occurrence>();
+  const copies = new Set<Occurrence>();
   const readSource = (form: PdfStream): ContentOpSource => {
     const cached = parsed.get(form);
     if (cached) {
@@ -198,70 +234,107 @@ export function planFormEdit(
     return source;
   };
   const collect = (
-    form: PdfStream, opIndex: number, parent?: FormOccurrence, selection?: number,
-  ): FormOccurrence | undefined => {
+    stream: PdfStream, invocation: Invocation, initialPaint?: PatternPaintState, parent?: Occurrence, selection?: number,
+  ): Occurrence | undefined => {
     let source: ContentOpSource;
-    try { source = readSource(form); }
+    try { source = readSource(stream); }
     catch (caught) {
       rethrowLimit(caught);
       if (selection !== undefined) throw caught;
       return undefined;
     }
 
-    const own = dictOf(doc, form.dict.get('Resources'));
+    const own = dictOf(doc, stream.dict.get('Resources'));
     const scope: ResourceScope = own ? { original: own } : parent?.scope ?? pageScope;
-    const occurrence: FormOccurrence = {
-      form, source, scope, ownsResources: own !== undefined, parent, opIndex, splices: [], backEdges: [],
-    };
     const next = selection === undefined ? undefined : invocations[selection + 1];
-    if (selection !== undefined) {
-      copies.add(occurrence);
-      if (!next) occurrence.splices.push(edit(source));
-    }
-    active.set(form.dict, occurrence);
+    const editedPath = selection !== undefined && !next ? edit(source) : undefined;
+    const occurrence: Occurrence = {
+      stream, source, scope, ownsResources: own !== undefined, parent, invocation, editedPath,
+      splices: editedPath ? [editedPath] : [], sites: [], backEdges: [],
+    };
+    if (selection !== undefined) copies.add(occurrence);
+    active.set(stream.dict, occurrence);
     let followedSelection = false;
     if (active.size < MAX_XOBJECT_DEPTH) {
-      for (const [opIndex, op] of source.ops.entries()) {
-        const target = calledForm(scope, op);
-        if (!target) continue;
+      const paint = trackPatternPaint(doc, scope.original, initialPaint);
+      const paintSite = trackPatternSites();
+      const visit = (target: PdfStream, link: Invocation, state?: PatternPaintState, nextSelection?: number) => {
         const ancestor = active.get(target.dict);
         if (ancestor) {
-          ancestor.backEdges.push({ caller: occurrence, opIndex });
+          ancestor.backEdges.push({ caller: occurrence, invocation: link });
+          return undefined;
+        }
+        return collect(target, link, state, occurrence, nextSelection);
+      };
+      const visitPatterns = (first: number, end: number, bindings: PatternBinding[]) => {
+        if (!bindings.length) return;
+        const site: ContentWrap = { first, end, before: [], after: [] };
+        occurrence.sites.push(site);
+        for (const binding of bindings) visit(binding.stream, { kind: 'pattern', site, binding });
+      };
+      for (let opIndex = 0; opIndex < source.ops.length; opIndex++) {
+        if (editedPath?.first === opIndex) {
+          // Removal or recoloring may replace the pattern. Follow only the
+          // channels that the edited paint still uses.
+          for (const op of editedPath.ops) {
+            paint.update(op);
+            const used = paintSite(op, opIndex, paint.state);
+            if (used) visitPatterns(editedPath.first, editedPath.end, used.bindings);
+          }
+          opIndex = editedPath.end - 1;
           continue;
         }
-        const followsSelection = next?.opIndex === opIndex;
-        const child = collect(target, opIndex, occurrence, followsSelection ? selection! + 1 : undefined);
-        if (child && followsSelection) followedSelection = true;
+        const op = source.ops[opIndex];
+        paint.update(op);
+        const target = calledForm(scope, op);
+        if (target) {
+          const followsSelection = next?.opIndex === opIndex;
+          const child = visit(target, { kind: 'form', opIndex }, paint.state, followsSelection ? selection! + 1 : undefined);
+          if (child && followsSelection) followedSelection = true;
+        }
+        const used = paintSite(op, opIndex, paint.state);
+        if (used) visitPatterns(used.first, used.end, used.bindings);
       }
     }
-    active.delete(form.dict);
+    active.delete(stream.dict);
     if (next && !followedSelection) throw new RangeError('missing nested Form draw');
     return occurrence;
   };
 
-  const root = collect(selected, topIndex, undefined, 0)!;
+  const initialPaint = pagePatternPaint(doc, page, invocations[0], top);
+  const root = collect(selected, { kind: 'form', opIndex: topIndex }, initialPaint, undefined, 0)!;
   // A back-edge only needs repair when its target is being copied. Copy the
   // invoking branch as far as the nearest existing copy. Set iteration also
   // visits those new copies so their own incoming back-edges are repaired.
   for (const target of copies) {
-    for (const { caller, opIndex } of target.backEdges) {
-      caller.splices.push(replacement(caller.scope, opIndex, target));
-      for (let node: FormOccurrence | undefined = caller; node && !copies.has(node); node = node.parent) copies.add(node);
+    for (const { caller, invocation } of target.backEdges) {
+      redirect(caller, invocation, target);
+      for (let node: Occurrence | undefined = caller; node && !copies.has(node); node = node.parent) copies.add(node);
     }
   }
   for (const target of copies) {
-    const { parent, opIndex } = target;
-    if (parent) parent.splices.push(replacement(parent.scope, opIndex, target));
+    if (target.parent) redirect(target.parent, target.invocation, target);
   }
   const topSplice = replacement(pageScope, topIndex, root);
 
   for (const occurrence of copies) {
-    const { form, source, splices, ownsResources, scope } = occurrence;
-    if (form.dict.has('StructParents') || form.dict.has('StructParent'))
+    const { stream, source, editedPath, splices, sites, ownsResources, scope } = occurrence;
+    if (stream.dict.has('StructParents') || stream.dict.has('StructParent'))
       throw new UnsupportedFeatureError('cannot edit a Form occurrence with a structure-parent entry');
 
+    for (const { first, end, before, after } of sites) {
+      if (!before.length) continue;
+      // Use the path boundary for standard streams. When a damaged stream
+      // interleaves state operations, keep them and rebind at the actual paint.
+      const start = source.ops.slice(first, end - 1).every((op) => pathConstruction.has(op.operator)) ? first : end - 1;
+      if (editedPath?.first === start && editedPath.end === end) {
+        editedPath.ops = [...before, ...editedPath.ops, ...after];
+      } else {
+        splices.push({ first: start, end, before, after });
+      }
+    }
     const raw = source.replaceAll(splices);
-    const dict = new Map(form.dict);
+    const dict = new Map(stream.dict);
     for (const key of ['Filter', 'DecodeParms', 'F', 'FFilter', 'FDecodeParms', 'DL']) dict.delete(key);
     dict.set('Length', raw.length);
     if (ownsResources && scope.copy) dict.set('Resources', scope.copy);

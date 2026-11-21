@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Document, LoadLimits } from '../src/index.js';
 import { UnsupportedFeatureError } from '../src/errors.js';
+import { isDict, isStream } from '../src/types.js';
 import { buildRawPdf } from './helpers/build-page-tree-pdf.js';
 import { decodePng } from './helpers/decode-png.js';
 
@@ -253,6 +254,144 @@ describe('editing one PagePath', () => {
     expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
     expect(after.at(10, 90)).toEqual(before.at(10, 90));
     expect(after.at(50, 90)).toEqual(before.at(50, 90));
+  });
+
+  it.each([
+    { inheritedPaint: false, ownResources: false }, { inheritedPaint: false, ownResources: true },
+    { inheritedPaint: true, ownResources: false }, { inheritedPaint: true, ownResources: true },
+  ])('keeps tiling recursion skipped with inherited paint $inheritedPaint and own resources $ownResources',
+    ({ inheritedPaint, ownResources }) => {
+      const originalPaint = '0 0 20 20 re % keep the producer comment\nW f';
+      const form = `q 1 0 0 rg 75 5 10 10 re f Q ${inheritedPaint ? '' : '/Pattern cs /Tile scn '}${originalPaint} 0 1 0 rg 25 5 10 10 re f`;
+      const pageContent = inheritedPaint ? 'q /Pattern cs /Tile scn /Outer Do 40 40 20 20 re f Q'
+        : '/Outer Do q /Pattern cs /Tile scn 40 40 20 20 re f Q';
+      const cell = `q 1 0 0 1 -70 0 cm /${ownResources ? 'Return' : 'Outer'} Do Q`;
+      const pattern = '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20';
+      const doc = Document.Open(buildRawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+        '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /Pattern << /Tile 6 0 R >> >> >>',
+        stream(pageContent),
+        stream(form, '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'),
+        stream(cell, pattern + (ownResources ? ' /Resources << /XObject << /Return 5 0 R >> >>' : '')),
+      ]));
+      const [page] = doc.Pages;
+      const before = decodePng(page.ToImage());
+      expect(before.at(10, 90)).toEqual([255, 255, 255, 255]);
+      expect(before.at(30, 90)).toEqual([255, 255, 255, 255]);
+      expect(before.at(50, 50)).toEqual([255, 0, 0, 255]);
+      page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+      const reopened = Document.Open(doc.Save());
+      const [editedPage] = reopened.Pages;
+      const after = decodePng(editedPage.ToImage());
+      expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+      expect(after.at(10, 90)).toEqual(before.at(10, 90));
+      expect(after.at(30, 90)).toEqual(before.at(30, 90));
+      expect(after.at(50, 50)).toEqual(before.at(50, 50));
+      const [formName] = editedPage.GetPaths()[0].addr.path;
+      const xobjects = reopened.resolve(editedPage.Resources?.get('XObject'));
+      const editedForm = isDict(xobjects) ? reopened.resolve(xobjects.get(formName)) : undefined;
+      expect(isStream(editedForm) && new TextDecoder().decode(editedForm.raw)).toContain(originalPaint);
+    },
+  );
+
+  it('restores an inherited pattern whose original name is shadowed in the painter', () => {
+    const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+    const pattern = '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20';
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /Pattern << /Tile 6 0 R >> >> >>',
+      stream('/Pattern cs /Tile scn /Outer Do'),
+      stream('q 1 0 0 rg 75 5 10 10 re f Q 0 0 20 20 re f /Nested Do',
+        `${form} /Resources << /XObject << /Outer 5 0 R /Nested 8 0 R >> /Pattern << /Tile 7 0 R >> >>`),
+      stream('q 1 0 0 1 -70 0 cm /Outer Do Q', pattern),
+      stream('1 0 1 rg 0 0 20 20 re f', pattern),
+      stream('40 40 20 20 re f', `${form} /Resources << /XObject << /Outer 9 0 R >> >>`),
+      stream('0 1 0 rg 75 5 10 10 re f', form),
+    ]));
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    expect(before.at(10, 90)).toEqual([255, 255, 255, 255]);
+    expect(before.at(50, 50)).toEqual([0, 255, 0, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(10, 90)).toEqual(before.at(10, 90));
+    expect(after.at(50, 50)).toEqual(before.at(50, 50));
+  });
+
+  it.each(['.5 sc 0 0 20 20 re f', 'BT (A) Tj ET', 'BT /F 18 Tf () Tj [() 12 ()] TJ ET', 'W f'])(
+    'leaves a selected but unpainted tile alone for %s', (operators) => {
+      const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+      const doc = Document.Open(buildRawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+        '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R /Tagged 7 0 R >> /Pattern << /Tile 6 0 R >> /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>',
+        stream('/Outer Do'), stream(`1 0 0 rg 75 5 10 10 re f /Pattern cs /Tile scn ${operators}`, form),
+        stream('/Tagged Do', '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20'),
+        stream('/Outer Do', `${form} /StructParents 4`),
+      ]));
+      doc.Pages[0].GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+      const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+      expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    },
+  );
+
+  it.each(['remove', 'recolor'])('does not copy a recursive pattern when the edit will %s its paint', (edit) => {
+    const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+    const pattern = '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20';
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R /Tagged 7 0 R >> /Pattern << /Tile 6 0 R >> >> >>',
+      stream('/Outer Do'), stream('/Pattern cs /Tile scn 0 0 20 20 re f', form),
+      stream('/Tagged Do', pattern), stream('/Outer Do', `${form} /StructParents 4`),
+    ]));
+    const [path] = doc.Pages[0].GetPaths();
+    if (edit === 'remove') path.Remove();
+    else path.Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(10, 90)).toEqual(edit === 'remove' ? [255, 255, 255, 255] : [0, 0, 255, 255]);
+  });
+
+  it('keeps a recursive stroke pattern skipped when editing only the fill', () => {
+    const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+    const pattern = '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20';
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents [4 0 R 7 0 R] /Resources << /XObject << /Outer 5 0 R >> /Pattern << /Tile 6 0 R >> >> >>',
+      stream('q /Pattern CS /Tile'), stream('1 0 0 rg 75 5 10 10 re f 4 w 5 5 10 10 re B', form),
+      stream('q 1 0 0 1 -70 0 cm /Outer Do Q', pattern), stream('SCN /Outer Do Q'),
+    ]));
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    expect(before.at(14, 90)).toEqual([255, 0, 0, 255]);
+    page.GetPaths()[1].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(10, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(14, 90)).toEqual([0, 0, 255, 255]);
+  });
+
+  it('preserves skipped tiling recursion in text painted with the active fill pattern', () => {
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /Pattern << /Tile 6 0 R >> /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>',
+      stream('/Outer Do'),
+      stream('1 0 0 rg 75 5 10 10 re f /Pattern cs /Tile scn BT /F 18 Tf 1 Tr 0 0 Td (A) Tj ET',
+        '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'),
+      stream('q 1 0 0 1 -70 0 cm /Outer Do Q', '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20'),
+    ]));
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    for (let y = 80; y < 100; y++) {
+      for (let x = 0; x < 20; x++) expect(after.at(x, y)).toEqual(before.at(x, y));
+    }
   });
 
   it('does not spend the content token allowance on an unused Form resource', () => {
