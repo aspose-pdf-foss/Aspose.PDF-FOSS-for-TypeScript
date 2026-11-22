@@ -603,6 +603,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Keep recursive Form draws skipped inside soft masks after a path edit.**
+  The affected graphics-state operation keeps its mask placement and opacity,
+  and other uses of the shared mask still draw as before after saving. (78um)
+
 - **Keep recursive Form draws skipped inside tiling patterns after a path edit.**
   An affected fill or stroke uses its own copied pattern, preserving inherited
   paint, clipping, and the original pattern's other draws after saving. (4dk0)

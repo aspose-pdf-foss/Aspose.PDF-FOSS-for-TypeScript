@@ -11,6 +11,7 @@ import { isArray, isDict, isName, isStream, name, type PdfDict, type PdfObject, 
 import { rethrowLimit, UnsupportedFeatureError } from './errors.js';
 import { referencedNames } from './resprune.js';
 import { pagePatternPaint, pathConstruction, trackPatternPaint, trackPatternSites, type PatternBinding, type PatternPaintState } from './formpattern.js';
+import { MAX_OFFSCREEN_DEPTH } from './pagerender.js';
 
 const ALIAS_PREFIX = 'PathEdit';
 
@@ -31,7 +32,7 @@ function drawName(op: ContentOp | undefined): string | undefined {
 }
 
 /** Reserve unresolved names in joined page content and reachable resource streams. */
-function reserveDrawNames(doc: Document, page: Page, pageResources: PdfDict | undefined): Set<string> {
+function reserveAliasNames(doc: Document, page: Page, pageResources: PdfDict | undefined): Set<string> {
   const names = new Set<string>();
   const tokens: ContentTokenBudget = { tokens: 0 };
   const scopes = new Map([[pageResources, 0]]);
@@ -85,6 +86,7 @@ function reserveDrawNames(doc: Document, page: Page, pageResources: PdfDict | un
     for (const key of refs.get('Font') ?? []) queueFont(fonts?.get(key), depth + 1);
     const states = dictOf(doc, scope?.get('ExtGState'));
     for (const key of refs.get('ExtGState') ?? []) {
+      if (key.startsWith(ALIAS_PREFIX)) names.add(key);
       const state = dictOf(doc, states?.get(key));
       const mask = doc.resolve(dictOf(doc, state?.get('SMask'))?.get('G'));
       if (isStream(mask)) queueProgram(mask, dictOf(doc, mask.dict.get('Resources')), depth + 1);
@@ -136,15 +138,17 @@ function reserveDrawNames(doc: Document, page: Page, pageResources: PdfDict | un
   return names;
 }
 
+type ResourceCategory = 'XObject' | 'Pattern' | 'ExtGState';
+
 interface ResourceScope {
   original?: PdfDict;
   copy?: PdfDict;
-  xobjects?: PdfDict;
-  patterns?: PdfDict;
+  subdicts?: Partial<Record<ResourceCategory, PdfDict>>;
 }
 
 type Invocation = { kind: 'form'; opIndex: number }
-  | { kind: 'pattern'; site: ContentWrap; binding: PatternBinding };
+  | { kind: 'pattern'; site: ContentWrap; binding: PatternBinding }
+  | { kind: 'mask'; opIndex: number; state: PdfDict; mask: PdfDict };
 
 interface Occurrence {
   stream: PdfStream;
@@ -152,7 +156,7 @@ interface Occurrence {
   scope: ResourceScope;
   ownsResources: boolean;
   parent?: Occurrence;
-  invocation: Invocation;
+  invocations: Invocation[];
   editedPath?: ContentSplice;
   splices: (ContentSplice | ContentWrap)[];
   sites: ContentWrap[];
@@ -177,13 +181,13 @@ export function planFormEdit(
   const selected = calledForm(pageScope, top.ops[topIndex]);
   if (!selected) throw new RangeError('missing Form draw');
 
-  const reserved = reserveDrawNames(doc, page, pageScope.original);
+  const reserved = reserveAliasNames(doc, page, pageScope.original);
   const aliases: { owner: PdfDict; key: string; target: Occurrence }[] = [];
   let aliasIndex = 0;
-  const newAlias = (scope: ResourceScope, category: 'XObject' | 'Pattern') => {
+  const newAlias = (scope: ResourceScope, category: ResourceCategory) => {
     const copy = scope.copy ??= new Map(scope.original);
-    const owner = category === 'XObject' ? (scope.xobjects ??= ensureOwnSubdict(doc, copy, category))
-      : (scope.patterns ??= ensureOwnSubdict(doc, copy, category));
+    const subdicts = scope.subdicts ??= {};
+    const owner = subdicts[category] ??= ensureOwnSubdict(doc, copy, category);
     let key: string;
     do { key = `${ALIAS_PREFIX}${aliasIndex++}`; } while (owner.has(key) || reserved.has(key));
     return { owner, key };
@@ -193,15 +197,28 @@ export function planFormEdit(
     aliases.push({ owner, key, target });
     return key;
   };
+  const replaceName = (opIndex: number, operator: 'Do' | 'gs', key: string): ContentSplice =>
+    ({ first: opIndex, end: opIndex + 1, ops: [{ operator, operands: [name(key)] }] });
   const replacement = (scope: ResourceScope, opIndex: number, target: Occurrence): ContentSplice => {
     const key = aliasCopy(scope, 'XObject', target);
-    return { first: opIndex, end: opIndex + 1, ops: [{ operator: 'Do', operands: [name(key)] }] };
+    return replaceName(opIndex, 'Do', key);
   };
   const selectPattern = (op: ContentOp, key: string): ContentOp =>
     ({ operator: op.operator, operands: [...op.operands.slice(0, -1), name(key)] });
   const redirect = (caller: Occurrence, invocation: Invocation, target: Occurrence) => {
     if (invocation.kind === 'form') {
       caller.splices.push(replacement(caller.scope, invocation.opIndex, target));
+      return;
+    }
+    if (invocation.kind === 'mask') {
+      const { owner, key } = newAlias(caller.scope, 'ExtGState');
+      const state = new Map(invocation.state);
+      const mask = new Map(invocation.mask);
+      state.set('SMask', mask);
+      owner.set(key, state);
+      // The group and every recursive name must share one indirect stream.
+      aliases.push({ owner: mask, key: 'G', target });
+      caller.splices.push(replaceName(invocation.opIndex, 'gs', key));
       return;
     }
     const { binding, site } = invocation;
@@ -234,7 +251,8 @@ export function planFormEdit(
     return source;
   };
   const collect = (
-    stream: PdfStream, invocation: Invocation, initialPaint?: PatternPaintState, parent?: Occurrence, selection?: number,
+    stream: PdfStream, invocation: Invocation, depth: number,
+    initialPaint?: PatternPaintState, parent?: Occurrence, selection?: number,
   ): Occurrence | undefined => {
     let source: ContentOpSource;
     try { source = readSource(stream); }
@@ -249,25 +267,27 @@ export function planFormEdit(
     const next = selection === undefined ? undefined : invocations[selection + 1];
     const editedPath = selection !== undefined && !next ? edit(source) : undefined;
     const occurrence: Occurrence = {
-      stream, source, scope, ownsResources: own !== undefined, parent, invocation, editedPath,
+      stream, source, scope, ownsResources: own !== undefined, parent, invocations: [invocation], editedPath,
       splices: editedPath ? [editedPath] : [], sites: [], backEdges: [],
     };
     if (selection !== undefined) copies.add(occurrence);
     active.set(stream.dict, occurrence);
     let followedSelection = false;
-    if (active.size < MAX_XOBJECT_DEPTH) {
+    if (depth < MAX_XOBJECT_DEPTH) {
       const paint = trackPatternPaint(doc, scope.original, initialPaint);
       const paintSite = trackPatternSites();
+      const states = dictOf(doc, scope.original?.get('ExtGState'));
+      let maskGroups: Map<PdfStream, Occurrence> | undefined;
       const visit = (target: PdfStream, link: Invocation, state?: PatternPaintState, nextSelection?: number) => {
         const ancestor = active.get(target.dict);
         if (ancestor) {
           ancestor.backEdges.push({ caller: occurrence, invocation: link });
           return undefined;
         }
-        return collect(target, link, state, occurrence, nextSelection);
+        return collect(target, link, depth + (link.kind === 'mask' ? 2 : 1), state, occurrence, nextSelection);
       };
       const visitPatterns = (first: number, end: number, bindings: PatternBinding[]) => {
-        if (!bindings.length) return;
+        if (!bindings.length || depth >= MAX_OFFSCREEN_DEPTH) return;
         const site: ContentWrap = { first, end, before: [], after: [] };
         occurrence.sites.push(site);
         for (const binding of bindings) visit(binding.stream, { kind: 'pattern', site, binding });
@@ -286,6 +306,26 @@ export function planFormEdit(
         }
         const op = source.ops[opIndex];
         paint.update(op);
+        // The renderer realizes a soft mask at gs with fresh paint. Inherited
+        // masks have already run, and only the resource lookup is inherited.
+        if (op.operator === 'gs' && depth < MAX_OFFSCREEN_DEPTH && depth + 1 < MAX_XOBJECT_DEPTH) {
+          const key = op.operands[0];
+          const state = isName(key) ? dictOf(doc, states?.get(key.name)) : undefined;
+          const mask = dictOf(doc, state?.get('SMask'));
+          const group = doc.resolve(mask?.get('G'));
+          if (state && mask && isStream(group)) {
+            // Repeated uses in this caller share scope and active ancestors.
+            // Keep their gs sites separate and reuse the repaired group bytes.
+            const groups = maskGroups ??= new Map<PdfStream, Occurrence>();
+            const link: Invocation = { kind: 'mask', opIndex, state, mask };
+            const prior = groups.get(group);
+            if (prior) prior.invocations.push(link);
+            else {
+              const child = visit(group, link);
+              if (child) groups.set(group, child);
+            }
+          }
+        }
         const target = calledForm(scope, op);
         if (target) {
           const followsSelection = next?.opIndex === opIndex;
@@ -302,7 +342,7 @@ export function planFormEdit(
   };
 
   const initialPaint = pagePatternPaint(doc, page, invocations[0], top);
-  const root = collect(selected, { kind: 'form', opIndex: topIndex }, initialPaint, undefined, 0)!;
+  const root = collect(selected, { kind: 'form', opIndex: topIndex }, 1, initialPaint, undefined, 0)!;
   // A back-edge only needs repair when its target is being copied. Copy the
   // invoking branch as far as the nearest existing copy. Set iteration also
   // visits those new copies so their own incoming back-edges are repaired.
@@ -313,7 +353,8 @@ export function planFormEdit(
     }
   }
   for (const target of copies) {
-    if (target.parent) redirect(target.parent, target.invocation, target);
+    if (!target.parent) continue;
+    for (const invocation of target.invocations) redirect(target.parent, invocation, target);
   }
   const topSplice = replacement(pageScope, topIndex, root);
 

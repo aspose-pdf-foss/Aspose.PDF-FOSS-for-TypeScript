@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Document, LoadLimits } from '../src/index.js';
 import { UnsupportedFeatureError } from '../src/errors.js';
-import { isDict, isStream } from '../src/types.js';
+import { isDict, isStream, type PdfStream } from '../src/types.js';
 import { buildRawPdf } from './helpers/build-page-tree-pdf.js';
 import { decodePng } from './helpers/decode-png.js';
 
@@ -294,6 +294,113 @@ describe('editing one PagePath', () => {
       expect(isStream(editedForm) && new TextDecoder().decode(editedForm.raw)).toContain(originalPaint);
     },
   );
+
+  it.each([
+    { ownsState: false, throughPattern: false },
+    { ownsState: true, throughPattern: false },
+    { ownsState: false, throughPattern: true },
+  ])('keeps a recursive soft mask skipped with own ExtGState resources $ownsState and tiling $throughPattern',
+    ({ ownsState, throughPattern }) => {
+      const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+      const states = '/ExtGState << /Mask 7 0 R >>';
+      const returnDraw = 'q 1 0 0 1 -70 0 cm /Return Do Q';
+      const groupDraw = throughPattern ? '/Pattern cs /Tile scn 0 0 20 20 re f' : returnDraw;
+      const patterns = throughPattern ? ' /Pattern << /Tile 9 0 R >>' : '';
+      const doc = Document.Open(buildRawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        `<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] /Resources << /XObject << /Outer 5 0 R >> ${states} >> >>`,
+        '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+        stream('/Outer Do q 1 0 0 1 0 40 cm /Mask gs 0 0 1 rg 0 0 40 20 re f Q q 1 0 0 1 0 70 cm /Outer Do Q'),
+        stream('1 0 0 rg 75 5 10 10 re f q 1 0 0 1 0 5 cm /Mask gs 1 0 0 1 0 -5 cm 0 1 0 rg 0 0 40 20 re f Q', form
+          + (ownsState ? ` /Resources << ${states} >>` : '')),
+        stream(`0 0 0 rg 25 5 10 10 re f ${groupDraw}`,
+          `${form} /Group << /S /Transparency /CS /DeviceRGB >> /Resources << /XObject << /Return 5 0 R >>${patterns} >>`),
+        '<< /Type /ExtGState /ca 0.5 /SMask 8 0 R >>',
+        '<< /S /Alpha /G 6 0 R >>',
+        ...(throughPattern ? [stream(returnDraw,
+          '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20')] : []),
+      ]));
+      const [page] = doc.Pages;
+      const before = decodePng(page.ToImage());
+      expect(before.at(10, 85)).toEqual([255, 255, 255, 255]);
+      expect(before.at(30, 93)).toEqual([255, 255, 255, 255]);
+      expect(before.at(30, 85)).toEqual([128, 255, 128, 255]);
+      expect(before.at(10, 50)).toEqual([128, 128, 255, 255]);
+      expect(before.at(10, 15)).toEqual([255, 255, 255, 255]);
+
+      page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+      const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+      expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+      expect(after.at(10, 85)).toEqual([255, 255, 255, 255]);
+      expect(after.at(30, 93)).toEqual([255, 255, 255, 255]);
+      expect(after.at(30, 85)).toEqual([128, 255, 128, 255]);
+      expect(after.at(10, 50)).toEqual([128, 128, 255, 255]);
+      expect(after.at(80, 20)).toEqual([255, 0, 0, 255]);
+      expect(after.at(10, 15)).toEqual([255, 255, 255, 255]);
+    },
+  );
+
+  it('keeps a mask whose group is the active Form skipped', () => {
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /ExtGState << /Mask 6 0 R >> >> >>',
+      stream('/Outer Do'),
+      stream('1 0 0 rg 75 5 10 10 re f q 1 0 0 1 -70 0 cm /Mask gs 1 0 0 1 70 0 cm 0 1 0 rg 0 0 20 20 re f Q',
+        '/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Group << /S /Transparency /CS /DeviceRGB >>'),
+      '<< /SMask << /S /Alpha /G 5 0 R >> >>',
+    ]));
+    const [page] = doc.Pages;
+    expect(decodePng(page.ToImage()).at(10, 90)).toEqual([255, 255, 255, 255]);
+
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(10, 90)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('leaves an unresolved gs untouched in a scope shared with a copied mask', () => {
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /ExtGState << /Mask 6 0 R >> >> >>',
+      stream('/Outer Do /PathEdit0 gs 1 0 1 rg 45 5 10 10 re f'),
+      stream('1 0 0 rg 75 5 10 10 re f /Mask gs', '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'),
+      '<< /SMask << /S /Alpha /G 5 0 R >> >>',
+    ]));
+    doc.Pages[0].GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(50, 90)).toEqual([255, 0, 255, 255]);
+  });
+
+  it('shares one repaired group when multiple gs ops in the same Form use it', () => {
+    const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+    const maskedPaint = '/Mask gs 0 1 0 rg 0 0 20 20 re f';
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Outer 5 0 R >> /ExtGState << /Mask 7 0 R >> >> >>',
+      stream('/Outer Do'),
+      stream(`1 0 0 rg 75 5 10 10 re f q ${maskedPaint} Q q 1 0 0 1 0 40 cm ${maskedPaint} Q`, form),
+      stream('q 1 0 0 1 -70 0 cm /Outer Do Q', `${form} /Group << /S /Transparency /CS /DeviceRGB >>`),
+      '<< /SMask << /S /Alpha /G 6 0 R >> >>',
+    ]));
+    doc.Pages[0].GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const reopened = Document.Open(doc.Save());
+    const states = reopened.resolve(reopened.Pages[0].Resources?.get('ExtGState'));
+    if (!isDict(states)) throw new Error('missing ExtGState');
+    const groups = new Set<PdfStream>();
+    for (const raw of states.values()) {
+      const state = reopened.resolve(raw);
+      const mask = isDict(state) ? reopened.resolve(state.get('SMask')) : undefined;
+      const group = isDict(mask) ? reopened.resolve(mask.get('G')) : undefined;
+      if (isStream(group)) groups.add(group);
+    }
+    expect(groups.size).toBe(2); // one original group and one shared repair
+    const after = decodePng(reopened.Pages[0].ToImage());
+    expect(after.at(10, 90)).toEqual([255, 255, 255, 255]);
+    expect(after.at(10, 50)).toEqual([255, 255, 255, 255]);
+  });
 
   it('restores an inherited pattern whose original name is shadowed in the painter', () => {
     const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';

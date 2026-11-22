@@ -6800,6 +6800,13 @@ Source (`src/`):
   same indirect object so the cycle guard still works after reopening. Keep
   the skipped `Do` in the content, because it can flush a clip inside hidden
   marked content. Only a branch referring to a copied ancestor needs repair.
+  Soft-mask groups participate in the same occurrence walk (`78um`). The
+  renderer enters `/SMask /G` at the `gs` operation with fresh paint and the
+  current resource scope. Redirect that `gs` through a private ExtGState and
+  mask dictionary so it keeps the original CTM and other graphics-state
+  entries. The `/G` reference and recursive aliases share the staged stream.
+  Repeated `gs` operations in one caller share a repaired group because its
+  resource scope and active ancestors are the same at those sites.
   **formpattern.ts** tracks tiling paint across graphics-state saves and Form
   entry (`4dk0`). The Form edit planner follows the cell only where the pattern
   paints. It selects the copied cell before the path and restores the original
