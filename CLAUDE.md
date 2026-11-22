@@ -13561,6 +13561,13 @@ Source (`src/`):
   **asn1.ts** + **cms.ts** primitives, with **cmskdf.ts** supplying the ECDH-ES
   key-agreement primitives (X9.63 KDF, `ECC-CMS-SharedInfo`, RFC 3394 AES key
   wrap) that `cms.ts` needs for EC recipient certificates.
+  **unsignedcontent.ts** joins the latest signature's existing modification list
+  to the current page and form model (`eent.1`). It selects the report by signed
+  byte extent, since field-tree order can differ from signing order. The summary
+  is present when that report's digest and CMS signature verify. It follows page
+  content, resource and appearance references without decoding streams. A
+  touched ancestor is compared with its signed value so a page-tree bookkeeping
+  edit alone does not flag pages that inherit unchanged settings.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream

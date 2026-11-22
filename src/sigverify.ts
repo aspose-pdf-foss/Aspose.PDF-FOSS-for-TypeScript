@@ -7,6 +7,7 @@ import { readXref } from './xref.js';
 import { digestByteRange, byteRangeContent } from './signature.js';
 import type { SignatureField } from './signature.js';
 import { rethrowLimit } from './errors.js';
+import type { UnsignedContentSummary } from './unsignedcontent.js';
 
 /** A fetcher for revocation material: given the target and its issuer (DER),
  *  return the OCSP response / CRL bytes, or undefined when none is available. */
@@ -73,6 +74,9 @@ export interface SignatureReport {
   coversWholeFile: boolean;
   /** Objects added/modified in revisions appended after this signature. */
   modifications: Change[];
+  /** Content attribution for the latest signature with a usable signed range,
+   *  when its digest and CMS signature both verify. */
+  unsignedContent?: UnsignedContentSummary;
   /** Certificate-chain trust — `unchecked` until V2. */
   chain: 'trusted' | 'untrusted' | 'unchecked';
   /** Revocation status — `unchecked` until V3. */

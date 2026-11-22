@@ -196,7 +196,7 @@ function annotRefs(pageDict: PdfObject, doc: DocMdpDoc): Set<number> {
 function changedKeys(prev: PdfObject, cur: PdfDict): Set<string> {
   const out = new Set<string>();
   if (!isDict(prev)) { for (const k of cur.keys()) out.add(k); return out; }
-  for (const [k, v] of cur) if (!equalObj(v, prev.get(k))) out.add(k);
+  for (const [k, v] of cur) if (!equalPdfObjects(v, prev.get(k))) out.add(k);
   for (const k of prev.keys()) if (!cur.has(k)) out.add(k);
   return out;
 }
@@ -210,19 +210,19 @@ function nameOf(o: PdfObject | undefined): string | undefined {
   return isName(o) ? o.name : undefined;
 }
 
-/** Structural equality over the PDF object model (references compare by id). */
-function equalObj(a: PdfObject | undefined, b: PdfObject | undefined): boolean {
+/** Structural equality over the PDF object model (references compare by id). @internal */
+export function equalPdfObjects(a: PdfObject | undefined, b: PdfObject | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined || a === null || b === null) return a === b;
   if (typeof a !== 'object' || typeof b !== 'object') return a === b;
   if (isRef(a)) return isRef(b) && a.num === b.num && a.gen === b.gen;
   if (isName(a)) return isName(b) && a.name === b.name;
   if (isString(a)) return isString(b) && bytesEqual(a.bytes, b.bytes);
-  if (isArray(a)) return isArray(b) && a.length === b.length && a.every((x, i) => equalObj(x, b[i]));
-  if (isStream(a)) return isStream(b) && equalObj(a.dict, b.dict) && bytesEqual(a.raw, b.raw);
+  if (isArray(a)) return isArray(b) && a.length === b.length && a.every((x, i) => equalPdfObjects(x, b[i]));
+  if (isStream(a)) return isStream(b) && equalPdfObjects(a.dict, b.dict) && bytesEqual(a.raw, b.raw);
   if (isDict(a)) {
     if (!isDict(b) || a.size !== b.size) return false;
-    for (const [k, v] of a) if (!b.has(k) || !equalObj(v, b.get(k))) return false;
+    for (const [k, v] of a) if (!b.has(k) || !equalPdfObjects(v, b.get(k))) return false;
     return true;
   }
   return false;

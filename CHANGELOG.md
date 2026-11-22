@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Summarize content changed after the latest PDF signature.** When that
+  signature verifies, `VerifySignatures()` adds `unsignedContent` to its report,
+  grouping recorded changes by affected page, annotation, widget, and field. (eent.1)
+
 - **Export selected page paths to SVG.** `page.PathsToSvg(paths)` draws the
   supplied snapshots in one standalone SVG. It preserves their page positions
   in the rotated CropBox and uses their recorded geometry and paint. Path

@@ -3889,7 +3889,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 516 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 518 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4497,6 +4497,23 @@ for work-unit boundaries and mutation/lifetime rules.
 
 ### Security
 
+Use `VerifySignatures()` to find the content affected by changes after the
+latest approval or certification signature. When its digest and CMS signature
+verify, that report carries `unsignedContent`.
+
+```ts
+import { Document } from '@asposefoss/pdf';
+
+const reports = await Document.OpenFile('signed.pdf').VerifySignatures();
+const latest = reports.find((report) => report.unsignedContent !== undefined);
+console.log(latest?.unsignedContent);
+```
+
+The summary attributes the added and modified objects in `modifications` to
+current pages, annotations, widgets, and terminal form fields. Page numbers
+start at 1. Field names are fully qualified. Resources shared by multiple pages
+can affect each of those pages.
+
 | Class | Description |
 |---|---|
 | `DocMdpPermission` | DocMDP permitted-changes level for a certification signature (PDF 32000-1 §12.8.2.2): the `/P` value in the DocMDP `/TransformParams`. |
@@ -4511,7 +4528,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `SignatureAppearance` | A visible signature appearance request. |
 | `SignatureField` | Read-side view of a signature field (always available, like `doc.Form`). |
 | `SignatureFieldInit` | Options for Form.AddSignatureField / Page.AddSignatureField, including an optional `seedValue`. |
-| `SignatureReport` | Interface with 13 properties. |
+| `SignatureReport` | Coverage, integrity, trust, modification and permission verdicts for one signature. The latest signature's report carries `unsignedContent` when its digest and CMS signature verify. |
+| `UnsignedAnnotationChange` | A changed annotation or widget's current page, object number, subtype and owning field name when available. |
+| `UnsignedContentSummary` | Affected 1-based pages, changed annotations and widgets, and full form field names attributed from `modifications`. |
 | `checkRevocation` | Determine the revocation status of `cert` (issued by `issuer`) from the given material, preferring a signature-verified OCSP response, then a verified CRL. |
 | `crlStatus` | Whether `cert`'s serial appears in the CRL's revoked list. |
 | `ocspStatus` | The OCSP status for `cert` (issued by `issuer`): match a SingleResponse by CertID (issuer name/key hash + serial), or `unknown` when none matches. |

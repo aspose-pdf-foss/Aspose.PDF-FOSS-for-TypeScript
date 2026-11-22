@@ -286,6 +286,7 @@ export type {
   SignatureReport, CertInfo, Change, VerifyOptions, RevocationFetcher,
   DocumentTimestampReport,
 } from './sigverify.js';
+export type { UnsignedAnnotationChange, UnsignedContentSummary } from './unsignedcontent.js';
 export {
   parseOcspResponse, ocspStatus, verifyOcspSignature,
   parseCrl, crlStatus, verifyCrlSignature, checkRevocation, findIssuer,

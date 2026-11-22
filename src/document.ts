@@ -182,6 +182,7 @@ import {
   verifySignature, checkSignatureRevocation,
   DocumentTimestampReport, verifyDocumentTimestamp,
 } from './sigverify.js';
+import { attachUnsignedContentSummary } from './unsignedcontent.js';
 import { parseSignedData } from './cms.js';
 import { findIssuer } from './revocation.js';
 import {
@@ -3298,6 +3299,8 @@ export class Document {
     // extra intermediates and validate against the caller's trust anchors.
     const chain = { trustAnchors: opts.trustAnchors, at: opts.at, extraCerts: readDssCerts(src) };
     const reports = signed.map((s) => verifySignature(bytes, s, chain));
+    attachUnsignedContentSummary(src, signed, reports, bytes.length,
+      (end) => Document.Open(bytes.subarray(0, end), { limits: src.loadLimits }));
     // Revocation: use explicit offline material or callbacks, else fall back to
     // any LTV validation data embedded in the document's /DSS (PAdES-B-LT).
     const offline = opts.offline ?? readDssMaterial(src);
