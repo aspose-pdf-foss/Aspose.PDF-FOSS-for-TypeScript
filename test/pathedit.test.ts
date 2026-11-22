@@ -402,6 +402,115 @@ describe('editing one PagePath', () => {
     expect(after.at(10, 50)).toEqual([255, 255, 255, 255]);
   });
 
+  it.each([
+    { selection: '/T3 1 Tf', inherited: false, fontResources: false, show: '(ab) Tj' },
+    { selection: '/T3 1 Tf', inherited: true, fontResources: false, show: '[(a) 0 (b)] TJ' },
+    { selection: '/UseT3 gs', inherited: true, fontResources: true, show: "10 TL 0 10 Td (ab) '" },
+    { selection: '/UseT3 gs', inherited: false, fontResources: true, show: '10 TL 0 10 Td 3 2 (ab) "' },
+  ])('preserves Type 3 recursion with $selection, inherited selection $inherited and show $show',
+    ({ selection, inherited, fontResources, show }) => {
+      const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+      const font = '/Type /Font /Subtype /Type3 /FontMatrix [1 0 0 1 0 0] /FontBBox [0 0 20 20]';
+      const doc = Document.Open(buildRawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+        '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /T3 5 0 R >> /XObject << /Outer 6 0 R /Return 6 0 R >> /ExtGState << /UseT3 << /Font [5 0 R 1] >> >> >> >>',
+        stream(`${inherited ? `BT ${selection} ET ` : ''}/Outer Do BT /T3 1 Tf /PathEdit1 1 Tf 0 40 Td (ab) Tj ET q 1 0 0 1 0 70 cm /Outer Do Q`),
+        `<< ${font} /Encoding << /Differences [97 /return /square] >> /CharProcs << /return 7 0 R /square 8 0 R >> /FirstChar 97 /LastChar 98 /Widths [20 20]`
+          + (fontResources ? ' /Resources << /XObject << /Return 6 0 R >> >>' : '') + ' >>',
+        stream(`1 0 0 rg 75 5 10 10 re f BT ${inherited ? '' : selection} ${show} (b) Tj ET`, form
+          + (inherited ? ' /Resources << /Font << /T3 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> /XObject << /Return 6 0 R >> >>' : '')),
+        stream('20 0 d0 q 1 0 0 1 -70 0 cm /Return Do Q'),
+        stream('20 0 d0 0 1 0 rg 5 5 10 10 re f'),
+      ]));
+      const [page] = doc.Pages;
+      const before = decodePng(page.ToImage());
+      expect(before.at(10, 90)).toEqual([255, 255, 255, 255]);
+      expect(before.at(30, 90)).toEqual([0, 255, 0, 255]);
+      expect(before.at(50, 90)).toEqual([0, 255, 0, 255]);
+      expect(before.at(10, 50)).toEqual([255, 0, 0, 255]);
+
+      page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+      const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+      expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+      expect(after.at(10, 90)).toEqual([255, 255, 255, 255]);
+      expect(after.at(30, 90)).toEqual([0, 255, 0, 255]);
+      expect(after.at(50, 90)).toEqual([0, 255, 0, 255]);
+      expect(after.at(48, 90)).toEqual(show.endsWith('"') ? [255, 255, 255, 255] : [0, 255, 0, 255]);
+      expect(after.at(10, 50)).toEqual([255, 0, 0, 255]);
+      expect(after.at(80, 20)).toEqual([255, 0, 0, 255]);
+      expect(after.at(10, 20)).toEqual([255, 255, 255, 255]);
+    },
+  );
+
+  it('preserves an inherited font in nested glyphs and shares the repair across repeated shows', () => {
+    const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /T3 5 0 R >> /XObject << /Outer 6 0 R /Return 6 0 R /Side 9 0 R >> >> >>',
+      stream('/Outer Do'),
+      '<< /Type /Font /Subtype /Type3 /FontMatrix [1 0 0 1 0 0] /FontBBox [0 0 20 20] /Encoding << /Differences [97 /return /side] >> /CharProcs << /return 7 0 R /side 8 0 R >> /FirstChar 97 /LastChar 98 /Widths [20 20] >>',
+      stream('1 0 0 rg 75 5 10 10 re f BT /T3 1 Tf (ab) Tj 0 40 Td (ab) Tj ET', form),
+      stream('20 0 d0 q 1 0 0 1 -70 0 cm /Return Do Q'),
+      stream('20 0 d0 /Side Do'),
+      stream('BT (a) Tj ET', `${form} /Resources << /XObject << /Return 10 0 R >> >>`),
+      stream('0 1 1 rg 75 5 10 10 re f', form),
+    ]));
+    const [page] = doc.Pages;
+    const before = decodePng(page.ToImage());
+    expect(before.at(10, 90)).toEqual([255, 255, 255, 255]);
+    expect(before.at(30, 90)).toEqual([0, 255, 255, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const reopened = Document.Open(doc.Save());
+    const [editedPage] = reopened.Pages;
+    const after = decodePng(editedPage.ToImage());
+    expect(after.at(10, 90)).toEqual([255, 255, 255, 255]);
+    expect(after.at(30, 90)).toEqual([0, 255, 255, 255]);
+    expect(after.at(10, 50)).toEqual([255, 255, 255, 255]);
+    expect(after.at(30, 50)).toEqual([0, 255, 255, 255]);
+    expect(reopened.resolve(editedPage.Resources?.get('Font'))).toHaveProperty('size', 2);
+  });
+
+  it('preserves a skipped call to the same glyph procedure through another glyph name', () => {
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /T3 5 0 R >> /XObject << /Outer 6 0 R >> >> >>',
+      stream('/Outer Do'),
+      '<< /Type /Font /Subtype /Type3 /FontMatrix [1 0 0 1 0 0] /FontBBox [0 0 20 20] /Encoding << /Differences [97 /a /b] >> /CharProcs << /a 7 0 R /b 7 0 R >> /FirstChar 97 /LastChar 98 /Widths [20 20] /Resources << /XObject << /Outer 6 0 R >> >> >>',
+      stream('1 0 0 rg 75 5 10 10 re f BT /T3 1 Tf (a) Tj ET', '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'),
+      stream('20 0 d0 q 1 0 0 1 -70 0 cm /Outer Do Q BT (b) Tj ET'),
+    ]));
+    const [page] = doc.Pages;
+    expect(decodePng(page.ToImage()).at(10, 90)).toEqual([255, 255, 255, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(10, 90)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('carries inherited tiling paint into a Type 3 procedure', () => {
+    const doc = Document.Open(buildRawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 100 100] >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /T3 5 0 R >> /XObject << /Outer 6 0 R >> /Pattern << /Tile 8 0 R >> >> >>',
+      stream('/Outer Do'),
+      '<< /Type /Font /Subtype /Type3 /FontMatrix [1 0 0 1 0 0] /FontBBox [0 0 20 20] /Encoding << /Differences [97 /square] >> /CharProcs << /square 7 0 R >> /FirstChar 97 /LastChar 97 /Widths [20] >>',
+      stream('1 0 0 rg 75 5 10 10 re f /Pattern cs /Tile scn BT /T3 1 Tf (a) Tj ET',
+        '/Type /XObject /Subtype /Form /BBox [0 0 100 100]'),
+      stream('20 0 0 0 20 20 d1 0 0 20 20 re f'),
+      stream('q 1 0 0 1 -70 0 cm /Outer Do Q',
+        '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20'),
+    ]));
+    const [page] = doc.Pages;
+    expect(decodePng(page.ToImage()).at(10, 90)).toEqual([255, 255, 255, 255]);
+    page.GetPaths()[0].Recolor({ fill: [0, 0, 1] });
+    const after = decodePng(Document.Open(doc.Save()).Pages[0].ToImage());
+    expect(after.at(80, 90)).toEqual([0, 0, 255, 255]);
+    expect(after.at(10, 90)).toEqual([255, 255, 255, 255]);
+  });
+
   it('restores an inherited pattern whose original name is shadowed in the painter', () => {
     const form = '/Type /XObject /Subtype /Form /BBox [0 0 100 100]';
     const pattern = '/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20';

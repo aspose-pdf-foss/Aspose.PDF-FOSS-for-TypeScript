@@ -6807,6 +6807,11 @@ Source (`src/`):
   entries. The `/G` reference and recursive aliases share the staged stream.
   Repeated `gs` operations in one caller share a repaired group because its
   resource scope and active ancestors are the same at those sites.
+  The same walk follows Type 3 procedures for the codes a show paints (`gzwx`).
+  Each repaired show selects a private font around its untouched text operator
+  so the pen still advances. A procedure reads the font's resources or inherits
+  the showing stream's scope. A procedure that reads the inherited font restores
+  the original inside its copy, keeping nested shows in their original scope.
   **formpattern.ts** tracks tiling paint across graphics-state saves and Form
   entry (`4dk0`). The Form edit planner follows the cell only where the pattern
   paints. It selects the copied cell before the path and restores the original

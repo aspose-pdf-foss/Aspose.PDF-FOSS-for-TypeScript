@@ -76,10 +76,10 @@ export class EditableContent {
     if (invocations.length === 0) throw new RangeError('missing Form invocation');
     const top = invocations[0].streamIndex;
     const { bytes, resources, additions } = planFormEdit(this.doc, this.page, this.topSource(top), invocations, edit, this.tokens);
-    const refs = new Map<PdfStream, PdfRef>();
-    for (const { owner, key, form } of additions) {
-      let ref = refs.get(form);
-      if (!ref) { ref = this.doc.allocObject(form); refs.set(form, ref); }
+    const refs = new Map<PdfStream | PdfDict, PdfRef>();
+    for (const { owner, key, object } of additions) {
+      let ref = refs.get(object);
+      if (!ref) { ref = this.doc.allocObject(object); refs.set(object, ref); }
       owner.set(key, ref);
     }
     this.writeTopStreams(new Map([[top, bytes]]));

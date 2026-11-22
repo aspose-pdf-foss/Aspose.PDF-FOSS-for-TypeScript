@@ -603,6 +603,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Keep recursive Form draws skipped inside Type 3 glyphs after a path edit.**
+  The edited show uses private glyph procedures where needed, preserving text
+  advance, inherited resources, and other uses of the font after saving. (gzwx)
+
 - **Keep recursive Form draws skipped inside soft masks after a path edit.**
   The affected graphics-state operation keeps its mask placement and opacity,
   and other uses of the shared mask still draw as before after saving. (78um)

@@ -56,8 +56,11 @@ export interface ContentOpSource {
   readonly ops: readonly ContentOp[];
   endOffset(index: number): number | undefined;
   replace(first: number, end: number, ops: ContentOp[]): Uint8Array;
-  replaceAll(splices: readonly (ContentSplice | ContentWrap)[]): Uint8Array;
+  replaceAll(splices: readonly (ContentSplice | ContentWrap)[], prefix?: ContentPrefix): Uint8Array;
 }
+
+/** Insert an operator at the start or after a stream's leading declaration. @internal */
+interface ContentPrefix { afterFirst: boolean; op: ContentOp; }
 
 /** Replace an exclusive range of original operator indexes. @internal */
 export interface ContentSplice { first: number; end: number; ops: ContentOp[]; }
@@ -80,10 +83,14 @@ export function parseContentStream(
 export function readContentForSplice(buf: Uint8Array, limits: LoadLimits, budget: ContentTokenBudget): ContentOpSource {
   const spans: OpSpan[] = [];
   const ops = parseOps(buf, limits, budget, spans);
-  const replaceAll = (splices: readonly (ContentSplice | ContentWrap)[]): Uint8Array => {
+  const replaceAll = (splices: readonly (ContentSplice | ContentWrap)[], prefix?: ContentPrefix): Uint8Array => {
     const chunks: Uint8Array[] = [];
     const newline = enc('\n');
     let offset = 0;
+    if (prefix) {
+      offset = prefix.afterFirst ? spans[0].end : 0;
+      chunks.push(buf.subarray(0, offset), newline, serializeContentStream([prefix.op]), newline);
+    }
     for (const splice of [...splices].sort((a, b) => a.first - b.first)) {
       const start = spans[splice.first], last = spans[splice.end - 1];
       if (!start || !last || splice.first >= splice.end || start.start < offset)

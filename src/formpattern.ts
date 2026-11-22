@@ -4,7 +4,7 @@ import type { ContentAddr } from './editcontent.js';
 import { parseContentStream, type ContentOp, type ContentOpSource } from './content.js';
 import { decodePageContentStreams, pageContentStreams } from './pagecontent.js';
 import { resolvePattern } from './pagerender.js';
-import { isArray, isDict, isName, isString, type PdfDict, type PdfObject, type PdfStream } from './types.js';
+import { isArray, isDict, isName, isString, type PdfDict, type PdfObject, type PdfStream, type PdfString } from './types.js';
 
 export interface PatternBinding {
   stream: PdfStream;
@@ -16,22 +16,32 @@ export interface PatternPaintState {
   fill?: PatternBinding;
   stroke?: PatternBinding;
   textMode: number;
-  outlineFont: boolean;
+  font?: FontBinding;
+  fontSize: number;
+}
+
+export interface FontBinding {
+  dict: PdfDict;
+  resource: PdfObject;
+  name?: string;
+  type3: boolean;
 }
 
 /** Pattern state follows q/Q and Form entry. A tiling cell starts fresh. */
 export function trackPatternPaint(doc: Document, resources: PdfDict | undefined, initial?: PatternPaintState) {
-  let current: PatternPaintState = initial ? { ...initial } : { textMode: 0, outlineFont: false };
+  let current: PatternPaintState = initial ? { ...initial } : { textMode: 0, fontSize: 0 };
   const saved: PatternPaintState[] = [];
   const patterns = doc.resolve(resources?.get('Pattern'));
   const fonts = doc.resolve(resources?.get('Font'));
   const states = doc.resolve(resources?.get('ExtGState'));
-  const setFont = (value: PdfObject | undefined) => {
+  const setFont = (value: PdfObject | undefined, name?: string): boolean => {
     const font = doc.resolve(value);
-    if (!isDict(font)) return;
+    if (value === undefined || !isDict(font)) return false;
     const subtype = doc.resolve(font.get('Subtype'));
-    current.outlineFont = !isName(subtype) || subtype.name !== 'Type3';
+    current.font = { dict: font, resource: value, name, type3: isName(subtype) && subtype.name === 'Type3' };
+    return true;
   };
+  const setFontSize = (value: PdfObject | undefined) => { current.fontSize = typeof value === 'number' ? value : 0; };
   return {
     get state(): PatternPaintState { return current; },
     update(op: ContentOp): void {
@@ -42,15 +52,16 @@ export function trackPatternPaint(doc: Document, resources: PdfDict | undefined,
         case 'G': case 'RG': case 'K': case 'CS': case 'SC': current.stroke = undefined; break;
         case 'Tr': current.textMode = typeof op.operands[0] === 'number' ? op.operands[0] | 0 : 0; break;
         case 'Tf': {
+          setFontSize(op.operands[1]);
           const key = op.operands[0];
-          if (isName(key) && isDict(fonts)) setFont(fonts.get(key.name));
+          if (isName(key) && isDict(fonts)) setFont(fonts.get(key.name), key.name);
           break;
         }
         case 'gs': {
           const key = op.operands[0];
           const state = isName(key) && isDict(states) ? doc.resolve(states.get(key.name)) : undefined;
           const font = isDict(state) ? doc.resolve(state.get('Font')) : undefined;
-          if (isArray(font)) setFont(font[0]);
+          if (isArray(font) && setFont(font[0])) setFontSize(font[1]);
           break;
         }
         case 'scn': case 'SCN': {
@@ -86,7 +97,12 @@ const fill = new Set(['f', 'F', 'f*', 'B', 'B*', 'b', 'b*']);
 const stroke = new Set(['S', 's', 'B', 'B*', 'b', 'b*']);
 const showText = new Set(['Tj', 'TJ', "'", '"']);
 export const pathConstruction = new Set(['m', 'l', 'c', 'v', 'y', 'h', 're', 'W', 'W*']);
-const hasText = (value: PdfObject | undefined): boolean => isString(value) && value.bytes.length > 0;
+export function shownStrings(op: ContentOp): PdfString[] {
+  if (!showText.has(op.operator)) return [];
+  const text = op.operands[op.operator === '"' ? 2 : 0];
+  if (op.operator === 'TJ') return isArray(text) ? text.filter(isString) : [];
+  return isString(text) ? [text] : [];
+}
 
 /** Find contiguous path and text painting sites which can consume a pattern. */
 export function trackPatternSites() {
@@ -111,9 +127,8 @@ export function trackPatternSites() {
       const bindings = [fills ? state.fill : undefined, strokes ? state.stroke : undefined];
       return { first: start, end: index + 1, bindings: bindings.filter((p) => p !== undefined) };
     }
-    if (state.fill && state.outlineFont && showText.has(operator) && (state.textMode & 3) !== 3) {
-      const text = operands[operator === '"' ? 2 : 0];
-      if (operator === 'TJ' ? !isArray(text) || !text.some(hasText) : !hasText(text)) return undefined;
+    if (state.fill && state.font && !state.font.type3 && (state.textMode & 3) !== 3
+      && shownStrings(op).some(({ bytes }) => bytes.length > 0)) {
       return { first: index, end: index + 1, bindings: [state.fill] };
     }
     return undefined;
