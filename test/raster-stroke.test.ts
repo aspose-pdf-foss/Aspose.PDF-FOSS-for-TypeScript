@@ -39,6 +39,17 @@ describe('Page.ToImage — closed subpaths', () => {
     expect(isRed(png.at(85, 115))).toBe(true);   // the continuation from (20,20)
     expect(isWhite(png.at(75, 100))).toBe(true); // a closing edge would cross this point
   });
+
+  it.each([['s', 'S'], ['b', 'B'], ['b*', 'B*']])('%s strokes the same closing edge as h %s', (op, paint) => {
+    const triangle = '1 0 0 RG 8 w 20 20 m 80 20 l 80 80 l';
+    const implicit = render(`${triangle} ${op}`, 100, 100);
+    const explicit = render(`${triangle} h ${paint}`, 100, 100);
+    const open = render(`${triangle} ${paint}`, 100, 100);
+    // The closing edge crosses user (50,50), at device (50,50).
+    expect(isRed(implicit.at(50, 50))).toBe(true);
+    expect(implicit.data).toEqual(explicit.data);
+    expect(isRed(open.at(50, 50))).toBe(false);
+  });
 });
 
 describe('Page.ToImage — line caps', () => {

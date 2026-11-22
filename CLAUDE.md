@@ -9527,6 +9527,8 @@ Source (`src/`):
   start on `h` and `re` for the implicit first control point of `v`. A later
   segment gets its own `M` so the raster stroke outliner keeps it open. A second
   `h` on an already closed subpath adds no geometry.
+  **Invariant (`qcik`):** `s`, `b` and `b*` close the current subpath using
+  the same routine as `h` before dispatching to the uppercase paint operator.
   **Invariant (`4gtd.4`):** `RenderSink.shading` takes `PdfDict | PdfStream`,
   because a MESH keeps its vertex data in the stream and `.dict` alone loses it.
   **Note the trap, and the typecheck gave FALSE ASSURANCE:** widening the

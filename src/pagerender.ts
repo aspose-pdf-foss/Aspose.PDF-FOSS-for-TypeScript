@@ -672,11 +672,15 @@ function walk(ctx: RenderCtx, bytes: Uint8Array, initial: GState, knockout = fal
       case 'h': closeSubpath(); break;
 
       // painting
-      case 'S': case 's': element(() => doStroke()); resetPath(); break;
+      // PDF 32000-1 Table 60 defines s, b, and b* as h followed by the uppercase operator.
+      case 's': closeSubpath(); // fall through
+      case 'S': element(() => doStroke()); resetPath(); break;
       case 'f': case 'F': element(() => doFill(false)); resetPath(); break;
       case 'f*': element(() => doFill(true)); resetPath(); break;
-      case 'B': case 'b': element(() => { doFill(false); doStroke(); }); resetPath(); break;
-      case 'B*': case 'b*': element(() => { doFill(true); doStroke(); }); resetPath(); break;
+      case 'b': closeSubpath(); // fall through
+      case 'B': element(() => { doFill(false); doStroke(); }); resetPath(); break;
+      case 'b*': closeSubpath(); // fall through
+      case 'B*': element(() => { doFill(true); doStroke(); }); resetPath(); break;
       case 'n': flushClip(); resetPath(); break;
 
       // clipping (snapshot current path; applied at next paint)

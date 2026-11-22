@@ -617,6 +617,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a closed shape start a fresh subpath, preventing stray closing strokes
   in raster output. (r0z8)
 
+- **Render the closing stroke for PDF close-and-paint operators.** SVG and
+  raster output now show the closing edge when `s`, `b`, or `b*` paints an
+  open subpath. (qcik)
+
 - **Name-tree lookups use PDF byte order.** Named destinations now resolve
   when the raw key lies within a child node's `/Limits`, even if its decoded
   text sorts outside those bounds. GoTo actions distinguish keys whose bytes

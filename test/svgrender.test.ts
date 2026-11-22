@@ -53,6 +53,17 @@ describe('Page.ToSvg — paths', () => {
     })).Pages[0];
     expect(page.ToSvg()).toContain('d="M5 95L8 95M10 90L90 90L90 50ZM10 90C10 90 20 35 30 30"');
   });
+
+  it.each([['s', 'S'], ['b', 'B'], ['b*', 'B*']])('%s paints like h %s', (op, paint) => {
+    const svg = (ending: string) => Document.Open(buildSvgPdf({
+      mediaBox: [0, 0, 100, 100],
+      content: `5 5 m 15 5 l 15 15 l 20 20 m 80 20 l 80 80 l ${ending}`,
+    })).Pages[0].ToSvg();
+    const implicit = svg(op);
+    expect(implicit).toContain('d="M5 95L15 95L15 85M20 80L80 80L80 20Z"');
+    expect(implicit).toBe(svg(`h ${paint}`));
+    expect(svg(paint)).toContain('d="M5 95L15 95L15 85M20 80L80 80L80 20"');
+  });
 });
 
 describe('Page.PathsToSvg', () => {
