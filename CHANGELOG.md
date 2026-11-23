@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Review changes to signed PDF page appearances.** Opt in with
+  `VerifySignatures({ shadowAnalysis: true })` to get page-level hide,
+  replace, and hide-and-replace findings for each verified signature.
+  The analysis compares the signed and current renders, including annotation
+  appearances, and reports evidence of overlays. (eent.2)
+
 - **Summarize content changed after the latest PDF signature.** When that
   signature verifies, `VerifySignatures()` adds `unsignedContent` to its report,
   grouping recorded changes by affected page, annotation, widget, and field. (eent.1)

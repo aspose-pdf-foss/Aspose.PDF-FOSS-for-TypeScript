@@ -287,6 +287,7 @@ export type {
   DocumentTimestampReport,
 } from './sigverify.js';
 export type { UnsignedAnnotationChange, UnsignedContentSummary } from './unsignedcontent.js';
+export type { ShadowAnalysis, ShadowFinding } from './shadowanalysis.js';
 export {
   parseOcspResponse, ocspStatus, verifyOcspSignature,
   parseCrl, crlStatus, verifyCrlSignature, checkRevocation, findIssuer,

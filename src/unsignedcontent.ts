@@ -1,6 +1,6 @@
 import type { Document } from './document.js';
 import type { Change, SignatureReport } from './sigverify.js';
-import type { SignatureField } from './signature.js';
+import { signatureRevisionEnd, type SignatureField } from './signature.js';
 import { isArray, isDict, isName, isRef, isStream, type PdfDict, type PdfObject } from './types.js';
 import { equalPdfObjects } from './docmdp.js';
 import { rethrowLimit } from './errors.js';
@@ -38,12 +38,8 @@ export function attachUnsignedContentSummary(
   let latest: SignatureReport | undefined;
   let end = 0;
   for (let i = 0; i < signatures.length; i++) {
-    const range = signatures[i].byteRange;
-    if (!range || !range.every(Number.isSafeInteger)) continue;
-    const [start, firstLength, secondStart, secondLength] = range;
-    const signedEnd = secondStart + secondLength;
-    if (start !== 0 || firstLength <= 0 || secondStart <= firstLength || secondLength <= 0
-      || signedEnd > length || signedEnd <= end) continue;
+    const signedEnd = signatureRevisionEnd(signatures[i].byteRange, length);
+    if (signedEnd === undefined || signedEnd <= end) continue;
     end = signedEnd;
     latest = reports[i];
   }

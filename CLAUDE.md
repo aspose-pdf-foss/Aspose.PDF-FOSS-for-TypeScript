@@ -13568,6 +13568,13 @@ Source (`src/`):
   content, resource and appearance references without decoding streams. A
   touched ancestor is compared with its signed value so a page-tree bookkeeping
   edit alone does not flag pages that inherit unchanged settings.
+  **shadowanalysis.ts** compares the signed and current page appearances for
+  each verified signature when `VerifySignatures({ shadowAnalysis: true })`
+  is requested (`eent.2`). It uses the same renderer and scale for each pair,
+  with a bounded sample size. A finding needs a change to a signed mark or a
+  removed page. Overlay evidence needs a layer-specific rerender to corroborate
+  the earlier appearance. This preserves independent cryptographic and
+  permission verdicts.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream

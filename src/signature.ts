@@ -146,6 +146,16 @@ export interface SignatureField {
   lock?: FieldLock;
 }
 
+/** The end of the signed byte extent when the range has the expected shape. */
+export function signatureRevisionEnd(range: SignatureField['byteRange'], length: number): number | undefined {
+  if (!range || !range.every(Number.isSafeInteger)) return undefined;
+  const [start, firstLength, secondStart, secondLength] = range;
+  const end = secondStart + secondLength;
+  if (start !== 0 || firstLength <= 0 || secondStart <= firstLength || secondLength <= 0 || end > length)
+    return undefined;
+  return end;
+}
+
 /** Map the public `subFilter` option to its PDF `/SubFilter` name. */
 export function subFilterName(opts: SignOptions): string {
   return opts.subFilter === 'PAdES' ? 'ETSI.CAdES.detached' : 'adbe.pkcs7.detached';

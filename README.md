@@ -3889,7 +3889,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 518 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 520 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4323,7 +4323,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ValidationIssue` | A single validation finding. |
 | `ValueCheckReport` | What `Form.CheckValues()` found: the `rejected` values and the `unrecognised` scripts. |
 | `ValueRejection` | A field value its own recognised keystroke or validate rule rejects: `{ field, trigger, rule, value, message }`. |
-| `VerifyOptions` | Options for VerifySignatures. |
+| `VerifyOptions` | Options for VerifySignatures, including opt-in page appearance analysis. |
 | `WatermarkCandidate` | What `doc.FindWatermarks` returns: an `XObjectWatermark` or a `TextWatermark`, each with `pages`, `bbox` and `occurrences`. |
 | `WatermarkOccurrence` | One place a watermark candidate was found: `page`, `bbox`, and its own `text` or its `Do`'s `addr`. |
 | `WatermarkOptions` | Options for AddWatermark. |
@@ -4514,6 +4514,25 @@ current pages, annotations, widgets, and terminal form fields. Page numbers
 start at 1. Field names are fully qualified. Resources shared by multiple pages
 can affect each of those pages.
 
+Pass `{ shadowAnalysis: true }` to compare the rendered pages of each verified
+signed revision with the current file. A finding can identify hidden marks,
+replaced marks, or both when an overlay corroborates the change. The
+`overlay` flag indicates that some changed signed marks reappeared when a
+layer was omitted. The result lists signed page numbers in reading order and
+records pages it could not compare in `skippedPages`.
+
+```ts
+const reports = await Document.OpenFile('signed.pdf').VerifySignatures({ shadowAnalysis: true });
+for (const report of reports) {
+  console.log(report.name, report.shadowAnalysis?.findings, report.shadowAnalysis?.skippedPages);
+}
+```
+
+The comparison samples the signed and current endpoints with the built-in
+renderer, including annotation appearances. The renderer may simplify
+unsupported graphics. These findings are signals for review and the reported
+signature, trust, and DocMDP verdicts are independent.
+
 | Class | Description |
 |---|---|
 | `DocMdpPermission` | DocMDP permitted-changes level for a certification signature (PDF 32000-1 §12.8.2.2): the `/P` value in the DocMDP `/TransformParams`. |
@@ -4528,7 +4547,9 @@ can affect each of those pages.
 | `SignatureAppearance` | A visible signature appearance request. |
 | `SignatureField` | Read-side view of a signature field (always available, like `doc.Form`). |
 | `SignatureFieldInit` | Options for Form.AddSignatureField / Page.AddSignatureField, including an optional `seedValue`. |
-| `SignatureReport` | Coverage, integrity, trust, modification and permission verdicts for one signature. The latest signature's report carries `unsignedContent` when its digest and CMS signature verify. |
+| `SignatureReport` | Coverage, integrity, trust, modification and permission verdicts for one signature, plus optional `unsignedContent` and `shadowAnalysis`. |
+| `ShadowAnalysis` | Signed-to-current page appearance findings and signed page numbers that could not be compared. |
+| `ShadowFinding` | Signed page number, appearance change kind, and overlay evidence for one finding. |
 | `UnsignedAnnotationChange` | A changed annotation or widget's current page, object number, subtype and owning field name when available. |
 | `UnsignedContentSummary` | Affected 1-based pages, changed annotations and widgets, and full form field names attributed from `modifications`. |
 | `checkRevocation` | Determine the revocation status of `cert` (issued by `issuer`) from the given material, preferring a signature-verified OCSP response, then a verified CRL. |

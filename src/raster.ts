@@ -1630,6 +1630,12 @@ export interface BackdropOptions {
   hideWidgets?: ReadonlySet<PdfDict>;
 }
 
+interface AppearanceOptions {
+  contents?: Uint8Array;
+  /** Propagate rendering failures to the caller doing forensic comparison. */
+  strict?: boolean;
+}
+
 /** Encode a finished canvas. The single dispatch point every raster entry
  *  reaches, so no two of them can disagree about what a format means. */
 function encodeCanvas(
@@ -1787,7 +1793,7 @@ function resolveFormat(opts: ImageOptions): ImageFormat {
  *  rather than a finished single-page file — encoded TIFFs cannot be
  *  concatenated, so every frame has to reach one `encodeTiff` call. */
 function renderCanvas(
-  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions,
+  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions & AppearanceOptions,
 ): Canvas {
   const box = opts.box ?? 'crop';
   const opaqueWhite = (opts.background ?? 'white') !== 'transparent';
@@ -1814,8 +1820,9 @@ function renderCanvas(
   const sink = new RasterSink(doc, canvas, o.skipGlyphs);
   try {
     interpret(doc, page, device, sink,
-      { annotations: opts.annotations, hideWidgets: o.hideWidgets });
+      { annotations: opts.annotations, hideWidgets: o.hideWidgets, contents: o.contents, strict: o.strict });
   } catch (caught) { rethrowLimit(caught);
+    if (o.strict) throw caught;
     // Degrade: whatever composited before the failure still renders.
   }
   return canvas;
@@ -2007,11 +2014,11 @@ export function renderPageRegionToPng(doc: Document, page: Page, region: Rect, s
 /** A page rendered to opaque 8-bit RGB at `scale` (pixels per point), with
  *  the page-space → pixel matrix the render used — `renderCanvas`'s own
  *  composition, so a caller mapping pixels back to the page cannot disagree
- *  with where they were drawn. For `comparerendering.ts`. */
+ *  with where they were drawn. For graphical and signature comparison. */
 export function renderPageRgb(
-  doc: Document, page: Page, scale: number, annotations = true,
+  doc: Document, page: Page, scale: number, annotations = true, appearance?: AppearanceOptions,
 ): { width: number; height: number; rgb: Uint8Array; device: Matrix } {
-  const canvas = renderCanvas(doc, page, { scale, annotations }, { skipGlyphs: false });
+  const canvas = renderCanvas(doc, page, { scale, annotations }, { skipGlyphs: false, ...appearance });
   const device = mul(baseMatrix(page, 'crop').matrix, [scale, 0, 0, scale, 0, 0]);
   return { width: canvas.w, height: canvas.h, rgb: canvas.toRgb(), device };
 }

@@ -171,7 +171,7 @@ import { Signer, resolveSigner } from './signer.js';
 import {
   SignOptions, CertifyOptions, DocMdpPermission, SignatureField,
   buildSigValueDict, buildDocMdpReference, subFilterName,
-  digestByteRange, digestName, derTotalLength, pdfString,
+  digestByteRange, digestName, derTotalLength, pdfString, signatureRevisionEnd,
   buildDocTimeStampDict, DocumentTimestampOptions,
 } from './signature.js';
 import {
@@ -183,6 +183,7 @@ import {
   DocumentTimestampReport, verifyDocumentTimestamp,
 } from './sigverify.js';
 import { attachUnsignedContentSummary } from './unsignedcontent.js';
+import { compareShadowPages, findSignedRevision } from './shadowanalysis.js';
 import { parseSignedData } from './cms.js';
 import { findIssuer } from './revocation.js';
 import {
@@ -3293,14 +3294,35 @@ export class Document {
     if (!bytes) return [];
     // Re-parse from the actual bytes so /ByteRange and /Contents are read as
     // written (the live model never holds the filled placeholder).
-    const src = Document.Open(bytes);
+    const src = Document.Open(bytes, opts.shadowAnalysis ? { limits: this.loadLimits } : undefined);
     const signed = src.Signatures.filter((s) => s.isSigned);
     // Chain validation (V2) is synchronous; feed it any /DSS-embedded certs as
     // extra intermediates and validate against the caller's trust anchors.
     const chain = { trustAnchors: opts.trustAnchors, at: opts.at, extraCerts: readDssCerts(src) };
     const reports = signed.map((s) => verifySignature(bytes, s, chain));
-    attachUnsignedContentSummary(src, signed, reports, bytes.length,
-      (end) => Document.Open(bytes.subarray(0, end), { limits: src.loadLimits }));
+    const openSignedRevision = (end: number) => Document.Open(bytes.subarray(0, end), { limits: src.loadLimits });
+    attachUnsignedContentSummary(src, signed, reports, bytes.length, openSignedRevision);
+    if (opts.shadowAnalysis) {
+      for (let i = 0; i < reports.length; i++) {
+        const report = reports[i];
+        const end = signatureRevisionEnd(signed[i].byteRange, bytes.length);
+        if (report.integrity !== 'valid' || report.signature !== 'valid' || end === undefined) continue;
+        const boundary = findSignedRevision(src.Revisions, bytes, end);
+        if (!boundary) continue;
+        if (boundary === src.Revisions.at(-1)) {
+          report.shadowAnalysis = { findings: [], skippedPages: [] };
+          continue;
+        }
+        let revision: Document;
+        try { revision = openSignedRevision(end); }
+        catch (caught) {
+          rethrowLimit(caught);
+          continue;
+        }
+        if (revision.Revisions.at(-1)?.xrefOffset === boundary.xrefOffset)
+          report.shadowAnalysis = compareShadowPages(revision, src);
+      }
+    }
     // Revocation: use explicit offline material or callbacks, else fall back to
     // any LTV validation data embedded in the document's /DSS (PAdES-B-LT).
     const offline = opts.offline ?? readDssMaterial(src);

@@ -219,6 +219,7 @@ interface RenderCtx {
    *  form, pattern, glyph procedure and annotation appearance — shared BY
    *  REFERENCE through each `{ ...ctx }` child (`ibzo.8`). */
   tokens: ContentTokenBudget;
+  strict?: boolean;
   /** Optional-content visibility for this render, absent when the document
    *  declares no `/OCProperties` — in which case every section is visible and
    *  no lookup is made at all. */
@@ -287,7 +288,12 @@ function paintTiling(ctx: RenderCtx, gs: GState, pat: TilingPattern, baseCtm: Ma
   if (ctx.depth >= MAX_OFFSCREEN_DEPTH || ctx.seen.has(pat.stream.dict)) return;
   const patCtm = mul(pat.matrix, baseCtm);
   let bytes: Uint8Array;
-  try { bytes = inflateStream(pat.stream as Parameters<typeof inflateStream>[0]); } catch (caught) { rethrowLimit(caught); return; }
+  try { bytes = inflateStream(pat.stream as Parameters<typeof inflateStream>[0]); }
+  catch (caught) {
+    rethrowLimit(caught);
+    if (ctx.strict) throw caught;
+    return;
+  }
 
   // The cell draws in pattern space, which generally lies outside the region it
   // fills, so the buffer is placed over the cell's own device bbox.
@@ -316,6 +322,7 @@ function paintTiling(ctx: RenderCtx, gs: GState, pat: TilingPattern, baseCtm: Ma
     walk({ ...ctx, resources: pat.resources ?? ctx.resources, depth: ctx.depth + 1 }, bytes, st);
     ctx.seen.delete(pat.stream.dict);
   } catch (caught) { rethrowLimit(caught);
+    if (ctx.strict) throw caught;
     // Degrade: whatever the cell drew before failing still tiles.
   }
   ctx.sink.endOffscreen({
@@ -442,6 +449,7 @@ function realizeSoftMask(ctx: RenderCtx, ref: SoftMaskRef): void {
   try {
     drawForm({ ...ctx, depth: ctx.depth + 1 }, initialState(ref.ctm), g);
   } catch (caught) { rethrowLimit(caught);
+    if (ctx.strict) throw caught;
     // Degrade: whatever the mask group drew before failing still masks.
   }
   ctx.sink.endOffscreen({ kind: 'softmask', luminosity, backdrop });
@@ -458,6 +466,10 @@ export function arrNums(doc: Document, o: PdfObject | undefined): number[] {
 export interface InterpretOptions {
   /** Composite annotation /AP appearances after the page content. Default true. */
   annotations?: boolean;
+  /** Render a known subsequence of page content with this page's resources. */
+  contents?: Uint8Array;
+  /** Propagate caught rendering failures for callers comparing appearances. */
+  strict?: boolean;
   /** Widget dicts whose appearance must NOT be composited.
    *
    *  For `htmlfixed.ts`'s `forms: true`: a widget that became a real HTML
@@ -468,16 +480,16 @@ export interface InterpretOptions {
 }
 
 /** Walk the page content under the base CTM, driving `sink`, then composite the
- *  annotation appearances over it. Never throws here; callers
- *  (renderPageToSvg / renderPageToPng) wrap with degrade-on-error. */
+ *  annotation appearances over it. The ordinary rendering callers handle
+ *  failures by returning what was drawn. */
 export function interpret(
   doc: Document, page: Page, base: Matrix, sink: RenderSink, opts: InterpretOptions = {},
 ): void {
   const ctx: RenderCtx = {
     doc, sink, resources: page.Resources, depth: 0, seen: new Set(), tokens: { tokens: 0 },
-    oc: ocVisibilityFor(doc),
+    oc: ocVisibilityFor(doc), strict: opts.strict,
   };
-  walk(ctx, page.Contents, initialState(base));
+  walk(ctx, opts.contents ?? page.Contents, initialState(base));
   if (opts.annotations !== false) drawAnnots(ctx, page, base, opts.hideWidgets);
 }
 
@@ -513,6 +525,7 @@ function drawAnnots(
       // /Matrix-transformed BBox onto /Rect, so this is not a double-apply.
       drawForm(ctx, initialState(mul(ap.place, base)), ap.stream);
     } catch (caught) { rethrowLimit(caught);
+      if (ctx.strict) throw caught;
       // Degrade: a malformed appearance costs only itself.
     }
   }
@@ -1139,13 +1152,19 @@ function drawGlyphProc(
   ctx: RenderCtx, gs: GState, proc: PdfStream, ctm: Matrix, resources: PdfDict | undefined,
 ): void {
   let bytes: Uint8Array;
-  try { bytes = inflateStream(proc as Parameters<typeof inflateStream>[0]); } catch (caught) { rethrowLimit(caught); return; }
+  try { bytes = inflateStream(proc as Parameters<typeof inflateStream>[0]); }
+  catch (caught) {
+    rethrowLimit(caught);
+    if (ctx.strict) throw caught;
+    return;
+  }
   const state = clone(gs);
   state.ctm = ctm;
   ctx.seen.add(proc.dict);
   try {
     walk({ ...ctx, resources: resources ?? ctx.resources, depth: ctx.depth + 1 }, bytes, state);
   } catch (caught) { rethrowLimit(caught);
+    if (ctx.strict) throw caught;
     // Degrade: whatever the glyph drew before failing stays, and the rest of
     // the run still draws.
   } finally {

@@ -29,6 +29,7 @@ describe('Document.VerifySignatures (V1: integrity + crypto + coverage)', () => 
     expect(r.coversWholeFile).toBe(true);
     expect(r.modifications).toEqual([]);
     expect(r.unsignedContent).toEqual({ pages: [], annotations: [], widgets: [], fields: [] });
+    expect(r.shadowAnalysis).toBeUndefined();
     expect(r.chain).toBe('unchecked');
     expect(r.revocation).toBe('unchecked');
     expect(r.docMDP).toBe('n/a');
@@ -49,10 +50,11 @@ describe('Document.VerifySignatures (V1: integrity + crypto + coverage)', () => 
     const [, a] = sig.byteRange!;
     bytes[Math.floor(a / 2)] ^= 0xff; // flip a byte inside the first signed range
 
-    const r = (await Document.Open(bytes).VerifySignatures())[0];
+    const r = (await Document.Open(bytes).VerifySignatures({ shadowAnalysis: true }))[0];
     expect(r.integrity).toBe('tampered');
     expect(r.signature).toBe('valid'); // signed attributes are intact
     expect(r.unsignedContent).toBeUndefined();
+    expect(r.shadowAnalysis).toBeUndefined();
   });
 
   it('verifies an incrementally-signed document and preserves whole-file coverage', async () => {
@@ -79,7 +81,7 @@ describe('Document.VerifySignatures (V1: integrity + crypto + coverage)', () => 
     await second.Sign(signerOf(buildSigner({ commonName: 'Second' })), {});
     const twice = second.Save();
 
-    const reports = await Document.Open(twice).VerifySignatures();
+    const reports = await Document.Open(twice).VerifySignatures({ shadowAnalysis: true });
     expect(reports.length).toBe(2);
     const earliest = reports.reduce((m, r) => (r.coversWholeFile ? m : r));
     const latest = reports.find((r) => r.coversWholeFile)!;
@@ -96,6 +98,8 @@ describe('Document.VerifySignatures (V1: integrity + crypto + coverage)', () => 
     expect(latest.coversWholeFile).toBe(true);
     expect(earliest.unsignedContent).toBeUndefined();
     expect(latest.unsignedContent).toEqual({ pages: [], annotations: [], widgets: [], fields: [] });
+    expect(earliest.shadowAnalysis).toEqual({ findings: [], skippedPages: [] });
+    expect(latest.shadowAnalysis).toEqual({ findings: [], skippedPages: [] });
   });
 
   it('attributes post-signing changes to pages, annotations, widgets, and their fields', async () => {
@@ -116,9 +120,11 @@ describe('Document.VerifySignatures (V1: integrity + crypto + coverage)', () => 
     const widget = edit.Form.Get('prefs.choice')!.Widgets[0];
     widget.set('Rect', [12, 10, 22, 20]);
     const objectOf = (dict: PdfDict) => [...edit.objectEntries()].find(([, obj]) => obj === dict)![0].num;
-    const report = (await Document.Open(edit.Save({ incremental: true })).VerifySignatures())[0];
+    const report = (await Document.Open(edit.Save({ incremental: true }))
+      .VerifySignatures({ shadowAnalysis: true }))[0];
 
     expect(report.integrity).toBe('valid');
+    expect(report.shadowAnalysis?.findings).toContainEqual({ page: 1, kind: 'replace', overlay: false });
     expect(report.unsignedContent).toEqual({
       pages: [1, 2],
       annotations: [{ page: 2, object: objectOf(note.Dict), subtype: 'Text' }],

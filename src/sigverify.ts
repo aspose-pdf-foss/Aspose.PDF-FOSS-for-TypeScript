@@ -8,6 +8,7 @@ import { digestByteRange, byteRangeContent } from './signature.js';
 import type { SignatureField } from './signature.js';
 import { rethrowLimit } from './errors.js';
 import type { UnsignedContentSummary } from './unsignedcontent.js';
+import type { ShadowAnalysis } from './shadowanalysis.js';
 
 /** A fetcher for revocation material: given the target and its issuer (DER),
  *  return the OCSP response / CRL bytes, or undefined when none is available. */
@@ -16,6 +17,8 @@ export type RevocationFetcher =
 
 /** Options for {@link Document.VerifySignatures}. */
 export interface VerifyOptions {
+  /** Compare each verified signed revision's appearance with the current file. */
+  shadowAnalysis?: boolean;
   /** Online OCSP fetch for the signer certificate (e.g. an HTTP call to the
    *  responder named in the cert's AIA extension). */
   getOCSP?: RevocationFetcher;
@@ -77,6 +80,8 @@ export interface SignatureReport {
   /** Content attribution for the latest signature with a usable signed range,
    *  when its digest and CMS signature both verify. */
   unsignedContent?: UnsignedContentSummary;
+  /** Appearance comparison when requested and the signed revision is available. */
+  shadowAnalysis?: ShadowAnalysis;
   /** Certificate-chain trust — `unchecked` until V2. */
   chain: 'trusted' | 'untrusted' | 'unchecked';
   /** Revocation status — `unchecked` until V3. */
