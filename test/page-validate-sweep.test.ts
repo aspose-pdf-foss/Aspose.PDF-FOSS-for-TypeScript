@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { createPrivateKey } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { Document } from '../src/document.js';
+import { Document, type OpenOptions } from '../src/document.js';
 import { PageFormat } from '../src/pageformat.js';
 import { buildTaggedPdf } from './helpers/build-tagged-pdf.js';
 import { buildFormPdf } from './helpers/build-form-pdf.js';
@@ -25,17 +26,22 @@ function fixturePdfs(dir = 'test/fixtures'): string[] {
 const issuesOf = (d: Document) => d.Validate().Issues.map((i) => `${i.rule}@${i.object?.num}`);
 
 const protectedFixtures = 'test/fixtures/qpdf-legacy-passwords';
-const fixturePasswords = new Map([
-  [join(protectedFixtures, 'r2-rc4.pdf'), 'fixture-user'],
-  [join(protectedFixtures, 'r3-rc4.pdf'), 'fixture-user'],
-  [join(protectedFixtures, 'r4-aes128.pdf'), 'fixture-user-π'],
+const pubSecFixture = 'test/fixtures/pubsec-go';
+const fixtureOptions = new Map<string, OpenOptions>([
+  [join(protectedFixtures, 'r2-rc4.pdf'), { password: 'fixture-user' }],
+  [join(protectedFixtures, 'r3-rc4.pdf'), { password: 'fixture-user' }],
+  [join(protectedFixtures, 'r4-aes128.pdf'), { password: 'fixture-user-π' }],
+  [join(pubSecFixture, 'aes128.pdf'), { recipient: {
+    certificate: readFileSync(join(pubSecFixture, 'recipient-cert.pem')),
+    privateKey: createPrivateKey(readFileSync(join(pubSecFixture, 'recipient-key.pem'))),
+  } }],
 ]);
 
 describe('Validate() passes every clean document in the suite', () => {
   const files = fixturePdfs();
   it('found the vendored fixtures', () => expect(files.length).toBeGreaterThanOrEqual(13));
   for (const f of files)
-    it(f, () => expect(issuesOf(Document.Open(readFileSync(f), { password: fixturePasswords.get(f) }))).toEqual([]));
+    it(f, () => expect(issuesOf(Document.Open(readFileSync(f), fixtureOptions.get(f)))).toEqual([]));
 
   const builders: [string, () => Uint8Array][] = [
     ['buildTaggedPdf', buildTaggedPdf],

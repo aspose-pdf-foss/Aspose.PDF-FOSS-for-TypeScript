@@ -199,10 +199,10 @@ import {
   type DssEntry, type ValidationDataOptions,
 } from './dss.js';
 import { buildDecryptor, Decryptor, CryptKeys, isEncryptDict } from './crypto.js';
-import { buildPubSecDecryptor } from './pubsec.js';
+import { buildPubSecDecryptor, type NormalizedRecipient } from './pubsec.js';
 import { parsePkcs12 } from './pkcs12.js';
 import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys } from './encrypt.js';
-import { X509Certificate, KeyObject } from 'node:crypto';
+import { X509Certificate } from 'node:crypto';
 import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { buildEmbeddedFont, buildFontEncoding, flateStream } from './fontembed.js';
@@ -243,7 +243,7 @@ export interface AddFontOptions {
 
 export type PubSecRecipient =
   | { pkcs12: Uint8Array; passphrase?: string }
-  | { privateKey: KeyObject; certificate: string | Uint8Array };
+  | NormalizedRecipient;
 
 export interface OpenOptions {
   /** Password for a standard-handler document; defaults to the empty user password. */
@@ -324,15 +324,22 @@ interface BuildResult {
   permissions: Permissions | undefined;
 }
 
-/** Resolve an OpenOptions.recipient into a private key + DER certificate. */
-function normalizeRecipient(recipient: PubSecRecipient): { privateKey: KeyObject; certificate: Uint8Array } {
+/** Resolve and retain the recipient credential with an owned DER certificate. */
+function normalizeRecipient(recipient: PubSecRecipient): NormalizedRecipient {
   if ('pkcs12' in recipient) {
     const { privateKey, certificates } = parsePkcs12(recipient.pkcs12, recipient.passphrase ?? '');
     return { privateKey, certificate: new Uint8Array(certificates[0]) };
   }
-  const certificate = new Uint8Array(new X509Certificate(
+  const parsed = new X509Certificate(
     typeof recipient.certificate === 'string'
-      ? recipient.certificate : Buffer.from(recipient.certificate)).raw);
+      ? recipient.certificate : Buffer.from(recipient.certificate));
+  const certificate = new Uint8Array(parsed.raw);
+  if ('keyTransport' in recipient) {
+    const provider = recipient.keyTransport;
+    if (provider?.algorithm !== 'rsa-pkcs1-v1_5' || typeof provider.unwrapKey !== 'function')
+      throw new UnsupportedFeatureError('PubSec: external key transport requires an RSAES-PKCS1-v1_5 provider');
+    return { certificate, keyTransport: { algorithm: provider.algorithm, unwrapKey: provider.unwrapKey.bind(provider) } };
+  }
   return { privateKey: recipient.privateKey, certificate };
 }
 

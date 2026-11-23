@@ -14,7 +14,7 @@ import {
   Encryptor, makeEncryptor, permissionsToP, permissionsFromP,
   PubSecEncryptOptions, Permissions,
 } from './encrypt.js';
-import { buildEnvelopedData, openEnvelopedData } from './cms.js';
+import { buildEnvelopedData, openEnvelopedData, type PubSecKeyTransport } from './cms.js';
 import { InvalidPasswordError, UnsupportedFeatureError } from './errors.js';
 
 const FF4 = Uint8Array.from([0xff, 0xff, 0xff, 0xff]);
@@ -115,10 +115,8 @@ export function buildPubSecEncryptor(opts: PubSecEncryptOptions): Encryptor {
   return makeEncryptor(dict, cipher, cipher);
 }
 
-export interface NormalizedRecipient {
-  privateKey: KeyObject;
-  certificate: string | Uint8Array;
-}
+export type NormalizedRecipient = { certificate: string | Uint8Array } &
+  ({ privateKey: KeyObject } | { keyTransport: PubSecKeyTransport });
 
 export function buildPubSecDecryptor(
   encrypt: PdfDict, recipient: NormalizedRecipient,
@@ -150,9 +148,10 @@ export function buildPubSecDecryptor(
   if (blobs.length === 0) throw new UnsupportedFeatureError('PubSec: no /Recipients');
 
   // Recover the 24-byte payload from the first envelope our key can open.
+  const key = 'keyTransport' in recipient ? recipient.keyTransport : recipient.privateKey;
   let payload: Uint8Array | undefined;
   for (const blob of blobs) {
-    payload = openEnvelopedData(blob, recipient.privateKey, certDer);
+    payload = openEnvelopedData(blob, key, certDer);
     if (payload) break;
   }
   if (!payload || payload.length < 24) throw new InvalidPasswordError();

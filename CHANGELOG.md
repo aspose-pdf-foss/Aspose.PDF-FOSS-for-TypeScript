@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Open PubSec PDFs with external RSA keys.** Supply a recipient certificate
+  and a synchronous RSAES-PKCS1-v1_5 key transport provider. The provider
+  unwraps the AES-128 CMS content key for a matched recipient. Incremental
+  saves and signature verification reuse the credential when reopening
+  encrypted revisions. Covered by a Go-produced AES-128 PDF. (chp0.10)
+
 - **Discover revocation endpoints through an opt-in transport.**
   `VerifySignatures` can try OCSP and complete direct-issuer CRLs advertised
   by a verified signer. The caller supplies exact allowed origins and a

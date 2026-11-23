@@ -9,17 +9,18 @@ import {
   publicEncrypt, privateDecrypt, randomBytes, constants as cryptoConstants,
   generateKeyPairSync, diffieHellman, createPublicKey,
 } from 'node:crypto';
+import { isPromise } from 'node:util/types';
 import {
   x963Kdf, eccCmsSharedInfo, aesKeyWrap, aesKeyUnwrap,
   KDF_HASH, WRAP_CIPHER, DH_SINGLE_PASS, AES_WRAP_OID,
 } from './cmskdf.js';
-import { der, parse, readOid, oidName, OID, Asn1Node } from './asn1.js';
+import { der, parse, parseBoundedDer, readOid, oidName, OID, Asn1Node } from './asn1.js';
 import {
   SignatureScheme, DigestAlgorithm, SigAlg, detectScheme, signData, verifyData,
   signatureAlgorithmId, schemeFromSigAlg,
 } from './sigalg.js';
 import { buildTimeStampRequest, extractTimeStampToken, type TimestampProvider } from './rfc3161.js';
-import { UnsupportedFeatureError } from './errors.js';
+import { InvalidPasswordError, PdfParseError, UnsupportedFeatureError, rethrowLimit } from './errors.js';
 
 export type { DigestAlgorithm, SigAlg } from './sigalg.js';
 
@@ -507,11 +508,26 @@ function oaepHashFromParams(params: Asn1Node | undefined): 'sha1' | 'sha256' {
   return hashOid === OID.sha256 ? 'sha256' : 'sha1';
 }
 
+/** Synchronous provider for an external RSA recipient key. */
+export interface PubSecKeyTransport {
+  /** Explicit opt-in to RSAES-PKCS1-v1_5 key transport. */
+  algorithm: 'rsa-pkcs1-v1_5';
+  /** Unwrap a copy of the CMS encrypted key and return the 16-byte content key.
+   * The provider must handle PKCS#1 v1.5 failures without exposing a padding
+   * oracle. Operations that reopen encrypted revisions may call it again. */
+  unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-pkcs1-v1_5') => Uint8Array;
+}
+
+function matchesRecipient(rid: Asn1Node | undefined, want: ReturnType<typeof certIssuerSerial>): boolean {
+  return rid?.raw[0] === 0x30 && rid.children.length === 2
+    && bytesEqual(rid.children[0].raw, want.issuer) && bytesEqual(rid.children[1].raw, want.serial);
+}
+
 /** Recover the CEK from a KeyAgreeRecipientInfo (ECDH-ES) if one
  *  RecipientEncryptedKey matches `want` (issuer/serial) and our key agrees;
  *  else undefined. */
 function openKeyAgree(
-  ri: Asn1Node, privateKey: KeyObject, want: { issuer: Uint8Array; serial: Uint8Array },
+  ri: Asn1Node, privateKey: KeyObject | PubSecKeyTransport, want: ReturnType<typeof certIssuerSerial>,
 ): Uint8Array | undefined {
   // children: version, [0] originator, keyEncAlg SEQUENCE, recipientEncryptedKeys
   // (optional [1] ukm never emitted here). recipientEncryptedKeys is the last child.
@@ -519,10 +535,10 @@ function openKeyAgree(
   const reks = ri.children[ri.children.length - 1];
   const keyEncAlg = ri.children[ri.children.length - 2]; // algid SEQUENCE before reks
 
-  const rek = reks.children.find((k) =>
-    bytesEqual(k.children[0].children[0].raw, want.issuer)
-    && bytesEqual(k.children[0].children[1].raw, want.serial));
+  const rek = reks?.children.find((k) => matchesRecipient(k.children[0], want));
   if (!rek) return undefined;
+  if (!(privateKey instanceof KeyObject))
+    throw new UnsupportedFeatureError('PubSec: external key transport supports RSAES-PKCS1-v1_5 only');
 
   // Rebuild the ephemeral public key as SPKISEQUENCE { algorithm, publicKey }.
   // The originator's OriginatorPublicKey algorithm may omit the EC curve params
@@ -545,27 +561,95 @@ function openKeyAgree(
   return aesKeyUnwrap(kek, rek.children[1].content);
 }
 
+const RSA_PKCS1_ALGORITHM = der.sequence(der.oid(OID.rsaEncryption), der.null_());
+const CMS_ENVELOPED_DATA = der.oid(OID.envelopedData);
+const CMS_DATA = der.oid(OID.data);
+const AES_128_CBC_OID = der.oid(OID.aes128CBC);
+
+function parseExternalEnvelope(envelope: Uint8Array): Asn1Node {
+  try {
+    // The enclosing PDF string already has the document's byte limits.
+    return parseBoundedDer(envelope, envelope.length);
+  } catch (e) {
+    rethrowLimit(e);
+    throw new PdfParseError('PubSec: invalid DER recipient envelope');
+  }
+}
+
+function openExternalKeyTransport(
+  ri: Asn1Node, eci: Asn1Node, provider: PubSecKeyTransport, certDer: Uint8Array,
+): Uint8Array {
+  if (ri.children[2] === undefined || !bytesEqual(ri.children[2].raw, RSA_PKCS1_ALGORITHM))
+    throw new UnsupportedFeatureError('PubSec: unsupported external key transport algorithm or parameters');
+
+  const [contentType, cipher, encryptedContent] = eci.children;
+  const [cipherOid, iv] = cipher?.children ?? [];
+  if (!contentType || !bytesEqual(contentType.raw, CMS_DATA)
+    || cipher?.raw[0] !== 0x30 || cipher.children.length !== 2
+    || !bytesEqual(cipherOid.raw, AES_128_CBC_OID) || iv.raw[0] !== 0x04 || iv.length !== 16)
+    throw new UnsupportedFeatureError('PubSec: unsupported external CMS content algorithm or parameters');
+
+  const publicKey = new X509Certificate(certDer).publicKey;
+  const modulusBits = publicKey.asymmetricKeyDetails?.modulusLength;
+  if (publicKey.asymmetricKeyType !== 'rsa' || modulusBits === undefined)
+    throw new UnsupportedFeatureError('PubSec: external key transport requires an RSA certificate');
+
+  const [version, , , wrapped] = ri.children;
+  // A 24-byte PDF seed and permissions payload takes two padded CBC blocks.
+  if (ri.children.length !== 4 || version.raw[0] !== 0x02 || version.length !== 1 || version.content[0] !== 0
+    || wrapped.raw[0] !== 0x04 || wrapped.length !== Math.ceil(modulusBits / 8)
+    || eci.children.length !== 3 || encryptedContent.raw[0] !== 0x80 || encryptedContent.length !== 32)
+    throw new PdfParseError('PubSec: invalid external recipient key or encrypted content');
+
+  // The original envelope bytes also participate in PDF file-key derivation.
+  // Use one credential error for provider failures and unusable content keys.
+  try {
+    const cek = provider.unwrapKey(Uint8Array.from(wrapped.content), 'rsa-pkcs1-v1_5');
+    // An incorrectly supplied async provider still fails synchronously.
+    if (isPromise(cek)) void cek.catch(() => undefined);
+    if (cek instanceof Uint8Array && cek.byteLength === 16) {
+      const payload = decryptEnvelopedContent(eci, cek);
+      if (payload.length === 24) return payload;
+    }
+  } catch (e) { rethrowLimit(e); }
+  throw new InvalidPasswordError('PubSec: recipient key transport failed');
+}
+
+function decryptEnvelopedContent(eci: Asn1Node, cek: Uint8Array): Uint8Array {
+  const iv = eci.children[1].children[1].content;            // algorithm params OCTET STRING
+  const encryptedContent = eci.children[2].content;          // [0] IMPLICIT OCTET STRING
+  const decipher = createDecipheriv('aes-128-cbc', cek, iv);
+  return new Uint8Array(Buffer.concat([decipher.update(Buffer.from(encryptedContent)), decipher.final()]));
+}
+
 /** Recover the enveloped content if one RecipientInfo matches `certDer`
- *  (by issuer/serial) and decrypts with `privateKey`; else undefined. */
+ *  (by issuer/serial) and decrypts with the supplied key or provider. */
 export function openEnvelopedData(
-  envelope: Uint8Array, privateKey: KeyObject, certDer: Uint8Array,
+  envelope: Uint8Array, privateKey: KeyObject | PubSecKeyTransport, certDer: Uint8Array,
 ): Uint8Array | undefined {
-  const contentInfo = parse(envelope);
-  const envelopedData = contentInfo.children[1].children[0];  // [0] EXPLICIT EnvelopedData
-  const recipientInfos = envelopedData.children[1];           // SET OF RecipientInfo
-  const eci = envelopedData.children[2];                      // EncryptedContentInfo
+  const external = !(privateKey instanceof KeyObject);
+  const contentInfo = external ? parseExternalEnvelope(envelope) : parse(envelope);
+  const [contentType, wrapper] = contentInfo.children;
+  const envelopedData = wrapper?.children[0];               // [0] EXPLICIT EnvelopedData
+  const recipientIndex = envelopedData?.children[1]?.raw[0] === 0xa0 ? 2 : 1; // optional originatorInfo
+  const recipientInfos = envelopedData?.children[recipientIndex];     // SET OF RecipientInfo
+  const eci = envelopedData?.children[recipientIndex + 1];            // EncryptedContentInfo
+  if (external && (contentInfo.raw[0] !== 0x30 || contentInfo.children.length !== 2
+    || !bytesEqual(contentType.raw, CMS_ENVELOPED_DATA) || wrapper.raw[0] !== 0xa0 || wrapper.children.length !== 1
+    || envelopedData?.raw[0] !== 0x30 || recipientInfos?.raw[0] !== 0x31 || eci?.raw[0] !== 0x30))
+    throw new PdfParseError('PubSec: invalid CMS recipient envelope');
 
   const want = certIssuerSerial(certDer);
   let cek: Uint8Array | undefined;
-  for (const ri of recipientInfos.children) {
+  for (const ri of recipientInfos!.children) {
     if (ri.tagClass === 2 && ri.tag === 1) {                  // KeyAgreeRecipientInfo [1]
       cek = openKeyAgree(ri, privateKey, want);
       if (cek) break;
       continue;
     }
-    const rid = ri.children[1];                               // IssuerAndSerialNumber
-    if (!bytesEqual(rid.children[0].raw, want.issuer)) continue;
-    if (!bytesEqual(rid.children[1].raw, want.serial)) continue;
+    if (ri.raw[0] !== 0x30 || !matchesRecipient(ri.children[1], want)) continue;
+    if (external) return openExternalKeyTransport(ri, eci!, privateKey, certDer);
+
     const keyEncOid = readOid(ri.children[2].children[0]);    // keyEncryptionAlgorithm
     const encryptedKey = ri.children[3].content;
     if (keyEncOid === OID.rsaesOaep) {
@@ -579,12 +663,7 @@ export function openEnvelopedData(
     }
     break;
   }
-  if (!cek) return undefined;
-
-  const iv = eci.children[1].children[1].content;            // algorithm params OCTET STRING
-  const encryptedContent = eci.children[2].content;          // [0] IMPLICIT OCTET STRING
-  const decipher = createDecipheriv('aes-128-cbc', cek, iv);
-  return new Uint8Array(Buffer.concat([decipher.update(Buffer.from(encryptedContent)), decipher.final()]));
+  return cek ? decryptEnvelopedContent(eci!, cek) : undefined;
 }
 
 export interface CmsVerifyResult {

@@ -13626,6 +13626,12 @@ Source (`src/`):
   hold the verification open after cancellation.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
+  **Invariant (`chp0.10`):** CMS validates the addressed recipient's issuer and
+  serial, RSAES-PKCS1-v1_5 algorithm and parameters, and AES-128-CBC parameters
+  before calling an external key transport provider. Pass a copy of the wrapped
+  key because file-key derivation hashes the original envelope. A failed
+  addressed callback ends the open. The existing private Open credential retains
+  the normalized certificate and provider for baseline and revision reopens.
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
   **encoders** (`encodeStream`, `ascii85Encode`/`asciiHexEncode`/`lzwEncode`/
   `runLengthEncode`) and the `Save({ streamFilter })` re-filter pass.

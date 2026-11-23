@@ -16,6 +16,7 @@ export interface SignerOptions {
   type?: 'rsa' | 'ec' | 'ed25519';
   namedCurve?: string;     // for type 'ec' (default P-256)
   commonName?: string;
+  serial?: bigint;
 }
 
 const SHA256_WITH_RSA = '1.2.840.113549.1.1.11';
@@ -60,7 +61,7 @@ export function buildSigner(opts: SignerOptions = {}): TestSigner {
 
   const tbs = der.sequence(
     der.explicit(0, der.integer(2)),       // version v3
-    der.integer(0x0123456789n),            // serialNumber
+    der.integer(opts.serial ?? 0x0123456789n), // serialNumber
     certAlgId,                             // signature
     name(commonName),                      // issuer
     der.sequence(notBefore, notAfter),     // validity

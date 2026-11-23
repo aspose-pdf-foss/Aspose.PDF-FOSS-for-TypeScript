@@ -251,6 +251,7 @@ export type {
   StampPosition, WatermarkOptions, HeaderFooterOptions, HeaderFooterBand, BatesOptions,
 } from './decorate.js';
 export type { EncryptOptions, Permissions, PubSecEncryptOptions, PubSecRecipientCert } from './encrypt.js';
+export type { PubSecKeyTransport } from './cms.js';
 export { verifyLinearization } from './linearize.js';
 export type { LinearizationCheck } from './linearize.js';
 export type { Metadata, MetadataUpdate } from './metadata.js';
