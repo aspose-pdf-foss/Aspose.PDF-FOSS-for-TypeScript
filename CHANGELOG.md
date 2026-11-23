@@ -631,6 +631,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preserve encryption when appending signature validation data.**
+  `AddValidationData` reuses the password or recipient credential supplied on
+  open and encrypts the DSS update while preserving the signed byte prefix.
+  `Certify` reports the normal ordering error after an existing encrypted
+  signature. (chp0.6)
+
 - **Preserve the PDF version on full save.** Classic, compressed, linearized,
   and full-rewrite signing output keep the input header version when the
   catalog supplies no override. Split, extraction, imposition, merging, and

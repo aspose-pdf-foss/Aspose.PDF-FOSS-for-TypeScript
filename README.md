@@ -104,6 +104,8 @@ flowchart TD
   `adbe.pkcs7.detached` (CMS) and `ETSI.CAdES.detached` (PAdES) subfilters from a `.p12`/`.pfx`
   keystore, DocMDP certification, RFC 3161 timestamps (`AddDocumentTimestamp`), LTV validation
   data (`AddValidationData`, `/DSS`), and [signature and timestamp verification](#security).
+  For signed encrypted PDFs, `AddValidationData` encrypts the appended data with the
+  existing file key and preserves the signed byte prefix.
   Reports include signed byte coverage and structural findings. Signature reports can
   also attribute later changes to content and compare signed and current page appearances.
 - Access and edit every page through `doc.Pages` — all five boundary boxes, rotation, resources,

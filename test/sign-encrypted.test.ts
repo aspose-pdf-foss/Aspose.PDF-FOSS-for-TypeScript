@@ -4,8 +4,11 @@ import { inspect } from 'node:util';
 import { buildEncryptedPdf } from './helpers/encrypt-pdf.js';
 import { buildPkcs12 } from './helpers/build-pkcs12.js';
 import { buildSigner, TestSigner } from './helpers/build-signer.js';
-import { Document } from '../src/document.js';
+import { buildCrl, buildOcspResponse } from './helpers/build-revocation.js';
+import { Document, type OpenOptions } from '../src/document.js';
 import { verifySignedData } from '../src/cms.js';
+import { readDssCerts, readDssMaterial } from '../src/dss.js';
+import { InvalidPasswordError, UnsupportedFeatureError } from '../src/errors.js';
 import { PageFormat } from '../src/pageformat.js';
 import { buildTimeStampToken } from '../src/rfc3161.js';
 import { LoadLimits } from '../src/loadlimits.js';
@@ -55,6 +58,81 @@ describe('signing an encrypted document', () => {
     const doc = Document.Open(encrypted());
     await doc.Sign(signerOf(buildSigner({ type: 'rsa' })), { reason: 'ok' });
     expect(Document.Open(doc.Save()).GetMetadata().title).toBe('SecretTitle');
+  });
+});
+
+describe('signature authoring follow-ups on an encrypted document', () => {
+  async function signProtected(mode: 'aes128' | 'aes256' | 'rsa' | 'ec') {
+    const draft = Document.New(PageFormat.A4);
+    draft.Lang = 'en-US';
+    let encrypted: Uint8Array;
+    let options: OpenOptions;
+    if (mode === 'aes128' || mode === 'aes256') {
+      const password = 'fixture password';
+      options = { password };
+      encrypted = draft.Save({ encrypt: { algorithm: mode, userPassword: password } });
+    } else {
+      const { certificate, privateKey } = buildSigner({ type: mode });
+      options = { recipient: { certificate, privateKey } };
+      encrypted = draft.Save({ encrypt: { recipients: [{ certificate }] } });
+    }
+    const doc = Document.Open(encrypted, options);
+    const signer = buildSigner({ type: 'ec' });
+    await doc.Sign(signer, { fieldName: 'Approval' });
+    return { doc, signer, signed: doc.Save(), options };
+  }
+
+  it.each([
+    ['aes128', false], ['aes256', true], ['rsa', false], ['ec', true],
+  ] as const)('appends encrypted DSS data with %s protection (reopened: %s)', async (mode, reopen) => {
+    const { doc, signer, signed, options } = await signProtected(mode);
+    const target = reopen ? Document.Open(signed, options) : doc;
+    const prefix = signed.slice();
+    const cert = signer.certificate;
+    const ocsp = buildOcspResponse({ responder: signer, cert, issuer: cert, status: 'good' });
+    const crl = buildCrl({ issuer: signer, revokedSerials: [] });
+    await target.AddValidationData({ getOCSP: async () => ocsp, getCRL: () => crl });
+    const bytes = target.Save();
+    expect(bytes.length).toBeGreaterThan(prefix.length);
+    expect(bytes.subarray(0, prefix.length)).toEqual(prefix);
+    const appended = Buffer.from(bytes.subarray(prefix.length));
+    for (const blob of [cert, ocsp, crl]) expect(appended.includes(Buffer.from(blob))).toBe(false);
+    expect(() => Document.Open(bytes)).toThrow(InvalidPasswordError);
+
+    const reopened = Document.Open(bytes, options);
+    expect(readDssCerts(reopened)).toEqual([cert]);
+    expect(readDssMaterial(reopened).get('Approval')).toEqual({ ocsp, crl });
+    expect(await reopened.VerifySignatures()).toMatchObject([{
+      name: 'Approval', integrity: 'valid', signature: 'valid', revocation: 'good',
+      coversWholeFile: false, structureFindings: [],
+    }]);
+  });
+
+  it('preserves catalog strings through repeated encrypted DSS appends', async () => {
+    const { doc, signer, signed, options } = await signProtected('aes128');
+    await doc.AddValidationData();
+    const first = doc.Save();
+    expect(first.subarray(0, signed.length)).toEqual(signed);
+    expect(doc.Lang).toBe('en-US');
+
+    const crl = buildCrl({ issuer: signer, revokedSerials: [] });
+    await doc.AddValidationData({ getCRL: () => crl });
+    const second = doc.Save();
+    expect(second.subarray(0, first.length)).toEqual(first);
+    const reopened = Document.Open(second, options);
+    expect(reopened.Lang).toBe('en-US');
+    expect(readDssMaterial(reopened).get('Approval')?.crl).toEqual(crl);
+  });
+
+  it.each(['aes128', 'rsa'] as const)('refuses certification after signing with %s protection', async (mode) => {
+    const { doc, signer, signed, options } = await signProtected(mode);
+    const prefix = signed.slice();
+    for (const target of [doc, Document.Open(signed, options)]) {
+      const certify = target.Certify(signer);
+      await expect(certify).rejects.toBeInstanceOf(UnsupportedFeatureError);
+      await expect(certify).rejects.toThrow('certification must be the first signature');
+    }
+    expect(doc.Save()).toEqual(prefix);
   });
 });
 

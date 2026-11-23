@@ -13605,6 +13605,10 @@ Source (`src/`):
   images through `Document.reopen` with the original password or recipient
   and the document's load limits. Cryptographic checks hash the ranges of
   the stored file bytes. The reopened model supplies the field and page data.
+  **Invariant (chp0.6):** `Certify` checks pending signatures through the same
+  reopen path. `AddValidationData` encrypts the appended DSS objects with the
+  encryptor from the byte image it reopened, preserving the signed prefix.
+  Encryption leaves live dictionaries and arrays intact for later appends.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream

@@ -26,6 +26,7 @@ export interface EncryptOptions {
 
 export interface Encryptor {
   readonly encryptDict: PdfDict;
+  /** Encrypt a serialization value without modifying the input object graph. */
   encryptObject(obj: PdfObject, num: number, gen: number): PdfObject;
   encryptStreamRaw(raw: Uint8Array, num: number, gen: number): Uint8Array;
 }
@@ -103,16 +104,17 @@ export function makeEncryptor(encryptDict: PdfDict, strCipher: CipherFn, stmCiph
   const encryptMetadata = encryptDict.get('EncryptMetadata') !== false;
   const encryptObject = (obj: PdfObject, num: number, gen: number): PdfObject => {
     if (isString(obj)) return pdfStr(strCipher(obj.bytes, num, gen));
-    if (isArray(obj)) { for (let i = 0; i < obj.length; i++) obj[i] = encryptObject(obj[i], num, gen); return obj; }
+    if (isArray(obj)) return obj.map((value) => encryptObject(value, num, gen));
     if (isDict(obj)) {
       // A signature dict's /Contents is exempt (32000-1 7.6.2).
       const skip = isSignatureDict(obj) ? 'Contents' : undefined;
-      for (const [k, v] of obj) if (k !== skip) obj.set(k, encryptObject(v, num, gen));
-      return obj;
+      const dict: PdfDict = new Map();
+      for (const [k, v] of obj) dict.set(k, k === skip ? v : encryptObject(v, num, gen));
+      return dict;
     }
     if (isStream(obj)) {
-      const d = obj.dict;
-      for (const [k, v] of d) d.set(k, encryptObject(v, num, gen));
+      const d: PdfDict = new Map();
+      for (const [k, v] of obj.dict) d.set(k, encryptObject(v, num, gen));
       let own = streamCryptFilter(d, identity);
       if (own === undefined && !encryptMetadata && isMetadataStream(d)) {
         markIdentityCrypt(d);

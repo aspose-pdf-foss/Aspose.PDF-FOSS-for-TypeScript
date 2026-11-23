@@ -3064,7 +3064,7 @@ export class Document {
   async Certify(signer: Signer, opts: CertifyOptions = {}): Promise<void> {
     // Probe the authoritative byte image (a pending in-session signature fills
     // /Contents only there, not the live model), else the live/opened state.
-    const probe = this.pendingSignedBytes ? Document.Open(this.pendingSignedBytes) : this;
+    const probe = this.pendingSignedBytes ? this.reopen(this.pendingSignedBytes) : this;
     if (probe.Signatures.some((s) => s.isSigned))
       throw new UnsupportedFeatureError('cannot certify: the document is already signed (certification must be the first signature)');
     if (Document.permsHasDocMdp(probe))
@@ -3250,7 +3250,8 @@ export class Document {
    *  existing signature, store its certificate chain plus the OCSP/CRL bytes
    *  returned by the `opts.getOCSP`/`opts.getCRL` callbacks, indexed by a `/VRI`
    *  entry, and append the store as an incremental update (existing signatures
-   *  preserved verbatim). The result is returned by the next {@link Save}.
+   *  and document encryption preserved). The result is returned by the next
+   *  {@link Save}.
    *
    *  The document must already be signed. Async because the fetch callbacks may
    *  be. Read the data back with {@link VerifySignatures} (it consults `/DSS`
@@ -3261,7 +3262,7 @@ export class Document {
     const base = this.pendingSignedBytes ?? this.originalBytes;
     if (!base)
       throw new UnsupportedFeatureError('AddValidationData requires a signed document');
-    const src = Document.Open(base);
+    const src = this.reopen(base);
     const sigs = src.Signatures.filter((s) => s.isSigned);
     if (sigs.length === 0)
       throw new UnsupportedFeatureError('AddValidationData: the document has no signatures');
@@ -3291,7 +3292,10 @@ export class Document {
     const catRef = this.trailer.get('Root');
     if (isRef(catRef)) collected.set(catRef.num, this.objects.get(catRef.num) ?? null);
 
-    this.pendingSignedBytes = appendIncrementalUpdate(base, { objects: collected });
+    this.pendingSignedBytes = appendIncrementalUpdate(base, {
+      objects: collected,
+      encryptor: src.preservedEncryptor,
+    });
     this.signedInSession = true;
   }
 
