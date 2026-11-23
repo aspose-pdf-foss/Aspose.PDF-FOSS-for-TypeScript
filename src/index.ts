@@ -288,6 +288,9 @@ export type {
   DocumentTimestampReport,
 } from './sigverify.js';
 export type { SignatureStructureFinding } from './sigstructure.js';
+export type {
+  RevocationDiscoveryOptions, RevocationTransport, RevocationTransportRequest, RevocationTransportResponse,
+} from './revocation-discovery.js';
 export type { UnsignedAnnotationChange, UnsignedContentSummary } from './unsignedcontent.js';
 export type { ShadowAnalysis, ShadowFinding } from './shadowanalysis.js';
 export {

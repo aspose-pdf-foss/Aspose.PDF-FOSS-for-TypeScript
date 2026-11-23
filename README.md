@@ -3953,7 +3953,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 524 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 528 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4080,7 +4080,11 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ResetAction` | A ResetForm action: clear the named fields, or every field. |
 | `ResourceLimitError` | A document exceeded a `LoadLimits` bound; `limit`, `allowed` and `reached` say which and by how much. Not a `PdfParseError`. |
 | `RevocationFetcher` | A fetcher for revocation material: given the target and its issuer (DER), return the OCSP response / CRL bytes, or undefined when none is available. |
+| `RevocationDiscoveryOptions` | Exact allowed origins, caller transport, cancellation signal, and discovery limits. |
 | `RevocationStatus` | A revocation verdict for one certificate. |
+| `RevocationTransport` | Caller adapter that enforces destination policy and streams an OCSP or CRL response. |
+| `RevocationTransportRequest` | Authorized URL, method, headers, optional DER request, redirect policy, signal, and decoded response cap. |
+| `RevocationTransportResponse` | HTTP status, effective URL, redirect flag, and streamed decoded body. |
 | `RowBuilder` | One row: an ordered list of cells plus an optional row-level style. |
 | `SaveOptions` | Options for Save/WriteTo. |
 | `Severity` | Severity of a validation finding (`error` or `warning`). |
@@ -4387,7 +4391,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ValidationIssue` | A single validation finding. |
 | `ValueCheckReport` | What `Form.CheckValues()` found: the `rejected` values and the `unrecognised` scripts. |
 | `ValueRejection` | A field value its own recognised keystroke or validate rule rejects: `{ field, trigger, rule, value, message }`. |
-| `VerifyOptions` | Options for VerifySignatures, including opt-in page appearance analysis. |
+| `VerifyOptions` | Options for `VerifySignatures`, including page appearance analysis and opt-in revocation endpoint discovery. |
 | `WatermarkCandidate` | What `doc.FindWatermarks` returns: an `XObjectWatermark` or a `TextWatermark`, each with `pages`, `bbox` and `occurrences`. |
 | `WatermarkOccurrence` | One place a watermark candidate was found: `page`, `bbox`, and its own `text` or its `Do`'s `addr`. |
 | `WatermarkOptions` | Options for AddWatermark. |
@@ -4672,6 +4676,43 @@ byte coverage, later object modifications, and structural findings.
 | `verifyOcspSignature` | Verify the signature and ResponderID for the issuer or an OCSP responder it directly authorized. |
 | `findIssuer` | Match an issuer cryptographically. This helper returns the target itself when no match is available. |
 | `vriKey` | The `/VRI` key for a signature: the uppercase base-16 SHA-1 of its `/Contents` value (the whole signature byte string, padding included). |
+
+#### Discover revocation endpoints
+
+`VerifySignatures` makes zero discovery requests by default. Set
+`revocationDiscovery` with exact allowed origins and a caller-supplied
+`RevocationTransport` to enable discovery for signers with valid signatures,
+intact PDF digests, and cryptographically matched issuers. Discovery starts
+after the existing offline, embedded DSS, and callback evidence has been
+evaluated. It tries allowed OCSP endpoints with a DER POST, followed by CRL GET
+requests for direct, unrestricted distribution points. [OCSP HTTP profile](https://www.rfc-editor.org/rfc/rfc6960.html#appendix-A) · [CRL distribution points](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.13)
+
+```ts
+const reports = await doc.VerifySignatures({
+  trustAnchors,
+  revocationDiscovery: {
+    allowedOrigins: ['https://status.example.test'],
+    transport: policyTransport,
+    signal: controller.signal,
+  },
+});
+```
+
+`policyTransport` implements the connection policy. It must enforce public
+destinations on the actual connection after DNS resolution, disable redirects,
+honor the supplied `AbortSignal`, and stream decoded bytes in bounded chunks.
+Return the HTTP `status`, effective response `url`, and a decoded
+`AsyncIterable<Uint8Array>` as `body`. Set `redirected` when applicable.
+Discovery rejects URL credentials, IP
+literals, local hostnames, and origin changes. Set `allowHttp: true` to enable
+HTTP for an explicitly listed origin.
+
+`RevocationDiscoveryOptions` defaults to 10 seconds, eight attempts, two
+concurrent attempts, 512 KiB per OCSP response and 4 MiB per CRL. Lower these
+limits with `timeoutMs`, `maxRequests`, `maxConcurrency`, `maxOcspBytes`, and
+`maxCrlBytes`. The library authenticates every returned response before using
+it. An unsuccessful attempt with no other conclusive evidence yields
+`unknown`. The download changes only the revocation verdict.
 
 ### AI
 

@@ -2,7 +2,7 @@
 // See RFC 6960 §§3.2, 4.2 and RFC 5280 §§5, 6.3.
 
 import { createHash, X509Certificate } from 'node:crypto';
-import { parseBoundedDer, readOid, readInteger, type Asn1Node } from './asn1.js';
+import { der, parseBoundedDer, readOid, readInteger, type Asn1Node } from './asn1.js';
 import { detectScheme, verifyData, x509SigAlg } from './sigalg.js';
 import { rethrowLimit } from './errors.js';
 
@@ -22,8 +22,10 @@ export interface RevocationMaterial {
   crl?: Uint8Array;
 }
 
-const MAX_OCSP_BYTES = 512 * 1024;
-const MAX_CRL_BYTES = 4 * 1024 * 1024;
+/** @internal Keep parsing and streamed discovery caps aligned. */
+export const MAX_OCSP_BYTES = 512 * 1024;
+/** @internal Keep parsing and streamed discovery caps aligned. */
+export const MAX_CRL_BYTES = 4 * 1024 * 1024;
 const MAX_CERT_BYTES = 128 * 1024;
 const MAX_OCSP_AGE_MS = 24 * 60 * 60 * 1000; // if nextUpdate is omitted
 const BASIC_OCSP = '1.3.6.1.5.5.7.48.1.1';
@@ -193,6 +195,47 @@ export function matchRevocationIssuer(cert: Uint8Array, pool: readonly Uint8Arra
  *  target itself. Use checkRevocation to authenticate evidence against it. */
 export function findIssuer(cert: Uint8Array, pool: Uint8Array[]): Uint8Array {
   return matchRevocationIssuer(cert, pool) ?? cert;
+}
+
+function endpointUris(ext: Extension | undefined, locations: (node: Asn1Node) => Asn1Node[]): string[] {
+  if (!ext) return [];
+  try {
+    return sequence(parseBoundedDer(ext.value, MAX_CERT_BYTES), 1).flatMap(locations)
+      .filter((node) => tagged(node, 2, 6, false)) // GeneralName.uniformResourceIdentifier
+      .map((node) => Buffer.from(node.content).toString('latin1'))
+      .filter((value) => /^[!-~]+$/.test(value));
+  } catch (caught) { rethrowLimit(caught); return []; }
+}
+
+/** Read OCSP AIA and direct, unrestricted full-name CRL distribution points.
+ *  URL authorization belongs to the discovery policy. @internal */
+export function revocationEndpoints(cert: Uint8Array): { ocsp: string[]; crl: string[] } {
+  const extensions = parseCert(cert).extensions;
+  const ocsp = endpointUris(extensions.get('1.3.6.1.5.5.7.1.1'), (entry) => {
+    const [method, location] = sequence(entry, 2, 2);
+    return oid(method) === '1.3.6.1.5.5.7.48.1' ? [location] : [];
+  });
+  const crl = endpointUris(extensions.get('2.5.29.31'), (entry) => {
+    const fields = sequence(entry, 1, 3);
+    // A reason mask or another CRL issuer needs scope processing outside this path.
+    if (fields.length !== 1 || !tagged(fields[0], 2, 0, true)) return [];
+    const point = explicit(fields[0], 0);
+    return tagged(point, 2, 0, true) ? point.children : [];
+  });
+  return { ocsp, crl };
+}
+
+/** Encode the one-certificate DER OCSP request for a matched issuer. @internal */
+export function buildOcspRequest(cert: Uint8Array, issuer: Uint8Array): Uint8Array {
+  const target = parseCert(cert);
+  const certId = der.sequence(
+    der.sequence(der.oid('1.3.14.3.2.26'), der.null_()),
+    der.octetString(digest('sha1', target.issuer)),
+    der.octetString(digest('sha1', parseCert(issuer).key)),
+    der.integer(target.serial),
+  );
+  const requestList = der.sequence(der.sequence(certId));
+  return der.sequence(der.sequence(requestList));
 }
 
 // OCSP (RFC 6960).

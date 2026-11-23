@@ -190,6 +190,7 @@ import { compareShadowPages, findSignedRevision } from './shadowanalysis.js';
 import { hasSignatureData, signatureStructureCheck } from './sigstructure.js';
 import { parseSignedData } from './cms.js';
 import { findIssuer } from './revocation.js';
+import { discoverRevocations, type RevocationTarget } from './revocation-discovery.js';
 import {
   docMdpVerdict, readDocMdpLevel, type DocMdpDoc, type DocMdpEnv,
 } from './docmdp.js';
@@ -3443,11 +3444,23 @@ export class Document {
     // any LTV validation data embedded in the document's /DSS (PAdES-B-LT).
     const dssMaterial = readDssMaterial(src);
     const offline = opts.offline ?? dssMaterial;
-    if (opts.getOCSP || opts.getCRL || offline.size > 0) {
+    const policy = opts.revocationDiscovery;
+    const discovery = policy && { ...policy, allowedOrigins: [...policy.allowedOrigins] };
+    const discoveryAt = discovery && opts.at ? new Date(opts.at) : undefined;
+    if (opts.getOCSP || opts.getCRL || offline.size > 0 || discovery) {
       const revOpts: VerifyOptions = { ...opts, offline };
-      await Promise.all(reports.map(async (report, i) => {
-        report.revocation = await checkSignatureRevocation(signed[i], revOpts, chain.extraCerts);
-      }));
+      const checks = await Promise.all(signed.map((sig) => checkSignatureRevocation(sig, revOpts, chain.extraCerts)));
+      const eligible: { report: SignatureReport; target: RevocationTarget }[] = [];
+      checks.forEach(({ status, target }, i) => {
+        const report = reports[i];
+        report.revocation = status;
+        if (discovery && target && report.integrity === 'valid' && report.signature === 'valid'
+          && (status === 'unknown' || status === 'unchecked')) eligible.push({ report, target });
+      });
+      if (discovery && eligible.length) {
+        const results = await discoverRevocations(eligible.map(({ target }) => target), discovery, discoveryAt);
+        results.forEach((status, i) => { if (status) eligible[i].report.revocation = status; });
+      }
     }
     // PAdES baseline level (structural presence): B-B → B-T → B-LT → B-LTA.
     const docTsValid = src.DocumentTimestamps

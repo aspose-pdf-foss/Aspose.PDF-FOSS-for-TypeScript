@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Discover revocation endpoints through an opt-in transport.**
+  `VerifySignatures` can try OCSP and complete direct-issuer CRLs advertised
+  by a verified signer. The caller supplies exact allowed origins and a
+  streaming transport. Discovery uses HTTPS by default and shares deadline,
+  attempt, and concurrency limits across signers. Existing evidence is
+  evaluated first. (chp0.9)
+
 - **Inspect PDF versions and migrate to PDF 2.0.** `doc.Version` reports the
   effective version and `doc.ID` reads the trailer identifier pair.
   `ConvertToPdf20()` moves legacy metadata to XMP, removes deprecated entries,

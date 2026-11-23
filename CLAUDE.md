@@ -13618,6 +13618,12 @@ Source (`src/`):
   signing authority and freshness. CRLs require a current complete direct list.
   Bounded DER failures produce inconclusive revocation evidence and keep the
   PDF integrity, signature, and chain verdicts independent.
+  **Invariant (chp0.9):** `revocation-discovery.ts` runs after existing evidence
+  and only for reports with valid integrity and signatures and a matched
+  issuer. The exact-origin policy authorizes requests, and the caller's
+  transport enforces the connection policy. A shared deadline and worker
+  budget bound discovery. A pending transport promise or body read cannot
+  hold the verification open after cancellation.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
