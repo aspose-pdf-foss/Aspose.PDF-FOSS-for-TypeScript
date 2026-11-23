@@ -5,8 +5,8 @@ working here (not just Claude), and it carries what this file does not: the
 build and test commands, the architecture overview of every `src/` module, the
 load-bearing invariants, and the conventions (zero runtime dependencies, ESM +
 NodeNext with `.js` specifiers, TDD, the public error types). User-facing API
-docs live in [README.md](README.md); design specs and implementation plans live
-under [docs/superpowers/](docs/superpowers/).
+docs live in [README.md](README.md). Dated design specs, plans, and verification
+notes live under [docs/superpowers/](docs/superpowers/).
 
 Quality gates before closing any issue — both must be green:
 
@@ -21,13 +21,13 @@ merged into `main` and both quality gates pass on `main`. Only then run
 `main` without asking for confirmation again. Push `main` and sync Beads before
 reporting completion.
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+This project uses **bd** (Beads) for issue tracking. Run `bd prime` for the
+workflow and see the [quick start](.beads/README.md) for local usage.
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
+> Issues live in the embedded Dolt database (`.beads/embeddeddolt/` in this
+> checkout). `bd dolt push` and `bd dolt pull` sync issue data over
+> `refs/dolt/data` on the Git remote. Code travels through `refs/heads/*`.
+> `.beads/issues.jsonl` is a passive export.
 >
 > See [SYNC_CONCEPTS.md](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)
 > for the one-screen overview and anti-patterns (don't treat JSONL as the
@@ -101,8 +101,9 @@ bd close <id>         # Complete work
 3. **Merge fixes, then update issue status** - Merge fix branches into `main` and verify both quality gates on `main` before closing their issues; update other in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
-   git pull --rebase
+   git pull --rebase --prune
    git push
+   bd dolt push
    git status  # MUST show "up to date with origin"
    ```
 5. **Clean up** - Clear stashes, prune remote branches

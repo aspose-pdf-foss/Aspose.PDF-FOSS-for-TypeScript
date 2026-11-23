@@ -65,8 +65,9 @@ is not worth the line.
 4. **Merge fixes, then update issue status** - Merge fix branches into `main` and verify both quality gates on `main` before closing their issues; update other in-progress items
 5. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
-   git pull --rebase
+   git pull --rebase --prune
    git push
+   bd dolt push
    git status  # MUST show "up to date with origin"
    ```
 6. **Clean up** - Clear stashes, prune remote branches
@@ -83,10 +84,11 @@ is not worth the line.
 
 ## Build & Test
 
-No runtime dependencies; dev deps are TypeScript + vitest only.
+Use Node.js 22 or later. The package has no npm runtime dependencies.
+Development uses TypeScript, Vitest, tsx, and the Node.js type declarations.
 
 ```bash
-npm install        # install dev deps (TypeScript, vitest)
+npm ci             # install locked development dependencies
 npm test           # vitest run — full suite (test/**/*.test.ts)
 npm run test:watch # vitest in watch mode
 npm run typecheck  # tsc -p tsconfig.json --noEmit
@@ -102,31 +104,33 @@ resolves to a file that does not exist. `tsconfig.build.json` is `src`-only
 with `rootDir: "src"`, so `dist/index.js` lands where `main` points. Never
 point `build` at `tsconfig.json`.
 
-Seven generators rebuild the bundled data tables and are **not** run by `npm
-test` — the generated `src/*data.ts` files are committed, and each is pinned to
-the upstream version its module documents. Re-run one only when that pin moves:
+The build and test suite read the committed data tables. Each generator uses
+the upstream version documented by its module. Rerun a generator when updating
+that pin.
 
 ```bash
 npm run gen:fonts      # std14data.ts    — Standard-14 substitute outlines (fonts/)
 npm run gen:ucd        # unicode-data.ts — UAX #9/#14 classes, caseFold (unicode/)
-npm run gen:entities   # mdentity.ts     — HTML character references
+npm run gen:entities   # mdentity.ts     — character references for HTML and Markdown
 npm run gen:cmaps      # cmapdata.ts     — the 195 predefined Adobe CMaps (cmaps/)
 npm run gen:cidunicode # cidunidata.ts   — CID->Unicode, mapping-resources-pdf
 npm run gen:xmpschemas # xmpschemadata.ts — veraPDF's predefined XMP tables (verapdf/)
-npm run gen:hyph      # hyphdata.ts     — Liang hyphenation patterns (tex-hyphen)
+npm run gen:hyph       # hyphdata.ts     — Liang hyphenation patterns (tex-hyphen)
+npm run gen:barcodes   # pdf417data.ts and datamatrixdata.ts — ZXing tables
 ```
 
-`npm run example:showcase` builds the feature-showcase document under
-`examples/feature-showcase/`; the remaining `scripts/gen-*` entries
-regenerate committed test fixtures (the corrupt files, the JPX and JBIG2
+`npm run example:showcase` runs the example in `examples/feature-showcase/`
+and writes its PDF and sibling exports under `docs/`. The other `scripts/gen-*`
+entries regenerate committed test fixtures (the corrupt files, the JPX and JBIG2
 streams, the SVG inputs, the headless-Chrome SVG and filter goldens, the
 WCS ICC goldens, `gen:dfont`'s FontForge-written Macintosh suitcase,
 `gen:aform`'s pdf.js AForm goldens, `gen:xfa`'s pdf.js XFA layout goldens
-(headless Chrome), and `gen:zip`'s libarchive, .NET and git
-ZIP archives) and are likewise never run by the suite — it reads what they
-produced. Each needs something that is NOT a dependency: headless Chrome,
-`mscms.dll`, FontForge, Windows `tar.exe` and PowerShell, or network access to
-fetch pdf.js (or the pinned `pdfjs-dist` release) at its pinned commit.
+(headless Chrome), and `gen:zip`'s libarchive, .NET and git ZIP archives).
+Some require headless Chrome, `mscms.dll`, FontForge, Windows `tar.exe` and
+PowerShell, or network access to fetch pinned pdf.js sources.
+`gen:barcode-goldens` uses a JDK and pinned ZXing sources.
+`npm run gen:postscript-oracles -- --gs <executable>` uses Ghostscript 10.07.1
+as described in [the PostScript fixture provenance](test/fixtures/postscript-oracle/PROVENANCE.md).
 
 **Note, and do NOT "fix" it back:** `.gitignore` deliberately carries **no**
 rule for `examples/feature-showcase/.reference/`. That directory was a fetched
@@ -145,9 +149,10 @@ must be green. Target a single test file with `npx vitest run test/<name>.test.t
 
 The library parses an entire PDF into an in-memory object model on `Open`, lets
 callers mutate that live model, and serializes a fresh, compactly-renumbered
-document on `Save` (mark-sweep from `/Root` + `/Info`). No temp files; the only
-incremental-update path is digital signing (`Sign`/`Certify`/`AddValidationData`/
-`AddDocumentTimestamp`), which appends to preserve earlier signed bytes.
+document on a full `Save` (mark-sweep from `/Root` + `/Info`). It works in
+memory. `Save({ incremental: true })` appends the changed objects to the opened
+byte image. Digital signing, DSS validation data, and document timestamps can
+also append revisions to preserve the earlier signed bytes.
 
 Source (`src/`):
 
@@ -5217,8 +5222,8 @@ Source (`src/`):
   `SetXmp({ custom: [...GetXmp().custom, mine] })` is the obvious way to add
   one property, and it used to copy every History field to the top level.
   **Invariant:** the six built-in namespaces are written under their STANDARD
-  prefixes whatever the source bound them to, because `readXmp`, `pdfaIdValue`
-  and `xmpVersion` match `dc:`, `pdfaid:` … literally.
+  prefixes whatever the source bound them to. The legacy field readers and
+  `pdfxvalidate.ts`'s `xmpVersion` still match some prefixes literally.
   **Invariant:** characters XML cannot carry are STRIPPED from the whole model
   before it is written, PRESERVED content included (`stripNonXmlChars`),
   because `serializeRdfPacket` refuses them. Two routes lead there: `/Info`
@@ -5234,7 +5239,7 @@ Source (`src/`):
   of edit reddens the six document-level acceptance cases.
   **Invariant (`ugxr`):** an attribute's value is matched with `*`, never `+` —
   a present-but-EMPTY property is not an absent one. Every value regex here and
-  in `pdfavalidate.ts`'s `pdfaIdValue` and `pdfxvalidate.ts`'s `xmpVersion`
+  in `xmpid.ts`'s legacy fallback and `pdfxvalidate.ts`'s `xmpVersion`
   follows it. **Note where the bug hid, because it is the sharpest example in
   this repo of one module answering a question two ways:** `scalar` had always
   matched `([^"]*)`, so `pdf:Producer=""` read back as `''`, while the five
@@ -5247,9 +5252,11 @@ Source (`src/`):
   **Invariant (`ugxr`):** a numeric identification field reads an empty value as
   **NaN**, never `Number('')`'s 0 — a 0 reads as a document CLAIMING part 0.
   Junk (`part="x"`) already yielded NaN, so empty and junk get ONE rule.
-  **Note, measured:** the five reads go through `idValue`/`idNumber` rather than
-  ten inline regexes, because five copies of the widened pattern is how they
-  would drift apart again — which is exactly how this bug existed.
+- **xmpid.ts** — shared PDF/A identification reader for `GetXmp` and
+  `ValidatePdfA`. It resolves `part`, `conformance` and `rev` by namespace URI
+  and name, and returns scalar text so validation can distinguish empty values,
+  absent values, and alternate number spellings. Unreadable RDF falls back to
+  the legacy `pdfaid:` scan. Resource-limit errors propagate in either caller.
 - **xmprdf.ts** — the XMP data model (`o6uu.1`): `parseRdfPacket` turns a
   packet into namespace-resolved `RdfProperty[]` (simple values, Bag/Seq/Alt
   arrays, `xml:lang`, structs in all three RDF spellings, general qualifiers

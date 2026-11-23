@@ -51,5 +51,5 @@ SHA-256 checksums of the fetched files are recorded in `SHA256SUMS.txt`.
 ## Regenerating the embedded data
 
 ```bash
-node scripts/gen-std14-fonts.mjs   # reads fonts/*.ttf -> writes src/std14data.ts
+npm run gen:fonts   # reads fonts/*.ttf and writes src/std14data.ts
 ```

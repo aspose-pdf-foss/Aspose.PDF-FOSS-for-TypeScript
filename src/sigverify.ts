@@ -32,8 +32,8 @@ export interface VerifyOptions {
    *  certificate path is built and validated to one of these anchors and the
    *  result reported as `trusted`/`untrusted` (else `unchecked`). */
   trustAnchors?: Uint8Array[];
-  /** Validation time for certificate validity-period checks. Default: the
-   *  signature's verified timestamp time, else now. */
+  /** Validation time for certificate validity-period checks when the signature
+   *  has no verified timestamp. Defaults to the current time in that case. */
   at?: Date;
 }
 
@@ -85,13 +85,14 @@ export interface SignatureReport {
   unsignedContent?: UnsignedContentSummary;
   /** Appearance comparison when requested and the signed revision is available. */
   shadowAnalysis?: ShadowAnalysis;
-  /** Certificate-chain trust — `unchecked` until V2. */
+  /** Certificate-chain trust against the supplied anchors. */
   chain: 'trusted' | 'untrusted' | 'unchecked';
-  /** Revocation status — `unchecked` until V3. */
+  /** Revocation status from caller-supplied or embedded validation material. */
   revocation: 'good' | 'revoked' | 'unknown' | 'unchecked';
-  /** `/DocMDP` permitted-changes verdict for a certification signature: `ok` when
-   *  every post-signing change stays within the certified level, `violated` when
-   *  one exceeds it, `n/a` for non-certified documents / non-cert signatures. */
+  /** `/DocMDP` permitted-changes verdict for a certification signature or an
+   *  approval signature with a document lock level. `ok` means the subsequent
+   *  changes stay within the level, `violated` means one exceeds it, and `n/a`
+   *  means no level was evaluated. */
   docMDP: 'ok' | 'violated' | 'n/a';
   /** Field-lock (`/FieldMDP`) verdict for a signature whose field carried a
    *  `/Lock`: `violated` when a field the lock freezes was changed or removed in
@@ -112,7 +113,7 @@ export interface SignatureReport {
   /** CAdES signer-location, when the signature carries it. */
   signerLocation?: SignerLocation;
   /** PAdES baseline level of this signature (structural presence, not trust):
-   *  `B-B` (basic) → `B-T` (trusted time) → `B-LT` (long-term validation data)
+   *  `B-B` (basic) → `B-T` (verified timestamp token) → `B-LT` (long-term validation data)
    *  → `B-LTA` (archive timestamp). Undefined when not classified. */
   padesLevel?: 'B-B' | 'B-T' | 'B-LT' | 'B-LTA';
 }

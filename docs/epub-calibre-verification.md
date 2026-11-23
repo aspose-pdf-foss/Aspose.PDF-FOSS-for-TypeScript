@@ -1,15 +1,13 @@
 # EPUB output — Calibre verification
 
-`Document.ToEpub` is tested for **structural** conformance to EPUB 3 by
-`test/epub-package.test.ts` and `test/epub-export.test.ts`. Those tests prove
-the archive says the right things about itself; they cannot prove a reader
-opens it. This file records that a real reader does, and exactly how that was
-established (`zwto.3`).
+This record documents the August 2026 Calibre check of `Document.ToEpub`
+(`zwto.3`). The [package tests](../test/epub-package.test.ts) and
+[export tests](../test/epub-export.test.ts) cover EPUB 3 archive structure
+and document export. The Calibre check covers one generated book in a reader.
 
-Nothing here runs in `npm test`. A test that shells out to Calibre would fail
-for everyone who does not have it installed, and the suite is hermetic by
-design — the same reason `test/docx-package.test.ts` proves ECMA-376
-conformance and says nothing about Word.
+Run the Calibre commands separately from `npm test`. See the
+[EPUB export limits](../README.md#detailed-limitations-reference) for the
+current behavior.
 
 ## What was verified
 
@@ -64,14 +62,8 @@ when converting to plain text, which needs no navigation. It is Calibre pruning
 its own intermediate manifest, not a complaint about ours — and the round trip
 above shows the nav was read before being pruned.
 
-## What remains unverified
+## Coverage of this check
 
-- **Other readers.** iBooks, Kindle (via conversion), Kobo and the various
-  Android readers are untested. Calibre is the most permissive of the common
-  readers, so this is a floor, not a ceiling.
-- **`epubcheck`**, the official IDPF validator, has not been run. It is a Java
-  tool and is not installed here; fetching it would mean a network download,
-  which this repo does not do for a build or a test.
-- **Fixtures with harder content.** The verified fixture has no images, no
-  tables, and no CJK text. `ToEpub` handles all three, and none of them is
-  covered by this record.
+The verification used Calibre 7.26.0 and the text-based fixture above.
+Other readers, `epubcheck`, and fixtures with images, tables, or CJK text
+fall outside this check.

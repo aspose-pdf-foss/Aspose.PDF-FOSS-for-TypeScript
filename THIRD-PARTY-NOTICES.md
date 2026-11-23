@@ -7,8 +7,8 @@ published package, and those fonts carry their own licenses.
 `dist/std14data.js` holds deflate-compressed, base64-encoded TrueType outlines
 for the 14 Standard-14 substitute faces. They are what lets `page.ToImage()`
 rasterize non-embedded text as real glyphs. The raw `.ttf` files are not
-shipped; the generated data is. Provenance and checksums for every file live in
-`fonts/SOURCES.md` in the source repository.
+shipped; the generated data is. The source repository records
+[font provenance](fonts/SOURCES.md) and [SHA-256 checksums](fonts/SHA256SUMS.txt).
 
 ## Liberation 2.1.5 — SIL Open Font License 1.1
 

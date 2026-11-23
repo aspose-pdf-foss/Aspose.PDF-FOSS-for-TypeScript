@@ -3286,10 +3286,11 @@ export class Document {
     return isDict(perms) && (perms as PdfDict).has('DocMDP');
   }
 
-  /** Verify every signature in the document: recompute each `/ByteRange` digest,
-   *  verify the detached CMS, and diff what changed after each signature. Returns
-   *  one {@link SignatureReport} per field with signature data. Async for the
-   *  forthcoming chain/revocation/timestamp checks (no I/O in V1). */
+  /** Verify approval and certification signatures in the opened or newly signed
+   *  bytes. Returns one {@link SignatureReport} per field with signature data.
+   *  Reports include structural findings and later revisions. Supply trust
+   *  anchors or revocation material to evaluate the signer's certificate, and
+   *  enable `shadowAnalysis` to compare signed and current page appearances. */
   async VerifySignatures(opts: VerifyOptions = {}): Promise<SignatureReport[]> {
     const bytes = this.pendingSignedBytes ?? this.originalBytes;
     if (!bytes) return [];

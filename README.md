@@ -35,6 +35,8 @@ flowchart TD
     i1["An existing PDF file"]
     i2["An HTML document"]
     i3["Markdown text (CommonMark/GFM)"]
+    i4["PostScript or EPS"]
+    i5["A Word document (.docx)"]
   end
   PRODUCT["Aspose.PDF FOSS for TypeScript"]
   subgraph Capabilities["Core Capabilities"]
@@ -91,8 +93,9 @@ flowchart TD
   recipients. Digital signatures (`await doc.Sign(signer, opts?)`/`doc.Certify`) support the
   `adbe.pkcs7.detached` (CMS) and `ETSI.CAdES.detached` (PAdES) subfilters from a `.p12`/`.pfx`
   keystore, DocMDP certification, RFC 3161 timestamps (`AddDocumentTimestamp`), LTV validation
-  data (`AddValidationData`, `/DSS`), and full verification (`VerifySignatures`,
-  `VerifyDocumentTimestamps`) including `/ByteRange` integrity and revocation checks.
+  data (`AddValidationData`, `/DSS`), and [signature and timestamp verification](#security).
+  Reports include signed byte coverage and structural findings. Signature reports can
+  also attribute later changes to content and compare signed and current page appearances.
 - Access and edit every page through `doc.Pages` — all five boundary boxes, rotation, resources,
   decoded content — and manipulate the page set with `AddPage`, `InsertPage`, `RemovePage`,
   `Reorder`, `Split`, `ExtractPages`, `Append` and `Document.Merge`.
@@ -118,14 +121,15 @@ flowchart TD
 - Render CommonMark/GFM Markdown or a full HTML document — parsed by a real HTML5 tokenizer and
   tree constructor, styled through a CSS cascade, and laid out as a CSS box tree — into a flow,
   a page rectangle, or a whole document with `AddMarkdown`/`AddHtml`.
-- Generate 1D barcodes (Code 128, EAN-13, UPC-A, EAN-8) and QR codes as vector shapes or a 1-bit
-  image mask, and impose pages into N-up sheets or a saddle-stitch booklet with `doc.NUp`/
-  `doc.Booklet`.
+- Generate Code 128, EAN-13, UPC-A, EAN-8, QR, PDF417, and Data Matrix barcodes as vector shapes
+  or a 1-bit image mask. Impose pages into N-up sheets or a saddle-stitch booklet with
+  `doc.NUp` or `doc.Booklet`.
 - Extract text (`GetText`, `GetTextFragments`, `GetStructuredText` — composite fonts resolved
   through their `/CIDSystemInfo` and CID-to-Unicode tables), tables (`GetTables`, including
   cross-page stitching and a `{ region }` option to constrain extraction to a page-space
-  rectangle), and vector paths (`GetPaths`) from any page, and search or replace text with
-  `Search`/`ReplaceText`, including annotation-carried and annotation-drawn text.
+  rectangle), and vector paths (`GetPaths`) from any page. Edit individual paths or
+  export a selection to SVG. Search or replace text with `Search`/`ReplaceText`,
+  including annotation-carried and annotation-drawn text.
 - Enumerate and edit embedded images through `page.Images`/`page.InlineImages` — `RawData`
   returns the encoded stream bytes, `img.Replace(data)` swaps the picture in place, and
   `img.Remove()` drops it from the page.
@@ -134,7 +138,8 @@ flowchart TD
   workflow via `AddRedact`/`MarkRedactText`/`ApplyRedactions`.
 - Create, fill and style AcroForm fields, regenerate their appearance streams so values render
   without `/NeedAppearances`, and round-trip field data through FDF/XFDF import and export.
-- Read, write and search annotations (16 subtypes), outlines/bookmarks (including `/Count`),
+- Read, write and search annotations, including reply threads, state, measurements and
+  printer marks. Manage outlines/bookmarks (including `/Count`),
   page labels, named destinations, document-level JavaScript, embedded-file attachments and
   portfolios (`SetCollection`/`GetCollection`, with per-file custom values via
   `Attachment.SetField(name, value)`), and manage optional-content (OCG) layers including
@@ -147,10 +152,9 @@ flowchart TD
   tagged source's tree along automatically unless `{ preserveStructure: false }` opts out — then
   validate against PDF/UA, and validate or convert to PDF/A and PDF/X with a detailed, honest
   report of what was and wasn't fixed.
-- Render a page to SVG or a raster image (PNG/JPEG/TIFF/BMP/GIF) with a pure-TypeScript software
-  rasterizer, and export a whole document to reflowable or fixed-layout HTML, Markdown, DOCX or
-  EPUB — each export verified against browser-rendered or real-application goldens rather than
-  the library's own output.
+- Render a page to SVG or a raster image (PNG/JPEG/TIFF/BMP/GIF) with a TypeScript renderer.
+  Export a whole document to HTML, Markdown, DOCX, or EPUB. HTML and DOCX offer
+  reflowable and positioned layouts. See [Scope and Limitations](#scope-and-limitations).
 - Optimize a document in place with `doc.Optimize({ fonts, dedup, compress })` — it subsets
   embedded fonts, recompresses photographic images, and prunes unused `/AcroForm` resources
   losslessly, returning an `OptimizeReport` naming anything it skipped — and convert pages or
@@ -267,7 +271,7 @@ const fixed = doc.ToDocx({ mode: 'textbox' });  // .docx keeping each page's own
 - **Encrypted output** — `Save({ encrypt })` writes a PDF protected with the standard security handler: AES-256 (default), AES-128, or RC4. Set user/owner passwords, restrict permissions with named flags, and toggle metadata encryption. Works with classic and compressed output.
 - **Public-key encryption (PubSec)** — certificate-based `Save`/`Open` (`/Adobe.PubSec`) with RC4, AES-128, and AES-256, alongside the password-based standard handler. Encrypt to one or more recipient certificates (PEM or DER), RSA or EC; RSA recipients use PKCS#1 v1.5 or opt-in RSAES-OAEP key transport, EC recipients use ECDH-ES key agreement. Give recipients distinct permissions (per-recipient permission groups) or a shared set. Open with the recipient's private key + certificate or a PKCS#12 bundle. Recovered permissions are surfaced via `doc.Permissions`.
 - **Stream re-filtering** — `Save({ streamFilter })` re-encodes eligible data streams with a chosen byte-filter (`'ASCII85Decode' | 'ASCIIHexDecode' | 'LZWDecode' | 'RunLengthDecode' | 'BrotliDecode'`). ASCII targets *armor* over any existing compression (e.g. `FlateDecode` becomes `[/ASCII85Decode /FlateDecode]`), producing 7-bit-clean stream contents while keeping compression; `LZWDecode`/`RunLengthDecode`/`BrotliDecode` fully re-encode. Brotli is opt-in: `Save({ streamFilter: 'BrotliDecode' })` emits PDF 2.0 with the PDF Association Brotli extension declaration, preserving other extensions; readers must support that extension. Decoding uses the document's `LoadLimits`, including in chained filters. PDF/A and PDF/X validation reports Brotli streams as unsupported; conversion leaves them unresolved. Image-codec streams (`DCTDecode`/`CCITTFaxDecode`/`JPXDecode`/`JBIG2Decode`), XMP `/Metadata`, and structural streams are left untouched. Full 7-bit output is a classic (non-`compressed`) property, since compressed output keeps a binary XRef stream. Not supported with `linearized`. Runs before the encrypt pass, so armored bytes are then encrypted.
-- **Digital signatures** — `await doc.Sign(signer, opts?)` adds a signature: it builds a `/Sig` AcroForm field — or, when `opts.fieldName` names an empty signature field prepared earlier with `doc.Form.AddSignatureField` / `page.AddSignatureField`, fills that one instead, so one party can lay out where a document is to be signed and another sign it later; a `seedValue` states what that signature should look like — filter, subfilters, digest methods, reasons, legal attestations, a named appearance, `/AddRevInfo`, `/LockDocument`, the signature type (`mdp: 'approval'` or a certification level) and a timestamp authority — with `required` naming the entries that bind, and `doc.Signatures[i].seedValue` reads it back typed. Filling such a field HONOURS its seed value: a required entry the call cannot meet raises `SeedValueError` (naming the entry) before anything is written — a digest, subfilter or reason outside the required list, a named appearance, Adobe-style revocation info, a `Sign` on a field meant for a certification or the reverse, or a required `/LockDocument` the field's own `/Lock /P` contradicts — while the seed value supplies the digest, subfilter and DocMDP level the caller left unstated. SHA-1 is never substituted. A timestamp the field REQUIRES is fetched from its `/TimeStamp` URL with `httpTimestampProvider` when the caller brought no TSA (http(s) only, never for a merely suggested URL, with a timeout and a response-size cap, since the URL comes from the document). The certificate seed value (`seedValue.cert`, `/Cert`) — allowed signer and issuer certificates, subject DN attributes, key-usage profiles and an enrolment URL, with its own `required` set — is written and read back typed but **not** evaluated: the caller supplies the credentials, so a certificate the field would reject is theirs to notice. Its `/OID` entry is not modelled. A `lock` — `{ action: 'all' }`, or `'include'`/`'exclude'` with a list of field names, where a name also covers its subtree — names the fields a signature in the field FREEZES: signing carries it into the signature as a FieldMDP transform, and `VerifySignatures` reports `fieldMDP: 'violated'` with `lockedFieldsChanged` when a locked field was changed, added or removed after that signature, beside the existing `docMDP` verdict. Signing a still-unsigned signature field is exempt, so a lock never forbids the signatures that follow it. A lock may also carry `permissions` (PDF 2.0's `/Lock /P`): an APPROVAL signature in that field then locks the whole document at that DocMDP level, and `VerifySignatures` gives it a real `docMDP` verdict — read from the level the signature carries, else from the field's `/Lock /P` as it was when signed. A seed value that REQUIRES `/LockDocument true` is honoured on `Sign` this way, writing `/Lock /P 1` into the field when it has none, and `Certify` on a field whose lock sets a level takes the stricter of the two (a field that is already signed, or is not a signature field, is refused, as is an `opts.appearance` placed anywhere but the prepared widget) — chooses the write path from document state (incremental append for an opened/unmodified or already-signed file — original bytes preserved verbatim; full rewrite for a new/authored/mutated one), reserves a fixed-size `/Contents` placeholder with a computed `/ByteRange`, and embeds a detached PKCS#7/CMS signature (`adbe.pkcs7.detached`, or PAdES `ETSI.CAdES.detached` with the ESS `signing-certificate-v2` attribute via `opts.subFilter: 'PAdES'`) built from `node:crypto` primitives — RSA PKCS#1 v1.5 / RSA-PSS, ECDSA (P-256/384/521), or Ed25519, with SHA-256/384/512. Signatures are invisible by default; pass `opts.appearance = { page, rect, text?, image? }` for a **visible** widget — a generated Form XObject with a name/date/reason/location text block (auto-built from `opts`, or your own `text`) and an optional JPEG/PNG `image` drawn beside it. The `signer` is a credential source — a PEM key + certificate chain (`{ pem: { key, certificates } }`), a PKCS#12 `.pfx`/`.p12` blob (`{ pkcs12, passphrase }`, parsed natively: PKCS#12 KDF + PBES1/PBES2), an external callback that signs without exposing the key (`{ certificates, sign(data, alg) }` for HSM/KMS/smartcard), or a pre-resolved certificate + `KeyObject`. `await doc.Certify(signer, opts?)` instead adds a **certification** (author) signature: the same machinery plus a DocMDP transform (`/Reference`) and a catalog `/Perms /DocMDP` entry declaring which later changes are permitted — `opts.permissions` of `'no-changes'` (default), `'form-fill'`, or `'form-fill-and-annotate'` (`/P` 1/2/3). A document can be certified only once and only before any approval signature. Pass `opts.timestamp` — a callback receiving a DER `TimeStampReq` and returning the TSA's token/response — to embed an **RFC 3161 signature timestamp** as an unsigned `id-aa-timeStampToken` attribute (PAdES-B-T); the `rfc3161` helpers (`buildTimeStampRequest`, `extractTimeStampToken`, `buildTimeStampToken`, `parseTstInfo`, `verifyTimestampToken`) build/parse those tokens and can even stand up a TSA. Pass `opts.cades` (requires `subFilter: 'PAdES'`) to embed CAdES signed attributes — a `commitmentType` (one of `'proof-of-origin' | 'proof-of-receipt' | 'proof-of-delivery' | 'proof-of-sender' | 'proof-of-approval' | 'proof-of-creation'`, or a custom OID string) and a structured `signerLocation` (`country` / `locality` / `postalAddress`), both covered by the signature; `VerifySignatures` reads them back on each `SignatureReport` (`commitmentType`, `signerLocation`). The signed bytes are returned by the following `Save()`/`WriteTo()`. `doc.Signatures` enumerates signature fields (name, subfilter, `/ByteRange`, whether it covers the whole file), and `await doc.VerifySignatures(opts?)` returns a `SignatureReport` per signature — recomputing the `/ByteRange` digest (integrity), verifying the detached CMS (signature), validating any embedded timestamp (imprint binding + TSA signature, with the asserted `genTime`), validating the signer's **certificate path** to caller-supplied `opts.trustAnchors` (building the chain through the CMS/`/DSS` certificates, checking each link's signature, name chaining, validity period, CA basic-constraints, and a basic key-usage check — `trusted`/`untrusted`), checking certificate **revocation** — from `opts.getOCSP`/`opts.getCRL` callbacks, from `opts.offline` material, or automatically from validation data embedded in the document's `/DSS` — by parsing the OCSP response / CRL, verifying its responder/issuer signature, and reporting `good`/`revoked`/`unknown` — reporting whole-file coverage, and diffing which objects changed in revisions appended after each signature. `await doc.AddValidationData({ getOCSP?, getCRL?, extraCerts? })` embeds **LTV** validation data (PAdES-B-LT): for every signature it stores the certificate chain plus the fetched OCSP/CRL bytes as a catalog `/DSS` with a per-signature `/VRI` entry, appended as an incremental update so existing signatures stay valid; `VerifySignatures` then reads it back with no callbacks needed. `await doc.AddDocumentTimestamp(tsa, opts?)` appends a standalone **document timestamp** (`/DocTimeStamp`, `ETSI.RFC3161`) as an incremental update — into a prepared empty signature field when `opts.fieldName` names one (refusing a field prepared with a seed value or a lock, which constrain a signature a timestamp cannot be), else into a new invisible field — an RFC 3161 token (from the `tsa` callback) over the whole document image — enabling **PAdES-B-LTA** archival on top of B-LT; `doc.DocumentTimestamps` enumerates them and `await doc.VerifyDocumentTimestamps()` returns a `DocumentTimestampReport` per timestamp (imprint binding + TSA signature, asserted `time`, TSA `signerCert`, and post-timestamp modifications). `VerifySignatures` now also reports each signature's `padesLevel` (`'B-B' | 'B-T' | 'B-LT' | 'B-LTA'`), climbing the ladder as a trusted timestamp, embedded `/DSS` validation data, and an archive document timestamp are present.
+- **Digital signatures** — `await doc.Sign(signer, opts?)` adds a signature: it builds a `/Sig` AcroForm field — or, when `opts.fieldName` names an empty signature field prepared earlier with `doc.Form.AddSignatureField` / `page.AddSignatureField`, fills that one instead, so one party can lay out where a document is to be signed and another sign it later; a `seedValue` states what that signature should look like — filter, subfilters, digest methods, reasons, legal attestations, a named appearance, `/AddRevInfo`, `/LockDocument`, the signature type (`mdp: 'approval'` or a certification level) and a timestamp authority — with `required` naming the entries that bind, and `doc.Signatures[i].seedValue` reads it back typed. Filling such a field HONOURS its seed value: a required entry the call cannot meet raises `SeedValueError` (naming the entry) before anything is written — a digest, subfilter or reason outside the required list, a named appearance, Adobe-style revocation info, a `Sign` on a field meant for a certification or the reverse, or a required `/LockDocument` the field's own `/Lock /P` contradicts — while the seed value supplies the digest, subfilter and DocMDP level the caller left unstated. SHA-1 is never substituted. A timestamp the field REQUIRES is fetched from its `/TimeStamp` URL with `httpTimestampProvider` when the caller brought no TSA (http(s) only, never for a merely suggested URL, with a timeout and a response-size cap, since the URL comes from the document). The certificate seed value (`seedValue.cert`, `/Cert`) — allowed signer and issuer certificates, subject DN attributes, key-usage profiles and an enrolment URL, with its own `required` set — is written and read back typed but **not** evaluated: the caller supplies the credentials, so a certificate the field would reject is theirs to notice. Its `/OID` entry is not modelled. A `lock` — `{ action: 'all' }`, or `'include'`/`'exclude'` with a list of field names, where a name also covers its subtree — names the fields a signature in the field FREEZES: signing carries it into the signature as a FieldMDP transform, and `VerifySignatures` reports `fieldMDP: 'violated'` with `lockedFieldsChanged` when a locked field was changed, added or removed after that signature, beside the existing `docMDP` verdict. Signing a still-unsigned signature field is exempt, so a lock never forbids the signatures that follow it. A lock may also carry `permissions` (PDF 2.0's `/Lock /P`): an APPROVAL signature in that field then locks the whole document at that DocMDP level, and `VerifySignatures` gives it a real `docMDP` verdict — read from the level the signature carries, else from the field's `/Lock /P` as it was when signed. A seed value that REQUIRES `/LockDocument true` is honoured on `Sign` this way, writing `/Lock /P 1` into the field when it has none, and `Certify` on a field whose lock sets a level takes the stricter of the two (a field that is already signed, or is not a signature field, is refused, as is an `opts.appearance` placed anywhere but the prepared widget) — chooses the write path from document state (incremental append for an opened/unmodified or already-signed file — original bytes preserved verbatim; full rewrite for a new/authored/mutated one), reserves a fixed-size `/Contents` placeholder with a computed `/ByteRange`, and embeds a detached PKCS#7/CMS signature (`adbe.pkcs7.detached`, or PAdES `ETSI.CAdES.detached` with the ESS `signing-certificate-v2` attribute via `opts.subFilter: 'PAdES'`) built from `node:crypto` primitives — RSA PKCS#1 v1.5 / RSA-PSS, ECDSA (P-256/384/521), or Ed25519, with SHA-256/384/512. Signatures are invisible by default; pass `opts.appearance = { page, rect, text?, image? }` for a **visible** widget — a generated Form XObject with a name/date/reason/location text block (auto-built from `opts`, or your own `text`) and an optional JPEG/PNG `image` drawn beside it. The `signer` is a credential source — a PEM key + certificate chain (`{ pem: { key, certificates } }`), a PKCS#12 `.pfx`/`.p12` blob (`{ pkcs12, passphrase }`, parsed natively: PKCS#12 KDF + PBES1/PBES2), an external callback that signs without exposing the key (`{ certificates, sign(data, alg) }` for HSM/KMS/smartcard), or a pre-resolved certificate + `KeyObject`. `await doc.Certify(signer, opts?)` instead adds a **certification** (author) signature: the same machinery plus a DocMDP transform (`/Reference`) and a catalog `/Perms /DocMDP` entry declaring which later changes are permitted — `opts.permissions` of `'no-changes'` (default), `'form-fill'`, or `'form-fill-and-annotate'` (`/P` 1/2/3). A document can be certified only once and only before any approval signature. Pass `opts.timestamp` — a callback receiving a DER `TimeStampReq` and returning the TSA's token/response — to embed an **RFC 3161 signature timestamp** as an unsigned `id-aa-timeStampToken` attribute (PAdES-B-T); the `rfc3161` helpers (`buildTimeStampRequest`, `extractTimeStampToken`, `buildTimeStampToken`, `parseTstInfo`, `verifyTimestampToken`) build/parse those tokens and can even stand up a TSA. Pass `opts.cades` (requires `subFilter: 'PAdES'`) to embed CAdES signed attributes — a `commitmentType` (one of `'proof-of-origin' | 'proof-of-receipt' | 'proof-of-delivery' | 'proof-of-sender' | 'proof-of-approval' | 'proof-of-creation'`, or a custom OID string) and a structured `signerLocation` (`country` / `locality` / `postalAddress`), both covered by the signature; `VerifySignatures` reads them back on each `SignatureReport` (`commitmentType`, `signerLocation`). The signed bytes are returned by the following `Save()`/`WriteTo()`. `doc.Signatures` enumerates signature fields (name, subfilter, `/ByteRange`, whether it covers the whole file), and `await doc.VerifySignatures(opts?)` returns a `SignatureReport` per signature — recomputing the `/ByteRange` digest (integrity), verifying the detached CMS (signature), validating any embedded timestamp (imprint binding + TSA signature, with the asserted `genTime`), validating the signer's **certificate path** to caller-supplied `opts.trustAnchors` (building the chain through the CMS/`/DSS` certificates, checking each link's signature, name chaining, validity period, CA basic-constraints, and a basic key-usage check — `trusted`/`untrusted`), checking certificate **revocation** — from `opts.getOCSP`/`opts.getCRL` callbacks, from `opts.offline` material, or automatically from validation data embedded in the document's `/DSS` — by parsing the OCSP response / CRL, verifying its responder/issuer signature, and reporting `good`/`revoked`/`unknown` — reporting whole-file coverage, and diffing which objects changed in revisions appended after each signature. `await doc.AddValidationData({ getOCSP?, getCRL?, extraCerts? })` embeds **LTV** validation data (PAdES-B-LT): for every signature it stores the certificate chain plus the fetched OCSP/CRL bytes as a catalog `/DSS` with a per-signature `/VRI` entry, appended as an incremental update so existing signatures stay valid; `VerifySignatures` then reads it back with no callbacks needed. `await doc.AddDocumentTimestamp(tsa, opts?)` appends a standalone **document timestamp** (`/DocTimeStamp`, `ETSI.RFC3161`) as an incremental update — into a prepared empty signature field when `opts.fieldName` names one (refusing a field prepared with a seed value or a lock, which constrain a signature a timestamp cannot be), else into a new invisible field — an RFC 3161 token (from the `tsa` callback) over the whole document image — enabling **PAdES-B-LTA** archival on top of B-LT; `doc.DocumentTimestamps` enumerates them and `await doc.VerifyDocumentTimestamps()` returns a `DocumentTimestampReport` per timestamp (imprint binding + TSA signature, asserted `time`, TSA `signerCert`, and post-timestamp modifications). `VerifySignatures` now also reports each signature's `padesLevel` (`'B-B' | 'B-T' | 'B-LT' | 'B-LTA'`), climbing the ladder from verified timestamp tokens and embedded `/DSS` validation data. This classification reflects structural presence independently of certificate trust.
 
 - **Optimization** — `doc.Optimize()` losslessly shrinks a document in place, and the next `Save()` writes the smaller file: it subsets already-embedded fonts to the glyphs actually shown (scanning page content, annotation `/AP` streams, tiling patterns, and Type3 charprocs to find them), merges duplicate streams such as repeated font programs and images (an image is compared by its decoded samples, so one picture stored raw and again Flate-coded counts as one), and recompresses stream payloads. Those three concerns are opt-out (`{ fonts, dedup, compress }`) and each is lossless — content and visual output are preserved exactly. Opting in to `{ images: { dpi, quality } }` adds a **lossy** pass that downsamples images to a target DPI (measured from where each is actually drawn) and recompresses them as JPEG. Returns an `OptimizeReport` with per-font glyph counts, per-image savings, `skipped`/`skippedImages` lists explaining anything it declined to touch, and a `lossy` flag.
 
@@ -281,15 +285,22 @@ The only runtime dependencies are Node.js built-ins (`node:zlib`, `node:crypto`,
 
 ## Installation
 
-Install directly from a local clone — as a local file or npm workspace dependency, build once
-and the same import specifier resolves:
+Build the package from a local clone.
 
 ```bash
 git clone https://github.com/aspose-pdf-foss/Aspose.PDF-FOSS-for-TypeScript.git
 cd Aspose.PDF-FOSS-for-TypeScript
-npm install
+npm ci
 npm run build
 ```
+
+From your application's directory, install the built clone as a dependency.
+
+```bash
+npm install /path/to/Aspose.PDF-FOSS-for-TypeScript
+```
+
+Use an ES module in your application to import from `@asposefoss/pdf`.
 
 ## Dependencies
 
@@ -311,7 +322,7 @@ No required third-party package dependencies.
 
 ## Quick Start
 
-Open an existing PDF, edit its pages and metadata, and save:
+Open a four-page PDF, edit its pages and metadata, and save.
 
 ```ts
 import { Document } from '@asposefoss/pdf';
@@ -985,11 +996,12 @@ doc.Pages[0].AddTable(t, 72, 720, { width: 400 });
 A table taller than the space on the page paginates. `AddTable` returns an
 `AddTableResult` (`{ pages, endY, remainder?, struct? }`). By default it draws the rows
 that fit above `bottomMargin` (points from the page bottom, default 0) and
-returns the rest as a re-drawable `remainder`:
+returns the rest as a re-drawable `remainder`. Here, `salesTable` is a
+`TableBuilder` created with `createTable()`.
 
 ```ts
 let page = doc.Pages[0];
-let remainder: ReturnType<typeof createTable> | undefined = table;
+let remainder: ReturnType<typeof createTable> | undefined = salesTable;
 let y = 720;
 while (remainder) {
   const res = page.AddTable(remainder, 72, y, { width: 468, bottomMargin: 72 });
@@ -1002,7 +1014,7 @@ Or let `AddTable` append pages for you with `autoPaginate: true`. Appended pages
 copy the anchor page's size; `topMargin` sets where each continuation starts:
 
 ```ts
-const { pages, endY } = doc.Pages[0].AddTable(table, 72, 720, {
+const { pages, endY } = doc.Pages[0].AddTable(salesTable, 72, 720, {
   width: 468, autoPaginate: true, bottomMargin: 72, topMargin: 72,
 });
 // `pages` lists every page drawn onto; `endY` is the bottom of the last row.
@@ -1299,9 +1311,7 @@ are not artifacted.
 
 ```ts
 doc.NewFlow({ tabStops: [{ position: 300, align: 'right', leader: 'dot' }] })
-  .AddParagraph('Introduction	1
-Methods	4
-Results	9')   // a dotted, right-aligned page column
+  .AddParagraph('Introduction\t1\nMethods\t4\nResults\t9') // a dotted, right-aligned page column
   .Render();
 
 page.AddTextBlock('Total	1,234.50', [72, 500, 300, 40], {
@@ -3345,7 +3355,7 @@ Convenience wrappers that handle reading and writing for you:
 
 ```ts
 import {
-  splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
+  PageFormat, splitPdfFile, readMetadataFile, updateMetadataFile, clearMetadataFile, savePageImageFile,
   saveImagesFile,
   exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile,
   exportXmlFile, importXmlFile, htmlFileToPdf, docxFileToPdf,
@@ -3373,7 +3383,7 @@ await importXmlFile('form.pdf', 'data.xml', 'filled.pdf');
 // document's own <meta charset>), and a relative <img src> is read from beside
 // the HTML file — confined to its directory, so a URL, an absolute path or a
 // `..` climb is refused and reported instead of fetched or followed.
-const { skipped } = await htmlFileToPdf('page.html', 'out.pdf', { format: PageFormat.A4 });
+const { skipped: skippedHtml } = await htmlFileToPdf('page.html', 'out.pdf', { format: PageFormat.A4 });
 
 // Word in, PDF out, with the same kind of report.
 const docx = await docxFileToPdf('report.docx', 'report.pdf');
@@ -3949,10 +3959,10 @@ for work-unit boundaries and mutation/lifetime rules.
 | Class | Description |
 |---|---|
 | `Background` | A bare RGB tuple, or the object form when `padding` is wanted. |
-| `BarcodeModel` | Class in the PDF TypeScript API. |
+| `BarcodeModel` | A linear or matrix barcode model for placement on a page. |
 | `BarcodeSpec` | Which barcode to draw. |
 | `BorderSides` | Which edges of a border box are painted: every edge, no edge, or exactly the ones flagged true (an omitted flag is false, so `{ bottom: true }` is a bottom rule only). |
-| `BorderStyle` | Class in the PDF TypeScript API. |
+| `BorderStyle` | PDF structure-attribute border style, such as `Solid`, `Dotted`, or `None`. |
 | `ButtonIconPosition` | Where a push button's icon sits relative to its caption — all seven layouts PDF 32000-1 table 189 defines. |
 | `CellBuilder` | One cell in a table row: a text string, optional per-cell style, and how many columns it spans. |
 | `CellHeader` | How a cell is marked in a tagged table: a /TH carrying the given /Scope, or a /TD. |
@@ -3966,9 +3976,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ComparisonJsonOptions` | Options for `comparisonToJson`: `spans` (include page spans, default true), `indent`. |
 | `ComparisonReportOptions` | Options shared by the comparison writers: `context`, the unchanged words kept either side of a change before a stretch is cut to `…`. |
 | `ContentItem` | A marked-content reference owned by a structure element. |
-| `ConvertCategory` | Class in the PDF TypeScript API. |
+| `ConvertCategory` | A category of document changes that a standards conversion can report or preserve. |
 | `Decoration` | `true` uses the font's metrics and the text's own colour; `false` is off. |
-| `DigestAlgorithm` | Class in the PDF TypeScript API. |
+| `DigestAlgorithm` | Digest used for signing or timestamping (`sha256`, `sha384`, or `sha512`). |
 | `Document` | A live PDF document; cooperative synchronous/async methods are listed below. |
 | `Edged` | A single value, or one-per-edge [top, right, bottom, left]. |
 | `EditableContent` | Editable per-stream view of a page's content (Phase 4 foundation, F1). |
@@ -3981,7 +3991,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `FlowListNode` | A list node: a bare string leaf or a FlowListItem that may nest. |
 | `Form` | The document's interactive form: terminal fields of the /AcroForm tree. |
 | `GoToAction` | A GoTo action: jump to a page in this document. |
-| `Gradient` | Class in the PDF TypeScript API. |
+| `Gradient` | A linear or radial gradient used by the graphics authoring API. |
 | `ImageInfo` | A single embedded image XObject: a live, read-only handle over its stream. |
 | `InlineImageInfo` | A single `BI … EI` image drawn on a page, addressed by its position in the content stream that draws it. |
 | `InvalidPasswordError` | Class with 1 method. |
@@ -3990,9 +4000,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `LayerConfig` | A viewing configuration (/D or a /Configs entry). |
 | `LoadLimits` | An immutable resource policy for opening untrusted files: `LoadLimits.defaults`, `LoadLimits.unlimited()`, `.with(patch)`. |
 | `MdAlign` | GFM table alignment, from the `:` markers on the delimiter row. |
-| `MdBlock` | Class in the PDF TypeScript API. |
-| `MdInline` | Class in the PDF TypeScript API. |
-| `MdNode` | Class in the PDF TypeScript API. |
+| `MdBlock` | A block-level node in the Markdown syntax tree. |
+| `MdInline` | An inline node in the Markdown syntax tree. |
+| `MdNode` | A block-level or inline Markdown syntax-tree node. |
 | `OpenAction` | What a document does when it is opened: go to a view, or run an action. |
 | `OptionalContent` | The document's optional-content properties (/OCProperties). |
 | `Padding` | Inner cell padding: one value for every side, or an object naming the sides that differ. |
@@ -4008,7 +4018,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `PdfUaPart` | Which part of ISO 14289 to validate or convert against: `1` or `2`. |
 | `PdfXLevel` | PDF/X conformance target. |
 | `PubSecRecipient` | Class with 4 properties. |
-| `QrEcc` | Class in the PDF TypeScript API. |
+| `QrEcc` | QR error-correction level (`L`, `M`, `Q`, or `H`). |
 | `RenderingCompareOptions` | Options for `Document.CompareRendering`: `dpi` (default 72), `tolerance` (per channel, 0..255, default 0), `mergeDistance` (points, default 6), `image`, `annotations`. |
 | `RenderingComparison` | The result of `Document.CompareRendering`: `pages`, totals `changedPixels`/`totalPixels`/`ratio`, and `identical`. |
 | `RGB` | An RGB colour in a structure attribute (`/BackgroundColor`, `/Color`, …): three components in 0..1. |
@@ -4019,11 +4029,11 @@ for work-unit boundaries and mutation/lifetime rules.
 | `RevocationStatus` | A revocation verdict for one certificate. |
 | `RowBuilder` | One row: an ordered list of cells plus an optional row-level style. |
 | `SaveOptions` | Options for Save/WriteTo. |
-| `Severity` | Class in the PDF TypeScript API. |
+| `Severity` | Severity of a validation finding (`error` or `warning`). |
 | `SideBySideOptions` | Options for `Document.CompareSideBySide`: `compare` (the `CompareTextOptions`), `gap`, `marks` (`annotations` or `content`), `deleteColor`, `insertColor`, `tagged` (carry both documents' structure and tag the marks). |
 | `SideBySideResult` | The result of `Document.CompareSideBySide`: the new side-by-side `document` and the `comparison` its marks came from. |
 | `Signer` | Any accepted signer: a credential source, or a pre-resolved CmsSigner (certificate DER + `KeyObject`) for callers that already hold a key. |
-| `StdFont` | Class in the PDF TypeScript API. |
+| `StdFont` | Name of a PDF Standard-14 font, including `Symbol` and `ZapfDingbats`. |
 | `StreamFilterName` | Save targets: ASCII85, ASCIIHex, LZW, RunLength, or opt-in `BrotliDecode` (PDF 2.0 extension). |
 | `StructElement` | A node in the structure tree: a live handle over its real /StructElem dict. |
 | `StructContainer` | Anything that can hold structure elements: an element, or the tree root. |
@@ -4046,7 +4056,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ValidationReport` | The result of a validation pass (PDF/UA or PDF/A). |
 | `VectorGraphics` | A buffered builder for vector content: every path constructor, paint operator, graphics-state setting and marked-content bracket, accumulated in memory as operator text. |
 | `XmpUpdate` | A partial XMP update: each known field may be set, or `null` to delete. |
-| `AddBarcodeOptions` | Interface with 8 properties. |
+| `AddBarcodeOptions` | Barcode drawing options for rendering, color, quiet zone, label text, layer, and tagging. |
 | `makeCode128(data)` | A Code 128 model with automatic A/B/C code-set selection and the modulo-103 check |
 | `makeEan13(digits)` | An EAN-13 model: 12 digits (check computed) or 13 (check validated) |
 | `makeEan8(digits)` | An EAN-8 model: 7 digits (check computed) or 8 (check validated) |
@@ -4054,9 +4064,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `makeQr(data, opts?)` | A QR model: `ecc` defaults to `'M'`, and the smallest fitting version is chosen unless `version` forces one |
 | `makePdf417(data, opts?)` | A PDF417 model: text, byte and numeric compaction, `ecLevel` 0..8 (default per ISO/IEC 15438 Annex E) and `columns` 1..30 (default about 3:1 wide); rows are three modules tall |
 | `makeDataMatrix(data, opts?)` | A Data Matrix ECC 200 model: ASCII or Base256 encodation in the smallest `shape` (`'square'`, `'rectangle'` or `'any'`) that holds the data |
-| `AddImageOptions` | Interface with 5 properties. |
-| `AddImagePagesOptions` | Interface with 3 properties. |
-| `AddImagePagesResult` | Interface with 2 properties. |
+| `AddImageOptions` | Image placement options for opacity, format override, source page, layer, and tagging. |
+| `AddImagePagesOptions` | Source frame selection, DPI, format override, and operation controls for appending image pages. |
+| `AddImagePagesResult` | Pages appended from the source and frames the decoder skipped. |
 | `AddLayerOptions` | Options for AddLayer. |
 | `AddSVGOptions` | Options for AddSVGObject. |
 | `AddSVGResult` | The outcome of AddSVGObject. |
@@ -4077,15 +4087,15 @@ for work-unit boundaries and mutation/lifetime rules.
 | `CellOptions` | `addCell` options: the per-cell text style plus an optional horizontal span. A cell's runs may cite a `footnote` or `endnote` only when the table goes into a Flow (`flow.AddTable`); `page.AddTable` refuses such a cell. |
 | `CellTextOptions` | Per-cell/row text + visual style; each field falls back through the cascade (cell ??. |
 | `CertInfo` | Summary of the signer's X.509 certificate. |
-| `ChainOptions` | Interface with 2 properties. |
-| `ChainResult` | Interface with 3 properties. |
+| `ChainOptions` | Trust anchors and evaluation time for certificate path validation. |
+| `ChainResult` | Certificate path validation status, path, and optional failure reason. |
 | `Change` | One object that changed in a revision added after a signature. |
 | `CheckboxInit` | Options for Form.AddCheckbox / Page.AddCheckbox. |
 | `ChoiceInit` | Options common to both choice field types. |
 | `CmykTransform` | A caller-supplied RGB->CMYK function, e.g. from `iccCmykTransform`. |
 | `iccCmykTransform(profile, opts?)` | A `CmykTransform` from an ICC v2 CMYK destination profile; declines what it cannot honour before any colour converts |
-| `CollectionFieldDef` | Interface with 6 properties. |
-| `CollectionSettings` | Interface with 5 properties. |
+| `CollectionFieldDef` | A portfolio field's key, display name, type, order, visibility, and editability. |
+| `CollectionSettings` | Portfolio field definitions, view, sort order, and initially selected file. |
 | `ColorConvertOptions` | Options shared by the colour-conversion entry points. |
 | `ColorConvertReport` | What a conversion converted and skipped, and why. |
 | `ColoredTilingPattern` | A tiling pattern that carries its own colours. |
@@ -4093,19 +4103,19 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ColorSkipped` | One thing that could not be converted, and the reason. |
 | `ComboBoxInit` | Options for Form.AddComboBox / Page.AddComboBox. |
 | `ContentAddr` | Address of an operator within a page's content. |
-| `ContentOp` | Interface with 5 properties. |
+| `ContentOp` | A content-stream operator and its operands, with the dictionary and bytes for inline images. |
 | `ContentVisitor` | Interface with 3 methods. |
 | `ConvertColorsOptions` | Options for `doc.ConvertColors`, including `to` and `transform`. |
 | `ConvertOptions` | PDF/A conversion options, including ICC intent, preserved categories and opt-in `flattenTransparency`. |
-| `Crl` | Interface with 7 properties. |
-| `CrlEntry` | Interface with 2 properties. |
+| `Crl` | Parsed certificate revocation list with issuer, validity times, revoked entries, and signature data. |
+| `CrlEntry` | Serial number and revocation time of a certificate listed in a CRL. |
 | `DataMatrixOptions` | What `makeDataMatrix` takes: `{ shape }`, `'square'` by default. |
 | `DecorationOptions` | The decoration options shared by every text-authoring options type. |
 | `DecorationStyle` | A rule drawn beneath (underline) or through (strikethrough) the text. |
 | `DocumentFont` | One font of `doc.Fonts`: `name`, `subsetTag`, `subtype`, `descendantSubtype`, `embedded`, `program`, `encoding`, `customEncoding`, `declaredOn` and `usedOn` pages, and the live `dict`. |
 | `DocumentJavaScript` | One entry of the document-level JavaScript name tree. |
 | `DocumentTimestampReport` | RFC 3161 time, imprint, TSA signature, byte coverage, and structural findings for a document timestamp. |
-| `DrPruneResult` | Interface with 3 properties. |
+| `DrPruneResult` | Removed AcroForm resource keys, bytes saved, and the reason if the pass was skipped. |
 | `DssEntry` | Per-signature validation data to embed under one `/VRI` entry. |
 | `ElemOpts` | Options for creating a structure element. |
 | `EmbedFontSkip` | A non-embedded font `doc.EmbedFonts` left as it was: `name`, `object` (or, for a font dict written directly in a resource dictionary, the `pages` that declare it), `reason`, and for a glyph or width disagreement a `detail` naming the code or CID. |
@@ -4113,7 +4123,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `EmbedFontsOptions` | What `doc.EmbedFonts` takes: `{ subset, bundledStandard14 }`. |
 | `EmbedFontsReport` | What `doc.EmbedFonts` did: `embedded` and `skipped`. |
 | `EmbeddedFontRecord` | A font `doc.EmbedFonts` embedded: `name`, `object` (or `pages` for a direct font dict), `source` (`'registered'` or `'bundled'`), the face's `postScriptName`, and a registered face's `path` and `faceIndex`. |
-| `ExportFormDataOptions` | Interface with 3 properties. |
+| `ExportFormDataOptions` | FDF/XFDF export options for empty values, source file reference, and annotations. |
 | `ExportJsonOptions` | What `ExportJson` takes: `{ includeEmpty, file, indent }`. |
 | `ExportXmlOptions` | What `ExportXml` takes: `{ includeEmpty }`. |
 | `ExternalSigner` | Sign via an external callback (HSM/KMS/smartcard) — the key never leaves the device. |
@@ -4149,12 +4159,12 @@ for work-unit boundaries and mutation/lifetime rules.
 | `FlattenLayersReport` | What `FlattenLayers` deleted, unwrapped and left alone. |
 | `FontFamily` | The four faces emphasis selects between, loaded from disk. |
 | `FontMatch` | What a name resolves to -- reported without loading or embedding anything. |
-| `FontOptimization` | Interface with 4 properties. |
+| `FontOptimization` | Font name, retained and dropped glyph counts, and bytes saved by subsetting. |
 | `FontProgramKind` | The kind of program a font embeds: `Type1`, `TrueType`, `Type1C`, `CIDFontType0C`, `OpenType`, or `Type3` for a Type 3 font. |
 | `FontSubstitutionHandler` | What `doc.SetFontSubstitutionHandler` takes: `(request) => string \| Uint8Array \| undefined` — a face name, font bytes, or nothing. |
 | `FontSubstitutionRequest` | What a substitution handler is asked: `name` (the font's `/BaseFont`, subset tag removed), `bold`, `italic`, and `characters`, a sample of up to 256 code points it needs. |
 | `FontSubstitutionRule` | One rule of `doc.AddFontSubstitution`: `{ original, substitute }`. |
-| `FormData` | Interface with 5 properties. |
+| `FormData` | Field values and optional source identifiers, annotations, and format-specific import details. |
 | `FormDataField` | One field's data, format-neutral. |
 | `G4EncodeOptions` | Interface with 1 property. |
 | `GradientStop` | One gradient stop. |
@@ -4165,56 +4175,56 @@ for work-unit boundaries and mutation/lifetime rules.
 | `HtmlOptions` | Options for ToHtml and ToHtml. |
 | `HttpTimestampOptions` | Options for `httpTimestampProvider`: extra `headers`, `timeoutMs`, `maxResponseBytes`. |
 | `ImageEvent` | A placed image with provenance. |
-| `ImageOptimization` | Interface with 7 properties. |
+| `ImageOptimization` | An optimized image's identity, dimensions before and after processing, and bytes saved. |
 | `ImportOptions` | Options for the four import methods. |
-| `ImportReport` | Interface with 8 properties. |
+| `ImportReport` | Imported and skipped fields and annotations, with source file and document identifiers when present. |
 | `InsertPagesOptions` | Interface with 1 property. |
 | `KeyUsageName` | An RFC 5280 key usage, in the bit order a `/KeyUsage` seed-value string follows. |
 | `LayerState` | One layer's resolved state, as LayerConfig.ResolveForEvent reports it. |
 | `LayerUsage` | A group's /Usage dictionary, as a typed view: what it says about viewing, printing, exporting, zoom, language and who the content is for. |
-| `LayoutAttributes` | Interface with 32 properties. |
+| `LayoutAttributes` | Tagged PDF layout attributes for placement, writing mode, borders, text, alignment, and columns. |
 | `LimitField` | One `LoadLimits` field name. |
 | `LinearBarcode` | 1D barcode geometry: alternating bar/space run widths in unit modules. |
 | `LinearGradient` | An axial (linear) gradient: a colour ramp along the axis from (x1, y1) to (x2, y2), in the **default** user space of the content stream it paints into — see the /Matrix note on PageGraphics.setFillGradient. |
-| `LinearizationCheck` | Interface with 2 properties. |
+| `LinearizationCheck` | Whether the byte offsets and hints support the file's linearized layout, with any errors found. |
 | `ListAttributes` | Interface with 1 property. |
 | `ListBoxInit` | Options for Form.AddListBox / Page.AddListBox. |
 | `LoadFontOptions` | A style request alongside the ordinary font options. |
 | `LoadLimitPatch` | A partial policy for `LoadLimits.with`: `undefined` leaves a field, `null` disables it. |
 | `LoadLimitValues` | The nineteen `LoadLimits` fields, each a positive integer or `null`. |
 | `MatrixBarcode` | 2D barcode geometry: a matrix of dark/light modules, row-major, with optional `width`, `height`, `rowHeight` and `quiet` for non-square symbols. |
-| `MdBlockQuote` | Interface with 2 properties. |
-| `MdCode` | Interface with 2 properties. |
+| `MdBlockQuote` | A block quote with child Markdown blocks. |
+| `MdCode` | An inline code span with its literal text. |
 | `MdCodeBlock` | `info` is the raw info string of a fenced block, entity-decoded and backslash-unescaped but not split on whitespace; '' for an indented block. |
 | `MdDocument` | The CommonMark abstract syntax tree, per CommonMark 0.31.2. |
-| `MdEmph` | Interface with 2 properties. |
+| `MdEmph` | An emphasis span with child inline nodes. |
 | `MdFootnoteDefinition` | A GFM footnote definition: `label`, `index` (its number), `references` (how many citations) and its block `children`. Found on `MdDocument.footnotes`, never among the tree's blocks. |
 | `MdFootnoteReference` | A GFM footnote citation, `[^label]`: the definition's `label`, its `index`, and `occurrence` (1 for the first citation of that definition, 2, 3…). |
 | `MdHardBreak` | Interface with 1 property. |
 | `MdHeading` | Level 1..6, identical for the ATX (`# x`) and setext (`x\n=`) spellings. |
 | `MdHtmlBlock` | Raw HTML, verbatim. |
-| `MdHtmlInline` | Interface with 2 properties. |
-| `MdImage` | Interface with 4 properties. |
-| `MdItem` | Interface with 3 properties. |
+| `MdHtmlInline` | An inline HTML node with its literal markup. |
+| `MdImage` | A Markdown image with destination, optional title, and inline description. |
+| `MdItem` | A list item's child blocks and optional task checkbox state. |
 | `MdLink` | Inline and reference links are indistinguishable here: both carry a resolved destination and title, which is what gl6o.3 wants. |
 | `MdList` | `tight` decides whether an item's paragraphs render as paragraphs (loose) or as bare content (tight). |
-| `MdParagraph` | Interface with 2 properties. |
+| `MdParagraph` | A paragraph with child inline nodes. |
 | `MdSoftBreak` | Interface with 1 property. |
 | `MdStrikethrough` | GFM strikethrough. |
-| `MdStrong` | Interface with 2 properties. |
+| `MdStrong` | A strong emphasis span with child inline nodes. |
 | `MdTable` | `align` carries one entry per column, null where the delimiter row gave none — which is not the same as 'left', since a renderer may have its own default. |
 | `MdTableCell` | Holds inlines, like a paragraph does. |
-| `MdTableRow` | Interface with 3 properties. |
-| `MdText` | Interface with 2 properties. |
+| `MdTableRow` | A Markdown table row with its children and header flag. |
+| `MdText` | A plain-text Markdown inline node. |
 | `MdThematicBreak` | Interface with 1 property. |
-| `Metadata` | Interface with 9 properties. |
+| `Metadata` | Document information fields, including dates and custom entries. |
 | `MetadataField` | One of the eight fields `/Info` and XMP share: `'title' \| 'author' \| 'subject' \| 'keywords' \| 'creator' \| 'producer' \| 'creationDate' \| 'modDate'`. |
 | `MetadataSyncReport` | What `SyncMetadata` did: `changed` (fields written or deleted on the target) and `skipped` (source dates that did not read), both in field order. |
-| `MetadataUpdate` | Interface with 9 properties. |
-| `NUpOptions` | Interface with 5 properties. |
+| `MetadataUpdate` | Partial document information update. Use `null` to delete a field. |
+| `NUpOptions` | Imposed sheet size, margins, gutters, cell order, and optional cell borders. |
 | `ObjStmDamage` | What one /ObjStm container yielded, and what it cost. |
-| `OcspResponse` | Interface with 7 properties. |
-| `OcspSingleResponse` | Interface with 8 properties. |
+| `OcspResponse` | Parsed OCSP status, production time, certificate responses, and signature material. |
+| `OcspSingleResponse` | Reported status and update times for one certificate, with its OCSP certificate identifier. |
 | `OoxmlPart` | One part of an OPC package. |
 | `OoxmlRelationship` | One entry of a `.rels` file. |
 | `OpenOptions` | `password`, `recipient` and `limits` (a `LoadLimits`). |
@@ -4223,18 +4233,18 @@ for work-unit boundaries and mutation/lifetime rules.
 | `OperationProgress` | Phase-local completed counts, optional total, and one-based page number. |
 | `OptimizeOptions` | Which concerns to run. |
 | `OptimizeReport` | Per-concern savings and skips, including lossless `jbig2` results and the JPEG pass's `lossy` flag. |
-| `OverlayOptions` | Interface with 5 properties. |
+| `OverlayOptions` | Target pages, placement, opacity, rotation, and whether to draw beneath the existing page. |
 | `PageLabel` | A logical page-label range in the /Root /PageLabels number tree. |
 | `PagePath` | Snapshot of a drawn or clipping path with geometry, paint state, and its `Addr` operator span. |
 | `EditablePagePath` | A `PagePath` returned by `GetPaths()` that can edit its source draw with `Remove()`, `Recolor(options)`, and `Transform(matrix)`. |
 | `PagePathAddr` | Inclusive path construction-to-paint span and enclosing Form draw addresses. |
 | `PathRecolorOptions` | Fill and/or stroke as DeviceRGB components from 0 to 1. |
 | `PathEvent` | A painted vector path, its subpaths flattened to page-space segments. |
-| `PathPaint` | Interface with 2 properties. |
-| `PathSubpath` | Interface with 2 properties. |
+| `PathPaint` | A path's RGB paint color and source color space. |
+| `PathSubpath` | A path's segments and whether the subpath is closed. |
 | `Pdf417Options` | What `makePdf417` takes: `{ ecLevel, columns }`. |
-| `PdfUaConvertOptions` | Interface with 3 properties. |
-| `PdfXConvertOptions` | Interface with 9 properties. |
+| `PdfUaConvertOptions` | PDF/UA conversion settings for part, language, title, role mappings, and operation controls. |
+| `PdfXConvertOptions` | PDF/X conversion settings for output intent, trapping, color conversion, preservation, and operation controls. |
 | `PemSigner` | Sign from a PEM private key plus its PEM/DER certificate chain (leaf first). |
 | `Pkcs12Signer` | Sign from a PKCS#12 (`.pfx`/`.p12`) blob; the key and chain are extracted. |
 | `PlaceContext` | Where an element is being placed. |
@@ -4245,7 +4255,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `PrunePolicy` | Interface with 1 method and 1 property. |
 | `defaultPrunePolicy()` | The `PrunePolicy` `ExtractPages` and `Split` apply when given none |
 | `PushButtonInit` | Options for Form.AddPushButton / Page.AddPushButton. |
-| `QrOptions` | Interface with 2 properties. |
+| `QrOptions` | QR error-correction level and optional fixed symbol version. |
 | `Quantized` | The result of quantizing an image. |
 | `RadialGradient` | A radial gradient: the ramp runs from the focal point out to the circle (cx, cy, r). |
 | `RadioGroupInit` | Options for Form.AddRadioGroup. |
@@ -4267,7 +4277,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ReplaceFontUndrawable` | A code `doc.ReplaceFont` kept in the old font: `page`, `code`, its `text`, and how many glyphs drew it. |
 | `ReplaceTextOptions` | `ReplaceText` options: `region`, `ignoreCase`, `wholeWord`, `fallbackFonts`, `matchRegisteredFonts`, `onUndrawable`, the replacement's `font`, `fontSize` and `color`, `adjust`, `onUnreflowable`, and `hyphenate` (with `adjust: 'reflow'`). |
 | `RestyleTextOptions` | `RestyleText` options: `region`, `ignoreCase`, `wholeWord`, `fallbackFonts`, `matchRegisteredFonts`, `onUndrawable`, `adjust`, `onUnreflowable` and `hyphenate` (with `adjust: 'reflow'`). |
-| `RevocationResult` | Interface with 2 properties. |
+| `RevocationResult` | Revocation status and the source that established it. |
 | `RowOptions` | `addRow` options: the row-level text style plus row-only geometry. |
 | `PagesToImagesOptions` | How `Sanitize({ pagesToImages })` renders: `dpi` (default 150), `format` (`'flate'` or `'jpeg'`), `quality`. |
 | `SanitizeOptions` | Which categories `Sanitize` removes; each defaults to `true` except the lossy `pagesToImages`. |
@@ -4284,24 +4294,24 @@ for work-unit boundaries and mutation/lifetime rules.
 | `SigAlg` | Signature algorithm passed to an external signer callback: the public-key scheme plus the message-digest algorithm to hash the data with. |
 | `SignerLocation` | CAdES `signer-location` signed attribute (all fields optional). |
 | `SignerOptions` | Options common to the credential-source signer variants. |
-| `SkippedFont` | Interface with 2 properties. |
-| `SkippedFrame` | Interface with 2 properties. |
-| `SkippedImage` | Interface with 3 properties. |
-| `SplitOptions` | Interface with 2 properties. |
-| `SvgOptions` | Interface with 2 properties. |
+| `SkippedFont` | Name of a font the optimizer skipped, with the reason. |
+| `SkippedFrame` | Zero-based source frame index and the reason image-page import skipped it. |
+| `SkippedImage` | Object number, name, and reason an image was skipped during optimization. |
+| `SplitOptions` | Controls for pruning copied page objects and preserving tagged structure. |
+| `SvgOptions` | Page box and annotation visibility settings for SVG rendering. |
 | `SyncDirection` | `'infoToXmp' \| 'xmpToInfo'` — which side `SyncMetadata` treats as the source. |
-| `TableAttributes` | Interface with 5 properties. |
-| `TableCell` | Interface with 13 properties. |
+| `TableAttributes` | Tagged PDF table attributes for spans, associated headers, scope, and summary. |
+| `TableCell` | Extracted cell position, spans, bounds, text, and optional tags, borders, shading, or nested tables. |
 | `TableDefaults` | Table-level defaults; the cascade root, plus table-only fields. |
-| `TableExtractOptions` | Interface with 2 properties. |
+| `TableExtractOptions` | Extraction region, tagged-table policy, and whether to include hidden optional content. |
 | `TableMetrics` | Measurement result for a table at given resolved column widths. |
-| `TableRow` | Interface with 3 properties. |
+| `TableRow` | Extracted cells, row bounds, and optional table section. |
 | `TableStitchOptions` | Interface with 1 property. |
 | `TargetSpace` | The device space a conversion targets: `gray`, `rgb` or `cmyk`. |
 | `TextBlock` | A paragraph-like cluster of consecutive lines, ordered top-to-bottom. |
 | `TextFieldInit` | Options for Form.AddTextField / Page.AddTextField. |
 | `TextFragment` | A positioned text run sharing one font, size, and baseline — the public unit of structured extraction (`Page.GetTextFragments`). |
-| `TextLine` | Interface with 4 properties. |
+| `TextLine` | Extracted text and fragments with line bounds and optional inferred styles. |
 | `TextMatch` | A positioned text match. |
 | `TextRestyle` | What `RestyleText` changes: `font`, `fontSize`, `color`, `underline`, `strikethrough` and `background`. |
 | `TextRun` | One styled span of a rich text block; optional shaping and OpenType `features` override the block by tag. `rise` shifts its baseline (a superscript) without changing the line height. |
@@ -4309,7 +4319,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `TilingPatternOptions` | Placement and repetition for a tiling pattern. |
 | `TimestampInfo` | Verdict on a signature timestamp: the asserted time plus whether the token binds to the signature (imprint) and whether the TSA's signature is valid. |
 | `TrailerChoice` | What trailer synthesis chose. |
-| `TstInfo` | Interface with 6 properties. |
+| `TstInfo` | Parsed RFC 3161 token details including imprint, generation time, serial number, policy, and optional nonce. |
 | `UncoloredTilingPattern` | A tiling pattern whose colour is supplied at use time. |
 | `UndrawableText` | A match `ReplaceText` could not fully draw: `page` (1-based), `match`, and the `missing` characters. |
 | `UnembeddedFont` | A Standard-14 font whose embedded program `Optimize({ unembedStandard14 })` removed, with the bytes that freed. |
@@ -4414,7 +4424,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `StampPosition` | Where a stamp anchors in the page's visual frame. |
 | `TextAnnotation` | A /Text (sticky-note) annotation: an icon-and-popup markup with no appearance stream. |
 | `TrimMarkAnnotation(page, corner)` | Attach one trim mark aligned to the requested finished-page corner. |
-| `AnnotData` | Interface with 4 properties. |
+| `AnnotData` | An annotation for form-data exchange with a zero-based page index, dictionary, and optional popup or reply links. |
 | `AnnotationMatch` | A match in the text one annotation's appearance stream draws. |
 | `AnnotationTextMatch` | A match in the text an annotation CARRIES, rather than the text it draws. |
 | `CaretOptions` | Options for Page.AddCaret. |
@@ -4426,16 +4436,16 @@ for work-unit boundaries and mutation/lifetime rules.
 | `SkippedAnnot` | An annotation that was present in the data file but not applied. |
 | `StampAnnotationOptions` | Options for Page.AddStamp. |
 | `StampOptions` | Options for stamping text onto a page. |
-| `StampWithOptions` | Interface with 4 properties. |
+| `StampWithOptions` | Stamp placement, opacity, rotation, and overlay or underlay mode. |
 | `TextBlockOptions` | Options for flowing wrapped text into a rectangle. |
 | `HyphenationOptions` | Opt-in hyphenation: `lang`, `mode` (`'auto'` or `'manual'`), `minLeft`, `minRight`, `minWord`. |
 | `TabStop` | One tab stop: `position` (points from the left text edge, before any indent), `align`, `leader`, `decimalChar`. Taken by `tabStops` on `TextBlockOptions`, `FlowParagraphOptions`, `FlowListOptions`, `FlowListItem` and `FlowOptions`, beside `defaultTabInterval`. |
 | `TabAlign` | A tab stop's alignment: `'left'`, `'right'`, `'center'` or `'decimal'`. |
 | `TabLeader` | What fills a tab's gap: `'none'`, `'dot'`, `'middleDot'`, `'hyphen'`, `'underscore'` or `'line'`. |
 | `TextNoteOptions` | Options for Page.AddTextNote. |
-| `TimeStampRequestInfo` | Interface with 3 properties. |
-| `TimeStampRequestOptions` | Interface with 3 properties. |
-| `TimeStampTokenOptions` | Interface with 3 properties. |
+| `TimeStampRequestInfo` | Digest algorithm, message imprint, and optional nonce parsed from an RFC 3161 request. |
+| `TimeStampRequestOptions` | Optional nonce, certificate request flag, and requested TSA policy. |
+| `TimeStampTokenOptions` | Generation time, serial number, and policy for an RFC 3161 token. |
 
 ### Attachments
 
@@ -4459,7 +4469,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `DocxOptions` | Options for ToDocx and ToDocx. |
 | `EpubOptions` | Options for ToEpub. |
 | `ImageMode` | What `ImageOptions.mode` accepts. |
-| `ImageOptions` | Interface with 11 properties. |
+| `ImageOptions` | Raster output format, dimensions, scale, page box, background, annotation and encoder options. |
 | `MarkdownAsset` | One image file an external-image export expects to be written. |
 | `MarkdownElements` | What markdownElements produced. |
 | `MarkdownExportOptions` | Options for ToMarkdown and ToMarkdown. |
@@ -4483,7 +4493,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `CheckboxField` | A checkbox (`/FT /Btn`, neither Pushbutton nor Radio). |
 | `ChoiceField` | A combo box or list box (`/FT /Ch`). |
 | `Field` | A terminal AcroForm field: a live, mutable handle over its field dict. |
-| `FieldType` | Class in the PDF TypeScript API. |
+| `FieldType` | AcroForm field kind, such as `text`, `radio`, `choice`, or `signature`. |
 | `RadioField` | A radio group (`/FT /Btn` with the Radio flag). |
 | `TextField` | A text field (`/FT /Tx`). |
 
@@ -4497,16 +4507,24 @@ for work-unit boundaries and mutation/lifetime rules.
 
 ### Security
 
-Use `VerifySignatures()` to find the content affected by changes after the
-latest approval or certification signature. When its digest and CMS signature
-verify, that report carries `unsignedContent`.
+Use `VerifySignatures()` to inspect approval and certification signatures in
+the opened file or in the bytes created by signing in the current session.
+`integrity` checks the byte-range digest, `signature` checks the CMS signature,
+and `chain` reports trust against the supplied DER `trustAnchors`. The report
+also includes byte coverage, revocation status, and any applicable DocMDP and
+FieldMDP verdicts. The signature with the latest usable signed byte range
+carries `unsignedContent` when both its digest and CMS signature verify.
 
 ```ts
 import { Document } from '@asposefoss/pdf';
 
-const reports = await Document.OpenFile('signed.pdf').VerifySignatures();
+const doc = Document.OpenFile('signed.pdf');
+const reports = await doc.VerifySignatures();
 const latest = reports.find((report) => report.unsignedContent !== undefined);
 console.log(latest?.unsignedContent);
+for (const { name, structureFindings } of reports) {
+  console.log(name, structureFindings);
+}
 ```
 
 The summary attributes the added and modified objects in `modifications` to
@@ -4522,6 +4540,8 @@ layer was omitted. The result lists signed page numbers in reading order and
 records pages it could not compare in `skippedPages`.
 
 ```ts
+import { Document } from '@asposefoss/pdf';
+
 const reports = await Document.OpenFile('signed.pdf').VerifySignatures({ shadowAnalysis: true });
 for (const report of reports) {
   console.log(report.name, report.shadowAnalysis?.findings, report.shadowAnalysis?.skippedPages);
@@ -4543,17 +4563,26 @@ footer. Ordinary incremental revisions remain visible in `modifications`.
 The report also identifies when the source dictionary, signed revision, or
 final footer cannot be verified.
 
+`VerifyDocumentTimestamps()` checks standalone RFC 3161 timestamps. Each
+report includes the asserted time, message-imprint and TSA-signature checks,
+byte coverage, later object modifications, and structural findings.
+
 | Class | Description |
 |---|---|
+| `doc.Sign(signer, opts?)` / `doc.Certify(signer, opts?)` | Create an approval or DocMDP certification signature. Read the signed bytes with `Save()` or `WriteTo()`. |
+| `doc.VerifySignatures(opts?)` | Verify approval and certification signatures and report trust, changes, and structure. |
+| `doc.AddValidationData(opts?)` / `doc.AddDocumentTimestamp(tsa, opts?)` | Append LTV validation data or a standalone RFC 3161 document timestamp. |
+| `doc.VerifyDocumentTimestamps()` | Verify standalone document timestamp imprints and TSA signatures, and report byte coverage and structure. |
+| `doc.Signatures` / `doc.DocumentTimestamps` | Read signature fields and standalone document timestamps. |
 | `DocMdpPermission` | DocMDP permitted-changes level for a certification signature (PDF 32000-1 §12.8.2.2): the `/P` value in the DocMDP `/TransformParams`. |
-| `SignatureScheme` | Class in the PDF TypeScript API. |
+| `SignatureScheme` | Signing algorithm (`rsa`, `rsa-pss`, `ecdsa`, or `ed25519`). |
 | `CertifyOptions` | Options for Certify: a SignOptions plus the DocMDP permitted-changes level (default `no-changes`). |
 | `DocumentTimestampOptions` | Options for AddDocumentTimestamp. |
-| `EncryptOptions` | Interface with 5 properties. |
-| `Permissions` | Interface with 8 properties. |
-| `PubSecEncryptOptions` | Interface with 6 properties. |
-| `PubSecRecipientCert` | Interface with 2 properties. |
-| `SignOptions` | Interface with 12 properties. |
+| `EncryptOptions` | Password encryption options for credentials, algorithm, permissions, and metadata encryption. |
+| `Permissions` | PDF permission flags for printing, editing, copying, annotation, forms, accessibility, and assembly. |
+| `PubSecEncryptOptions` | Certificate encryption options for recipients, algorithm, permissions, key wrapping, and metadata encryption. |
+| `PubSecRecipientCert` | Recipient certificate and optional recipient-specific permission flags. |
+| `SignOptions` | Signature metadata, subfilter, target field, appearance, timestamp provider, CAdES attributes, and placeholder size. |
 | `SignatureAppearance` | A visible signature appearance request. |
 | `SignatureField` | Read-side view of a signature field (always available, like `doc.Form`). |
 | `SignatureFieldInit` | Options for Form.AddSignatureField / Page.AddSignatureField, including an optional `seedValue`. |
@@ -5133,8 +5162,10 @@ still carries GitHub's number.
   annotation subtypes, tables, vector graphics, flow layout, tagged PDF, standards validation,
   and digital signatures.
 - **[CHANGELOG.md](CHANGELOG.md)** — release history.
+- **[Third-party notices](THIRD-PARTY-NOTICES.md)** and **[font sources](fonts/SOURCES.md)** — attribution, licenses, and bundled font provenance.
 - **[AGENTS.md](AGENTS.md)** and **[CLAUDE.md](CLAUDE.md)** — the agent-facing development
   workflow for this repository.
+- **[Design and implementation records](docs/superpowers/)** — dated specs, plans, and verification notes.
 - **[docs/epub-calibre-verification.md](docs/epub-calibre-verification.md)** — how EPUB export
   was hand-verified in a real reader (Calibre 7.26.0) beyond the suite's own structural
   conformance checks.
@@ -5164,7 +5195,11 @@ still carries GitHub's number.
 - **DOCX flow mode reflows** — `ToDocx()` concatenates pages with **no page break** between them, exactly as `ToHtml` and `ToMarkdown` do. Headers, footers, footnotes and revision tracking are not exported, because the document model records none of them.
 - **Emphasis is inferred, not read** (in all three exports) — a PDF records a *font*, not an emphasis. Bold and italic are derived from the producing font's descriptor and `/BaseFont` name, so a document that sets bold by using a bold face is recovered and one that fakes it with a stroke width is not.
 - **The package writer has no ZIP64**, so it refuses an archive above 4 GB or 65535 entries, and **Word compatibility is unverified in CI**: the tests prove the package is structurally conformant to ECMA-376, not that any particular consumer opens it.
-- **XMP writes are not type-checked against the predefined schemas** — `SetXmpValue` writes what it is given (a Bag to `dc:creator`, whose schema says Seq, is accepted); checking values against their schema types is a PDF/A validation layer not yet implemented.
+- **XMP schema checks run during PDF/A validation.** `SetXmpValue` accepts any
+  supported XMP value for a property. `ValidatePdfA` checks predefined and
+  declared extension-schema types for PDF/A parts 1–3. `ConvertToPdfA` can
+  repair some value shapes, such as a Bag written where the schema requires
+  a Seq, and reports unresolved values.
 - **No CFF2 and no variable-font instancing, by decision** — the two halves are separate. *An embedded CFF2 program* (PDF 2.0's `/FontFile3 /Subtype /OpenType` carrying a `CFF2` table) is not read: there is no CFF2 charstring interpreter and no subsetting of an `ItemVariationStore`. Such a document still opens, and its text still extracts through `/Widths` and `/ToUnicode`, but its glyphs are not drawn from the program. `AddFont` does not accept a CFF2 font either; it throws `UnsupportedFeatureError` naming CFF2. *A variable font found on the system*, as a render substitute (`RegisterRenderFontFolder`) or through `LoadFontByName`, is used at its **default instance**. `fvar`, `gvar` and `avar` are not applied, and its named instances are not indexed as separate faces, so asking for Bold from a variable family gets the default face. A system face whose only outlines are CFF2 is left out of the index altogether, so a lookup falls through to the next usable face rather than choosing one it cannot draw. Few PDFs embed a CFF2 font today. Rendering through a Bahnschrift- or SF-style system face is the case that shows the limit: it draws in the family's default weight.
 - **Network calls only through a client you build, by decision** — the library never reaches a host on its own initiative, so opening, rendering, converting or exporting a document makes no network request, whatever URLs the document contains. A call happens only through a client object the caller constructs and hands in. Today there are two: `httpTimestampProvider(url)`, an RFC 3161 timestamp client, and `openAiModel(baseUrl, opts)`, a chat-completions client for OpenAI-compatible servers — both over Node's built-in `fetch`, bounded by a timeout and a response-size cap, with no default endpoint. There is one narrow exception, and a caller opts into it by signing a prepared field: when a signature field's seed value **requires** a timestamp and the call brought no TSA, `Sign` builds that client for the field's own `/TimeStamp` URL, over http(s) only and never for a merely suggested URL. Every href an HTML, Markdown or SVG source names goes through your `resolveImage` instead. Future network-backed features follow the same rule, AI assistance included: they take a client or a callback you supply and never call a default endpoint.
 - **DOCX import is a documented subset, not a Word layout engine; legacy `.doc` is out of scope, by decision** — `AddDocx` maps WordprocessingML onto the same flow engine `AddHtml` and `AddMarkdown` use, so a document **reflows**: line and page breaks fall where this engine puts them, not where Word did, and a document relying on absolute positioning will not look the same. What renders: paragraphs and their resolved styles, headings by outline level, character formatting, numbered and bulleted lists with Word's own labels, tables with column spans and vertical merges, inline and block images (JPEG, PNG, BMP, TIFF), external hyperlinks, and the last section's page size and margins. What is **reported in `skipped` rather than drawn**: headers and footers, comments, a note reference inside another note (Word never writes one), a note placement Word allows and the engine does not (notes beneath the text, endnotes at each section's end), a section whose note format or start differs from the last section's (the last one's is used), text boxes and floating drawings (a floating picture is placed in line), section-level layout (columns, per-section page sizes — only the last section's geometry is used), tab stops (a tab is one space), internal hyperlinks and bookmarks, fields such as a table of contents (the stored result text is kept), tracked changes (shown as final text), table borders and column widths beyond the grid (every table draws a uniform 0.5pt grid), block structure inside a table cell (its paragraphs are joined by line breaks and a nested table is flattened), sub/superscript, EMF/WMF images, and a bullet glyph from Symbol or Wingdings (drawn as `•`). An empty paragraph's height is that of the default 10pt size, since the model does not carry the paragraph mark's own. There is **no oracle for the rendering**: the reader beneath it is checked against Word 2010 and LibreOffice on a vendored corpus and the spacing rule against Word through COM, while where the ink lands is held by hand-built cases. Legacy binary `.doc` is not read at all: its OLE compound-file container is a separate format that nothing else in the library needs.
@@ -5188,7 +5223,7 @@ still carries GitHub's number.
 | `PdfFileStamp` | `doc.AddWatermark(opts)`, `page.StampWith(src, opts?)`, `doc.Overlay(src, opts?)` |
 | `PdfPageEditor` | `page.Rotate`, `page.Resize(box, opts?)`, `doc.NUp(cols, rows, opts?)` |
 | `FormEditor` | `doc.Form` |
-| `PdfFileSignature` | `doc.Sign(opts)`, `doc.Certify(opts)` |
+| `PdfFileSignature` | `doc.Sign(signer, opts?)`, `doc.Certify(signer, opts?)`, `doc.VerifySignatures(opts?)` |
 | `PdfConverter` | `page.ToImage(opts?)` |
 
 <details>
@@ -5249,7 +5284,14 @@ still carries GitHub's number.
 - **Redaction is rectangle-driven and removes whole glyphs/images** — `Redact` takes explicit regions; `RedactText` derives them from a text search (still rectangle-based underneath — a neighboring glyph whose box overlaps a match's union quad may be removed too, and device-space quads assume unrotated pages); any glyph whose box touches a region is dropped entirely. A fully-covered image is deleted; a partially-covered image is decoded, its covered pixels destroyed, and the image re-encoded — sample-preservingly (keeping the original colorspace and bit-depth) for `FlateDecode`/`LZWDecode`/`CCITTFaxDecode`, or as DeviceRGB for baseline/progressive/arithmetic/lossless/hierarchical JPEG (`DCTDecode`) and any image carrying an `/SMask`/`/Mask`. This covers both image XObjects and inline images, and rotated/skewed placements. Only `JPXDecode`, `JBIG2Decode`, and non-mask inline images that decode with an alpha channel throw `UnsupportedFeatureError` (transparency can't be represented inline). Rasterized text inside images is not detected (no OCR), and vector artwork under a region is covered by the marker box but not removed.
 - **Vertical writing reaches extraction, `ToImage`, `ToSvg` and HTML fixed mode** — `/WMode 1` (the `-V` CMaps) advances glyphs down the page by `/W2`/`/DW2`, places each at its vertical origin, and extracts columns top-to-bottom ordered right-to-left. `page.ToHtml({ mode: 'fixed' })` emits one absolutely positioned `<span>` per glyph for a vertical run (one per *run* horizontally), so a column stacks by the font's own vertical metrics rather than by whatever advance a browser would choose. That makes a vertical page markedly more markup than a horizontal one.
 - **Table extraction: tagged `/Table` tree first, else geometry** — for a tagged PDF, `GetTables` uses the `/Table → TR → TH/TD` structure tree as the authoritative source for rows/cells/spans (`options.structure = 'off'` forces geometry). Otherwise it reconstructs tables from horizontal/vertical ruling lines and text position, axis-aligned or rotated. The ruled path needs at least one *interior* rule: a bare rectangle outline yields a 1×1 grid, which is page furniture rather than a one-cell table, and is not reported (this also keeps it out of `AutoTag`'s structure tree, where a one-cell `Table` announces decoration as data). Borderless-table detection is heuristic and conservative (loosely-aligned columns may be missed, and a candidate is rejected unless every column carries text in most rows), and `toMarkdown()` approximates spanning cells (colspan repeats the text, rowspan leaves blanks below). Nested tables are extracted in both paths — from the tagged `/Table` tree, and (for ruled tables) in the geometry path via rule-hierarchy detection (a rule spanning < 90% of the table extent is treated as confined; a container cell whose confined rules form a ≥2×2 grid becomes a nested table). Each nested table is attached to its parent cell's `tables`, rendered as an inner `<table>` by `toHtml()`, and its text removed from the parent cell. The ruled geometry path also returns multiple tables per page: page rules are partitioned into connected stroke components (a component whose bbox sits inside a larger one is treated as a nested table, not a separate one), so two or more distinct ruled grids surface as separate `Table[]` entries in top→bottom, left→right order. Geometry nesting is heuristic: a borderless/whitespace table is always **flat**, so a sub-grid inside one of its cells is flattened into extra columns of the outer grid rather than nested (a 2×2 whose right column holds its own 2×2 comes back as one 3×3), and it infers a **column span** conservatively: a row holding a single fragment whose text clears the column boundary the *other* rows imply, by a margin, becomes one cell with a `colSpan` (a header over two columns is the usual case). The boundary it is measured against is derived from the rows with the most common fragment count, because a spanning row distorts the boundary it crosses — so the yardstick has to exclude it. A long wrapped cell in one column is geometrically identical to a spanning header, which is why the margin is deliberately conservative and a missed span leaves the previous flat output rather than a wrong merge. **`rowSpan` is never inferred** here: rows come from baselines, so a cell covering two bands is indistinguishable from ordinary wrapped text. Right-aligned numeric columns are handled: the column gap is found from a whitespace-coverage histogram, so the cells need not share a left edge. Multiple borderless tables per page *are* detected — the whitespace path recursively XY-cuts the page on full-span whitespace bands and reports one table per region. Cross-page tables are stitched by `doc.GetTables()` when the continuation shares the same column count and aligned column positions (repeated headers dropped); non-tail continuations, column-count changes across the break, and spanning-cell reflow across the seam are not handled. Rotated and skewed tables are detected (the geometry runs in the table's upright frame, with `Table.angle` recording the rotation), but the angle is resolved **once per page** from the dominant glyph baseline — falling back to rule direction mod 90° when a candidate has no text — so two tables at different rotations on the same page cannot both be recovered, and `AutoTag` does not compute exact rotated-table cell regions.
-- **Digital signing is single-pass** — `doc.Sign`/`doc.Certify` produce signatures with the `adbe.pkcs7.detached` (CMS, default) or `ETSI.CAdES.detached` (PAdES, via `opts.subFilter: 'PAdES'`) subfilter, invisible or with a generated visible appearance (`opts.appearance`), optionally certifying via DocMDP (`/Perms`) and/or carrying an RFC 3161 signature timestamp (`opts.timestamp`), with LTV validation data embeddable afterwards via `doc.AddValidationData` (`/DSS`). PAdES adds the ESS `signing-certificate-v2` signed attribute (CAdES-BES; combine with `opts.timestamp` for PAdES-B-T); the CAdES signed-attribute set is otherwise the CMS one (no commitment-type or signer-location attributes). The incremental-append path requires the in-memory model to be unchanged since `Open`; any mutation through a tracked entry point (including in-place handle setters on pages/annotations/form fields) switches signing to a full rewrite. **Verification** (`doc.VerifySignatures`) checks integrity (digest), the CMS signature, certificate-chain trust (to `trustAnchors`, with validity/CA/key-usage checks), any embedded timestamp (imprint + TSA signature), revocation (OCSP/CRL, when a `getOCSP`/`getCRL`/`offline`/`/DSS` source is supplied — signature-verified; the OCSP responder/CRL issuer is checked but not yet independently chain-validated), post-signing changes (revision/coverage), and `/DocMDP` enforcement for certified documents (the `docMDP` verdict is `ok`/`violated` against the certified permission level — `no-changes`/`form-fill`/`form-fill-and-annotate` — via a structural object-level change classifier, `n/a` for non-certified documents).
+- **Signing and verification work on stored byte images.** An initial signature appends to a clean,
+  unchanged opened file. Signing a new or edited unsigned document writes a fresh byte image.
+  Signing an already signed file appends to preserve the earlier signatures. For recovered PDFs,
+  save a fresh file and reopen it before signing. To append edits after signing in the same session,
+  save the signed bytes and reopen them before calling `Save({ incremental: true })`.
+  Certificate trust uses the anchors you supply and revocation uses caller-supplied or embedded
+  evidence. See [Security](#security) for permission verdicts, structural findings, and the
+  limits of rendered appearance comparison.
 - **Annotation subtypes are a curated set** — create/edit covers `/Text`, `/Stamp`, the text-markup family (`/Highlight`, `/Underline`, `/StrikeOut`, `/Squiggly`), `/Link` (GoTo/URI), the geometric shapes (`/Line`, `/Square`, `/Circle`), the path shapes (`/Polygon`, `/PolyLine`, `/Ink`), `/FreeText` (with callout leaders), `/Popup`, `/Redact` (see [Redaction](#redaction) — `/RO` is read but never authored), and `/Caret` (`/Sy` symbol; `/RD` is read but never authored). Remaining subtypes (`/Sound`, `/Movie`, `/Screen`, `/Widget`, ...) still read back as a base `Annotation` (use `.Dict`) but have no typed setters. **Multimedia is out of scope as a decision, not an oversight**: `/Screen` annotations and `/Rendition` actions embed audio and video, almost no viewer honours them, and Node has nothing to play them with — so this library will not grow typed constructors for them. They survive a round trip like any other annotation, and `.Dict` is there if you must author one by hand. Path shapes stroke straight segments through their points (no Bézier smoothing). Authored borders are a solid width only (no dashed `/BS /D`, and no API writes a `/BE`), but a **cloudy `/BE /S /C` border is drawn** on a `/Square` or `/Polygon` whose appearance is regenerated — see [Annotations](#annotations). It is a uniform scallop approximation rather than a viewer-exact screen, since 32000-1 12.5.4 names the effect and prescribes no drawing; `/Circle` keeps its straight ellipse, and a polygon whose `/Rect` was not padded for the effect has its outermost scallops clipped. Highlights use a plain fill at `/CA` opacity (no blend modes), `/QuadPoints` are supplied by the caller (not derived from a text search), and `/D` (down) appearances are not rendered (`page.ToImage`/`ToSvg` composite `/N` only, as a static render has no mouse state).
 - **SVG rendering is preview-grade** — `page.ToSvg()` emits text as positioned `<text>` styled by font family/weight (glyph-outline embedding is future work), so exact glyph shapes depend on the viewer's fonts. Annotation and form-field `/AP` appearances composite by default (`annotations: false` to opt out), sharing the interpreter with `page.ToImage()`. Images decode at 8-bit (other bit depths become a gray placeholder); `JPXDecode` (JPEG 2000) decodes to samples, while `JBIG2Decode` (1-bit) decodes but renders as a gray placeholder here since the SVG image path only rasterizes 8-bit samples (`page.ToImage()` renders JBIG2 fully). Axial/radial shadings render via the `sh` operator and as `scn` shading-pattern fills, clipped to the path — or, for pattern-filled text, to a `<clipPath>` holding the run's own `<text>` element (SVG 1.1 §14.3.5), which means the gradient shows through the *viewer's* glyph shapes rather than the PDF's outlines. Transparency constructs emit their SVG equivalents — tiling patterns become `<pattern>`, soft masks `<mask>`, constant alpha `fill-opacity`/`stroke-opacity`, blend modes `mix-blend-mode`, and isolated transparency groups an `<g opacity isolation="isolate">`. That output is verified against **browser-rendered goldens**: `scripts/gen-svg-goldens.ts` rasterizes it under headless Chrome and resvg, requires the two engines to agree with each other and with the hand-computed ISO 32000-1 §11.3.5.2 values, and commits the result to `test/fixtures/svg/` — so the suite checks real rendering with no test-time dependency (see that directory's `PROVENANCE.md` for exactly what is and is not covered). Constant alpha, luminosity soft masks, tiling-pattern fills, group compositing, and the separable blend modes plus `Luminosity` are covered. Stroke patterns (`SCN`) do render: an SVG `clipPath` uses only its children's *fill* geometry, so clipping to a stroked path directly would yield an empty clip — the stroke is therefore outlined (joins, caps, dashes, flattened Béziers) into device-space polygons and the clip is taken against those.
 - **Transparency groups** — `page.ToImage()` buffers any `/Group` that composites as a unit (group alpha, a blend mode, or an active soft mask) regardless of `/I`, so overlapping content inside a group does not double-darken. For a non-isolated group whose contents also blend, the buffer is seeded with the page backdrop and the backdrop is subtracted back out at composite time (ISO 32000-1 §11.4.6), so inner blend modes see the page. `page.ToSvg()` is exact for every case except a non-isolated group that *both* composites as a unit *and* blends internally: SVG group `opacity` forces a stacking context, which isolates, so that one combination has no SVG expression. Knockout groups (`/K true`) — where each element composites against the group's initial backdrop rather than the accumulated result (§11.4.6.2) — render correctly in `page.ToImage()` (isolated and non-isolated); `page.ToSvg()` has no expression for per-element backdrop reset and renders a knockout group as an ordinary group. Offscreen nesting is capped at 8 deep and a single buffer at 16M pixels; past either, the construct draws inline instead of allocating further.
@@ -5284,11 +5326,11 @@ build leaves unimplemented.
 ## Development and Testing
 
 ```bash
-npm install        # dev deps only — TypeScript, vitest, tsx
+npm ci             # install locked development dependencies
 npm test           # vitest run
 npm run test:watch
 npm run typecheck
-npm run build      # tsc -> dist/ (ESM + .d.ts)
+npm run build      # clean and compile src/ to dist/ (ESM + .d.ts)
 ```
 
 The bundled data tables are committed, so a normal build never regenerates
@@ -5298,10 +5340,16 @@ re-run one only when that pin moves:
 ```bash
 npm run gen:fonts      # Standard-14 substitute font outlines
 npm run gen:ucd        # Unicode character data (UAX #9 / #14, case folding)
-npm run gen:entities   # HTML character references, for Markdown parsing
+npm run gen:entities   # HTML character references for HTML and Markdown
 npm run gen:cmaps      # the 195 predefined Adobe CMaps
 npm run gen:cidunicode # CID -> Unicode tables for the CJK collections
+npm run gen:xmpschemas # predefined XMP schema tables
+npm run gen:hyph       # Liang hyphenation patterns
+npm run gen:barcodes   # PDF417 and Data Matrix tables from pinned ZXing sources
 ```
+
+The suite reads the committed fixture data. See [Build & Test](CLAUDE.md#build--test)
+for regeneration commands that need an external program.
 
 ### Feature Showcase
 
@@ -5363,7 +5411,7 @@ hand-tagged, and that both signatures on the sibling verify with the
 certification *not* covering the appended revision — so a regression fails the
 run instead of producing a quietly wrong PDF.
 
-Design specs and implementation plans live under [docs/superpowers/](docs/superpowers/). Issue tracking uses [beads](https://github.com/gastownhall/beads) (`bd ready`, `bd show <id>`); see [CLAUDE.md](CLAUDE.md) for the agent workflow.
+The repository tracks issues in Beads. See the [issue-tracking quick start](.beads/README.md).
 
 ## License
 
