@@ -172,7 +172,7 @@ flowchart TD
 #### Detailed Capability Reference
 
 - **Parsing** — classic cross-reference tables and cross-reference streams, object streams (`/ObjStm`); stream decoding for `FlateDecode` (with PNG/TIFF predictors), `LZWDecode`, `ASCII85Decode`, `ASCIIHexDecode`, `RunLengthDecode`, and `BrotliDecode`, including multi-filter chains. Matching stream **encoders** — `ascii85Encode`, `asciiHexEncode`, `lzwEncode`, `runLengthEncode`, plus `encodeStream(bytes, filter)` — build streams in any of these filters (`FlateDecode` too).
-- **Encrypted documents** — opens PDFs protected with the standard security handler: RC4 (V2/R3), AES-128 (V4/R4 `AESV2`), and AES-256 (V5/R6 `AESV3`). Pass the password via `Document.Open(buf, { password })`; a wrong or missing password throws `InvalidPasswordError`. Output is unencrypted unless you ask for encryption — `Save({ encrypt })` writes RC4, AES-128 or AES-256 with the standard handler, or a `/Adobe.PubSec` certificate envelope (see *Encrypted output* below).
+- **Encrypted documents** — open PDFs protected with the standard security handler using `Document.Open(buf, { password })`. Supply the user or owner password for RC4 (R2–R4), AES-128 (R4 `AESV2`), or AES-256 (`AESV3`). An invalid credential throws `InvalidPasswordError`. `doc.Permissions` reports the stored permission flags for either credential. `Save()` preserves existing encryption, and `Save({ encrypt: false })` writes plaintext.
 - **Page access** — `doc.Pages` exposes one `Page` per page with all five boundary boxes (`MediaBox`, `CropBox`, `BleedBox`, `TrimBox`, `ArtBox` — read/write), `Rect`, `Rotate` (read/write), `Resources`, `Contents` (decoded), and `Annotations`.
 - **Page manipulation** — `AddPage`, `InsertPage`, `RemovePage`, `Reorder`. A blank page defaults to A4; pass a `PageFormat` (`.A4`/`.Letter`/`.Legal`, `PageFormat.custom(w, h)`, `.landscape()`/`.portrait()`) to size it. Pages can be copied between documents: pass a `Page` from any document as the argument instead (the copy keeps that page's own size).
 - **Split & merge** — `Split()` produces one single-page `Document` per page; `ExtractPages([...])` copies any subset of pages into a new document; `Append`, `InsertPages`, and `Document.Merge(...docs)` combine documents.
@@ -395,12 +395,14 @@ obscuring the primary installation and quick-start path.
 
 ### Open Encrypted PDFs
 
+Pass the document's user or owner password in the same `password` option.
+
 ```ts
 import { Document, InvalidPasswordError } from '@asposefoss/pdf';
 
 try {
   const doc = Document.OpenFile('secret.pdf', { password: 'hunter2' });
-  doc.WriteTo('decrypted.pdf');    // output is plaintext
+  doc.WriteTo('decrypted.pdf', { encrypt: false });
 } catch (e) {
   if (e instanceof InvalidPasswordError) console.error('wrong password');
   else throw e;
@@ -5197,7 +5199,7 @@ still carries GitHub's number.
   system memory and time limit — `worker_threads` `resourceLimits` cap the V8 heap, not the
   `ArrayBuffer` memory where decoded streams and canvases live. See the detailed reference for the
   paths that are not covered.
-- **Encrypted output passwords are UTF-8, not SASLprep-normalized** (R6), matching the read side. Opening an RC4/AES-128 file requires the *user* password (the reader does not derive the user key from the owner password for R≤4).
+- **Password encoding** — encrypted input and output use UTF-8 for supplied passwords. Revision 6 uses the supplied UTF-8 bytes without SASLprep normalization.
 - **Classic xref output by default** — `Save()` writes an uncompressed classic cross-reference table unless `{ compressed: true }` is passed, which emits a cross-reference stream and compressed object streams.
 - **Page copies are pruned** — pages copied between documents lose document-level links such as `GoTo` actions, `/Dest`, and `/StructParents` (see `defaultPrunePolicy` / the `PrunePolicy` option to customize).
 - **Form appearances** — filling a field regenerates its `/AP` appearance stream (text, choice, and synthesized checkbox/radio marks), so values render without `/NeedAppearances`. Layout uses Standard-14 metrics; non-standard/embedded `/DA` fonts are measured with Helvetica as an approximation. Signature and pushbutton fields cannot be set.

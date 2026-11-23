@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Open legacy encrypted PDFs with the owner password.** `Document.Open`
+  accepts either credential for R2–R4 RC4 and AES-128 files. It reports the
+  same stored permissions for both and preserves both credentials when
+  saving with the original encryption. V4 uses a 128-bit file key when the
+  top-level encryption dictionary omits `/Length`. (chp0.3)
+
 - **Check signed PDF byte coverage and appended data.** Signature and document
   timestamp verification now report structural findings for malformed ranges,
   ambiguous signature dictionaries, and unsigned bytes after the last verified

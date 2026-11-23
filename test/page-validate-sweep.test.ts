@@ -24,11 +24,18 @@ function fixturePdfs(dir = 'test/fixtures'): string[] {
 
 const issuesOf = (d: Document) => d.Validate().Issues.map((i) => `${i.rule}@${i.object?.num}`);
 
+const protectedFixtures = 'test/fixtures/qpdf-legacy-passwords';
+const fixturePasswords = new Map([
+  [join(protectedFixtures, 'r2-rc4.pdf'), 'fixture-user'],
+  [join(protectedFixtures, 'r3-rc4.pdf'), 'fixture-user'],
+  [join(protectedFixtures, 'r4-aes128.pdf'), 'fixture-user-π'],
+]);
+
 describe('Validate() passes every clean document in the suite', () => {
   const files = fixturePdfs();
   it('found the vendored fixtures', () => expect(files.length).toBeGreaterThanOrEqual(13));
   for (const f of files)
-    it(f, () => expect(issuesOf(Document.Open(readFileSync(f)))).toEqual([]));
+    it(f, () => expect(issuesOf(Document.Open(readFileSync(f), { password: fixturePasswords.get(f) }))).toEqual([]));
 
   const builders: [string, () => Uint8Array][] = [
     ['buildTaggedPdf', buildTaggedPdf],

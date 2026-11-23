@@ -375,6 +375,13 @@ Source (`src/`):
   final rows are preserved. Invalid TIFF predictor geometry throws PdfParseError.
 - **crypto.ts** — standard security handler decryption on open (RC4, `AESV2`,
   `AESV3`) via `node:crypto`.
+  **Invariant (`chp0.3`):** for R2–R4, authentication tries the supplied
+  password as the user credential first. The owner path decodes `/O` into
+  padded bytes and validates those directly against `/U`. Both paths return
+  the same file key and use the stored `/P` flags. The qpdf fixtures under
+  `test/fixtures/qpdf-legacy-passwords/` cover RC4-40, RC4-128, and AES-128.
+  Shorter R3/R4 keys try both the full MD5 digest and the key-length prefix
+  during owner key derivation. V4 defaults to 128 bits if `/Length` is absent.
 - **document.ts** — the `Document` facade: `Open`/`Save`, page-tree edits,
   metadata (`/Info` + XMP), outlines, forms, annotations, split/merge/extract.
   **Invariant (`daqd`):** object and page counts never become function-argument

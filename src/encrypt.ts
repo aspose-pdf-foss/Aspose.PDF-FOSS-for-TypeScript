@@ -1,7 +1,7 @@
 import { PdfDict, PdfObject, name, isString, isArray, isDict, isStream, isName } from './types.js';
 import {
   aesCbcEncrypt, aesCbcEncryptNoPad, aes256EcbEncrypt, randomBytes, hash2B,
-  md5, rc4, padPassword, PASSWORD_PADDING, fileKeyR234, objectKeyV4, Cipher, CryptKeys, isSignatureDict,
+  md5, rc4, padPassword, PASSWORD_PADDING, fileKeyR234, ownerKeyR234, objectKeyV4, Cipher, CryptKeys, isSignatureDict,
   streamCryptFilter, isMetadataStream,
 } from './crypto.js';
 
@@ -181,10 +181,8 @@ export function buildEncryptor(opts: EncryptOptions, id0: Uint8Array): Encryptor
 }
 
 /** Algorithm 3: compute /O (32 bytes) for R3/R4 (128-bit). */
-function computeO(ownerPw: Uint8Array, userPw: Uint8Array, n: number): Uint8Array {
-  let h = md5(padPassword(ownerPw.length ? ownerPw : userPw));
-  for (let i = 0; i < 50; i++) h = md5(h.subarray(0, n)); // R>=3
-  const key = h.subarray(0, n);
+function computeO(ownerPw: Uint8Array, userPw: Uint8Array, revision: number): Uint8Array {
+  const key = ownerKeyR234(ownerPw.length ? ownerPw : userPw, revision, 128);
   let data = rc4(key, padPassword(userPw));
   for (let i = 1; i <= 19; i++) data = rc4(key.map((b) => b ^ i), data);
   return data;
@@ -205,12 +203,11 @@ function buildR34(
   algorithm: 'aes128' | 'rc4', userPw: Uint8Array, ownerPw: Uint8Array,
   P: number, id0: Uint8Array, encryptMetadata: boolean,
 ): Encryptor {
-  const n = 16; // 128-bit
   const R = algorithm === 'rc4' ? 3 : 4;
   const V = algorithm === 'rc4' ? 2 : 4;
   const isAes = algorithm === 'aes128';
 
-  const O = computeO(ownerPw, userPw, n);
+  const O = computeO(ownerPw, userPw, R);
   const fileKey = fileKeyR234(userPw, O, P, id0, R, 128, encryptMetadata);
   const U = computeU(fileKey, id0);
 

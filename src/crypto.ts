@@ -77,6 +77,14 @@ export function padPassword(pw: Uint8Array): Uint8Array {
   return out;
 }
 
+/** Algorithm 3 steps a–d: derive the RC4 key for the legacy /O entry. */
+export function ownerKeyR234(password: Uint8Array, revision: number, length: number, digestBytes = 16): Uint8Array {
+  const n = length / 8;
+  let hash = md5(padPassword(password));
+  if (revision >= 3) for (let i = 0; i < 50; i++) hash = md5(hash.subarray(0, digestBytes));
+  return hash.subarray(0, n);
+}
+
 /** Algorithm 2: compute the file encryption key for R2-R4.
  *  `length` is the key length in bits; returns length/8 bytes. */
 export function fileKeyR234(
@@ -262,7 +270,7 @@ export function buildDecryptor(
 
   const V = asNum(resolve(encrypt.get('V'))) ?? 0;
   const R = asNum(resolve(encrypt.get('R'))) ?? 0;
-  const length = asNum(resolve(encrypt.get('Length'))) ?? 40;
+  const length = asNum(resolve(encrypt.get('Length'))) ?? (V === 4 ? 128 : 40);
   const P = asNum(resolve(encrypt.get('P'))) ?? 0;
   const O = asBytes(resolve(encrypt.get('O'))) ?? new Uint8Array(0);
   const U = asBytes(resolve(encrypt.get('U'))) ?? new Uint8Array(0);
@@ -288,8 +296,31 @@ export function buildDecryptor(
   // file key + password validation
   let fileKey: Uint8Array;
   if (R <= 4) {
-    fileKey = fileKeyR234(pw, O, P, id, R, length, encryptMetadata);
-    if (!validateUserR234(fileKey, U, id, R)) throw new InvalidPasswordError();
+    const deriveFileKey = (user: Uint8Array) => fileKeyR234(user, O, P, id, R, length, encryptMetadata);
+    fileKey = deriveFileKey(pw);
+    if (!validateUserR234(fileKey, U, id, R)) {
+      if (R < 2 || O.length !== 32) throw new InvalidPasswordError();
+      // Algorithm 3 rehashes the full digest. qpdf and other implementations
+      // rehash only the key-length prefix, which differs for short R3/R4 keys.
+      const digestWidths = R >= 3 && length < 128 ? [16, length / 8] : [16];
+      let authenticatedKey: Uint8Array | undefined;
+      for (const digestBytes of digestWidths) {
+        // Algorithm 7: undo /O's RC4 passes and validate the recovered padded
+        // user credential as raw bytes against /U.
+        const ownerKey = ownerKeyR234(pw, R, length, digestBytes);
+        let paddedUser = O;
+        for (let round = R >= 3 ? 19 : 0; round >= 0; round--) {
+          paddedUser = rc4(ownerKey.map((b) => b ^ round), paddedUser);
+        }
+        const candidate = deriveFileKey(paddedUser);
+        if (validateUserR234(candidate, U, id, R)) {
+          authenticatedKey = candidate;
+          break;
+        }
+      }
+      if (!authenticatedKey) throw new InvalidPasswordError();
+      fileKey = authenticatedKey;
+    }
   } else {
     fileKey = fileKeyR56(pw, encrypt, resolve, R);
   }
