@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sign a newly authored PDF with password encryption.** Pass `encrypt` to
+  `Sign` or `Certify` to create an encrypted base in memory and append the
+  signature in the same operation. `Save()` returns the sealed bytes and
+  `VerifySignatures()` can reopen them with the retained credential. A failed
+  signing attempt leaves the draft available to retry. (chp0.11)
+
 - **Open PubSec PDFs with external RSA keys.** Supply a recipient certificate
   and a synchronous RSAES-PKCS1-v1_5 key transport provider. The provider
   unwraps the AES-128 CMS content key for a matched recipient. Incremental

@@ -192,7 +192,7 @@ import { parseSignedData } from './cms.js';
 import { findIssuer } from './revocation.js';
 import { discoverRevocations, type RevocationTarget } from './revocation-discovery.js';
 import {
-  docMdpVerdict, readDocMdpLevel, type DocMdpDoc, type DocMdpEnv,
+  docMdpVerdict, equalPdfObjects, readDocMdpLevel, type DocMdpDoc, type DocMdpEnv,
 } from './docmdp.js';
 import {
   buildDss, readDssMaterial, readDssCerts, vriKey, dedupBlobs,
@@ -201,7 +201,7 @@ import {
 import { buildDecryptor, Decryptor, CryptKeys, isEncryptDict } from './crypto.js';
 import { buildPubSecDecryptor, type NormalizedRecipient } from './pubsec.js';
 import { parsePkcs12 } from './pkcs12.js';
-import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys } from './encrypt.js';
+import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys, type EncryptOptions } from './encrypt.js';
 import { X509Certificate } from 'node:crypto';
 import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
@@ -425,7 +425,7 @@ export class Document {
   /** Object number backing each Pages slot (parallel to Pages). */
   private pageObjNums: number[];
   /** Object number of the root /Pages node, or undefined when /Pages is inline. */
-  private readonly rootPagesNum: number | undefined;
+  private rootPagesNum: number | undefined;
   /** Fonts registered via AddFont, subset and embedded by the Save finalize pass. */
   private readonly embeddedFonts: EmbeddedFont[] = [];
   /** Folders to search for LoadFontByName, in registration order. */
@@ -481,9 +481,9 @@ export class Document {
    *  {@link Save}/{@link WriteTo} so the signed bytes are never re-serialized. */
   private pendingSignedBytes?: Uint8Array;
   /** Set once this session produced signed bytes, and NEVER cleared -- unlike
-   *  `pendingSignedBytes`, which `markModified` clears. From that moment the
-   *  live model is permanently behind the bytes for the signature object, so an
-   *  incremental save is unsafe whether or not anything was edited after. */
+   *  `pendingSignedBytes`, which `markModified` clears. Incremental saving
+   *  requires reopening the signed bytes before editing because the signing
+   *  writer can leave a placeholder in the live model. */
   private signedInSession = false;
   /** Set once {@link Sanitize} has run, and never cleared. An incremental save
    *  APPENDS to the bytes this document was opened from, and those bytes still
@@ -546,7 +546,8 @@ export class Document {
 
   /** @internal What this document's streams have cost to decode (`ibzo.3`),
    *  shared by every stream registered to it. See `decodebudget.ts`. */
-  readonly decodeBudget: DecodeBudget;
+  #decodeBudget: DecodeBudget;
+  get decodeBudget(): DecodeBudget { return this.#decodeBudget; }
 
   private constructor(
     /** Every indirect object, eagerly parsed and live-mutable. */
@@ -556,7 +557,7 @@ export class Document {
     budget?: DecodeBudget,
   ) {
     this.loadLimits = limits;
-    this.decodeBudget = budget ?? new DecodeBudget(limits);
+    this.#decodeBudget = budget ?? new DecodeBudget(limits);
     // Every stream the document holds decodes under its policy, whether it was
     // parsed, merged in or built by `New` — the constructor is the one place
     // all three pass through. Re-registering a parsed stream is a no-op.
@@ -2459,20 +2460,11 @@ export class Document {
   private *saveIncrementalSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
     if (this.migratedToPdf20)
       throw new UnsupportedFeatureError('cannot save incrementally after ConvertToPdf20: write a standalone file with Save()');
-    // The live model is BEHIND the signed bytes for the signature object:
-    // `fillSignature` patches bytes and never the model, so the live `/Sig`
-    // carries a `/Contents` of length 0 while the signed bytes carry the real
-    // CMS. Diffing them would append the EMPTY one, destroying the signature —
-    // so this refuses rather than appending, and it refuses even with no edit
-    // at all, because the divergence is already there the moment Sign returns.
-    // Save() the signed bytes, reopen them, then edit: that is the path the
-    // whole feature exists for, and it is exercised in
-    // test/sign-incremental-survival.test.ts.
+    // Signing can leave a placeholder in the object graph. Reopen the signed
+    // output to make the complete signature revision the incremental baseline.
     if (this.signedInSession)
       throw new UnsupportedFeatureError(
-        'cannot save incrementally after signing in this session: the signature\'s '
-        + '/Contents exists only in the signed bytes, not in the live model, so an '
-        + 'appended revision would overwrite it with an empty one. Save() first, '
+        'cannot save incrementally after signing in this session: Save() first, '
         + 'reopen the result, then edit.');
     if (this.sanitizedInSession)
       throw new UnsupportedFeatureError(
@@ -3062,11 +3054,13 @@ export class Document {
    *
    *  Protected PDFs require an encrypted incremental append. If signing would
    *  require a rewrite, save and reopen the PDF with its credential first.
+   *  For an authored document, `opts.encrypt` creates a password-encrypted base
+   *  and appends the signature before the first write.
    *
    *  `subFilter` selects `adbe.pkcs7.detached` (CMS, default) or
    *  `ETSI.CAdES.detached` (PAdES — adds the ESS signing-certificate-v2 attr). */
   async Sign(signer: Signer, opts: SignOptions = {}): Promise<void> {
-    await this.signCore(signer, opts, undefined);
+    await this.signWithOptions(signer, opts, undefined);
   }
 
   /** Add a *certification* (author) signature with a DocMDP transform: the
@@ -3086,7 +3080,7 @@ export class Document {
       throw new UnsupportedFeatureError('cannot certify: the document is already certified (DocMDP allows one certification)');
     // The level is passed as STATED, not defaulted: a prepared field's seed
     // value may supply it, and only an unstated level can take one.
-    await this.signCore(signer, opts, { permissions: opts.permissions });
+    await this.signWithOptions(signer, opts, { permissions: opts.permissions });
   }
 
   /** Shared signing pipeline for {@link Sign} and {@link Certify}: validate,
@@ -3105,6 +3099,14 @@ export class Document {
     );
   }
 
+
+  private signWithOptions(
+    signer: Signer, opts: SignOptions, certify: { permissions?: DocMdpPermission } | undefined,
+  ): Promise<void> {
+    const encrypt = opts.encrypt;
+    return encrypt === undefined ? this.signCore(signer, opts, certify)
+      : this.signFirstEncrypted(signer, encrypt, opts, certify);
+  }
 
   /** `certify` is undefined for an approval signature ({@link Sign}); for
    *  {@link Certify} it carries the DocMDP level the caller STATED, if any. */
@@ -3272,6 +3274,78 @@ export class Document {
     this.signedInSession = true;
   }
 
+  private async signFirstEncrypted(
+    signer: Signer, encrypt: EncryptOptions, opts: SignOptions,
+    certify: { permissions?: DocMdpPermission } | undefined,
+  ): Promise<void> {
+    if (!encrypt || typeof encrypt !== 'object' || Array.isArray(encrypt) || 'recipients' in encrypt)
+      throw new UnsupportedFeatureError('first-write signing requires password encryption options');
+    if (this.signBaseAvailable() || this.signedInSession || this.preservedEncryptor
+      || this.trailer.has('Encrypt') || this.hasExistingSignature())
+      throw new UnsupportedFeatureError('first-write encryption requires an unsigned authored document');
+
+    // Save refreshes barcodes and installs font subsets, so even the unsigned
+    // base must be prepared on a copy. Keep a snapshot to detect edits through
+    // live dictionaries as well as tracked setters while the signer runs.
+    const before = structuredClone({ objects: this.objects, trailer: this.trailer });
+    const sourceVersion = this.sourceVersion;
+    const migratedToPdf20 = this.migratedToPdf20;
+    const limits = this.loadLimits;
+    const encryption: EncryptOptions = {
+      userPassword: encrypt.userPassword,
+      ownerPassword: encrypt.ownerPassword,
+      algorithm: encrypt.algorithm,
+      permissions: encrypt.permissions,
+      encryptMetadata: encrypt.encryptMetadata,
+    };
+    let base: Uint8Array;
+    {
+      const { objects, trailer } = structuredClone(before);
+      const draft = new Document(objects, trailer, limits);
+      draft.sourceVersion = sourceVersion;
+      draft.migratedToPdf20 = migratedToPdf20;
+      draft.formEnforceRules = this.formEnforceRules;
+      for (const font of this.embeddedFonts) draft.embeddedFonts.push(font);
+      base = draft.Save({ encrypt: encryption });
+    }
+    const staged = Document.Open(base, { password: encryption.userPassword ?? '', limits });
+    staged.formEnforceRules = this.formEnforceRules;
+    await staged.signCore(signer, opts, certify);
+
+    if (this.signBaseAvailable() || this.signedInSession || this.loadLimits !== limits
+      || this.sourceVersion !== sourceVersion || this.migratedToPdf20 !== migratedToPdf20
+      || !equalPdfObjects(this.trailer, before.trailer) || this.objects.size !== before.objects.size
+      || [...before.objects].some(([num, value]) => !equalPdfObjects(value, this.objects.get(num))))
+      throw new UnsupportedFeatureError('the document changed during signing: retry with the current document');
+
+    // Install only the exact authenticated, filled byte image. The base writer
+    // compacts object numbers, so the live model must adopt the reopened graph.
+    const sealed = staged.reopen(staged.signBase());
+    this.#decodeBudget = sealed.decodeBudget;
+    this.objects.clear();
+    for (const [num, value] of sealed.objects) this.install(num, value);
+    this.trailer.clear();
+    for (const [key, value] of sealed.trailer) this.trailer.set(key, value);
+    this.Pages.length = 0;
+    for (const page of sealed.Pages) this.Pages.push(new Page(this, page.Dict, page.Number));
+    this.pageObjNums = sealed.pageObjNums;
+    this.rootPagesNum = sealed.rootPagesNum;
+    for (const font of this.embeddedFonts) {
+      font.objNum = undefined;
+      font.verticalObjNum = undefined;
+    }
+    this.#openCredentials = sealed.#openCredentials;
+    this.preservedEncryptor = sealed.preservedEncryptor;
+    this.sourceVersion = sealed.sourceVersion;
+    this.permissions = sealed.permissions;
+    this.revisions = sealed.revisions;
+    this.originalBytes = sealed.originalBytes;
+    this.pendingSignedBytes = sealed.originalBytes;
+    this.signedInSession = true;
+    this.migratedToPdf20 = false;
+    this.modified = false;
+  }
+
   /** Embed long-term-validation (LTV) data in a `/DSS` (PAdES-B-LT): for each
    *  existing signature, store its certificate chain plus the OCSP/CRL bytes
    *  returned by the `opts.getOCSP`/`opts.getCRL` callbacks, indexed by a `/VRI`
@@ -3411,8 +3485,7 @@ export class Document {
   async VerifySignatures(opts: VerifyOptions = {}): Promise<SignatureReport[]> {
     const bytes = this.pendingSignedBytes ?? this.originalBytes;
     if (!bytes) return [];
-    // Re-parse from the actual bytes so /ByteRange and /Contents are read as
-    // written (the live model never holds the filled placeholder).
+    // Re-parse the stored bytes for the /ByteRange and /Contents as written.
     const src = this.reopen(bytes);
     const signed = src.Signatures.filter(hasSignatureData);
     // Chain validation (V2) is synchronous; feed it any /DSS-embedded certs as

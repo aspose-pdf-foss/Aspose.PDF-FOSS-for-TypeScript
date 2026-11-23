@@ -7,6 +7,7 @@ import type { DigestAlgorithm } from './sigalg.js';
 import type { TimestampProvider } from './rfc3161.js';
 import type { SeedValue } from './sigseed.js';
 import type { FieldLock } from './siglock.js';
+import type { EncryptOptions } from './encrypt.js';
 import { encodePdfText } from './metadata.js';
 
 /** Digital-signature field/value-dict model and signing orchestration helpers
@@ -39,6 +40,9 @@ export interface SignatureAppearance {
 }
 
 export interface SignOptions {
+  /** Password encryption for the first write of an authored document.
+   * Signing appends to an encrypted base created in memory. */
+  encrypt?: EncryptOptions;
   /** Human-readable reason for signing (`/Reason`). */
   reason?: string;
   /** Signing location (`/Location`). */

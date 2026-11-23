@@ -567,6 +567,28 @@ Permission flags (`printing`, `modifying`, `copying`, `annotating`,
 `fillingForms`, `accessibility`, `assembling`, `highQualityPrinting`) each
 default to allowed. An `algorithm` other than the three names throws `TypeError`.
 
+### Sign a Newly Authored PDF With Password Encryption
+
+```ts
+import { Document, PageFormat } from '@asposefoss/pdf';
+
+const doc = Document.New(PageFormat.A4);
+await doc.Sign(signer, {
+  fieldName: 'Approval',
+  encrypt: { userPassword, ownerPassword, algorithm: 'aes256' },
+});
+const bytes = doc.Save();
+console.log(await doc.VerifySignatures());
+```
+
+`Sign` and `Certify` accept the password-based `EncryptOptions` for an unsigned
+document authored in memory. The default is AES-256. The operation creates an
+encrypted base in memory and appends the signature before `Save()` or
+`WriteTo()` publishes the resulting bytes. Both passwords can open the
+output. A failed signature leaves the draft available to retry. Save and
+reopen with a password before making further edits that must preserve the
+signature. Acquire page and form handles from the reopened document.
+
 ### Encrypt With Certificate-Based (Public-Key) Encryption
 
 ```ts
@@ -4671,7 +4693,7 @@ byte coverage, later object modifications, and structural findings.
 | `PubSecEncryptOptions` | Certificate encryption options for recipients, algorithm, permissions, key wrapping, and metadata encryption. |
 | `PubSecKeyTransport` | Synchronous RSAES-PKCS1-v1_5 provider that unwraps the AES-128 CMS content key for an addressed recipient. |
 | `PubSecRecipientCert` | Recipient certificate and optional recipient-specific permission flags. |
-| `SignOptions` | Signature metadata, subfilter, target field, appearance, timestamp provider, CAdES attributes, and placeholder size. |
+| `SignOptions` | Signature metadata, subfilter, target field, appearance, timestamp provider, CAdES attributes, placeholder size, and first-write password encryption. |
 | `SignatureAppearance` | A visible signature appearance request. |
 | `SignatureField` | Read-side view of a signature field (always available, like `doc.Form`). |
 | `SignatureFieldInit` | Options for Form.AddSignatureField / Page.AddSignatureField, including an optional `seedValue`. |

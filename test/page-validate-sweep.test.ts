@@ -28,6 +28,7 @@ const issuesOf = (d: Document) => d.Validate().Issues.map((i) => `${i.rule}@${i.
 const protectedFixtures = 'test/fixtures/qpdf-legacy-passwords';
 const pubSecFixture = 'test/fixtures/pubsec-go';
 const fixtureOptions = new Map<string, OpenOptions>([
+  [join('test/fixtures/go-encrypted-signature', 'aes256.pdf'), { password: 'go-signature-user' }],
   [join(protectedFixtures, 'r2-rc4.pdf'), { password: 'fixture-user' }],
   [join(protectedFixtures, 'r3-rc4.pdf'), { password: 'fixture-user' }],
   [join(protectedFixtures, 'r4-aes128.pdf'), { password: 'fixture-user-π' }],

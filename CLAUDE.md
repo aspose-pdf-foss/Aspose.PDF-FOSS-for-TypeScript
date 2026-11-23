@@ -13613,6 +13613,13 @@ Source (`src/`):
   path for protected input. The check happens before signature setup and any
   barcode refresh. `Save` rejects any explicit `encrypt` option on a sealed
   signed byte image.
+  **Invariant (chp0.11):** first-write `Sign` and `Certify` prepare password
+  encryption and the incremental signature on a staged document. Font and
+  barcode preparation touch only the stage. Commit the reopened signed graph,
+  private password context and exact signed bytes after filling the placeholder
+  and confirming the original graph has not changed. Serialization compacts
+  object numbers, so subsequent signature-preserving edits start from a save
+  and reopen.
   **Invariant (chp0.8):** revocation verdicts use a cryptographically matched
   issuer. OCSP binds CertID and ResponderID and checks direct or delegated
   signing authority and freshness. CRLs require a current complete direct list.
