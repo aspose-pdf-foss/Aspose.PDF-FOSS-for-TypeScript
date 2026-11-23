@@ -12,6 +12,7 @@ import { InvalidPasswordError, UnsupportedFeatureError } from '../src/errors.js'
 import { PageFormat } from '../src/pageformat.js';
 import { buildTimeStampToken } from '../src/rfc3161.js';
 import { LoadLimits } from '../src/loadlimits.js';
+import { serializeDocument } from '../src/serializer.js';
 
 const signerOf = (t: TestSigner): { certificate: Uint8Array; privateKey: any } =>
   ({ certificate: t.certificate, privateKey: t.privateKey });
@@ -58,6 +59,148 @@ describe('signing an encrypted document', () => {
     const doc = Document.Open(encrypted());
     await doc.Sign(signerOf(buildSigner({ type: 'rsa' })), { reason: 'ok' });
     expect(Document.Open(doc.Save()).GetMetadata().title).toBe('SecretTitle');
+  });
+});
+
+describe('protecting encrypted PDFs during signing', () => {
+  it.each([
+    ['Sign', 'aes128'], ['Certify', 'aes256'],
+  ] as const)('%s refuses a rewrite after editing an unsigned %s PDF', async (method, algorithm) => {
+    const password = 'fixture password';
+    const base = Document.New(PageFormat.A4).Save({ encrypt: { algorithm, userPassword: password } });
+    const doc = Document.Open(base, { password });
+    doc.SetMetadata({ title: 'Edited title' });
+    const before = structuredClone([...doc.objectEntries()]);
+
+    const signing = doc[method](buildSigner({ type: 'ec' }), { fieldName: 'Approval' });
+    await expect(signing).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    await expect(signing).rejects.toThrow(/save and reopen/i);
+    expect(doc.Signatures).toHaveLength(0);
+    expect([...doc.objectEntries()]).toEqual(before);
+    const saved = doc.Save({ incremental: true });
+    expect(saved.subarray(0, base.length)).toEqual(base);
+    expect(() => Document.Open(saved)).toThrow(InvalidPasswordError);
+    expect(Document.Open(saved, { password }).GetMetadata().title).toBe('Edited title');
+  });
+
+  it('refuses a rewrite after editing an unsigned certificate-encrypted PDF', async () => {
+    const { certificate, privateKey } = buildSigner({ type: 'ec' });
+    const options = { recipient: { certificate, privateKey } };
+    const base = Document.New(PageFormat.A4).Save({ encrypt: { recipients: [{ certificate }] } });
+    const doc = Document.Open(base, options);
+    doc.Lang = 'en-US';
+    await expect(doc.Sign(buildSigner({ type: 'ec' }))).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    expect(doc.Signatures).toHaveLength(0);
+    const saved = doc.Save();
+    expect(() => Document.Open(saved)).toThrow(InvalidPasswordError);
+    expect(Document.Open(saved, options).Lang).toBe('en-US');
+  });
+
+  it.each(['Sign', 'Certify'] as const)('%s appends to an encrypted PDF after edits are saved and reopened', async (method) => {
+    const options = { password: 'fixture password' };
+    const base = Document.New(PageFormat.A4).Save({ encrypt: { userPassword: options.password } });
+    const prepared = Document.Open(base, options);
+    prepared.SetMetadata({ title: 'Prepared' });
+    prepared.Form.AddTextField({ name: 'field', page: 1, rect: [10, 10, 60, 20], value: 'current' });
+    prepared.Form.AddBarcodeField({ name: 'barcode', page: 1, rect: [10, 30, 300, 120] });
+    const saved = prepared.Save();
+    const doc = Document.Open(saved, options);
+    await doc[method](buildSigner({ type: 'ec' }), { fieldName: 'Approval' });
+    const signed = doc.Save();
+    expect(signed.subarray(0, saved.length)).toEqual(saved);
+    expect(() => Document.Open(signed)).toThrow(InvalidPasswordError);
+    const reopened = Document.Open(signed, options);
+    expect(reopened.GetMetadata().title).toBe('Prepared');
+    expect(reopened.Form.Get('barcode')!.Value).toBe('current');
+    expect(await reopened.VerifySignatures()).toMatchObject([{
+      name: 'Approval', signature: 'valid', integrity: 'valid',
+    }]);
+  });
+
+  it('checks for edits made while signing awaits credential resolution', async () => {
+    const password = 'fixture password';
+    const base = Document.New(PageFormat.A4).Save({ encrypt: { userPassword: password } });
+    const doc = Document.Open(base, { password });
+    const signing = doc.Sign(buildSigner({ type: 'ec' }));
+    doc.Lang = 'en-US';
+    await expect(signing).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    expect(doc.Signatures).toHaveLength(0);
+    expect(doc.Lang).toBe('en-US');
+  });
+
+  it('refuses before changing an encrypted PDF with an inline catalog', async () => {
+    const password = 'fixture password';
+    const { bytes } = buildEncryptedPdf(
+      { cipher: 'aes128', R: 4, V: 4, length: 128, userPassword: password },
+      { pageContents: ['BT ET'] },
+    );
+    const input = Buffer.from(bytes).toString('latin1')
+      .replace('/Root 1 0 R /Encrypt', '/Root << /Type /Catalog /Pages 2 0 R >> /Encrypt');
+    const doc = Document.Open(Buffer.from(input, 'latin1'), { password });
+    expect(doc.recovery).toBeUndefined();
+    const catalog = structuredClone(doc.catalog());
+    const objects = structuredClone([...doc.objectEntries()]);
+
+    await expect(doc.Sign(buildSigner({ type: 'ec' }))).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    expect(doc.catalog()).toEqual(catalog);
+    expect([...doc.objectEntries()]).toEqual(objects);
+  });
+
+  it('retains protected signing rules after an edit to the live trailer', async () => {
+    const password = 'fixture password';
+    const bytes = Document.New(PageFormat.A4).Save({ encrypt: { userPassword: password } });
+    const doc = Document.Open(bytes, { password });
+    doc.trailer.delete('Encrypt');
+    doc.Lang = 'en-US';
+    await expect(doc.Sign(buildSigner({ type: 'ec' }))).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    expect(doc.Signatures).toHaveLength(0);
+  });
+
+  it('refuses before refreshing a stale barcode in a protected input', async () => {
+    const draft = Document.New(PageFormat.A4);
+    draft.Form.AddTextField({ name: 'field', page: 1, rect: [10, 10, 60, 20], value: 'old' });
+    draft.Form.AddBarcodeField({ name: 'barcode', page: 1, rect: [10, 30, 300, 120] });
+    draft.Form.RefreshBarcodes();
+    draft.Form.Get('field')!.Value = 'new';
+    const entries = [...draft.objectEntries()];
+    const [root] = entries.find(([, value]) => value === draft.catalog())!;
+    const objects = new Map(entries.map(([r, value]) => [r.num, value]));
+    const password = 'fixture password';
+    // Write an input with a stale barcode, bypassing the Save hook that refreshes it.
+    const base = serializeDocument(objects, new Map([['Root', root]]), { encrypt: { userPassword: password } });
+    const doc = Document.Open(base, { password });
+    expect(doc.Form.Get('barcode')!.Value).toBe('old');
+
+    await expect(doc.Sign(buildSigner({ type: 'ec' }))).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    expect(doc.Form.Get('barcode')!.Value).toBe('old');
+    expect(doc.Signatures).toHaveLength(0);
+  });
+});
+
+describe('saving sealed signed bytes', () => {
+  it('refuses encryption added after signing and retains the signed bytes', async () => {
+    const doc = Document.New(PageFormat.A4);
+    await doc.Sign(buildSigner({ type: 'ec' }));
+    const before = doc.Save().slice();
+    const options = { encrypt: { userPassword: 'fixture password' } };
+    expect(() => doc.Save(options)).toThrow(UnsupportedFeatureError);
+    await expect(doc.SaveAsync(options)).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    expect(doc.Save()).toEqual(before);
+  });
+
+  it('refuses removing or replacing encryption on sealed protected bytes', async () => {
+    const password = 'fixture password';
+    const base = Document.New(PageFormat.A4).Save({ encrypt: { userPassword: password } });
+    const doc = Document.Open(base, { password });
+    await doc.Sign(buildSigner({ type: 'ec' }));
+    const before = doc.Save().slice();
+    expect(() => doc.Save({ encrypt: false })).toThrow(UnsupportedFeatureError);
+    expect(() => doc.Save({ encrypt: { userPassword: 'different password' } })).toThrow(UnsupportedFeatureError);
+    expect(doc.Save()).toEqual(before);
+    expect(() => Document.Open(before)).toThrow(InvalidPasswordError);
+    expect(await Document.Open(before, { password }).VerifySignatures()).toMatchObject([{
+      signature: 'valid', integrity: 'valid',
+    }]);
   });
 });
 

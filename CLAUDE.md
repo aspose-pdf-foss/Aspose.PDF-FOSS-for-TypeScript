@@ -13609,6 +13609,10 @@ Source (`src/`):
   reopen path. `AddValidationData` encrypts the appended DSS objects with the
   encryptor from the byte image it reopened, preserving the signed prefix.
   Encryption leaves live dictionaries and arrays intact for later appends.
+  **Invariant (chp0.7):** `Sign` and `Certify` require the encrypted append
+  path for protected input. The check happens before signature setup and any
+  barcode refresh. `Save` rejects any explicit `encrypt` option on a sealed
+  signed byte image.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream

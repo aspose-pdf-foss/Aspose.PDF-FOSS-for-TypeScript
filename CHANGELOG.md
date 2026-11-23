@@ -485,6 +485,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Preserve protection when signing encrypted PDFs.** `Sign` and `Certify`
+  reject an encrypted PDF that would require a rewrite and direct the caller
+  to save and reopen it first. Unedited encrypted PDFs can still be signed by
+  appending an encrypted revision. `Save`, `SaveAsync`, and `WriteTo` reject
+  explicit `encrypt` options on sealed signed bytes. (chp0.7)
+
 - **Font programs cannot exhaust memory or spin on one glyph.** A CFF or
   Type 1 font under a kilobyte, whose subroutines call each other ten times
   per level across the ten levels allowed, exhausted the heap and killed the

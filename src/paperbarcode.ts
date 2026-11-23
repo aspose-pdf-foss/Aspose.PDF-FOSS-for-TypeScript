@@ -317,6 +317,11 @@ function barcodeStates(doc: Document): BarcodeState[] {
   return out;
 }
 
+/** Whether refresh would write any fields or appearances. Does not mutate the document. */
+export function needsBarcodeRefresh(doc: Document): boolean {
+  return barcodeStates(doc).some((state) => state.redraw !== undefined);
+}
+
 /** Recompute every barcode field's content and redraw what changed. Touches
  *  nothing -- no write, no markModified -- for a barcode whose content already
  *  matches and whose widgets are all drawn. */

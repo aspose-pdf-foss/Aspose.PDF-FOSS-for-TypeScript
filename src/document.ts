@@ -5,7 +5,7 @@ import { preparePsPages, type PsPageOutput } from './pspdf.js';
 import type { PsBudget } from './psbudget.js';
 import { runPostScriptImport, type PostScriptOptions, type PostScriptResult } from './psimport.js';
 import { appendPsPages } from './pspdf.js';
-import { refreshBarcodeFields } from './paperbarcode.js';
+import { needsBarcodeRefresh, refreshBarcodeFields } from './paperbarcode.js';
 import type { FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
 import { readXref, XrefEntry, PdfRevision } from './xref.js';
@@ -2394,7 +2394,9 @@ export class Document {
   }
 
   /** Serialize the live document to PDF bytes (mark-sweep from /Root, renumbered).
-   *  Pass `{ compressed: true }` for cross-reference-stream + ObjStm output. */
+   *  Pass `{ compressed: true }` for cross-reference-stream + ObjStm output.
+   *  When returning sealed signed bytes, an explicit `encrypt` option throws
+   *  {@link UnsupportedFeatureError}. */
   Save(options: SaveOptions = {}): Uint8Array {
     return runOperation('Save', options, (context) => this.saveSteps(options, context));
   }
@@ -2412,6 +2414,8 @@ export class Document {
     // A completed signature fixes the exact bytes; return them verbatim so the
     // signed byte image is never re-serialized (which would break the digest).
     if (this.pendingSignedBytes) {
+      if (options.encrypt !== undefined)
+        throw new UnsupportedFeatureError('cannot change encryption on sealed signed bytes');
       const signed = this.pendingSignedBytes;
       yield context.progress('prepare', 1, 1);
       return signed;
@@ -3048,6 +3052,9 @@ export class Document {
    *  placeholder. The finished bytes are returned by the next {@link Save}/
    *  {@link WriteTo}. Async because credential/timestamp callbacks may be (K1/T1).
    *
+   *  Protected PDFs require an encrypted incremental append. If signing would
+   *  require a rewrite, save and reopen the PDF with its credential first.
+   *
    *  `subFilter` selects `adbe.pkcs7.detached` (CMS, default) or
    *  `ETSI.CAdES.detached` (PAdES — adds the ESS signing-certificate-v2 attr). */
   async Sign(signer: Signer, opts: SignOptions = {}): Promise<void> {
@@ -3156,12 +3163,23 @@ export class Document {
       if (c.commitmentType !== undefined) commitmentTypeOid(c.commitmentType); // validate early (throws)
     }
 
-    // Paper barcodes and pending fonts, before the byte image is frozen -- and
-    // before choosePath, since a barcode that changed modifies the document.
-    refreshBarcodeFields(this);
+    // The full signing writer emits plaintext. For protected input, check the
+    // append path before a barcode refresh or signature setup can mutate it.
+    const encryptRef = this.trailer.get('Encrypt');
+    const protectedInput = this.preservedEncryptor !== undefined || encryptRef !== undefined;
+    if (protectedInput) {
+      if (!isRef(encryptRef) || !this.preservedEncryptor)
+        throw new UnsupportedFeatureError('cannot sign this protected PDF: an incremental update cannot preserve its encryption');
+      if (!isRef(this.trailer.get('Root')))
+        throw new UnsupportedFeatureError('cannot sign this protected PDF: an incremental update needs an indirect catalog');
+      if (!this.choosePath() || needsBarcodeRefresh(this))
+        throw new UnsupportedFeatureError('cannot sign a protected PDF that needs a rewrite: save and reopen it before signing');
+    } else {
+      refreshBarcodeFields(this);
+    }
     this.finalizeEmbeddedFonts();
 
-    const useIncremental = this.choosePath();
+    const useIncremental = protectedInput || this.choosePath();
     const placeholderBytes = opts.placeholderBytes ?? DEFAULT_PLACEHOLDER_BYTES;
     const signingTime = opts.signingTime ?? new Date();
 
