@@ -13620,6 +13620,13 @@ Source (`src/`):
   and confirming the original graph has not changed. Serialization compacts
   object numbers, so subsequent signature-preserving edits start from a save
   and reopen.
+  **Invariant (chp0.12):** signature and document timestamp appends capture
+  the stored byte image before any field allocation can clear pending bytes.
+  Preflight validates the stored catalog and encryption references, reopens
+  with the retained credential and load policy, and hands the same parsed
+  cross-reference layout and key to the placeholder writer. Cross-reference
+  streams share the reopen's decode budget. A pending signed image from a full
+  rewrite requires reopening before a signature or timestamp can append.
   **Invariant (chp0.8):** revocation verdicts use a cryptographically matched
   issuer. OCSP binds CertID and ResponderID and checks direct or delegated
   signing authority and freshness. CRLs require a current complete direct list.

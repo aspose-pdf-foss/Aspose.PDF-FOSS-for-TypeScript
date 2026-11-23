@@ -8,7 +8,7 @@ import { appendPsPages } from './pspdf.js';
 import { needsBarcodeRefresh, refreshBarcodeFields } from './paperbarcode.js';
 import type { FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
-import { readXref, XrefEntry, PdfRevision } from './xref.js';
+import { readXref, XrefEntry, PdfRevision, type XrefResult } from './xref.js';
 import { sweepObjects, ObjCandidate, SweepResult } from './recover.js';
 import {
   expandObjectStreams, findEncryptDict, rebuildTrailer, TrailerChoice,
@@ -144,7 +144,7 @@ import type { AuthoringFont } from './stamp.js';
 import {
   DEFAULT_PDF_VERSION, laterPdfVersion, serializeDocumentSteps, serializeSignedDocument, SerializeOptions,
 } from './serializer.js';
-import { appendSignatureUpdate, appendIncrementalUpdate, appendIncrementalUpdateSteps } from './incremental.js';
+import { appendSignatureUpdate, appendIncrementalUpdate, appendIncrementalUpdateSteps, type AppendBase } from './incremental.js';
 import { diffObjectsSteps } from './incrementaldelta.js';
 import { readSeedValue, planSeedValue, type SeedValue } from './sigseed.js';
 import { httpTimestampProvider } from './tsahttp.js';
@@ -261,6 +261,8 @@ export interface OpenOptions {
 }
 
 type OpenCredentials = Pick<OpenOptions, 'password' | 'recipient'>;
+/** Layout already parsed under the policy used for this authenticated reopen. */
+interface OpenLayout { xref: XrefResult; budget: DecodeBudget }
 
 /** True when the file ends with a startxref whose value is a plausible offset
  *  into it. Used only to classify *why* readXref failed — a pointer that is
@@ -480,6 +482,8 @@ export class Document {
   /** The finished signed byte image cached by {@link Sign}; returned verbatim by
    *  {@link Save}/{@link WriteTo} so the signed bytes are never re-serialized. */
   private pendingSignedBytes?: Uint8Array;
+  /** A full signing rewrite can assign different object numbers to the live graph. */
+  private pendingLayoutNeedsReopen = false;
   /** Set once this session produced signed bytes, and NEVER cleared -- unlike
    *  `pendingSignedBytes`, which `markModified` clears. Incremental saving
    *  requires reopening the signed bytes before editing because the signing
@@ -703,6 +707,10 @@ export class Document {
   }
 
   static Open(buf: Uint8Array, opts: OpenOptions = {}): Document {
+    return Document.openBytes(buf, opts);
+  }
+
+  private static openBytes(buf: Uint8Array, opts: OpenOptions, layout?: OpenLayout): Document {
     const limits = opts.limits ?? LoadLimits.defaults;
     // Before anything is read. The bound is on what a caller handed us, so it is
     // checked once against the whole input rather than per structure.
@@ -712,13 +720,13 @@ export class Document {
     // One decode budget for the whole Open, shared by every build pass and then
     // by the document, so object streams decoded while parsing count against
     // the same running total as everything decoded afterwards.
-    const budget = new DecodeBudget(limits);
+    const budget = layout?.budget ?? new DecodeBudget(limits);
     let entries = new Map<number, XrefEntry>();
     let trailer: PdfDict | undefined;
     let xrefFailure: RecoveryReport | undefined;
     let revisions: PdfRevision[] = [];
     try {
-      const r = readXref(buf, limits);
+      const r = layout?.xref ?? readXref(buf, limits, budget);
       entries = r.entries;
       trailer = r.trailer;
       revisions = r.revisions;
@@ -1273,6 +1281,7 @@ export class Document {
   markModified(): void {
     this.modified = true;
     this.pendingSignedBytes = undefined;
+    this.pendingLayoutNeedsReopen = false;
   }
 
   /** @internal Whether {@link markModified} has been called. */
@@ -1303,8 +1312,8 @@ export class Document {
   }
 
   /** Parse a fresh view of stored bytes under the original credentials and limits. */
-  private reopen(bytes: Uint8Array): Document {
-    return Document.Open(bytes, { ...this.#openCredentials, limits: this.loadLimits });
+  private reopen(bytes: Uint8Array, layout?: OpenLayout): Document {
+    return Document.openBytes(bytes, { ...this.#openCredentials, limits: this.loadLimits }, layout);
   }
 
   /** The live /Info dict, or undefined when there is none. */
@@ -3177,19 +3186,21 @@ export class Document {
     // append path before a barcode refresh or signature setup can mutate it.
     const encryptRef = this.trailer.get('Encrypt');
     const protectedInput = this.preservedEncryptor !== undefined || encryptRef !== undefined;
+    const hasSignature = this.pendingSignedBytes !== undefined || this.hasExistingSignature();
+    const canAppend = this.choosePath(hasSignature);
     if (protectedInput) {
       if (!isRef(encryptRef) || !this.preservedEncryptor)
         throw new UnsupportedFeatureError('cannot sign this protected PDF: an incremental update cannot preserve its encryption');
-      if (!isRef(this.trailer.get('Root')))
-        throw new UnsupportedFeatureError('cannot sign this protected PDF: an incremental update needs an indirect catalog');
-      if (!this.choosePath() || needsBarcodeRefresh(this))
+      if (!canAppend || needsBarcodeRefresh(this))
         throw new UnsupportedFeatureError('cannot sign a protected PDF that needs a rewrite: save and reopen it before signing');
-    } else {
-      refreshBarcodeFields(this);
     }
+    // An unsigned plaintext PDF can still take the full rewrite when its
+    // barcodes need refreshing. A signed base has to keep its earlier bytes.
+    const base = canAppend && (protectedInput || hasSignature || !needsBarcodeRefresh(this))
+      ? this.preflightSignatureAppend('sign') : undefined;
+    if (!protectedInput) refreshBarcodeFields(this);
     this.finalizeEmbeddedFonts();
 
-    const useIncremental = protectedInput || this.choosePath();
     const placeholderBytes = opts.placeholderBytes ?? DEFAULT_PLACEHOLDER_BYTES;
     const signingTime = opts.signingTime ?? new Date();
 
@@ -3242,13 +3253,13 @@ export class Document {
     if (references.length > 0) sigValueDict.set('Reference', references);
 
     // Produce the placeholder byte image via the chosen writer.
-    const layout = useIncremental
-      ? appendSignatureUpdate(this.signBase(), {
+    const layout = base
+      ? appendSignatureUpdate(base, {
         sigObjNum: sigRef.num,
         sigDict: sigValueDict,
         objects: this.collectObjects(touched),
         placeholderBytes,
-        encryptor: this.preservedEncryptor,
+        encryptor: base.encryptor,
       })
       : serializeSignedDocument(
         this.objects, this.trailer, { signatureObj: sigRef.num, placeholderBytes }, this.headerVersion(),
@@ -3270,8 +3281,7 @@ export class Document {
     });
     fillSignature(layout.bytes, layout, cms);
 
-    this.pendingSignedBytes = layout.bytes;
-    this.signedInSession = true;
+    this.storeSignedBytes(layout.bytes, base === undefined);
   }
 
   private async signFirstEncrypted(
@@ -3320,7 +3330,8 @@ export class Document {
 
     // Install only the exact authenticated, filled byte image. The base writer
     // compacts object numbers, so the live model must adopt the reopened graph.
-    const sealed = staged.reopen(staged.signBase());
+    const signed = staged.signBase();
+    const sealed = staged.reopen(signed);
     this.#decodeBudget = sealed.decodeBudget;
     this.objects.clear();
     for (const [num, value] of sealed.objects) this.install(num, value);
@@ -3339,9 +3350,8 @@ export class Document {
     this.sourceVersion = sealed.sourceVersion;
     this.permissions = sealed.permissions;
     this.revisions = sealed.revisions;
-    this.originalBytes = sealed.originalBytes;
-    this.pendingSignedBytes = sealed.originalBytes;
-    this.signedInSession = true;
+    this.originalBytes = signed;
+    this.storeSignedBytes(signed);
     this.migratedToPdf20 = false;
     this.modified = false;
   }
@@ -3362,6 +3372,7 @@ export class Document {
     const base = this.pendingSignedBytes ?? this.originalBytes;
     if (!base)
       throw new UnsupportedFeatureError('AddValidationData requires a signed document');
+    const needsReopen = this.pendingLayoutNeedsReopen;
     const src = this.reopen(base);
     const sigs = src.Signatures.filter((s) => s.isSigned);
     if (sigs.length === 0)
@@ -3392,11 +3403,10 @@ export class Document {
     const catRef = this.trailer.get('Root');
     if (isRef(catRef)) collected.set(catRef.num, this.objects.get(catRef.num) ?? null);
 
-    this.pendingSignedBytes = appendIncrementalUpdate(base, {
+    this.storeSignedBytes(appendIncrementalUpdate(base, {
       objects: collected,
       encryptor: src.preservedEncryptor,
-    });
-    this.signedInSession = true;
+    }), needsReopen);
   }
 
   /** Append a document timestamp (`/DocTimeStamp`, ETSI.RFC3161) as an
@@ -3408,12 +3418,10 @@ export class Document {
   async AddDocumentTimestamp(tsa: TimestampProvider, opts: DocumentTimestampOptions = {}): Promise<void> {
     this.assertNotRecovered('timestamp');
     this.requireSavedPdf20Migration('AddDocumentTimestamp');
-    const base = this.pendingSignedBytes ?? this.originalBytes;
-    if (!base)
+    if (!this.signBaseAvailable())
       throw new UnsupportedFeatureError('AddDocumentTimestamp requires an existing document to append to');
     if (this.Pages.length === 0)
       throw new UnsupportedFeatureError('cannot timestamp a document with no pages');
-    this.finalizeEmbeddedFonts();
 
     const hashAlg: DigestAlgorithm = opts.digest ?? 'sha256';
     const placeholderBytes = opts.placeholderBytes ?? 16384;
@@ -3430,6 +3438,9 @@ export class Document {
       throw new UnsupportedFeatureError(
         `signature field '${opts.fieldName}' is prepared for a signature with constraints `
         + '(/SV or /Lock); a document timestamp cannot honour them');
+
+    const base = this.preflightSignatureAppend('timestamp');
+    this.finalizeEmbeddedFonts();
 
     // Build the /DocTimeStamp value dict, then fill the prepared field or wire
     // a new invisible widget into the AcroForm and the first page's /Annots.
@@ -3461,14 +3472,13 @@ export class Document {
       sigDict: dtsDict,
       objects: this.collectObjects(touched),
       placeholderBytes,
-      encryptor: this.preservedEncryptor,
+      encryptor: base.encryptor,
     });
     const imprint = digestByteRange(layout.bytes, layout.byteRange, hashAlg);
     const request = buildTimeStampRequest(imprint, hashAlg);
     const token = extractTimeStampToken(await tsa(request));
     fillSignature(layout.bytes, layout, token);
-    this.pendingSignedBytes = layout.bytes;
-    this.signedInSession = true;
+    this.storeSignedBytes(layout.bytes);
   }
 
   /** Whether `doc`'s catalog carries a DocMDP certification (`/Perms /DocMDP`). */
@@ -3717,8 +3727,8 @@ export class Document {
 
   /** Choose the write path: incremental append when an opened, unmodified (or
    *  already-signed) base byte image exists; full rewrite otherwise. */
-  private choosePath(): boolean {
-    if (this.hasExistingSignature()) {
+  private choosePath(hasSignature: boolean): boolean {
+    if (hasSignature) {
       if (!this.signBaseAvailable())
         throw new UnsupportedFeatureError('cannot add a signature: no base byte image to append to');
       return true;
@@ -3742,6 +3752,39 @@ export class Document {
     const base = this.pendingSignedBytes ?? this.originalBytes;
     if (!base) throw new UnsupportedFeatureError('cannot append: no base byte image');
     return base;
+  }
+
+  private storeSignedBytes(bytes: Uint8Array, needsReopen = false): void {
+    this.pendingSignedBytes = bytes;
+    this.pendingLayoutNeedsReopen = needsReopen;
+    this.signedInSession = true;
+  }
+
+  /** Validate and authenticate the exact byte image the writer will append to.
+   *  Capture it before allocating fields, which invalidates pending bytes. */
+  private preflightSignatureAppend(operation: 'sign' | 'timestamp'): AppendBase & { encryptor?: Encryptor } {
+    if (this.pendingLayoutNeedsReopen)
+      throw new UnsupportedFeatureError(`cannot ${operation} incrementally after a signing rewrite: save and reopen the signed PDF first`);
+    const bytes = this.signBase();
+    const limits = this.loadLimits;
+    limits.enforce('maxFileBytes', bytes.length, 'signature append base');
+    const budget = new DecodeBudget(limits);
+    const xref = readXref(bytes, limits, budget);
+    const root = xref.trailer.get('Root');
+    if (!isRef(root) || !equalPdfObjects(root, this.trailer.get('Root')))
+      throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored /Root must match the live indirect catalog`);
+    const entry = xref.entries.get(root.num);
+    if (!entry || entry.type === 'free' || (entry.type === 'offset' ? entry.gen : 0) !== root.gen)
+      throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored /Root has no matching cross-reference entry`);
+    const encryption = xref.trailer.get('Encrypt');
+    if (!equalPdfObjects(encryption, this.trailer.get('Encrypt'))
+      || (encryption !== undefined && !isRef(encryption)))
+      throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored encryption layout disagrees with the live trailer`);
+    const stored = this.reopen(bytes, { xref, budget });
+    stored.assertNotRecovered(operation);
+    if ((encryption !== undefined) !== (stored.preservedEncryptor !== undefined))
+      throw new UnsupportedFeatureError(`cannot ${operation} incrementally: unable to preserve the stored encryption`);
+    return { bytes, xref, encryptor: stored.preservedEncryptor };
   }
 
   /** Snapshot the live values of `nums` for an incremental update's delta. */

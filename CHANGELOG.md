@@ -663,6 +663,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preflight the stored PDF before appending a signature.** Approval,
+  certification, and document timestamp appends use the stored revision and
+  the document's load limits. A rejected layout leaves the fields and signed
+  bytes intact. A subsequent signature preserves any pending signed revision
+  it extends. (chp0.12)
+
 - **Preserve encryption when appending signature validation data.**
   `AddValidationData` reuses the password or recipient credential supplied on
   open and encrypts the DSS update while preserving the signed byte prefix.

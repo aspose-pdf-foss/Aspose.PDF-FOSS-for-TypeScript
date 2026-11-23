@@ -4,13 +4,14 @@ import { inflateStream } from './flate.js';
 import { PdfParseError } from './errors.js';
 import { PdfDict, isDict, isStream } from './types.js';
 import { LoadLimits } from './loadlimits.js';
+import { DecodeBudget, registerStream } from './decodebudget.js';
 
 /** Rows read so far across every section of one `readXref`, checked against
  *  `maxObjects` as each row is PRODUCED. Deliberately not against a declared
  *  count: a subsection header or `/Size` that overstates what follows is
  *  damage the recovery ladder already opens, and refusing it would turn a file
  *  that opens into one that does not. What costs memory is rows that exist. */
-interface RowBudget { limits: LoadLimits; rows: number }
+interface RowBudget { limits: LoadLimits; rows: number; decodeBudget: DecodeBudget }
 const countRow = (b: RowBudget): void => b.limits.enforce('maxObjects', ++b.rows, 'cross-reference rows');
 
 export type XrefEntry =
@@ -61,14 +62,16 @@ export interface XrefResult {
  *
  *  **Invariant:** every section read, `/XRefStm` included, counts against
  *  `maxXrefSections` BEFORE it is parsed. */
-export function readXref(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaults): XrefResult {
+export function readXref(
+  buf: Uint8Array, limits = LoadLimits.defaults, decodeBudget = new DecodeBudget(limits),
+): XrefResult {
   const start = findStartXref(buf);
   const entries = new Map<number, XrefEntry>();
   let trailer: PdfDict | undefined;
   const seen = new Set<number>();
   const revisions: PdfRevision[] = [];
   let pos: number | undefined = start;
-  const budget: RowBudget = { limits, rows: 0 };
+  const budget: RowBudget = { limits, rows: 0, decodeBudget };
   let sections = 0;
 
   while (pos !== undefined) {
@@ -189,7 +192,8 @@ function readClassicTable(buf: Uint8Array, lx: Lexer, budget: RowBudget): Sectio
 }
 
 export function readXrefStream(
-  buf: Uint8Array, pos: number, budget: RowBudget = { limits: LoadLimits.defaults, rows: 0 },
+  buf: Uint8Array, pos: number,
+  budget: RowBudget = { limits: LoadLimits.defaults, rows: 0, decodeBudget: new DecodeBudget(LoadLimits.defaults) },
 ): Section {
   // The lexer is held so its position can be read back: it lands past the
   // stream payload, which is where the revision-end scan must begin.
@@ -197,6 +201,7 @@ export function readXrefStream(
   const parser = new ObjectParser(lx, undefined, budget.limits);
   const { value } = parser.parseIndirectObject();
   if (!isStream(value)) throw new PdfParseError('xref stream object is not a stream', pos);
+  registerStream(value, budget.decodeBudget);
   const dict = value.dict;
   const data = inflateStream(value);
   const W = dict.get('W');

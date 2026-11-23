@@ -2,7 +2,7 @@ import { runOperation, type OperationContext, type OperationSteps } from './oper
 import { PdfObject, PdfDict, isRef, isArray } from './types.js';
 import { enc, serializeObject } from './serialize.js';
 import { Encryptor } from './encrypt.js';
-import { readXref, XrefEntry } from './xref.js';
+import { readXref, XrefEntry, type XrefResult } from './xref.js';
 import { PdfParseError } from './errors.js';
 import {
   DEFAULT_PLACEHOLDER_BYTES, SignatureLayout, buildSigDictPlaceholder, finalizePlaceholder,
@@ -80,10 +80,17 @@ export interface SignatureUpdateOptions {
   id?: PdfObject;
 }
 
+/** @internal A stored byte image and the layout already read under its load policy. */
+export interface AppendBase {
+  bytes: Uint8Array;
+  xref: XrefResult;
+}
+
 /** Append a signature-bearing incremental update with a `/Contents` placeholder
  *  and a computed `/ByteRange`. The returned bytes are ready to be digested over
  *  `byteRange`; pass the result and the DER CMS to `fillSignature` to finish. */
-export function appendSignatureUpdate(original: Uint8Array, opts: SignatureUpdateOptions): SignatureLayout {
+export function appendSignatureUpdate(original: Uint8Array | AppendBase, opts: SignatureUpdateOptions): SignatureLayout {
+  const base = 'xref' in original ? original : { bytes: original, xref: readXref(original) };
   const placeholderBytes = opts.placeholderBytes ?? DEFAULT_PLACEHOLDER_BYTES;
   const objects = new Map<number, PdfObject>(opts.objects ?? []);
   // The signature object is built specially (placeholder + ByteRange slots), so
@@ -94,7 +101,7 @@ export function appendSignatureUpdate(original: Uint8Array, opts: SignatureUpdat
   const header = `${opts.sigObjNum} 0 obj\n`;
   const text = `${header}${ph.body}\nendobj\n`;
 
-  const { bytes, sigStart } = layout(original, {
+  const { bytes, sigStart } = layout(base, {
     objects,
     encryptor: opts.encryptor,
     rootNum: opts.rootNum,
@@ -116,18 +123,24 @@ interface LayoutResult {
 
 /** Core append: concatenate `original`, the new objects (and optional raw
  *  signature-object text), a classic xref section, and a `/Prev`-chained trailer. */
-function layout(original: Uint8Array, opts: IncrementalUpdateOptions, sigObject?: { num: number; text: string }): LayoutResult {
-  return runOperation('layout', undefined, (context) => layoutSteps(original, opts, sigObject, context));
+function layout(base: AppendBase, opts: IncrementalUpdateOptions, sigObject: { num: number; text: string }): LayoutResult {
+  return runOperation('layout', undefined, (context) => layoutSteps(base.bytes, opts, sigObject, context, base.xref));
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* layoutSteps(original: Uint8Array, opts: IncrementalUpdateOptions, sigObject: { num: number; text: string } | undefined, context: OperationContext): OperationSteps<LayoutResult> {
-  const prev = readXref(original);
-  const prevStartxref = findPrevStartxref(original);
+export function* layoutSteps(
+  original: Uint8Array, opts: IncrementalUpdateOptions, sigObject: { num: number; text: string } | undefined,
+  context: OperationContext, prev = readXref(original),
+): OperationSteps<LayoutResult> {
+  const prevStartxref = prev.revisions.at(-1)!.xrefOffset;
 
-  const rootNum = opts.rootNum ?? refNum(prev.trailer.get('Root'));
+  const storedRoot = prev.trailer.get('Root');
+  const rootNum = opts.rootNum ?? refNum(storedRoot);
   if (rootNum === undefined) throw new PdfParseError('cannot append: original /Root is not an indirect reference');
-  const infoNum = opts.infoNum ?? refNum(prev.trailer.get('Info'));
+  const rootGen = opts.rootNum === undefined && isRef(storedRoot) ? storedRoot.gen : 0;
+  const storedInfo = prev.trailer.get('Info');
+  const infoNum = opts.infoNum ?? refNum(storedInfo);
+  const infoGen = opts.infoNum === undefined && isRef(storedInfo) ? storedInfo.gen : 0;
   const id = opts.id ?? prev.trailer.get('ID');
   const prevSize = typeof prev.trailer.get('Size') === 'number' ? (prev.trailer.get('Size') as number) : 0;
 
@@ -187,8 +200,8 @@ export function* layoutSteps(original: Uint8Array, opts: IncrementalUpdateOption
   for (const n of opts.freed ?? []) if (n > maxNum) maxNum = n;
   const size = Math.max(prevSize, maxNum + 1);
 
-  let tr = `trailer\n<< /Size ${size} /Root ${rootNum} 0 R /Prev ${prevStartxref}`;
-  if (infoNum !== undefined) tr += ` /Info ${infoNum} 0 R`;
+  let tr = `trailer\n<< /Size ${size} /Root ${rootNum} ${rootGen} R /Prev ${prevStartxref}`;
+  if (infoNum !== undefined) tr += ` /Info ${infoNum} ${infoGen} R`;
   if (id !== undefined) tr += ` /ID ${serializeValueLatin(id)}`;
   // The /Encrypt object already lives in the original bytes, so the appended
   // revision REFERENCES it. Omitting it is what made a reader take the newest
@@ -235,16 +248,6 @@ function buildXrefSection(rows: XrefRow[]): string {
 function prevGen(entries: Map<number, XrefEntry>, num: number): number {
   const e = entries.get(num);
   return e !== undefined && e.type === 'offset' ? e.gen : 0;
-}
-
-/** The `startxref` integer of the previous (newest existing) cross-reference. */
-function findPrevStartxref(buf: Uint8Array): number {
-  const tail = new TextDecoder('latin1').decode(buf.subarray(Math.max(0, buf.length - 2048)));
-  const idx = tail.lastIndexOf('startxref');
-  if (idx < 0) throw new PdfParseError('cannot append: original has no startxref');
-  const m = /startxref\s+(\d+)/.exec(tail.slice(idx));
-  if (!m) throw new PdfParseError('cannot append: malformed startxref');
-  return parseInt(m[1], 10);
 }
 
 function refNum(o: PdfObject | undefined): number | undefined {
