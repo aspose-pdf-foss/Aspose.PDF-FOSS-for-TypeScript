@@ -45,6 +45,7 @@ export interface OcspOptions {
   status: 'good' | 'revoked';
   producedAt?: Date;
   revocationTime?: Date;
+  responderByKey?: boolean;
   /** Corrupt the responder signature (to test signature-verification failure). */
   tamper?: boolean;
 }
@@ -59,15 +60,18 @@ export function buildOcspResponse(o: OcspOptions): Uint8Array {
     der.octetString(keyHash),
     der.integer(serialOf(o.cert)),
   );
+  const producedAt = o.producedAt ?? new Date();
   const certStatus = o.status === 'good'
     ? Uint8Array.of(0x80, 0x00)                                   // good [0] IMPLICIT NULL
-    : der.explicit(1, der.generalizedTime(o.revocationTime ?? new Date())); // revoked [1]
-  const singleResponse = der.sequence(certID, certStatus, der.generalizedTime(new Date()));
+    : der.explicit(1, der.generalizedTime(o.revocationTime ?? producedAt)); // revoked [1]
+  const singleResponse = der.sequence(certID, certStatus, der.generalizedTime(producedAt));
 
-  const responderID = der.explicit(1, subjectRaw(o.responder.certificate)); // byName [1]
+  const responderID = o.responderByKey
+    ? der.explicit(2, der.octetString(createHash('sha1').update(keyBytes(o.responder.certificate)).digest()))
+    : der.explicit(1, subjectRaw(o.responder.certificate));
   const responseData = der.sequence(
     responderID,
-    der.generalizedTime(o.producedAt ?? new Date()),
+    der.generalizedTime(producedAt),
     der.sequence(singleResponse),                                // responses SEQUENCE OF
   );
 

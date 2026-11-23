@@ -485,6 +485,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Authenticate certificate revocation evidence.** Verification uses a
+  cryptographically matched issuer, checks OCSP responder identity and signing
+  authorization, and enforces evidence freshness. CRLs must be complete and
+  applicable to the issuer. Invalid or oversized evidence yields `unknown` when
+  no other source establishes status. PDF integrity, signature, and chain
+  verdicts are evaluated independently. (chp0.8)
+
 - **Preserve protection when signing encrypted PDFs.** `Sign` and `Certify`
   reject an encrypted PDF that would require a rewrite and direct the caller
   to save and reopen it first. Unedited encrypted PDFs can still be signed by

@@ -12,6 +12,7 @@ import {
   PdfObject, PdfDict, PdfStream, PdfRef, isDict, isArray, isStream, name,
 } from './types.js';
 import { inflateStream } from './flate.js';
+import { rethrowLimit } from './errors.js';
 import type { RevocationMaterial } from './revocation.js';
 import type { RevocationFetcher } from './sigverify.js';
 
@@ -93,20 +94,30 @@ export function buildDss(doc: Document, entries: DssEntry[]): PdfRef {
   return doc.allocObject(dss);
 }
 
-/** Decode every validation stream referenced by `arr` (resolving refs, inflating
- *  any FlateDecode). */
-function streamsOf(doc: Document, arr: PdfObject | undefined): Uint8Array[] {
+/** Decode validation streams on demand. Retain a marker for unreadable status
+ *  evidence so it yields 'unknown'. Skip unreadable certificates. */
+function* streamsOf(doc: Document, arr: PdfObject | undefined, unreadable?: Uint8Array): Generator<Uint8Array, void> {
   const a = doc.resolve(arr);
-  if (!isArray(a)) return [];
-  const out: Uint8Array[] = [];
-  for (const r of a) { const s = doc.resolve(r); if (isStream(s)) out.push(inflateStream(s)); }
-  return out;
+  if (!isArray(a)) return;
+  for (const r of a) {
+    const s = doc.resolve(r);
+    if (!isStream(s)) continue;
+    try { yield inflateStream(s); }
+    catch (caught) { rethrowLimit(caught); if (unreadable) yield unreadable; }
+  }
+}
+
+const UNREADABLE_EVIDENCE = new Uint8Array();
+
+function firstEvidence(doc: Document, arr: PdfObject | undefined): Uint8Array | undefined {
+  const first = streamsOf(doc, arr, UNREADABLE_EVIDENCE).next();
+  return first.done ? undefined : first.value;
 }
 
 /** All certificates embedded in the document's `/DSS` (top-level `/Certs`), DER. */
 export function readDssCerts(doc: Document): Uint8Array[] {
   const dss = doc.resolve(doc.catalog().get('DSS'));
-  return isDict(dss) ? streamsOf(doc, dss.get('Certs')) : [];
+  return isDict(dss) ? [...streamsOf(doc, dss.get('Certs'))] : [];
 }
 
 /** Read `/DSS` validation data into per-signature {@link RevocationMaterial},
@@ -117,22 +128,22 @@ export function readDssMaterial(doc: Document): Map<string, RevocationMaterial> 
   const dss = doc.resolve(doc.catalog().get('DSS'));
   if (!isDict(dss)) return out;
   const vri = doc.resolve(dss.get('VRI'));
-  const topOcsps = streamsOf(doc, dss.get('OCSPs'));
-  const topCrls = streamsOf(doc, dss.get('CRLs'));
+  const topOcsp = firstEvidence(doc, dss.get('OCSPs'));
+  const topCrl = firstEvidence(doc, dss.get('CRLs'));
 
   for (const sig of doc.Signatures) {
     if (!sig.isSigned || !sig.contents) continue;
-    let ocsps = topOcsps, crls = topCrls;
+    let ocsp = topOcsp, crl = topCrl;
     if (isDict(vri)) {
       const entry = doc.resolve((vri as PdfDict).get(vriKey(sig.contents)));
       if (isDict(entry)) {
-        ocsps = streamsOf(doc, (entry as PdfDict).get('OCSP'));
-        crls = streamsOf(doc, (entry as PdfDict).get('CRL'));
+        ocsp = firstEvidence(doc, entry.get('OCSP'));
+        crl = firstEvidence(doc, entry.get('CRL'));
       }
     }
     const m: RevocationMaterial = {};
-    if (ocsps[0]) m.ocsp = ocsps[0];
-    if (crls[0]) m.crl = crls[0];
+    if (ocsp) m.ocsp = ocsp;
+    if (crl) m.crl = crl;
     if (m.ocsp || m.crl) out.set(sig.name, m);
   }
   return out;

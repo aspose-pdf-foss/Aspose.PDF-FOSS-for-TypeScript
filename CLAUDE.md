@@ -13613,6 +13613,11 @@ Source (`src/`):
   path for protected input. The check happens before signature setup and any
   barcode refresh. `Save` rejects any explicit `encrypt` option on a sealed
   signed byte image.
+  **Invariant (chp0.8):** revocation verdicts use a cryptographically matched
+  issuer. OCSP binds CertID and ResponderID and checks direct or delegated
+  signing authority and freshness. CRLs require a current complete direct list.
+  Bounded DER failures produce inconclusive revocation evidence and keep the
+  PDF integrity, signature, and chain verdicts independent.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream

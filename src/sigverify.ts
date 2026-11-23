@@ -1,7 +1,7 @@
 import { X509Certificate } from 'node:crypto';
 import { parseSignedData, verifySignedData, SignerLocation } from './cms.js';
 import { verifyTimestampToken, type TimestampInfo } from './rfc3161.js';
-import { checkRevocation, findIssuer, type RevocationMaterial } from './revocation.js';
+import { checkRevocation, matchRevocationIssuer, type RevocationMaterial } from './revocation.js';
 import { verifyCertChain } from './chain.js';
 import { readXref } from './xref.js';
 import { digestByteRange, byteRangeContent, signatureRevisionEnd } from './signature.js';
@@ -12,7 +12,8 @@ import type { ShadowAnalysis } from './shadowanalysis.js';
 import type { SignatureStructureFinding } from './sigstructure.js';
 
 /** A fetcher for revocation material: given the target and its issuer (DER),
- *  return the OCSP response / CRL bytes, or undefined when none is available. */
+ *  return the OCSP response / CRL bytes, or undefined when none is available.
+ *  Verification calls fetchers only when it can match the issuer. */
 export type RevocationFetcher =
   (cert: Uint8Array, issuer: Uint8Array) => Uint8Array | undefined | Promise<Uint8Array | undefined>;
 
@@ -32,8 +33,8 @@ export interface VerifyOptions {
    *  certificate path is built and validated to one of these anchors and the
    *  result reported as `trusted`/`untrusted` (else `unchecked`). */
   trustAnchors?: Uint8Array[];
-  /** Validation time for certificate validity-period checks when the signature
-   *  has no verified timestamp. Defaults to the current time in that case. */
+  /** Evaluation time for revocation evidence and for certificate validity when
+   *  the signature has no verified timestamp. Defaults to the current time. */
   at?: Date;
 }
 
@@ -250,23 +251,24 @@ function revisionChanges(bytes: Uint8Array, signedEnd: number): Change[] {
  *  from `opts` (offline `/DSS` material and/or online OCSP/CRL callbacks).
  *  Returns the {@link SignatureReport.revocation} verdict. */
 export async function checkSignatureRevocation(
-  sig: SignatureField, opts: VerifyOptions,
+  sig: SignatureField, opts: VerifyOptions, extraCerts: readonly Uint8Array[] = [],
 ): Promise<SignatureReport['revocation']> {
   if (!sig.contents) return 'unchecked';
-  let signer: Uint8Array, issuer: Uint8Array;
+  let signer: Uint8Array, issuer: Uint8Array | undefined;
   try {
     const cms = sig.cmsLength !== undefined ? sig.contents.subarray(0, sig.cmsLength) : sig.contents;
     const parsed = parseSignedData(cms);
     signer = parsed.signerCertificate;
-    issuer = findIssuer(signer, parsed.certificates);
+    issuer = matchRevocationIssuer(signer, [...parsed.certificates, ...extraCerts, ...(opts.trustAnchors ?? [])]);
   } catch (caught) { rethrowLimit(caught);
     return 'unchecked';
   }
 
   const material: RevocationMaterial = { ...(opts.offline?.get(sig.name) ?? {}) };
+  if (!issuer) return material.ocsp || material.crl ? 'unknown' : 'unchecked';
   if (!material.ocsp && opts.getOCSP) material.ocsp = (await opts.getOCSP(signer, issuer)) ?? undefined;
   if (!material.crl && opts.getCRL) material.crl = (await opts.getCRL(signer, issuer)) ?? undefined;
-  return checkRevocation(signer, issuer, material).status;
+  return checkRevocation(signer, issuer, material, opts.at).status;
 }
 
 function certInfo(der: Uint8Array): CertInfo {

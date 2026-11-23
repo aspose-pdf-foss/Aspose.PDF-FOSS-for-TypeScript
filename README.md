@@ -109,6 +109,11 @@ flowchart TD
   option on sealed signed bytes raises `UnsupportedFeatureError`.
   For signed encrypted PDFs, `AddValidationData` encrypts the appended data with the
   existing file key and preserves the signed byte prefix.
+  Revocation verification authenticates the issuer and OCSP responder and requires
+  current evidence. A conclusive CRL must cover the full direct issuer scope.
+  `VerifySignatures({ at })` sets the evidence evaluation time. OCSP responses without
+  `nextUpdate` are accepted for up to 24 hours after `thisUpdate`.
+  The DER size limits are 512 KiB for OCSP and 4 MiB for CRLs.
   Reports include signed byte coverage and structural findings. Signature reports can
   also attribute later changes to content and compare signed and current page appearances.
 - Access and edit every page through `doc.Pages` — all five boundary boxes, rotation, resources,
@@ -4648,11 +4653,11 @@ byte coverage, later object modifications, and structural findings.
 | `ShadowFinding` | Signed page number, appearance change kind, and overlay evidence for one finding. |
 | `UnsignedAnnotationChange` | A changed annotation or widget's current page, object number, subtype and owning field name when available. |
 | `UnsignedContentSummary` | Affected 1-based pages, changed annotations and widgets, and full form field names attributed from `modifications`. |
-| `checkRevocation` | Determine the revocation status of `cert` (issued by `issuer`) from the given material, preferring a signature-verified OCSP response, then a verified CRL. |
-| `crlStatus` | Whether `cert`'s serial appears in the CRL's revoked list. |
-| `ocspStatus` | The OCSP status for `cert` (issued by `issuer`): match a SingleResponse by CertID (issuer name/key hash + serial), or `unknown` when none matches. |
-| `parseCrl` | Parse a `CertificateList` (CRL, RFC 5280). |
-| `parseOcspResponse` | Parse an `OCSPResponse` (RFC 6960). |
+| `checkRevocation(cert, issuer, material, at?)` | Authenticate the issuer and evaluate evidence at `at`, which defaults to now. Prefer conclusive OCSP, then a fresh, applicable full CRL. |
+| `crlStatus` | Look up a serial number in the raw CRL. Use `checkRevocation` for a verified verdict. |
+| `ocspStatus` | Look up the raw OCSP status by CertID. Use `checkRevocation` for a verified verdict. |
+| `parseCrl` | Parse a bounded DER `CertificateList` (CRL, RFC 5280). |
+| `parseOcspResponse` | Parse a bounded DER `OCSPResponse` (RFC 6960). |
 | `parseTimeStampRequest` | Parse the message imprint and nonce out of a DER `TimeStampReq`. |
 | `buildTimeStampRequest(imprint, hashAlg, opts?)` | A DER RFC 3161 `TimeStampReq` over an already-hashed imprint |
 | `buildTimeStampToken(request, signer, opts?)` | Answer a `TimeStampReq` as a TSA would: a signed `TimeStampToken` |
@@ -4663,9 +4668,9 @@ byte coverage, later object modifications, and structural findings.
 | `readDssCerts` | All certificates embedded in the document's `/DSS` (top-level `/Certs`), DER. |
 | `readDssMaterial` | Read `/DSS` validation data into per-signature `RevocationMaterial`, keyed by signature field name. |
 | `verifyCertChain` | Build and validate a path from `leaf` to a trust anchor through `pool` (intermediates from the CMS / `/DSS`). |
-| `verifyCrlSignature` | Verify the CRL signature against the `issuer` certificate's public key. |
-| `verifyOcspSignature` | Verify the BasicOCSPResponse signature against an embedded responder cert or the `issuer` cert (a directly-issued OCSP response). |
-| `findIssuer` | Find the issuer certificate of `cert` among `pool` (subject == cert.issuer), or `cert` itself when self-issued / no better match is available. |
+| `verifyCrlSignature` | Authenticate the CRL signature, issuer name, and the issuer's CRL signing usage. |
+| `verifyOcspSignature` | Verify the signature and ResponderID for the issuer or an OCSP responder it directly authorized. |
+| `findIssuer` | Match an issuer cryptographically. This helper returns the target itself when no match is available. |
 | `vriKey` | The `/VRI` key for a signature: the uppercase base-16 SHA-1 of its `/Contents` value (the whole signature byte string, padding included). |
 
 ### AI

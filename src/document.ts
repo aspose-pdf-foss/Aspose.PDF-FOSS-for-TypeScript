@@ -3441,22 +3441,21 @@ export class Document {
     }
     // Revocation: use explicit offline material or callbacks, else fall back to
     // any LTV validation data embedded in the document's /DSS (PAdES-B-LT).
-    const offline = opts.offline ?? readDssMaterial(src);
+    const dssMaterial = readDssMaterial(src);
+    const offline = opts.offline ?? dssMaterial;
     if (opts.getOCSP || opts.getCRL || offline.size > 0) {
       const revOpts: VerifyOptions = { ...opts, offline };
       await Promise.all(reports.map(async (report, i) => {
-        report.revocation = await checkSignatureRevocation(signed[i], revOpts);
+        report.revocation = await checkSignatureRevocation(signed[i], revOpts, chain.extraCerts);
       }));
     }
     // PAdES baseline level (structural presence): B-B → B-T → B-LT → B-LTA.
     const docTsValid = src.DocumentTimestamps
       .filter((t) => t.isSigned)
       .some((t) => verifyDocumentTimestamp(bytes, t).timestamp.valid);
-    const dssMaterial = readDssMaterial(src);
-    const dssCerts = readDssCerts(src);
     reports.forEach((report) => {
       const hasT = report.timestamp?.valid === true || docTsValid;
-      const hasLT = dssMaterial.has(report.name) || dssCerts.length > 0;
+      const hasLT = dssMaterial.has(report.name) || chain.extraCerts.length > 0;
       const hasA = docTsValid;
       report.padesLevel = hasLT && hasA ? 'B-LTA' : hasLT ? 'B-LT' : hasT ? 'B-T' : 'B-B';
     });

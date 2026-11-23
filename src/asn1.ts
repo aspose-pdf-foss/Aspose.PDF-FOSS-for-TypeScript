@@ -218,6 +218,59 @@ export function parse(bytes: Uint8Array, offset = 0): Asn1Node {
   return { tagClass, constructed, tag, length, content, raw, end, children };
 }
 
+/** Parse one complete DER value under evidence-specific resource bounds.
+ * @internal */
+export function parseBoundedDer(bytes: Uint8Array, maxBytes: number): Asn1Node {
+  if (bytes.length > maxBytes) throw new Error('DER exceeds its byte limit');
+  const invalid = (): never => { throw new Error('invalid or truncated DER'); };
+  let nodes = 0;
+  const read = (start: number, limit: number, depth: number): Asn1Node => {
+    if (depth > 32 || ++nodes > 100_000) throw new Error('DER exceeds its structural limits');
+    let pos = start;
+    const next = (): number => pos < limit ? bytes[pos++] : invalid();
+    const id = next();
+    const tagClass = id >> 6;
+    const constructed = (id & CONSTRUCTED) !== 0;
+    let tag = id & 0x1f;
+    if (tag === 0x1f) {
+      let octet = next();
+      if ((octet & 0x7f) === 0) invalid();
+      tag = octet & 0x7f;
+      while (octet & 0x80) {
+        octet = next();
+        tag = tag * 128 + (octet & 0x7f);
+        if (tag > 0x7fffffff) invalid();
+      }
+      if (tag < 31) invalid();
+    }
+    if (tagClass === 0 && tag === 0) invalid();
+    let length = next();
+    if (length & 0x80) {
+      const count = length & 0x7f;
+      if (count === 0 || count > 4) invalid();
+      length = next();
+      if (length === 0) invalid();
+      for (let i = 1; i < count; i++) length = length * 256 + next();
+      if (length < 128) invalid();
+    }
+    const end = pos + length;
+    if (end > limit) invalid();
+    const content = bytes.subarray(pos, end);
+    const children: Asn1Node[] = [];
+    if (constructed) {
+      while (pos < end) {
+        const child = read(pos, end, depth + 1);
+        children.push(child);
+        pos = child.end;
+      }
+    }
+    return { tagClass, constructed, tag, length, content, raw: bytes.subarray(start, end), end, children };
+  };
+  const root = read(0, bytes.length, 0);
+  if (root.end !== bytes.length) invalid();
+  return root;
+}
+
 /** Read a (non-negative) INTEGER node's value as a bigint. */
 export function readInteger(node: Asn1Node): bigint {
   let v = 0n;
