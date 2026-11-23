@@ -512,6 +512,8 @@ Source (`src/`):
   from `Document.headerVersion()`. A catalog `/Version` takes precedence over
   the input or inherited header, so an explicit PDF/A or PDF/X conversion can
   select an older version. Documents with no declaration default to 1.7.
+  `Document.Version` exposes this effective version. `Document.ID` reads the
+  live trailer's binary identifier pair as upper-case hexadecimal.
   Page derivatives inherit the effective source version. Merging pages carries
   the highest version. Object and cross-reference streams require at least
   1.5. Encryption, Brotli, linearization, and full-rewrite signing also impose
@@ -519,6 +521,10 @@ Source (`src/`):
   planner uses a copy of the catalog before walking references so a superseded
   indirect version can be collected. A page import can raise the catalog
   version in an incremental update while preserving the original header bytes.
+  **Invariant (`chp0.4`):** `pdf20.ts` plans metadata migration and deprecated
+  entry removal before mutating live dictionaries. The facade selects header
+  2.0, requires a full save, and prevents timestamp and validation-data appends
+  against the original byte image. Existing signed revisions are refused.
   **Invariant:** the header is inside the SIGNED byte range, so the version is
   chosen where the placeholder is laid out and never patched afterwards —
   patching it would move the digest out from under `/ByteRange`.

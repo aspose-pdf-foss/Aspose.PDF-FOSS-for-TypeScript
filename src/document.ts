@@ -43,6 +43,7 @@ import {
 import { validatePdfUaSteps, ValidationReport, type PdfUaPart } from './structvalidate.js';
 import { validatePdfASteps, type PdfALevel } from './pdfavalidate.js';
 import { convertToPdfASteps, type ConvertOptions, type ConversionReport } from './pdfaconvert.js';
+import { migratePdf20, type DocumentId, type Pdf20MigrationReport } from './pdf20.js';
 import { convertToPdfUaSteps, type PdfUaConvertOptions } from './pdfuaconvert.js';
 import { validatePdfXSteps, type PdfXLevel } from './pdfxvalidate.js';
 import { convertToPdfXSteps, type PdfXConvertOptions } from './pdfxconvert.js';
@@ -481,6 +482,8 @@ export class Document {
    *  hold everything Sanitize removed — so it is refused from then on, even
    *  when this run found nothing, rather than trusting a count (`74mf.4`). */
   private sanitizedInSession = false;
+  /** An explicit PDF 2.0 migration must be written as a standalone file. */
+  private migratedToPdf20 = false;
   /** Revisions the `/Prev` chain named on open, oldest first — exactly what
    *  `readXref` could read, and empty when it could not read anything.
    *
@@ -1760,6 +1763,40 @@ export class Document {
     return isName(cv) ? cv.name : this.sourceVersion;
   }
 
+  /** The effective PDF version before any feature minimum imposed by Save. */
+  get Version(): string {
+    return this.headerVersion() ?? DEFAULT_PDF_VERSION;
+  }
+
+  /** The trailer's two file identifier byte strings as upper-case hexadecimal. */
+  get ID(): DocumentId | undefined {
+    const id = this.resolve(this.trailer.get('ID'));
+    if (!isArray(id) || id.length !== 2) return undefined;
+    const original = this.resolve(id[0]);
+    const modified = this.resolve(id[1]);
+    if (!isString(original) || !isString(modified)) return undefined;
+    return {
+      original: Buffer.from(original.bytes).toString('hex').toUpperCase(),
+      modified: Buffer.from(modified.bytes).toString('hex').toUpperCase(),
+    };
+  }
+
+  /** Migrate a document in place for a full PDF 2.0 save. Moves legacy Info
+   *  into XMP and reports the deprecated entries removed. Refuses signed
+   *  revisions, legacy encryption, and incompatible profile identification. */
+  ConvertToPdf20(): Pdf20MigrationReport {
+    if (this.signedInSession || this.hasExistingSignature() || this.DocumentTimestamps.some((t) => t.isSigned))
+      throw new UnsupportedFeatureError('ConvertToPdf20: rewriting a signed or timestamped document invalidates its signature');
+    const previousVersion = this.Version;
+    const changes = migratePdf20(this, this.preservedEncryptor?.encryptDict);
+    if (previousVersion !== '2.0') changes.unshift({ kind: 'version', from: previousVersion, to: '2.0' });
+    if (this.catalog().delete('Version')) changes.push({ kind: 'remove', key: 'Version', path: '/Root/Version' });
+    this.sourceVersion = '2.0';
+    this.migratedToPdf20 = true;
+    this.markModified();
+    return { previousVersion, version: '2.0', changes };
+  }
+
   /** A composed document carries the latest version of its page sources. */
   private inheritImportedVersion(source: Document, hadPages: boolean): void {
     const incoming = source.headerVersion() ?? DEFAULT_PDF_VERSION;
@@ -2379,6 +2416,9 @@ export class Document {
       yield context.progress('prepare', 1, 1);
       return signed;
     }
+    if (this.migratedToPdf20 && this.Version === '2.0' && options.encrypt
+      && options.encrypt.algorithm !== undefined && options.encrypt.algorithm !== 'aes256')
+      throw new UnsupportedFeatureError('Save: PDF 2.0 migration requires AES-256 when encrypting the output');
     // Paper barcodes first: a refresh draws appearances, which may need fonts.
     refreshBarcodeFields(this);
     yield context.progress('prepare', 1, 2);
@@ -2405,6 +2445,8 @@ export class Document {
    *  point at the object it supersedes. Garbage-collecting here corrupts the
    *  revision history this feature exists to provide. */
   private *saveIncrementalSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
+    if (this.migratedToPdf20)
+      throw new UnsupportedFeatureError('cannot save incrementally after ConvertToPdf20: write a standalone file with Save()');
     // The live model is BEHIND the signed bytes for the signature object:
     // `fillSignature` patches bytes and never the model, so the live `/Sig`
     // carries a `/Contents` of length 0 while the signed bytes carry the real
@@ -3055,6 +3097,7 @@ export class Document {
     signer: Signer, stated: SignOptions, certify: { permissions?: DocMdpPermission } | undefined,
   ): Promise<void> {
     this.assertNotRecovered('sign');
+    if (this.preservedEncryptor || this.signedInSession) this.requireSavedPdf20Migration('Sign');
     if (this.Pages.length === 0)
       throw new UnsupportedFeatureError('cannot sign a document with no pages');
     subFilterName(stated); // validate subfilter early
@@ -3062,6 +3105,7 @@ export class Document {
     // Resolve credentials up front so a bad key/passphrase fails before the
     // document object map is mutated below.
     const resolved = await resolveSigner(signer);
+    if (this.preservedEncryptor || this.signedInSession) this.requireSavedPdf20Migration('Sign');
 
     // Validate any visible-appearance request before mutating the object map.
     if (stated.appearance) {
@@ -3213,6 +3257,7 @@ export class Document {
    *  automatically) or `dss.readDssMaterial`. */
   async AddValidationData(opts: ValidationDataOptions = {}): Promise<void> {
     this.assertNotRecovered('add validation data to');
+    this.requireSavedPdf20Migration('AddValidationData');
     const base = this.pendingSignedBytes ?? this.originalBytes;
     if (!base)
       throw new UnsupportedFeatureError('AddValidationData requires a signed document');
@@ -3258,6 +3303,7 @@ export class Document {
    *  by the next {@link Save}/{@link WriteTo}. Async because the TSA callback is. */
   async AddDocumentTimestamp(tsa: TimestampProvider, opts: DocumentTimestampOptions = {}): Promise<void> {
     this.assertNotRecovered('timestamp');
+    this.requireSavedPdf20Migration('AddDocumentTimestamp');
     const base = this.pendingSignedBytes ?? this.originalBytes;
     if (!base)
       throw new UnsupportedFeatureError('AddDocumentTimestamp requires an existing document to append to');
@@ -3564,6 +3610,12 @@ export class Document {
       return true;
     }
     return this.signBaseAvailable() && !this.modified;
+  }
+
+  /** Incremental signature writers need the standalone layout and object numbers. */
+  private requireSavedPdf20Migration(operation: string): void {
+    if (this.migratedToPdf20)
+      throw new UnsupportedFeatureError(`${operation}: save and reopen the converted PDF before signing or appending validation data`);
   }
 
   private signBaseAvailable(): boolean {

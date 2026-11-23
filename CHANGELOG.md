@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inspect PDF versions and migrate to PDF 2.0.** `doc.Version` reports the
+  effective version and `doc.ID` reads the trailer identifier pair.
+  `ConvertToPdf20()` moves legacy metadata to XMP, removes deprecated entries,
+  and reports each change. It rejects incompatible profile claims, legacy
+  encryption, and rewrites that would invalidate digital signatures. (chp0.4)
+
 - **Open legacy encrypted PDFs with the owner password.** `Document.Open`
   accepts either credential for R2–R4 RC4 and AES-128 files. It reports the
   same stored permissions for both and preserves both credentials when

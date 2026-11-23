@@ -352,7 +352,7 @@ const simpleValue = (v: unknown) => ({ kind: 'simple' as const, value: stripNonX
 
 /** Apply `update` to `packet` in place. `current` is what `readXmp` reported
  *  for the packet being edited — the scope of `custom`'s removal. */
-function applyXmpUpdate(packet: RdfPacket, update: XmpUpdate, current: XmpProperty[] | undefined): void {
+export function applyXmpUpdate(packet: RdfPacket, update: XmpUpdate, current: XmpProperty[] | undefined): void {
   const props = packet.properties;
   const at = (ns: string, name: string) => props.findIndex((p) => p.ns === ns && p.name === name);
   const put = (p: RdfProperty) => { const i = at(p.ns, p.name); if (i < 0) props.push(p); else props[i] = p; };

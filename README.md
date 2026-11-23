@@ -18,6 +18,10 @@ carries the highest source version. Newly authored documents default to PDF
 1.7. Compressed output, linearization, encryption, Brotli, and full-rewrite
 signing can require a higher version.
 
+Read `doc.Version` and `doc.ID` to inspect the effective version and saved file
+identifiers. Use [`doc.ConvertToPdf20()`](#migrate-a-pdf-to-20) for a standalone
+PDF 2.0 migration.
+
 ## Navigation
 
 - [At a Glance](#at-a-glance)
@@ -3517,6 +3521,38 @@ when they are image masks, non-8-bit, indexed, bilevel (JBIG2/CCITT), carry a
 `/Mask` or `/Decode`, use a colorspace with no JPEG equivalent, or are never
 drawn by the content scan (which is what leaves an `/SMask` untouched).
 
+### Migrate a PDF to 2.0
+
+`doc.Version` reports the effective version before save-time feature minimums.
+`doc.ID` returns `{ original, modified }` as upper-case hexadecimal, or
+`undefined` when a valid pair of trailer identifiers is absent. Open the saved
+bytes to inspect the identifiers the writer emitted.
+
+```ts
+import { Document } from '@asposefoss/pdf';
+
+const doc = Document.OpenFile('source.pdf');
+const report = doc.ConvertToPdf20();
+doc.WriteTo('converted-pdf20.pdf');
+console.log(report.changes);
+```
+
+Run `ConvertToPdf20()` after editing and write the result with a full save.
+The migration moves legacy `/Info` fields into XMP, prefers existing XMP
+properties, and retains `/CreationDate` and `/ModDate` in `/Info` where the
+document's profile permits them. Custom text fields use Adobe's `pdfx`
+namespace. The report identifies each metadata decision, version change, and
+removed dictionary entry, including obsolete resource, font, and usage-rights
+entries. Read the migrated metadata with `GetXmp()` or `GetXmpValue()`.
+
+The migration refuses signed or timestamped documents, incompatible PDF/A,
+PDF/UA, and PDF/X identification, and retained legacy encryption. With a
+legacy encrypted source, explicitly save as plaintext or re-encrypt with
+AES-256 and reopen before migrating. Save and reopen the migrated file before
+signing it with retained encryption or appending signatures, timestamps, or
+long-term validation data. PDF/A and accessibility conformance have their own
+validation and conversion APIs.
+
 ### Flatten Transparency for PDF/A-1
 
 Real transparency stays unresolved by default. Opt in when rasterizing affected
@@ -3907,7 +3943,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 521 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 524 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4472,6 +4508,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `MarkdownFontSpec` | A single face (whose family is derived when it is Standard-14) or an explicit family. |
 | `AddMarkdownResult` | What AddMarkdown reports. |
 | `ConversionReport` | The result of a conversion run: what was applied, what still fails, pass flag. |
+| `DocumentId` | Original and modified trailer identifiers as upper-case hexadecimal. |
+| `Pdf20MigrationChange` | A version change, metadata decision, or removed PDF dictionary entry. |
+| `Pdf20MigrationReport` | The previous version, target `2.0`, and changes from standalone migration. |
 | `ConvertAction` | One remediation performed by a converter (PDF/A or PDF/UA). |
 | `DocxExtras` | Parts and relationships a caller adds beside the minimal set — styles, numbering, images. |
 | `DocxOptions` | Options for ToDocx and ToDocx. |
@@ -4734,6 +4773,8 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.GetXmpValue(namespaceUri, name)` | One top-level XMP property as a typed `XmpValue` (`undefined` when absent or no packet) |
 | `doc.SetXmpValue(namespaceUri, name, value, opts?)` | Write one top-level XMP property from a typed `XmpValueInput` (`null` deletes); mirrors the eight `/Info`-shared properties |
 | `doc.SyncMetadata(direction)` | Make `/Info` and XMP agree on the eight shared fields (`'infoToXmp'` / `'xmpToInfo'`), converting dates; returns `MetadataSyncReport` |
+| `doc.Version` / `doc.ID` | Inspect the effective PDF version and optional trailer identifiers |
+| `doc.ConvertToPdf20()` | Prepare a standalone PDF 2.0 save and return `Pdf20MigrationReport` |
 | `doc.Save(opts?)` / `doc.WriteTo(fileName, opts?)` | Serialize (`{ compressed: true }` for xref + object streams; `{ streamFilter }` to re-filter data streams; `{ incremental: true }` to append a revision rather than rewrite) |
 | `doc.Revisions` / `doc.hasIncrementalUpdates` | The revisions this file carries, oldest first — each with its xref offset and the file's byte length as of that revision, so `bytes.subarray(0, rev.length)` is that revision's document. Empty when the chain could not be read |
 | `doc.Save({ encrypt })` / `WriteTo(name, { encrypt })` | Write a standard-security-handler encrypted PDF (AES-256/128, RC4) |

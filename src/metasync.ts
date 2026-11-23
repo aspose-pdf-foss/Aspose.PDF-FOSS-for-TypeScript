@@ -30,7 +30,7 @@ export interface SyncPlan extends MetadataSyncReport { info: MetadataUpdate; xmp
 
 type Kind = 'text' | 'author' | 'date';
 /** Field, /Info key, XmpUpdate key, XMP (ns, name), kind — in report order. */
-const MAP: readonly (readonly [MetadataField, string, keyof XmpUpdate, string, string, Kind])[] = [
+export const INFO_XMP_FIELDS: readonly (readonly [MetadataField, string, keyof XmpUpdate, string, string, Kind])[] = [
   ['title', 'Title', 'title', NS.dc, 'title', 'text'],
   ['author', 'Author', 'authors', NS.dc, 'creator', 'author'],
   ['subject', 'Subject', 'description', NS.dc, 'description', 'text'],
@@ -43,7 +43,7 @@ const MAP: readonly (readonly [MetadataField, string, keyof XmpUpdate, string, s
 
 /** The /Info-mirrored field a top-level XMP property is, if any (`o6uu.8`). */
 export function mirroredField(ns: string, name: string): MetadataField | undefined {
-  return MAP.find(([, , , n, m]) => n === ns && m === name)?.[0];
+  return INFO_XMP_FIELDS.find(([, , , n, m]) => n === ns && m === name)?.[0];
 }
 
 /** The eight /Info entries as decoded text. A non-string entry is `null`
@@ -52,7 +52,7 @@ export function mirroredField(ns: string, name: string): MetadataField | undefin
 export function infoSide(info: PdfDict | undefined, resolve: (o: PdfObject | undefined) => PdfObject): SideText {
   const out: SideText = {};
   if (!info) return out;
-  for (const [field, key, , , , kind] of MAP) {
+  for (const [field, key, , , , kind] of INFO_XMP_FIELDS) {
     const v = resolve(info.get(key));
     if (isString(v)) out[field] = kind === 'date' ? decodePdfByteString(v.bytes) : decodePdfText(v.bytes);
     else if (v !== null) out[field] = null;
@@ -87,7 +87,7 @@ export function xmpSide(bytes: Uint8Array | undefined, limits: LoadLimits): Side
   if (bytes === undefined) return out;
   try {
     const props = parseRdfPacket(bytes, limits).properties;
-    for (const [field, , , ns, name, kind] of MAP) {
+    for (const [field, , , ns, name, kind] of INFO_XMP_FIELDS) {
       const p = props.find((q) => q.ns === ns && q.name === name);
       if (!p) continue;
       const text = kind === 'author' ? creatorText(p.value)
@@ -120,7 +120,7 @@ export function planSync(info: SideText, xmp: SideText, direction: SyncDirection
     if (toXmp) (plan.xmp as Record<string, unknown>)[xkey] = v;
     else (plan.info as Record<string, unknown>)[field] = v;
   };
-  for (const [field, , xkey, , , kind] of MAP) {
+  for (const [field, , xkey, , , kind] of INFO_XMP_FIELDS) {
     let src = toXmp ? info[field] : xmp[field];
     const tgt = toXmp ? xmp[field] : info[field];
     // A source value present but unreadable says nothing to copy — and
