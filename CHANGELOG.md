@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Check signed PDF byte coverage and appended data.** Signature and document
+  timestamp verification now report structural findings for malformed ranges,
+  ambiguous signature dictionaries, and unsigned bytes after the last verified
+  PDF footer. Cryptographic verification and permission checks retain their own
+  verdicts. (eent.3)
+
 - **Review changes to signed PDF page appearances.** Opt in with
   `VerifySignatures({ shadowAnalysis: true })` to get page-level hide,
   replace, and hide-and-replace findings for each verified signature.

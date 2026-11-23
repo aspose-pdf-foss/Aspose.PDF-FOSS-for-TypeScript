@@ -205,10 +205,10 @@ export interface TimestampInfo {
 /** Verify a TimeStampToken against the `signedValue` it timestamps (the outer
  *  signature's signatureValue): check the message-imprint binding and the TSA's
  *  own CMS signature over the embedded TSTInfo. */
-export function verifyTimestampToken(token: Uint8Array, signedValue: Uint8Array): TimestampInfo {
+export function verifyTimestampToken(token: Uint8Array, signedValue: Uint8Array | undefined): TimestampInfo {
   const info = parseTstInfo(token);
-  const recomputed = new Uint8Array(createHash(info.hashAlg).update(signedValue).digest());
-  const imprintMatches = bytesEqual(recomputed, info.imprint);
+  const imprintMatches = signedValue !== undefined &&
+    bytesEqual(new Uint8Array(createHash(info.hashAlg).update(signedValue).digest()), info.imprint);
 
   // The TSA's SignedData carries the TSTInfo as eContent; verify its signature
   // by digesting that eContent with the token's own digest algorithm.

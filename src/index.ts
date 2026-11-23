@@ -286,6 +286,7 @@ export type {
   SignatureReport, CertInfo, Change, VerifyOptions, RevocationFetcher,
   DocumentTimestampReport,
 } from './sigverify.js';
+export type { SignatureStructureFinding } from './sigstructure.js';
 export type { UnsignedAnnotationChange, UnsignedContentSummary } from './unsignedcontent.js';
 export type { ShadowAnalysis, ShadowFinding } from './shadowanalysis.js';
 export {

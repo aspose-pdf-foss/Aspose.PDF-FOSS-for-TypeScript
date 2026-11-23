@@ -4,11 +4,12 @@ import { verifyTimestampToken, type TimestampInfo } from './rfc3161.js';
 import { checkRevocation, findIssuer, type RevocationMaterial } from './revocation.js';
 import { verifyCertChain } from './chain.js';
 import { readXref } from './xref.js';
-import { digestByteRange, byteRangeContent } from './signature.js';
+import { digestByteRange, byteRangeContent, signatureRevisionEnd } from './signature.js';
 import type { SignatureField } from './signature.js';
 import { rethrowLimit } from './errors.js';
 import type { UnsignedContentSummary } from './unsignedcontent.js';
 import type { ShadowAnalysis } from './shadowanalysis.js';
+import type { SignatureStructureFinding } from './sigstructure.js';
 
 /** A fetcher for revocation material: given the target and its issuer (DER),
  *  return the OCSP response / CRL bytes, or undefined when none is available. */
@@ -77,6 +78,8 @@ export interface SignatureReport {
   coversWholeFile: boolean;
   /** Objects added/modified in revisions appended after this signature. */
   modifications: Change[];
+  /** Structural findings for this signature and its claimed coverage. */
+  structureFindings: SignatureStructureFinding[];
   /** Content attribution for the latest signature with a usable signed range,
    *  when its digest and CMS signature both verify. */
   unsignedContent?: UnsignedContentSummary;
@@ -127,17 +130,19 @@ export function verifySignature(
     signature: 'invalid',
     coversWholeFile: sig.coversWholeFile,
     modifications: [],
+    structureFindings: [],
     chain: 'unchecked',
     revocation: 'unchecked',
     docMDP: 'n/a',
     fieldMDP: 'n/a',
   };
   if (!sig.byteRange || !sig.contents) return base;
+  const signedEnd = signatureRevisionEnd(sig.byteRange, bytes.length);
 
   const cms = sig.cmsLength !== undefined ? sig.contents.subarray(0, sig.cmsLength) : sig.contents;
   try {
     const parsed = parseSignedData(cms);
-    const expectedDigest = digestByteRange(bytes, sig.byteRange, parsed.digestAlgorithm);
+    const expectedDigest = signedEnd === undefined ? undefined : digestByteRange(bytes, sig.byteRange, parsed.digestAlgorithm);
     const res = verifySignedData(cms, expectedDigest);
     base.integrity = res.digestMatches ? 'valid' : 'tampered';
     base.signature = res.signatureValid ? 'valid' : 'invalid';
@@ -159,9 +164,7 @@ export function verifySignature(
     return base; // unparseable CMS -> invalid/tampered
   }
 
-  // Coverage diff: the signed revision ends at byteRange[2] + byteRange[3].
-  const signedEnd = sig.byteRange[2] + sig.byteRange[3];
-  if (!sig.coversWholeFile && signedEnd < bytes.length)
+  if (signedEnd !== undefined && signedEnd < bytes.length)
     base.modifications = revisionChanges(bytes, signedEnd);
   return base;
 }
@@ -177,6 +180,8 @@ export interface DocumentTimestampReport {
   coversWholeFile: boolean;
   /** Objects added/modified in revisions appended after this timestamp. */
   modifications: Change[];
+  /** Structural findings for this timestamp and its claimed coverage. */
+  structureFindings: SignatureStructureFinding[];
   /** The TSA's certificate summary, when the token could be parsed. */
   signerCert?: CertInfo;
 }
@@ -191,13 +196,16 @@ export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField):
     valid: false, policy: '', serialNumber: '',
   };
   const report: DocumentTimestampReport = {
-    name: sig.name, timestamp: failed, coversWholeFile: sig.coversWholeFile, modifications: [],
+    name: sig.name, timestamp: failed, coversWholeFile: sig.coversWholeFile,
+    modifications: [], structureFindings: [],
   };
   if (!sig.byteRange || !sig.contents) return report;
+  const signedEnd = signatureRevisionEnd(sig.byteRange, bytes.length);
 
   const token = sig.cmsLength !== undefined ? sig.contents.subarray(0, sig.cmsLength) : sig.contents;
   try {
-    report.timestamp = verifyTimestampToken(token, byteRangeContent(bytes, sig.byteRange));
+    const signedBytes = signedEnd === undefined ? undefined : byteRangeContent(bytes, sig.byteRange);
+    report.timestamp = verifyTimestampToken(token, signedBytes);
   } catch (caught) { rethrowLimit(caught);
     // malformed token: keep the failed verdict
   }
@@ -207,8 +215,7 @@ export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField):
     // no signer cert available
   }
 
-  const signedEnd = sig.byteRange[2] + sig.byteRange[3];
-  if (!sig.coversWholeFile && signedEnd < bytes.length)
+  if (signedEnd !== undefined && signedEnd < bytes.length)
     report.modifications = revisionChanges(bytes, signedEnd);
   return report;
 }
@@ -216,12 +223,17 @@ export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField):
 /** Objects whose newest definition lies beyond `signedEnd` — i.e. written in a
  *  revision appended after the signature — tagged `added` or `modified`. */
 function revisionChanges(bytes: Uint8Array, signedEnd: number): Change[] {
-  const full = readXref(bytes).entries;
-  let revivable: Map<number, unknown>;
+  let full: ReturnType<typeof readXref>['entries'];
+  try {
+    full = readXref(bytes).entries;
+  } catch (caught) { rethrowLimit(caught);
+    return [];
+  }
+  let revivable: typeof full;
   try {
     revivable = readXref(bytes.subarray(0, signedEnd)).entries;
   } catch (caught) { rethrowLimit(caught);
-    revivable = new Map();
+    return [];
   }
   const changes: Change[] = [];
   for (const [num, entry] of full) {

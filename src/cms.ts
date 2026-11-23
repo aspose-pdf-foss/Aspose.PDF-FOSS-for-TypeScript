@@ -593,9 +593,9 @@ export interface CmsVerifyResult {
   signerCertificate: Uint8Array;
 }
 
-export function verifySignedData(cms: Uint8Array, expectedDigest: Uint8Array): CmsVerifyResult {
+export function verifySignedData(cms: Uint8Array, expectedDigest: Uint8Array | undefined): CmsVerifyResult {
   const p = parseSignedData(cms);
-  const digestMatches = bytesEqual(p.messageDigest, expectedDigest);
+  const digestMatches = expectedDigest !== undefined && bytesEqual(p.messageDigest, expectedDigest);
 
   // Signature is computed over the signedAttrs as a SET OF (0x31), not [0].
   const signedAttrsSet = Uint8Array.from(p.signedAttrs);

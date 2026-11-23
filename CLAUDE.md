@@ -13575,6 +13575,13 @@ Source (`src/`):
   removed page. Overlay evidence needs a layer-specific rerender to corroborate
   the earlier appearance. This preserves independent cryptographic and
   permission verdicts.
+  **sigstructure.ts** reports signature dictionary and revision evidence by
+  default (`eent.3`). The object parser records original `/Contents` token
+  boundaries and duplicate keys before dictionaries collapse them. A valid
+  gap may span the whole token or the hex digits between signed delimiters.
+  Structure checks use the footer confirmed immediately after the parsed
+  cross-reference section. The recovery estimate in `PdfRevision.length`
+  remains available for callers and cannot establish signed coverage.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream

@@ -5,6 +5,15 @@ import { LoadLimits } from './loadlimits.js';
 
 export type LengthResolver = (numOrValue: PdfObject) => number | undefined;
 
+export interface SignatureDictionarySource {
+  end: number;
+  duplicateKeys: boolean;
+  contents: { start: number; end: number };
+}
+
+/** Source offsets are available only from strict parses of the original file bytes. */
+export const signatureDictionarySources = new WeakMap<PdfDict, SignatureDictionarySource>();
+
 /** The delimiters no object production claims; `lexer.ts` returns each as a
  *  one-character keyword rather than throwing. */
 const STRAY = new Set([')', '{', '}', '>']);
@@ -42,6 +51,7 @@ export class ObjectParser {
     private readonly resolveLength?: LengthResolver,
     private readonly limits: LoadLimits = LoadLimits.defaults,
     private readonly lenient = false,
+    private readonly recordSignatureSource = false,
   ) {
     // The one site that turns the lexer's cap on. Object parsing owns this lexer
     // for as long as it runs, and no token can be larger than the object holding
@@ -147,15 +157,29 @@ export class ObjectParser {
     const at = this.lx.pos;
     const dict: PdfDict = this.nested(at, () => {
       const d: PdfDict = new Map();
+      const recordSource = this.recordSignatureSource && !this.lenient;
+      let contents: SignatureDictionarySource['contents'] | undefined;
+      let duplicateKeys = false;
       for (;;) {
         const k = this.take();
-        if (k.t === 'delim' && k.v === '>>') return d;
+        if (k.t === 'delim' && k.v === '>>') {
+          if (contents && d.has('ByteRange'))
+            signatureDictionarySources.set(d, { end: this.lx.pos, duplicateKeys, contents });
+          return d;
+        }
         if (this.isStray(k)) continue;
         if (k.t !== 'name') throw new PdfParseError('expected dict key', k.pos);
         // By ENTRY, which is what a dictionary holds; counting tokens would
         // halve the bound for every dictionary and for no array.
         this.limits.enforce('maxContainerItems', d.size + 1, `dictionary at byte ${at}`);
-        d.set(k.v as string, this.parseValue(this.take()));
+        const token = this.take();
+        const value = this.parseValue(token);
+        if (recordSource) {
+          duplicateKeys ||= d.has(k.v);
+          if (k.v === 'Contents')
+            contents = token.t === 'str' ? { start: token.pos, end: this.lx.pos } : undefined;
+        }
+        d.set(k.v, value);
       }
     });
     // Is a stream following?

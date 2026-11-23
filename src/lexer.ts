@@ -13,9 +13,9 @@ export type Token = (
 
 const WS = new Set([0, 9, 10, 12, 13, 32]);
 const DELIM = new Set([40, 41, 60, 62, 91, 93, 123, 125, 47, 37]); // ()<>[]{}/%
-const isWs = (b: number) => WS.has(b);
+export const isPdfWhitespace = (b: number) => WS.has(b);
 const isDelim = (b: number) => DELIM.has(b);
-const isReg = (b: number) => !isWs(b) && !isDelim(b);
+const isReg = (b: number) => !isPdfWhitespace(b) && !isDelim(b);
 
 export class Lexer {
   pos = 0;
@@ -45,7 +45,7 @@ export class Lexer {
   private skipWsAndComments() {
     while (this.pos < this.buf.length) {
       const b = this.buf[this.pos];
-      if (isWs(b)) { this.pos++; continue; }
+      if (isPdfWhitespace(b)) { this.pos++; continue; }
       if (b === 37) { // % comment to EOL
         while (this.pos < this.buf.length && this.buf[this.pos] !== 10 && this.buf[this.pos] !== 13) this.pos++;
         continue;
@@ -167,7 +167,7 @@ export class Lexer {
     while (this.pos < this.buf.length && this.buf[this.pos] !== 62) {
       if (digits.length >= 2 * this.maxTokenBytes) { this.overflow = (digits.length >> 1) + 1; break; }
       const b = this.buf[this.pos++];
-      if (isWs(b)) continue;
+      if (isPdfWhitespace(b)) continue;
       digits.push(b);
     }
     this.pos++; // skip '>'

@@ -3889,7 +3889,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 520 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 521 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4104,7 +4104,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `DecorationStyle` | A rule drawn beneath (underline) or through (strikethrough) the text. |
 | `DocumentFont` | One font of `doc.Fonts`: `name`, `subsetTag`, `subtype`, `descendantSubtype`, `embedded`, `program`, `encoding`, `customEncoding`, `declaredOn` and `usedOn` pages, and the live `dict`. |
 | `DocumentJavaScript` | One entry of the document-level JavaScript name tree. |
-| `DocumentTimestampReport` | Verdict for one document timestamp (`/DocTimeStamp`): the RFC 3161 token's time and imprint/TSA-signature checks, plus coverage and the TSA cert. |
+| `DocumentTimestampReport` | RFC 3161 time, imprint, TSA signature, byte coverage, and structural findings for a document timestamp. |
 | `DrPruneResult` | Interface with 3 properties. |
 | `DssEntry` | Per-signature validation data to embed under one `/VRI` entry. |
 | `ElemOpts` | Options for creating a structure element. |
@@ -4533,6 +4533,16 @@ renderer, including annotation appearances. The renderer may simplify
 unsupported graphics. These findings are signals for review and the reported
 signature, trust, and DocMDP verdicts are independent.
 
+Every `VerifySignatures()` and `VerifyDocumentTimestamps()` report includes
+`structureFindings`. Check this array alongside the cryptographic and permission
+verdicts. Findings cover malformed byte ranges, duplicate keys in a signature
+dictionary, a gap that extends outside or misses `/Contents`, and a dictionary
+that cannot be tied to the signed revision. `appended-data` gives the zero-based
+offset of the first unsigned non-whitespace byte after the last verified PDF
+footer. Ordinary incremental revisions remain visible in `modifications`.
+The report also identifies when the source dictionary, signed revision, or
+final footer cannot be verified.
+
 | Class | Description |
 |---|---|
 | `DocMdpPermission` | DocMDP permitted-changes level for a certification signature (PDF 32000-1 §12.8.2.2): the `/P` value in the DocMDP `/TransformParams`. |
@@ -4547,7 +4557,8 @@ signature, trust, and DocMDP verdicts are independent.
 | `SignatureAppearance` | A visible signature appearance request. |
 | `SignatureField` | Read-side view of a signature field (always available, like `doc.Form`). |
 | `SignatureFieldInit` | Options for Form.AddSignatureField / Page.AddSignatureField, including an optional `seedValue`. |
-| `SignatureReport` | Coverage, integrity, trust, modification and permission verdicts for one signature, plus optional `unsignedContent` and `shadowAnalysis`. |
+| `SignatureReport` | Coverage, integrity, trust, modification, permission and structural findings for one signature, plus optional `unsignedContent` and `shadowAnalysis`. |
+| `SignatureStructureFinding` | Finding kind, with a zero-based byte offset for unsigned data after the last verified PDF footer. |
 | `ShadowAnalysis` | Signed-to-current page appearance findings and signed page numbers that could not be compared. |
 | `ShadowFinding` | Signed page number, appearance change kind, and overlay evidence for one finding. |
 | `UnsignedAnnotationChange` | A changed annotation or widget's current page, object number, subtype and owning field name when available. |

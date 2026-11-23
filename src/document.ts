@@ -184,6 +184,7 @@ import {
 } from './sigverify.js';
 import { attachUnsignedContentSummary } from './unsignedcontent.js';
 import { compareShadowPages, findSignedRevision } from './shadowanalysis.js';
+import { hasSignatureData, signatureStructureCheck } from './sigstructure.js';
 import { parseSignedData } from './cms.js';
 import { findIssuer } from './revocation.js';
 import {
@@ -990,7 +991,7 @@ export class Document {
           const parser = new ObjectParser(new Lexer(buf, entry.offset), (lenObj) => {
             const r = isRef(lenObj) ? parseEntry(lenObj.num) : lenObj;
             return typeof r === 'number' ? r : undefined;
-          }, limits, lenient?.has(num) === true);
+          }, limits, lenient?.has(num) === true, true);
           value = parser.parseIndirectObject().value;
           // Decrypt top-level offset objects, except the /Encrypt dict and any
           // cross-reference stream (/Type /XRef is never encrypted). An
@@ -3287,19 +3288,24 @@ export class Document {
 
   /** Verify every signature in the document: recompute each `/ByteRange` digest,
    *  verify the detached CMS, and diff what changed after each signature. Returns
-   *  one {@link SignatureReport} per signed field. Async for parity with the
+   *  one {@link SignatureReport} per field with signature data. Async for the
    *  forthcoming chain/revocation/timestamp checks (no I/O in V1). */
   async VerifySignatures(opts: VerifyOptions = {}): Promise<SignatureReport[]> {
     const bytes = this.pendingSignedBytes ?? this.originalBytes;
     if (!bytes) return [];
     // Re-parse from the actual bytes so /ByteRange and /Contents are read as
     // written (the live model never holds the filled placeholder).
-    const src = Document.Open(bytes, opts.shadowAnalysis ? { limits: this.loadLimits } : undefined);
-    const signed = src.Signatures.filter((s) => s.isSigned);
+    const src = Document.Open(bytes, { limits: this.loadLimits });
+    const signed = src.Signatures.filter(hasSignatureData);
     // Chain validation (V2) is synchronous; feed it any /DSS-embedded certs as
     // extra intermediates and validate against the caller's trust anchors.
     const chain = { trustAnchors: opts.trustAnchors, at: opts.at, extraCerts: readDssCerts(src) };
-    const reports = signed.map((s) => verifySignature(bytes, s, chain));
+    const checkStructure = src.signatureStructure(bytes);
+    const reports = signed.map((s) => {
+      const report = verifySignature(bytes, s, chain);
+      report.structureFindings = checkStructure(s);
+      return report;
+    });
     const openSignedRevision = (end: number) => Document.Open(bytes.subarray(0, end), { limits: src.loadLimits });
     attachUnsignedContentSummary(src, signed, reports, bytes.length, openSignedRevision);
     if (opts.shadowAnalysis) {
@@ -3356,6 +3362,25 @@ export class Document {
     return reports;
   }
 
+  private signatureStructure(bytes: Uint8Array) {
+    return signatureStructureCheck(bytes, this.revisions, (end, name, xrefOffset) => {
+      const prior = Document.Open(bytes.subarray(0, end), { limits: this.loadLimits });
+      if (prior.recovery || prior.Revisions.at(-1)?.xrefOffset !== xrefOffset)
+        throw new PdfParseError('could not open the signed revision at its cross-reference section');
+      const field = prior.Form.Get(name);
+      return field?.Type === 'signature' ? prior.readSignatureField(field.Dict, name) : undefined;
+    });
+  }
+
+  private verificationRevision(bytes: Uint8Array, end: number): Document | undefined {
+    if (end === bytes.length) return this;
+    try {
+      return Document.Open(bytes.subarray(0, end), { limits: this.loadLimits });
+    } catch (caught) { rethrowLimit(caught);
+      return undefined;
+    }
+  }
+
   /** Set the `docMDP` verdict of each APPROVAL signature whose lock sets a
    *  level (`/Lock /P`, `puep.7`), through the same classifier a certification
    *  uses. The level comes from what the SIGNER signed — the FieldMDP
@@ -3369,16 +3394,17 @@ export class Document {
     for (let i = 0; i < signed.length; i++) {
       const sig = signed[i];
       const report = reports[i];
-      if (report.docMDP !== 'n/a' || !sig.byteRange) continue;   // a certification: applyDocMdp's
-      const signedEnd = sig.byteRange[2] + sig.byteRange[3];
-      const prevDoc = signedEnd < bytes.length ? Document.Open(bytes.subarray(0, signedEnd)) : src;
+      const signedEnd = signatureRevisionEnd(sig.byteRange, bytes.length);
+      if (report.docMDP !== 'n/a' || signedEnd === undefined) continue;
+      const prevDoc = src.verificationRevision(bytes, signedEnd);
+      if (!prevDoc) continue;
       const carried = readFieldMdpLock(sig.valueDict, (o) => src.resolve(o ?? null))?.permissions;
       const fieldThen = prevDoc.Form.Get(sig.name);
       const level = carried
         ?? (fieldThen === undefined ? undefined
           : readLockLevel((o) => prevDoc.resolve(o ?? null), fieldThen.Dict.get('Lock')));
       if (level === undefined) continue;
-      if (sig.coversWholeFile || signedEnd >= bytes.length) { report.docMDP = 'ok'; continue; }
+      if (signedEnd === bytes.length) { report.docMDP = 'ok'; continue; }
       const view = (d: Document): DocMdpDoc => ({ getObject: (n) => d.getObject(n), resolve: (o) => d.resolve(o ?? null) });
       const rootRef = src.trailer.get('Root');
       const acroRef = src.catalog().get('AcroForm');
@@ -3408,14 +3434,16 @@ export class Document {
       const lock = readFieldMdpLock(sig.valueDict, (o) => src.resolve(o ?? null));
       if (lock === undefined) continue;
       const report = reports[i];
-      if (sig.coversWholeFile || !sig.byteRange) {
+      const signedEnd = signatureRevisionEnd(sig.byteRange, bytes.length);
+      if (signedEnd === undefined) continue;
+      if (signedEnd === bytes.length) {
         report.fieldMDP = 'ok'; report.lockedFieldsChanged = []; continue;
       }
-      const signedEnd = sig.byteRange[2] + sig.byteRange[3];
-      if (signedEnd >= bytes.length) { report.fieldMDP = 'ok'; report.lockedFieldsChanged = []; continue; }
+      const prior = src.verificationRevision(bytes, signedEnd);
+      if (!prior) continue;
 
       numOf ??= new Map([...src.objects].map(([n, o]) => [o, n] as [PdfObject, number]));
-      const prev = Document.Open(bytes.subarray(0, signedEnd)).Form;
+      const prev = prior.Form;
       const touched = new Set(report.modifications.map((m) => m.object));
       const changed = new Set<string>();
       const curNames = new Set<string>();
@@ -3441,8 +3469,13 @@ export class Document {
   async VerifyDocumentTimestamps(): Promise<DocumentTimestampReport[]> {
     const bytes = this.pendingSignedBytes ?? this.originalBytes;
     if (!bytes) return [];
-    const src = Document.Open(bytes);
-    return src.DocumentTimestamps.filter((t) => t.isSigned).map((t) => verifyDocumentTimestamp(bytes, t));
+    const src = Document.Open(bytes, { limits: this.loadLimits });
+    const checkStructure = src.signatureStructure(bytes);
+    return src.DocumentTimestamps.filter(hasSignatureData).map((t) => {
+      const report = verifyDocumentTimestamp(bytes, t);
+      report.structureFindings = checkStructure(t);
+      return report;
+    });
   }
 
   /** Set the certification signature's `docMDP` verdict (V4). Finds the field
@@ -3463,11 +3496,12 @@ export class Document {
 
     const sig = signed[idx];
     // Nothing appended after the certified revision → trivially within the level.
-    if (sig.coversWholeFile || !sig.byteRange) { reports[idx].docMDP = 'ok'; return; }
-    const signedEnd = sig.byteRange[2] + sig.byteRange[3];
-    if (signedEnd >= bytes.length) { reports[idx].docMDP = 'ok'; return; }
+    const signedEnd = signatureRevisionEnd(sig.byteRange, bytes.length);
+    if (signedEnd === undefined) return;
+    if (signedEnd === bytes.length) { reports[idx].docMDP = 'ok'; return; }
 
-    const prevDoc = Document.Open(bytes.subarray(0, signedEnd));
+    const prevDoc = src.verificationRevision(bytes, signedEnd);
+    if (!prevDoc) return;
     const view = (d: Document): DocMdpDoc => ({ getObject: (n) => d.getObject(n), resolve: (o) => d.resolve(o ?? null) });
     const rootRef = src.trailer.get('Root');
     const acroRef = src.catalog().get('AcroForm');

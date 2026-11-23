@@ -85,6 +85,7 @@ describe('Document.VerifyDocumentTimestamps', () => {
     expect(r.timestamp.tokenSignatureValid).toBe(true);
     expect(r.timestamp.time).toBeInstanceOf(Date);
     expect(r.coversWholeFile).toBe(true);
+    expect(r.structureFindings).toEqual([]);
     expect(r.signerCert?.subject).toContain('Test TSA');
   });
 

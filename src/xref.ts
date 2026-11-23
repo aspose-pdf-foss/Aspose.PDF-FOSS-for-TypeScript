@@ -1,4 +1,4 @@
-import { Lexer } from './lexer.js';
+import { isPdfWhitespace, Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
 import { inflateStream } from './flate.js';
 import { PdfParseError } from './errors.js';
@@ -31,6 +31,15 @@ export interface PdfRevision {
   xrefOffset: number;
   /** The file's byte length as of this revision, i.e. the end of its `%%EOF`. */
   length: number;
+}
+
+// A recovered revision length can be an estimate. Signature checks need the
+// actual footer paired with this section, independently of that length.
+const confirmedFooters = new WeakMap<PdfRevision, number>();
+
+/** @internal Byte immediately after the confirmed `%%EOF` marker. */
+export function revisionFooterEnd(revision: PdfRevision): number | undefined {
+  return confirmedFooters.get(revision);
 }
 
 export interface XrefResult {
@@ -70,7 +79,10 @@ export function readXref(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaul
     // earlier sections must not overwrite newer entries
     for (const [num, e] of section.entries) if (!entries.has(num)) entries.set(num, e);
     if (!trailer) trailer = section.trailer;
-    revisions.push({ xrefOffset: pos, length: revisionEnd(buf, section.end) });
+    const revision = { xrefOffset: pos, length: revisionEnd(buf, section.end) };
+    const footer = confirmFooter(buf, section.end, pos);
+    if (footer !== undefined) confirmedFooters.set(revision, footer);
+    revisions.push(revision);
     // Hybrid: /XRefStm points to a parallel xref stream
     const xrefStm = section.trailer.get('XRefStm');
     if (typeof xrefStm === 'number' && !seen.has(xrefStm)) {
@@ -83,6 +95,23 @@ export function readXref(buf: Uint8Array, limits: LoadLimits = LoadLimits.defaul
   }
   if (!trailer) throw new PdfParseError('no trailer found');
   return { entries, trailer, revisions: revisions.reverse() };
+}
+
+function confirmFooter(buf: Uint8Array, from: number, xrefOffset: number): number | undefined {
+  const lexer = new Lexer(buf, from);
+  lexer.maxTokenBytes = 32;
+  let keyword = lexer.next();
+  if (keyword.t === 'kw' && keyword.v === 'endobj') keyword = lexer.next();
+  if (keyword.t !== 'kw' || keyword.v !== 'startxref') return undefined;
+  const offset = lexer.next();
+  if (offset.t !== 'num' || offset.over !== undefined || offset.v !== xrefOffset) return undefined;
+  let pos = lexer.pos;
+  while (isPdfWhitespace(buf[pos])) pos++;
+  const end = pos + 5;
+  if (buf[pos] === 37 && buf[pos + 1] === 37 && buf[pos + 2] === 69 &&
+      buf[pos + 3] === 79 && buf[pos + 4] === 70 && (end === buf.length || isPdfWhitespace(buf[end])))
+    return end;
+  return undefined;
 }
 
 /** Byte length of the revision whose cross-reference section ENDS at `from`:

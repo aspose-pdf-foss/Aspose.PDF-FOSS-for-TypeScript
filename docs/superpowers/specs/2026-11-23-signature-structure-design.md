@@ -1,0 +1,7 @@
+# Signature structure and appended data
+
+Beads issue `eent.3` adds structural findings to every `VerifySignatures()` report. The digest and CMS results continue to describe cryptography. The findings let a caller separately review the dictionary and the bytes a signature claims to cover. Document timestamps get the same checks on their verification reports.
+
+Run the checks by default. An opt-in would save some work on historical signatures, but callers would have to know to request structural coverage. The parser can capture the evidence during the existing file parse. Only historical signatures with usable coverage need a signed-prefix parse to establish that their field points to the same dictionary.
+
+Require two ordered ranges from byte zero, with a single gap matching the direct `/Contents` string in the actual signature dictionary. Accept both the entire string token and the hex digits between signed delimiters, as the library's writer uses the latter. Check for duplicate dictionary keys before the parser collapses them. Use the parsed cross-reference section to bind the signed end to a revision footer and check for non-whitespace after the last recognized footer outside the signed range. Later incremental revisions have their own footer and use the existing modification report. Report when source bytes or revision boundaries are unavailable. [ISO 32000-2 signature errata](https://pdf-issues.pdfa.org/32000-2-2020/clause12.html)
