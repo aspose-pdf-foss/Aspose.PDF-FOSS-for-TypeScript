@@ -256,6 +256,8 @@ export interface OpenOptions {
   limits?: LoadLimits;
 }
 
+type OpenCredentials = Pick<OpenOptions, 'password' | 'recipient'>;
+
 /** True when the file ends with a startxref whose value is a plausible offset
  *  into it. Used only to classify *why* readXref failed — a pointer that is
  *  absent, malformed or out of range is a different fault from one that pointed
@@ -299,6 +301,8 @@ export interface RecoveryReport {
 /** One object-building pass over an entry map, from {@link Document.build}. */
 interface BuildResult {
   objects: Map<number, PdfObject>;
+  /** Credentials that authenticated this build, if it decrypted the file. */
+  credentials?: OpenCredentials;
   /** The key and `/Encrypt` dict this document was decrypted with, so a save
    *  can write it encrypted again. Absent for a plaintext document. */
   preserved?: { keys: CryptKeys; encryptDict: PdfDict };
@@ -320,7 +324,7 @@ interface BuildResult {
 function normalizeRecipient(recipient: PubSecRecipient): { privateKey: KeyObject; certificate: Uint8Array } {
   if ('pkcs12' in recipient) {
     const { privateKey, certificates } = parsePkcs12(recipient.pkcs12, recipient.passphrase ?? '');
-    return { privateKey, certificate: certificates[0] };
+    return { privateKey, certificate: new Uint8Array(certificates[0]) };
   }
   const certificate = new Uint8Array(new X509Certificate(
     typeof recipient.certificate === 'string'
@@ -446,11 +450,9 @@ export class Document {
   /** The bytes this document was opened from (absent when authored in memory).
    *  Required as the base for incremental-update (append) signing. */
   private originalBytes?: Uint8Array;
-  /** The options `Open` was called with, retained so an incremental save can
-   *  re-parse `originalBytes` into a pristine baseline. The password is the
-   *  reason this is kept rather than re-derived: `build()` constructs its
-   *  `Decryptor` locally and discards it. */
-  private openOptions: OpenOptions = {};
+  /** Retain the effective password or resolved recipient for fresh byte views.
+   *  Keep it out of ordinary object inspection. */
+  #openCredentials?: OpenCredentials;
   /** An Encryptor over the key and `/Encrypt` dict this document was opened
    *  with, so `Save` writes it encrypted again rather than silently in the
    *  clear. Absent for a plaintext document, which is what keeps an
@@ -765,7 +767,7 @@ export class Document {
       if (pass.objStmDamage.length > 0) xrefFailure.objectStreams = pass.objStmDamage;
       const doc = new Document(pass.objects, recovered, limits, budget);
       doc.originalBytes = buf;
-      doc.openOptions = opts;
+      doc.#openCredentials = pass.credentials;
       doc.revisions = revisions;
       if (pass.preserved)
         doc.preservedEncryptor = buildEncryptorFromKeys(pass.preserved.keys, pass.preserved.encryptDict);
@@ -861,7 +863,7 @@ export class Document {
 
     const doc = new Document(pass.objects, trailer, limits, budget);
     doc.originalBytes = buf;
-    doc.openOptions = opts;
+    doc.#openCredentials = pass.credentials;
     doc.revisions = revisions;
     if (pass.preserved)
       doc.preservedEncryptor = buildEncryptorFromKeys(pass.preserved.keys, pass.preserved.encryptDict);
@@ -933,6 +935,7 @@ export class Document {
       o === undefined ? null : isRef(o) ? rawObject(o.num) : o;
 
     let decryptor: Decryptor | undefined;
+    let credentials: OpenCredentials | undefined;
     let preserved: { keys: CryptKeys; encryptDict: PdfDict } | undefined;
     let permissions: Permissions | undefined;
     let encObjNum = -1;
@@ -943,16 +946,23 @@ export class Document {
       if (!isDict(encDict)) throw new PdfParseError('/Encrypt is not a dict');
       const filter = resolveRaw(encDict.get('Filter'));
       if (isName(filter) && filter.name === 'Adobe.PubSec') {
-        if (!opts.recipient) throw new InvalidPasswordError();
-        const result = buildPubSecDecryptor(encDict, normalizeRecipient(opts.recipient), resolveRaw);
+        const supplied = opts.recipient;
+        if (!supplied) throw new InvalidPasswordError();
+        const recipient = normalizeRecipient(supplied);
+        const result = buildPubSecDecryptor(encDict, recipient, resolveRaw);
         decryptor = { decryptObject: result.decryptObject, keys: result.keys };
+        credentials = { recipient };
         permissions = result.permissions;
         preserved = { keys: result.keys, encryptDict: encDict };
       } else {
         const idArr = trailer.get('ID');
         const id0 = isArray(idArr) && isString(idArr[0]) ? idArr[0].bytes : undefined;
-        decryptor = buildDecryptor(encDict, id0, opts.password ?? '', resolveRaw);
-        if (decryptor) preserved = { keys: decryptor.keys, encryptDict: encDict };
+        const password = opts.password ?? '';
+        decryptor = buildDecryptor(encDict, id0, password, resolveRaw);
+        if (decryptor) {
+          credentials = { password };
+          preserved = { keys: decryptor.keys, encryptDict: encDict };
+        }
         const P = resolveRaw(encDict.get('P'));
         if (typeof P === 'number') permissions = permissionsFromP(P);
       }
@@ -1111,7 +1121,7 @@ export class Document {
     for (const d of damagedStreams.values()) for (const n of d.lost) lostInObjStm.add(n);
 
     return {
-      objects, failed, lostInObjStm, preserved,
+      objects, failed, lostInObjStm, preserved, credentials,
       objStmDamage: [...damagedStreams.values()],
       repaired, permissions,
     };
@@ -1266,7 +1276,12 @@ export class Document {
       throw new UnsupportedFeatureError(
         'cannot compute an incremental delta: this document was authored in memory, '
         + 'so there is no base byte image to compare against');
-    return Document.Open(this.originalBytes, this.openOptions).objects;
+    return this.reopen(this.originalBytes).objects;
+  }
+
+  /** Parse a fresh view of stored bytes under the original credentials and limits. */
+  private reopen(bytes: Uint8Array): Document {
+    return Document.Open(bytes, { ...this.#openCredentials, limits: this.loadLimits });
   }
 
   /** The live /Info dict, or undefined when there is none. */
@@ -3296,7 +3311,7 @@ export class Document {
     if (!bytes) return [];
     // Re-parse from the actual bytes so /ByteRange and /Contents are read as
     // written (the live model never holds the filled placeholder).
-    const src = Document.Open(bytes, { limits: this.loadLimits });
+    const src = this.reopen(bytes);
     const signed = src.Signatures.filter(hasSignatureData);
     // Chain validation (V2) is synchronous; feed it any /DSS-embedded certs as
     // extra intermediates and validate against the caller's trust anchors.
@@ -3307,7 +3322,7 @@ export class Document {
       report.structureFindings = checkStructure(s);
       return report;
     });
-    const openSignedRevision = (end: number) => Document.Open(bytes.subarray(0, end), { limits: src.loadLimits });
+    const openSignedRevision = (end: number) => src.reopen(bytes.subarray(0, end));
     attachUnsignedContentSummary(src, signed, reports, bytes.length, openSignedRevision);
     if (opts.shadowAnalysis) {
       for (let i = 0; i < reports.length; i++) {
@@ -3365,7 +3380,7 @@ export class Document {
 
   private signatureStructure(bytes: Uint8Array) {
     return signatureStructureCheck(bytes, this.revisions, (end, name, xrefOffset) => {
-      const prior = Document.Open(bytes.subarray(0, end), { limits: this.loadLimits });
+      const prior = this.reopen(bytes.subarray(0, end));
       if (prior.recovery || prior.Revisions.at(-1)?.xrefOffset !== xrefOffset)
         throw new PdfParseError('could not open the signed revision at its cross-reference section');
       const field = prior.Form.Get(name);
@@ -3376,7 +3391,7 @@ export class Document {
   private verificationRevision(bytes: Uint8Array, end: number): Document | undefined {
     if (end === bytes.length) return this;
     try {
-      return Document.Open(bytes.subarray(0, end), { limits: this.loadLimits });
+      return this.reopen(bytes.subarray(0, end));
     } catch (caught) { rethrowLimit(caught);
       return undefined;
     }
@@ -3470,7 +3485,7 @@ export class Document {
   async VerifyDocumentTimestamps(): Promise<DocumentTimestampReport[]> {
     const bytes = this.pendingSignedBytes ?? this.originalBytes;
     if (!bytes) return [];
-    const src = Document.Open(bytes, { limits: this.loadLimits });
+    const src = this.reopen(bytes);
     const checkStructure = src.signatureStructure(bytes);
     return src.DocumentTimestamps.filter(hasSignatureData).map((t) => {
       const report = verifyDocumentTimestamp(bytes, t);

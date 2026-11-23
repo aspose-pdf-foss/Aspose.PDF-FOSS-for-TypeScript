@@ -619,6 +619,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Verify signatures and timestamps in encrypted PDFs.** Verification reuses
+  the password or recipient credential supplied on open for the current file
+  and earlier signed revisions. Digest and timestamp checks still use the
+  original covered bytes. (chp0.1)
+
 - **Keep recursive Form draws skipped inside Type 3 glyphs after a path edit.**
   The edited show uses private glyph procedures where needed, preserving text
   advance, inherited resources, and other uses of the font after saving. (gzwx)

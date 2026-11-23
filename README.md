@@ -4515,6 +4515,10 @@ also includes byte coverage, revocation status, and any applicable DocMDP and
 FieldMDP verdicts. The signature with the latest usable signed byte range
 carries `unsignedContent` when both its digest and CMS signature verify.
 
+For encrypted PDFs, supply the password or recipient credential when you open
+the document. Signature and document timestamp verification reuse it when
+reading the current file and earlier signed revisions.
+
 ```ts
 import { Document } from '@asposefoss/pdf';
 

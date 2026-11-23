@@ -13589,6 +13589,10 @@ Source (`src/`):
   Structure checks use the footer confirmed immediately after the parsed
   cross-reference section. The recovery estimate in `PdfRevision.length`
   remains available for callers and cannot establish signed coverage.
+  **Invariant (chp0.1):** verification opens current and earlier signed byte
+  images through `Document.reopen` with the original password or recipient
+  and the document's load limits. Cryptographic checks hash the ranges of
+  the stored file bytes. The reopened model supplies the field and page data.
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
