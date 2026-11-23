@@ -619,6 +619,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preserve the PDF version on full save.** Classic, compressed, linearized,
+  and full-rewrite signing output keep the input header version when the
+  catalog supplies no override. Split, extraction, imposition, merging, and
+  side-by-side comparison carry forward source versions. Each writer raises
+  the output version as needed for the features it emits. (chp0.2)
+
 - **Verify signatures and timestamps in encrypted PDFs.** Verification reuses
   the password or recipient credential supplied on open for the current file
   and earlier signed revisions. Digest and timestamp checks still use the

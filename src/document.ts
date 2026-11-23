@@ -140,7 +140,9 @@ import { documentFonts, type DocumentFont } from './fontinventory.js';
 import { embedFonts, type EmbedFontsOptions, type EmbedFontsReport } from './embedfonts.js';
 import { replaceFont, type ReplaceFontOptions, type ReplaceFontReport } from './fontreplace.js';
 import type { AuthoringFont } from './stamp.js';
-import { serializeDocumentSteps, serializeSignedDocument, SerializeOptions } from './serializer.js';
+import {
+  DEFAULT_PDF_VERSION, laterPdfVersion, serializeDocumentSteps, serializeSignedDocument, SerializeOptions,
+} from './serializer.js';
 import { appendSignatureUpdate, appendIncrementalUpdate, appendIncrementalUpdateSteps } from './incremental.js';
 import { diffObjectsSteps } from './incrementaldelta.js';
 import { readSeedValue, planSeedValue, type SeedValue } from './sigseed.js';
@@ -450,6 +452,8 @@ export class Document {
   /** The bytes this document was opened from (absent when authored in memory).
    *  Required as the base for incremental-update (append) signing. */
   private originalBytes?: Uint8Array;
+  /** The input header or the effective version inherited from copied pages. */
+  private sourceVersion?: string;
   /** Retain the effective password or resolved recipient for fresh byte views.
    *  Keep it out of ordinary object inspection. */
   #openCredentials?: OpenCredentials;
@@ -560,9 +564,11 @@ export class Document {
   }
 
   /** Build an in-memory document from a complete object set rooted at `rootNum`. */
-  private static fromObjects(objects: Map<number, PdfObject>, rootNum: number): Document {
+  private static fromObjects(objects: Map<number, PdfObject>, rootNum: number, version?: string): Document {
     const trailer: PdfDict = new Map<string, PdfObject>([['Root', ref(rootNum)]]);
-    return new Document(objects, trailer);
+    const doc = new Document(objects, trailer);
+    doc.sourceVersion = version;
+    return doc;
   }
 
   /** Create a new document from scratch: zero pages when `format` is omitted, or
@@ -580,7 +586,7 @@ export class Document {
 
   /** Build an empty document: a /Catalog (obj 1) plus an empty indirect /Pages
    *  root (obj 2). Shared by {@link Document.New} and Merge's accumulator. */
-  private static createEmptyDocument(): Document {
+  private static createEmptyDocument(version?: string): Document {
     const objects = new Map<number, PdfObject>();
     const pagesRoot: PdfDict = new Map<string, PdfObject>([
       ['Type', name('Pages')],
@@ -593,17 +599,18 @@ export class Document {
     ]);
     objects.set(1, catalog);
     objects.set(2, pagesRoot);
-    return Document.fromObjects(objects, 1);
+    return Document.fromObjects(objects, 1, version);
   }
 
   /** Split into one new single-page Document per page, in page order. */
   Split(options: SplitOptions = {}): Document[] {
     const policy = options.prunePolicy ?? defaultPrunePolicy();
     const preserve = options.preserveStructure ?? true;
+    const version = this.headerVersion();
     return this.Pages.map((page, i) => {
       const { objects, pageNum } = extractPage(this, page.Dict, policy);
       const { objects: full, rootNum } = assembleSinglePageDoc(objects, pageNum);
-      const out = Document.fromObjects(full, rootNum);
+      const out = Document.fromObjects(full, rootNum, version);
       if (preserve) preserveStructure(out, [{ srcDoc: this, srcPageNum: this.pageObjNums[i], newPageNum: pageNum }]);
       return out;
     });
@@ -621,7 +628,7 @@ export class Document {
     for (const o of numbers)
       if (!Number.isInteger(o) || o < 1 || o > n)
         throw new RangeError(`ExtractPages: page number ${o} out of range 1..${n}`);
-    const out = Document.createEmptyDocument();
+    const out = Document.createEmptyDocument(this.headerVersion());
     const selected = numbers.map((num) => this.Pages[num - 1]);
     const newNums = out.importPages(this, out.requireIndirectPagesRoot(), selected);
     out.syncPages(newNums.map((num) => ref(num)));
@@ -688,6 +695,8 @@ export class Document {
     // Before anything is read. The bound is on what a caller handed us, so it is
     // checked once against the whole input rather than per structure.
     limits.enforce('maxFileBytes', buf.length, 'input');
+    const head = new TextDecoder('latin1').decode(buf.subarray(0, 1024));
+    const sourceVersion = /%PDF-(\d+\.\d+)/.exec(head)?.[1];
     // One decode budget for the whole Open, shared by every build pass and then
     // by the document, so object streams decoded while parsing count against
     // the same running total as everything decoded afterwards.
@@ -767,6 +776,7 @@ export class Document {
       if (pass.objStmDamage.length > 0) xrefFailure.objectStreams = pass.objStmDamage;
       const doc = new Document(pass.objects, recovered, limits, budget);
       doc.originalBytes = buf;
+      doc.sourceVersion = sourceVersion;
       doc.#openCredentials = pass.credentials;
       doc.revisions = revisions;
       if (pass.preserved)
@@ -863,6 +873,7 @@ export class Document {
 
     const doc = new Document(pass.objects, trailer, limits, budget);
     doc.originalBytes = buf;
+    doc.sourceVersion = sourceVersion;
     doc.#openCredentials = pass.credentials;
     doc.revisions = revisions;
     if (pass.preserved)
@@ -1743,14 +1754,25 @@ export class Document {
   }
 
   /** @internal The effective PDF version: catalog `/Version` when present, else
-   *  the `%PDF-x.y` header from the opened bytes, else undefined (in-memory). */
+   *  the source or inherited version, else undefined for a new document. */
   headerVersion(): string | undefined {
     const cv = this.resolve(this.catalog().get('Version'));
-    if (isName(cv)) return cv.name;
-    if (!this.originalBytes) return undefined;
-    const head = new TextDecoder('latin1').decode(this.originalBytes.subarray(0, 16));
-    const m = /%PDF-(\d+\.\d+)/.exec(head);
-    return m ? m[1] : undefined;
+    return isName(cv) ? cv.name : this.sourceVersion;
+  }
+
+  /** A composed document carries the latest version of its page sources. */
+  private inheritImportedVersion(source: Document, hadPages: boolean): void {
+    const incoming = source.headerVersion() ?? DEFAULT_PDF_VERSION;
+    const current = this.headerVersion() ?? (hadPages ? DEFAULT_PDF_VERSION : undefined);
+    if (current !== undefined && laterPdfVersion(current, incoming) === current) return;
+    this.sourceVersion = incoming;
+    const catalog = this.catalog();
+    // From PDF 1.4 onward an incremental catalog can raise the version while
+    // keeping the original header and signed bytes in the base revision.
+    if (isName(this.resolve(catalog.get('Version')))
+      || (this.originalBytes && laterPdfVersion(incoming, '1.4') === incoming)) {
+      catalog.set('Version', name(incoming));
+    }
   }
 
   /** Build (or return the existing) document structure tree, marking the
@@ -2370,7 +2392,9 @@ export class Document {
         'cannot preserve encryption: the trailer names no /ID, which the file key '
         + 'is derived from. Pass `encrypt` to re-encrypt with stated credentials, '
         + 'or `encrypt: false` to write plaintext.');
-    return yield* serializeDocumentSteps(this.objects, this.trailer, options, this.preservedEncryptor, context);
+    return yield* serializeDocumentSteps(
+      this.objects, this.trailer, options, this.preservedEncryptor, context, this.headerVersion(),
+    );
   }
 
   /** Append an incremental update carrying only what changed since `Open`.
@@ -3154,7 +3178,9 @@ export class Document {
         placeholderBytes,
         encryptor: this.preservedEncryptor,
       })
-      : serializeSignedDocument(this.objects, this.trailer, { signatureObj: sigRef.num, placeholderBytes });
+      : serializeSignedDocument(
+        this.objects, this.trailer, { signatureObj: sigRef.num, placeholderBytes }, this.headerVersion(),
+      );
 
     // Digest the /ByteRange, build the detached CMS, drop it into /Contents.
     const cmsSigner: CmsSigner = {
@@ -3915,6 +3941,7 @@ export class Document {
     this.syncPages(kids);
     if (copyFrom !== undefined) {
       const srcDoc = copyFrom.Document;
+      if (srcDoc !== this) this.inheritImportedVersion(srcDoc, n > 0);
       preserveStructure(this, [{ srcDoc, srcPageNum: srcDoc.pageObjNums[copyFrom.Number - 1], newPageNum: newNum }]);
     }
     return { page: this.Pages[at - 1], number: at };
@@ -4266,6 +4293,7 @@ export class Document {
     if (newNums.length === 0) return [];
     const kids = this.currentKids();
     this.syncPages(kids.slice(0, at - 1).concat(newNums.map((num) => ref(num)), kids.slice(at - 1)));
+    if (other !== this) this.inheritImportedVersion(other, n > 0);
     if (options.preserveStructure ?? true) {
       const origins: PageOrigin[] = newNums.map((newNum, i) => ({
         srcDoc: other, srcPageNum: other.pageObjNums[other.Pages[i].Number - 1], newPageNum: newNum,
@@ -4377,6 +4405,8 @@ export class Document {
   CompareSideBySide(other: Document, options: SideBySideOptions = {}): SideBySideResult {
     const plan = planSideBySide(this, other, options); // validates and compares; allocates nothing
     const out = Document.createEmptyDocument();
+    if (this.Pages.length > 0) out.inheritImportedVersion(this, true);
+    if (other.Pages.length > 0) out.inheritImportedVersion(other, true);
     const rootNum = out.requireIndirectPagesRoot();
     const nums = plan.sheets.map((s) => out.allocObject(new Map<string, PdfObject>([
       ['Type', name('Page')],
@@ -4524,7 +4554,7 @@ export class Document {
     };
 
     const perSheet = cols * rows;
-    const out = Document.createEmptyDocument();
+    const out = Document.createEmptyDocument(this.headerVersion());
     const rootNum = out.requireIndirectPagesRoot();
     const numSheets = Math.ceil(src.length / perSheet);
     const sheetNums: number[] = [];
@@ -4622,7 +4652,7 @@ export class Document {
     };
 
     const sides = bookletSides(src.length, { binding, sheetsPerSignature, padSignatures });
-    const out = Document.createEmptyDocument();
+    const out = Document.createEmptyDocument(this.headerVersion());
     const rootNum = out.requireIndirectPagesRoot();
     const sheetNums: number[] = [];
     for (let i = 0; i < sides.length; i++) {

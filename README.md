@@ -12,6 +12,12 @@ edits, metadata changes, reordering) act directly on that live model, and `Save(
 fresh, renumbered document from it — no temp files. Appending a revision instead of rewriting
 (`Save({ incremental: true })`, and digital signing) is available where earlier bytes must be kept.
 
+Full saves use the catalog's `/Version` when present, then the input header.
+Split, extraction, and imposition retain the source version. Merging pages
+carries the highest source version. Newly authored documents default to PDF
+1.7. Compressed output, linearization, encryption, Brotli, and full-rewrite
+signing can require a higher version.
+
 ## Navigation
 
 - [At a Glance](#at-a-glance)

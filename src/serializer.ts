@@ -15,6 +15,8 @@ import { serializeLinearizedSteps } from './linearize.js';
 import { applyStreamFilterSteps, StreamFilterName } from './streamfilter.js';
 import { registerStreamCopy } from './decodebudget.js';
 
+export const DEFAULT_PDF_VERSION = '1.7';
+
 export interface SerializeOptions extends OperationControlOptions {
   /** Emit a cross-reference stream + compressed object streams (ObjStm) instead
    *  of a classic xref table. Smaller for multi-object docs. Default: false. */
@@ -78,15 +80,18 @@ export interface Plan {
 
 /** Mark reachable-from-/Root(+/Info), assign compact numbers 1..N (root first,
  *  then discovery order), and return the remapped object graph. */
-export function planDocument(objects: Map<number, PdfObject>, trailer: PdfDict): Plan {
-  return runOperation('planDocument', undefined, (context) => planDocumentSteps(objects, trailer, context));
+export function planDocument(objects: Map<number, PdfObject>, trailer: PdfDict, outputCatalog?: PdfDict): Plan {
+  return runOperation('planDocument', undefined, (context) => planDocumentSteps(objects, trailer, context, outputCatalog));
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* planDocumentSteps(objects: Map<number, PdfObject>, trailer: PdfDict, context: OperationContext): OperationSteps<Plan> {
+export function* planDocumentSteps(
+  objects: Map<number, PdfObject>, trailer: PdfDict, context: OperationContext, outputCatalog?: PdfDict,
+): OperationSteps<Plan> {
   const rootRef = trailer.get('Root');
   if (!isRef(rootRef)) throw new PdfParseError('cannot serialize: /Root is not an indirect reference');
   const infoRef = trailer.get('Info');
+  const sourceObject = (num: number) => num === rootRef.num && outputCatalog ? outputCatalog : objects.get(num);
 
   const oldToNew = new Map<number, number>();
   const order: number[] = []; // old numbers, indexed by (newNumber - 1)
@@ -102,7 +107,7 @@ export function* planDocumentSteps(objects: Map<number, PdfObject>, trailer: Pdf
   let completedplan = 0;
   while (queue.length) {
     operationUnit: {
-    const obj = objects.get(queue.shift()!);
+    const obj = sourceObject(queue.shift()!);
     if (obj === undefined) break operationUnit;
     const refs: PdfRef[] = [];
     refsIn(obj, refs);
@@ -115,7 +120,7 @@ export function* planDocumentSteps(objects: Map<number, PdfObject>, trailer: Pdf
   const objs: PdfObject[] = [];
   let completedremap = 0;
   for (const old of order) {
-    operationUnit: { objs.push(remap(objects.get(old)!, oldToNew));
+    operationUnit: { objs.push(remap(sourceObject(old)!, oldToNew));
     }
     yield context.progress('remap', ++completedremap, order.length, undefined);
   }
@@ -142,18 +147,19 @@ export function serializeDocumentAsync(objects: Map<number, PdfObject>, trailer:
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* serializeDocumentSteps(objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions, preserved: Encryptor | undefined, context: OperationContext): OperationSteps<Uint8Array> {
+export function* serializeDocumentSteps(
+  objects: Map<number, PdfObject>, trailer: PdfDict, options: SerializeOptions,
+  preserved: Encryptor | undefined, context: OperationContext, preferredVersion = headerVersion(objects, trailer),
+): OperationSteps<Uint8Array> {
   if (options.streamFilter && options.linearized)
     throw new UnsupportedFeatureError('streamFilter is not supported with linearized output');
   if (options.linearized) {
     if (options.compressed) throw new UnsupportedFeatureError('compressed linearization is not supported');
     if (options.encrypt) throw new UnsupportedFeatureError('encrypted linearization is not supported');
-    return yield* serializeLinearizedSteps(objects, trailer, headerVersion(objects, trailer), context);
+    const ver = laterPdfVersion(preferredVersion, '1.2');
+    return yield* serializeLinearizedSteps(objects, trailer, ver, context,
+      raisedVersionCatalog(objects, trailer, preferredVersion, ver));
   }
-  const plan = yield* planDocumentSteps(objects, trailer, context);
-  if (options.streamFilter) yield* applyStreamFilterSteps(plan.objs, options.streamFilter, context);
-  if (options.streamFilter === 'BrotliDecode') declareBrotli(plan);
-  const ver = options.streamFilter === 'BrotliDecode' ? '2.0' : headerVersion(objects, trailer);
   // Precedence: an explicit `encrypt` wins; else the document's own retained
   // encryption; else plaintext. `encrypt: false` is how a caller asks for
   // plaintext from a document that was opened encrypted.
@@ -165,6 +171,14 @@ export function* serializeDocumentSteps(objects: Map<number, PdfObject>, trailer
         ? buildPubSecEncryptor(options.encrypt)
         : buildEncryptor(options.encrypt, id0))
       : preserved;
+  let ver = preferredVersion;
+  if (options.compressed) ver = laterPdfVersion(ver, '1.5');
+  if (chosen) ver = laterPdfVersion(ver, encryptionVersion(chosen, objects));
+  if (options.streamFilter === 'BrotliDecode') ver = laterPdfVersion(ver, '2.0');
+  const plan = yield* planDocumentSteps(objects, trailer, context,
+    raisedVersionCatalog(objects, trailer, preferredVersion, ver));
+  if (options.streamFilter) yield* applyStreamFilterSteps(plan.objs, options.streamFilter, context);
+  if (options.streamFilter === 'BrotliDecode') declareBrotli(plan, ver);
   if (!chosen) {
     return options.compressed ? yield* serializeCompressedSteps(plan, trailer, ver, context) : yield* serializeClassicSteps(plan, trailer, ver, context);
   }
@@ -176,7 +190,7 @@ export function* serializeDocumentSteps(objects: Map<number, PdfObject>, trailer
 /** The PDF Association's Brotli extension applies only to the output copy.
  *  Resolve against the remapped plan, since /Extensions and its entries may
  *  be indirect. Keep unrelated developers and PDFa levels intact. */
-function declareBrotli(plan: Plan): void {
+function declareBrotli(plan: Plan, version: string): void {
   const resolve = (o: PdfObject | undefined): PdfObject | undefined =>
     isRef(o) ? plan.objs[o.num - 1] : o;
   // Plan.rootRef retains its SOURCE number; only references inside objs have
@@ -202,7 +216,51 @@ function declareBrotli(plan: Plan): void {
   if (index < 0) entries.push(declaration); else entries[index] = declaration;
   extensions.set('PDFa', entries.length === 1 ? entries[0] : entries);
   catalog.set('Extensions', extensions);
-  catalog.set('Version', name('2.0'));
+  const declared = resolve(catalog.get('Version'));
+  if (!isName(declared) || declared.name !== version) catalog.set('Version', name(version));
+}
+
+/** Compare major and minor separately so a two-digit component sorts numerically. */
+export function laterPdfVersion(version: string, candidate: string): string {
+  const [major, minor] = version.split('.').map(Number);
+  const [nextMajor, nextMinor] = candidate.split('.').map(Number);
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return candidate;
+  return nextMajor > major || (nextMajor === major && nextMinor > minor) ? candidate : version;
+}
+
+/** Replace a superseded catalog override before traversing reachable objects.
+ *  An indirect old name can then be dropped when it has no other uses. */
+function raisedVersionCatalog(
+  objects: Map<number, PdfObject>, trailer: PdfDict, preferred: string, version: string,
+): PdfDict | undefined {
+  if (version === preferred) return undefined;
+  const root = trailer.get('Root');
+  const catalog = isRef(root) ? objects.get(root.num) : undefined;
+  if (!isDict(catalog) || !catalog.has('Version')) return undefined;
+  const copy = new Map(catalog);
+  // Before PDF 1.4 the catalog cannot override the header version.
+  if (laterPdfVersion(version, '1.4') === version) copy.set('Version', name(version));
+  else copy.delete('Version');
+  return copy;
+}
+
+/** Minimum core version for the encryption dictionary this writer will emit. */
+function encryptionVersion(encryptor: Encryptor, objects: Map<number, PdfObject>): string {
+  const resolve = (obj: PdfObject | undefined) => isRef(obj) ? objects.get(obj.num) : obj;
+  const dict = encryptor.encryptDict;
+  const mode = resolve(dict.get('V'));
+  if (mode === 5) return '2.0';
+  const filters = resolve(dict.get('CF'));
+  if (isDict(filters)) {
+    for (const item of filters.values()) {
+      const filter = resolve(item);
+      const method = isDict(filter) ? resolve(filter.get('CFM')) : undefined;
+      if (isName(method) && method.name === 'AESV2') return '1.6';
+    }
+    return '1.5';
+  }
+  if (mode === 4 || dict.has('EncryptMetadata')) return '1.5';
+  return mode === 2 || mode === 3 ? '1.4' : '1.1';
 }
 
 /** The header version to emit: catalog /Version when present, else 1.7. */
@@ -210,10 +268,11 @@ function headerVersion(objects: Map<number, PdfObject>, trailer: PdfDict): strin
   const root = trailer.get('Root');
   const cat = isRef(root) ? objects.get(root.num) : undefined;
   if (isDict(cat)) {
-    const v = cat.get('Version');
+    const entry = cat.get('Version');
+    const v = isRef(entry) ? objects.get(entry.num) : entry;
     if (isName(v)) return v.name;
   }
-  return '1.7';
+  return DEFAULT_PDF_VERSION;
 }
 
 export interface SignSerializeOptions {
@@ -233,6 +292,7 @@ export interface SignSerializeOptions {
  *  mutate `objects` or `trailer` (remapping produces copies). */
 export function serializeSignedDocument(
   objects: Map<number, PdfObject>, trailer: PdfDict, options: SignSerializeOptions & SerializeOptions,
+  preferredVersion = headerVersion(objects, trailer),
 ): SignatureLayout {
   if (options.compressed)
     throw new UnsupportedFeatureError('sign-on-save does not support compressed output');
@@ -241,7 +301,10 @@ export function serializeSignedDocument(
   if (options.streamFilter)
     throw new UnsupportedFeatureError('sign-on-save does not support streamFilter');
 
-  const plan = planDocument(objects, trailer);
+  const signature = objects.get(options.signatureObj);
+  const minimum = isDict(signature) && signature.has('Reference') ? '1.5' : '1.3';
+  const version = laterPdfVersion(preferredVersion, minimum);
+  const plan = planDocument(objects, trailer, raisedVersionCatalog(objects, trailer, preferredVersion, version));
   const sigNew = plan.oldToNew.get(options.signatureObj);
   if (sigNew === undefined)
     throw new PdfParseError('cannot sign: signature object is not reachable from /Root');
@@ -252,7 +315,7 @@ export function serializeSignedDocument(
   const placeholderBytes = options.placeholderBytes ?? DEFAULT_PLACEHOLDER_BYTES;
   const ph = buildSigDictPlaceholder(sigObj, placeholderBytes);
   return serializeClassicSigned(
-    plan, trailer, sigNew, ph, placeholderBytes, headerVersion(objects, trailer));
+    plan, trailer, sigNew, ph, placeholderBytes, version);
 }
 
 /** Classic-xref serialization that emits object `sigNew` as a placeholder body. */

@@ -69,10 +69,13 @@ function nbits(v: number): number {
 /** Re-run the mark-sweep plan locally (no runtime import of serializer.ts, which
  *  imports this module). Mirrors `planDocument`. */
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* planLocalSteps(objects: Map<number, PdfObject>, trailer: PdfDict, context: OperationContext): OperationSteps<Plan> {
+export function* planLocalSteps(
+  objects: Map<number, PdfObject>, trailer: PdfDict, context: OperationContext, outputCatalog?: PdfDict,
+): OperationSteps<Plan> {
   const rootRef = trailer.get('Root');
   if (!isRef(rootRef)) throw new PdfParseError('cannot serialize: /Root is not an indirect reference');
   const infoRef = trailer.get('Info');
+  const sourceObject = (num: number) => num === rootRef.num && outputCatalog ? outputCatalog : objects.get(num);
   const oldToNew = new Map<number, number>();
   const order: number[] = [];
   const queue: number[] = [];
@@ -87,7 +90,7 @@ export function* planLocalSteps(objects: Map<number, PdfObject>, trailer: PdfDic
   let completedplan = 0;
   while (queue.length) {
     operationUnit: {
-    const obj = objects.get(queue.shift()!);
+    const obj = sourceObject(queue.shift()!);
     if (obj === undefined) break operationUnit;
     const refs: PdfRef[] = [];
     refsIn(obj, refs);
@@ -99,7 +102,7 @@ export function* planLocalSteps(objects: Map<number, PdfObject>, trailer: PdfDic
   const objs: PdfObject[] = [];
   let completedremap = 0;
   for (const old of order) {
-    operationUnit: { objs.push(remap(objects.get(old)!, oldToNew));
+    operationUnit: { objs.push(remap(sourceObject(old)!, oldToNew));
     }
     yield context.progress('remap', ++completedremap, order.length, undefined);
   }
@@ -472,8 +475,10 @@ export function serializeLinearized(objects: Map<number, PdfObject>, trailer: Pd
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* serializeLinearizedSteps(objects: Map<number, PdfObject>, trailer: PdfDict, ver: string, context: OperationContext): OperationSteps<Uint8Array> {
-  const plan = yield* planLocalSteps(objects, trailer, context);
+export function* serializeLinearizedSteps(
+  objects: Map<number, PdfObject>, trailer: PdfDict, ver: string, context: OperationContext, outputCatalog?: PdfDict,
+): OperationSteps<Uint8Array> {
+  const plan = yield* planLocalSteps(objects, trailer, context, outputCatalog);
   const layout = computeLinearLayout(plan);
 
   // Linearized layout order:

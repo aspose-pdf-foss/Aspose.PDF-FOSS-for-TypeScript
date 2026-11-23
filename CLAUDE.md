@@ -501,18 +501,17 @@ Source (`src/`):
   digits. A fixed fractional precision rounded values such as `1e-22` to
   zero, which also made a zero-to-small edit invisible to the incremental
   writer's serialized comparison.
-  **Invariant (`909q`):** the `%PDF-x.y` header is `headerVersion()`'s answer —
-  the catalog `/Version`, else 1.7 — in EVERY write path, the sign-on-save one
-  included. It is threaded as a `ver` parameter rather than read inside each
-  writer, because `serializeSignedDocument` and `serializeDocument` are separate
-  entry points over the same five writers. `serializeClassicSigned` hardcoded
-  `'%PDF-1.7'` until `909q`, so signing silently overwrote the document's own
-  declared version. **Note which flow makes that reachable, since a hardcoded
-  header sounds harmless:** `choosePath()` takes the full rewrite whenever the
-  document is `modified`, and every `ConvertToPdfA` calls `markModified()` — so
-  convert-then-sign is exactly the path that lands there, and it breached the
-  version rule the conversion had just satisfied, in both directions (PDF/A-4
-  demands 2.n, PDF/A-1 forbids anything above 1.4).
+  **Invariant (`909q`, `chp0.2`):** full writers receive the effective version
+  from `Document.headerVersion()`. A catalog `/Version` takes precedence over
+  the input or inherited header, so an explicit PDF/A or PDF/X conversion can
+  select an older version. Documents with no declaration default to 1.7.
+  Page derivatives inherit the effective source version. Merging pages carries
+  the highest version. Object and cross-reference streams require at least
+  1.5. Encryption, Brotli, linearization, and full-rewrite signing also impose
+  minimums. When an output floor raises an existing catalog override, the
+  planner uses a copy of the catalog before walking references so a superseded
+  indirect version can be collected. A page import can raise the catalog
+  version in an incremental update while preserving the original header bytes.
   **Invariant:** the header is inside the SIGNED byte range, so the version is
   chosen where the placeholder is laid out and never patched afterwards —
   patching it would move the digest out from under `/ByteRange`.
