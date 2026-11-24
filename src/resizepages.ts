@@ -84,7 +84,7 @@ function visitDestinations(doc: Document, pages: readonly Page[], visit: (v: Pdf
   }
   owner(catalog);
   const open = doc.resolve(catalog.get('OpenAction'));
-  if (isDict(open)) actions.push(open);
+  if (isDict(open) && isName(doc.resolve(open.get('S')))) actions.push(open);
   else visit(open);
 
   const names = doc.resolve(catalog.get('Names'));

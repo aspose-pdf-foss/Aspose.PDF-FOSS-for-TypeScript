@@ -94,11 +94,11 @@ import { buildPages, PageTree } from './pagetree.js';
 import { checkPageTree, checkPageTreeSteps } from './pagecheck.js';
 import type { ValidationIssue } from './validation.js';
 import {
-  OutlineItem, PageDest, readOutlineTree, buildOutlineObjects, validateOutlineItems,
+  OutlineItem, PageDest, readOutlineTree, buildOutlineObjects, prepareOutlineTargets,
   NamedDestination, readNamedDestinations, encodeDest,
 } from './outline.js';
 import { removeNameTreeEntries, upsertNameTreeEntry } from './nametree.js';
-import type { PdfAction } from './actions.js';
+import { encodeAction, parseStandaloneAction, type PdfAction } from './actions.js';
 import {
   OpenAction, readOpenAction, removeOpenAction, setOpenAction, setOpenDestination,
   DocumentJavaScript, readDocumentJavaScripts, removeDocumentJavaScript,
@@ -2056,7 +2056,7 @@ export class Document {
   GetOutlines(): OutlineItem[] {
     const outlines = this.resolve(this.catalog().get('Outlines'));
     if (!isDict(outlines)) return [];
-    return readOutlineTree(this, outlines, (o) => this.pageNumberOf(o));
+    return readOutlineTree(this, outlines, raw => parseStandaloneAction(this, raw));
   }
 
   /** @internal The indirect ref for a 1-based page number; throws when that page
@@ -2101,13 +2101,15 @@ export class Document {
   /** Replace the document outline with `items`; an empty array removes it.
    *  Validates the whole tree first, so a throw leaves the document unchanged. */
   SetOutlines(items: OutlineItem[]): void {
-    validateOutlineItems(items, this.Pages.length, (p) => { this.pageRefForNumber(p); });
+    const targets = prepareOutlineTargets(this, items, p => this.pageRefForNumber(p), a => encodeAction(this, a));
     const catalog = this.catalog();
+    if (items.length === 0 && !catalog.has('Outlines')) return;
     this.deleteOutlineSubtree();
+    this.markModified();
     if (items.length === 0) { catalog.delete('Outlines'); return; }
     const rootNum = buildOutlineObjects(items, {
       alloc: (obj) => { const n = this.maxObjNum() + 1; this.install(n, obj); return n; },
-      pageRef: (p) => this.pageRefForNumber(p),
+      targets,
     });
     catalog.set('Outlines', ref(rootNum));
   }

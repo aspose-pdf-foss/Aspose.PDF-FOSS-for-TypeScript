@@ -1,4 +1,6 @@
 import type { Document } from './document.js';
+import { isDeepStrictEqual } from 'node:util';
+import type { PdfAction } from './actions.js';
 import {
   PdfDict, PdfObject, PdfRef, isArray, isDict, isName, isRef, isString, name, ref,
 } from './types.js';
@@ -10,6 +12,8 @@ export interface OutlineItem {
   Title: string;
   /** Target; undefined for a heading with no (or an unresolvable) destination. */
   Dest?: OutlineDest;
+  /** Typed bookmark /A. An unmodelled action survives a same-document edit. */
+  Action?: PdfAction;
   /** Expanded state; set on read for items with children, default true on write. */
   Open?: boolean;
   /** Child items; omitted/empty for a leaf. */
@@ -21,6 +25,20 @@ export interface OutlineItem {
   /** Italic title (`/F` bit 1). Read as true only when the bit is set. */
   Italic?: boolean;
 }
+
+// An enumerable symbol survives {...item} without adding a field to the public
+// string-keyed model. Store the wire object separately from the editable views:
+// /Next, named /D, field refs and producer keys cannot be rebuilt from PdfAction.
+const sourceAction = Symbol('original bookmark action');
+type ReadItem = OutlineItem & {
+  [sourceAction]?: {
+    owner: WeakRef<Document>;
+    catalog: WeakRef<PdfDict>;
+    raw: PdfObject;
+    action: PdfAction | undefined;
+    dest: OutlineDest | undefined;
+  };
+};
 
 /** A page destination: 1-based page number plus an optional view. */
 export interface PageDest {
@@ -179,7 +197,7 @@ export function readNamedDestinations(doc: Document, pageOf: PageOf): NamedDesti
 
 /** Walk a sibling list from `container`'s /First, following /Next, into items. */
 export function readOutlineTree(
-  doc: Document, container: PdfDict, pageOf: PageOf, depth = 1,
+  doc: Document, container: PdfDict, readAction: (raw: PdfObject) => PdfAction | undefined, depth = 1,
 ): OutlineItem[] {
   const out: OutlineItem[] = [];
   const seen = new Set<PdfDict>();
@@ -190,9 +208,17 @@ export function readOutlineTree(
   while (isDict(node) && !seen.has(node)) {
     seen.add(node);
     const title = doc.resolve(node.get('Title'));
-    const item: OutlineItem = { Title: isString(title) ? decodePdfText(title.bytes) : '' };
-    const dest = parseDest(doc, node, pageOf);
+    const item: ReadItem = { Title: isString(title) ? decodePdfText(title.bytes) : '' };
+    const dest = parseDest(doc, node, o => doc.pageNumberOf(o));
     if (dest) item.Dest = dest;
+    const raw = node.get('A');
+    if (raw !== undefined && isDict(doc.resolve(raw)) && doc.resolve(node.get('Dest')) === null) {
+      item.Action = readAction(raw);
+      item[sourceAction] = {
+        owner: new WeakRef(doc), catalog: new WeakRef(doc.catalog()), raw,
+        action: structuredClone(item.Action), dest: structuredClone(dest),
+      };
+    }
     const c = doc.resolve(node.get('C'));
     if (isArray(c) && c.length === 3) {
       const rgb = c.map((v) => doc.resolve(v));
@@ -204,7 +230,7 @@ export function readOutlineTree(
       if (f & 1) item.Italic = true;   // bit position 1 (PDF 32000-1 12.3.3)
       if (f & 2) item.Bold = true;     // bit position 2
     }
-    const children = readOutlineTree(doc, node, pageOf, depth + 1);
+    const children = readOutlineTree(doc, node, readAction, depth + 1);
     if (children.length) {
       item.Children = children;
       const count = doc.resolve(node.get('Count'));
@@ -216,12 +242,13 @@ export function readOutlineTree(
   return out;
 }
 
-/** Build context supplied by Document: object allocation + page-ref lookup. */
+type OutlineTarget = ['A' | 'Dest', PdfObject];
+
+/** Build context supplied by Document after target validation. */
 export interface OutlineBuildCtx {
   /** Install `obj` under a fresh object number and return that number. */
   alloc(obj: PdfObject): number;
-  /** The page object ref for a validated 1-based page number. */
-  pageRef(page: number): PdfRef;
+  targets: ReadonlyMap<OutlineItem, OutlineTarget>;
 }
 
 /** Encode a destination as a PDF dest array `[pageRef /Fit ...]`. */
@@ -248,32 +275,59 @@ function visibleCount(children: OutlineItem[]): number {
   return c;
 }
 
-/** Validate the whole tree; throws before any mutation. `pageCount` is the
- *  document's page count; `checkPage` mirrors Document.pageRefForNumber so a
- *  non-indirect target page fails here too. */
-export function validateOutlineItems(
-  items: OutlineItem[], pageCount: number, checkPage: (page: number) => void,
-): void {
-  for (const item of items) {
-    if (typeof item.Title !== 'string') throw new TypeError('outline item Title must be a string');
-    if (item.Dest !== undefined) {
-      // Discriminated on key presence, not on `isNamedDest`: this validates
-      // caller input, so `{ name: 7 }` must report a bad name rather than fall
-      // through and report a missing page.
-      const d = item.Dest as { name?: unknown; page?: unknown };
-      if ('name' in d) {
-        // Not checked against the document's existing names: resolution happens
-        // at view time, so a forward reference to a destination the caller adds
-        // afterwards is legitimate.
-        if (typeof d.name !== 'string' || d.name === '')
-          throw new TypeError('outline destination name must be a non-empty string');
-      } else {
-        const p = (item.Dest as PageDest).page;
-        if (!Number.isInteger(p) || p < 1 || p > pageCount)
-          throw new RangeError(`outline destination page ${p} out of range 1..${pageCount}`);
-        checkPage(p);
-      }
+function prepareDest(doc: Document, dest: OutlineDest, pageRef: (page: number) => PdfRef): PdfObject {
+  if ('name' in dest) {
+    if (typeof dest.name !== 'string' || dest.name === '')
+      throw new TypeError('outline destination name must be a non-empty string');
+    return { kind: 'string', bytes: encodePdfByteString(dest.name) };
+  }
+  const p = dest.page;
+  if (!Number.isInteger(p) || p < 1 || p > doc.Pages.length)
+    throw new RangeError(`outline destination page ${p} out of range 1..${doc.Pages.length}`);
+  return encodeDest(pageRef(p), dest.view);
+}
+
+type ActionEncoder = (action: PdfAction) => PdfDict;
+
+function prepareTarget(doc: Document, item: ReadItem, pageRef: (page: number) => PdfRef,
+  writeAction: ActionEncoder): OutlineTarget | undefined {
+  const source = item[sourceAction];
+  let action = item.Action, dest = item.Dest;
+  if (source) {
+    const actionEdited = !Object.hasOwn(item, 'Action') || !isDeepStrictEqual(action, source.action);
+    const destEdited = !isDeepStrictEqual(dest, source.dest);
+    if (!actionEdited && !destEdited) {
+      // First-write encrypted signing replaces the catalog and renumbers the
+      // object graph inside the same Document instance.
+      if (source.owner.deref() === doc && source.catalog.deref() === doc.catalog()) return ['A', source.raw];
+      // A foreign object number could refer to an entirely different object.
+      // Named GoTos retain their name even when it has no entry in this document.
+      if (dest && isNamedDest(dest))
+        return ['A', new Map<string, PdfObject>([['S', name('GoTo')], ['D', prepareDest(doc, dest, pageRef)]])];
+      if (!action) throw new TypeError('unknown bookmark action belongs to a different document object graph');
+      dest = undefined;
+    } else {
+      // A local GoTo exposes both projections for compatibility. Editing only
+      // one replaces the wire target, including when the caller removes it.
+      if (!destEdited) dest = undefined;
+      if (!actionEdited) action = undefined;
     }
+  }
+  if (action !== undefined && dest !== undefined)
+    throw new TypeError('outline item cannot specify both Action and Dest');
+  if (action !== undefined) return ['A', writeAction(action)];
+  if (dest !== undefined) return ['Dest', prepareDest(doc, dest, pageRef)];
+  return undefined;
+}
+
+/** Validate and encode the whole tree before the previous outline is removed. */
+export function prepareOutlineTargets(doc: Document, items: OutlineItem[], pageRef: (page: number) => PdfRef,
+  writeAction: ActionEncoder): Map<OutlineItem, OutlineTarget> {
+  const targets = new Map<OutlineItem, OutlineTarget>();
+  function visit(item: OutlineItem): void {
+    if (typeof item.Title !== 'string') throw new TypeError('outline item Title must be a string');
+    const target = prepareTarget(doc, item, pageRef, writeAction);
+    if (target) targets.set(item, target);
     if (item.Color !== undefined && (!Array.isArray(item.Color) || item.Color.length !== 3 ||
         !item.Color.every((c) => typeof c === 'number' && Number.isFinite(c) && c >= 0 && c <= 1)))
       throw new TypeError('outline item Color must be [r, g, b] with each component in 0..1');
@@ -281,8 +335,10 @@ export function validateOutlineItems(
       throw new TypeError('outline item Bold must be a boolean');
     if (item.Italic !== undefined && typeof item.Italic !== 'boolean')
       throw new TypeError('outline item Italic must be a boolean');
-    if (item.Children) validateOutlineItems(item.Children, pageCount, checkPage);
+    if (item.Children) for (const child of item.Children) visit(child);
   }
+  for (const item of items) visit(item);
+  return targets;
 }
 
 /** Build the /Outlines object graph from a validated tree; returns the root
@@ -297,13 +353,8 @@ export function buildOutlineObjects(items: OutlineItem[], ctx: OutlineBuildCtx):
     siblings.forEach((item, i) => {
       const d = dicts[i];
       d.set('Title', { kind: 'string', bytes: encodePdfText(item.Title) });
-      if (item.Dest) {
-        // A string, not a name object: that is what the /Names /Dests tree keys
-        // on, so a bookmark and Document.SetNamedDestination agree.
-        d.set('Dest', isNamedDest(item.Dest)
-          ? { kind: 'string', bytes: encodePdfByteString(item.Dest.name) }
-          : encodeDest(ctx.pageRef(item.Dest.page), item.Dest.view));
-      }
+      const target = ctx.targets.get(item);
+      if (target) d.set(...target);
       if (item.Color) d.set('C', [...item.Color]);
       const flags = (item.Italic ? 1 : 0) | (item.Bold ? 2 : 0);
       if (flags !== 0) d.set('F', flags);
