@@ -335,11 +335,11 @@ export class Page {
     return addStamp(this.doc, this, opts);
   }
 
-  /** Add prepress trim, bleed, registration, and color-bar marks. The page
+  /** Add prepress trim, bleed, registration, color-bar or page information marks. The page
    *  boxes grow around the existing artwork. Returns the annotation handles,
    *  or an empty array for marks written directly into page content. */
   AddPrinterMarks(options: PrinterMarksOptions = {}): PrinterMarkAnnotation[] {
-    return addPrinterMarks(this, options);
+    return addPrinterMarks([this], options);
   }
 
   /** Add a /Highlight markup annotation over the given /QuadPoints. */

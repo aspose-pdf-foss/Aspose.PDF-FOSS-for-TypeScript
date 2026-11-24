@@ -1,10 +1,11 @@
 import type { Document } from './document.js';
 import type { FieldType } from './formfield.js';
 import {
-  PdfObject, PdfDict, PdfStream, isDict, isArray, isString, isName, name,
+  PdfObject, PdfDict, PdfStream, isDict, isArray, isString, isStream, isName, name,
 } from './types.js';
 import { num } from './pagecontent.js';
-import { enc, serializeString } from './serialize.js';
+import { enc, escapeName, serializeString } from './serialize.js';
+import { winAnsiDriver, type FontDriver } from './layout.js';
 import { encodeWinAnsi } from './encoding.js';
 import { measure, type StdFont } from './metrics.js';
 import { resolveDA, type ResolvedDA } from './da.js';
@@ -234,6 +235,12 @@ export function buildAppearanceXObject(
   doc: Document, g: WidgetGeom, std: StdFont, fontKey: string, body: string,
   faces?: ReadonlyMap<string, StdFont>,
 ): PdfStream {
+  const resources = faces === undefined ? fontResources(doc, std, fontKey) : multiFontResources(doc, faces);
+  return appearanceXObject(g, body, resources);
+}
+
+/** Build a form with resources already bound by the caller (including imported fonts). */
+export function appearanceXObject(g: WidgetGeom, body: string, resources: PdfDict): PdfStream {
   const content = `q\n${body}\nQ`;
   const dict: PdfDict = new Map<string, PdfObject>([
     ['Type', name('XObject')],
@@ -245,15 +252,36 @@ export function buildAppearanceXObject(
     // single-font resources every other caller made before it existed, so they
     // are byte-identical BY CONSTRUCTION rather than by test — the shape
     // installShapeAP already takes on the annotation side.
-    ['Resources', faces === undefined ? fontResources(doc, std, fontKey) : multiFontResources(doc, faces)],
+    ['Resources', resources],
   ]);
   return { kind: 'stream', dict, raw: enc(content) };
 }
 
-/** Install `stream` as the widget's single normal appearance (/AP /N). */
-export function installAP(doc: Document, widget: PdfDict, stream: PdfStream): void {
-  const ref = doc.allocObject(stream);
-  widget.set('AP', new Map<string, PdfObject>([['N', ref]]));
+/** The raw /AP /N entry to draw. /N is either a single appearance stream or a
+ *  state subdictionary keyed by the annotation's /AS appearance state. */
+export function normalEntry(doc: Document, annot: PdfDict): PdfObject | undefined {
+  const ap = doc.resolve(annot.get('AP'));
+  if (!isDict(ap)) return undefined;
+
+  const n = ap.get('N');
+  const resolved = doc.resolve(n);
+  if (isStream(resolved)) return n;
+
+  if (isDict(resolved)) {
+    const as = doc.resolve(annot.get('AS'));
+    if (!isName(as)) return undefined;
+    const entry = resolved.get(as.name);
+    if (entry === undefined || !isStream(doc.resolve(entry))) return undefined;
+    return entry;
+  }
+  return undefined;
+}
+
+/** Replace the normal appearance, retaining alternate states and shared dictionaries. */
+export function installAP(doc: Document, annot: PdfDict, stream: PdfStream): void {
+  const ap = doc.resolve(annot.get('AP'));
+  const updated = new Map<string, PdfObject>(isDict(ap) ? ap : []);
+  annot.set('AP', updated.set('N', doc.allocObject(stream)));
 }
 
 /** Install `stream` as the widget's normal appearance for state `state`
@@ -297,12 +325,12 @@ function singleLineText(text: string, da: ResolvedDA, g: WidgetGeom, q: number, 
 }
 
 /** Greedy word-wrap: split `words` into lines no wider than `maxW` at `size`. */
-function wrapLines(words: string[], std: StdFont, size: number, maxW: number): string[] {
+function wrapLines(words: string[], driver: FontDriver, size: number, maxW: number): string[] {
   const lines: string[] = [];
   let cur = '';
   for (const word of words) {
     const trial = cur ? `${cur} ${word}` : word;
-    if (cur === '' || measure(std, encodeWinAnsi(trial), size) <= maxW) cur = trial;
+    if (cur === '' || driver.measure(trial, size) <= maxW) cur = trial;
     else { lines.push(cur); cur = word; }
   }
   if (cur) lines.push(cur);
@@ -319,21 +347,21 @@ function wrapLines(words: string[], std: StdFont, size: number, maxW: number): s
  *  annotation path, so every FreeText appearance named a font its own form did
  *  not contain (bug cu3b). A default would let that happen again silently. */
 export function wrapTextBody(
-  text: string, std: StdFont, size: number, color: [number, number, number],
+  text: string, driver: FontDriver, size: number, color: [number, number, number],
   boxW: number, boxH: number, inset: number, align: 'left' | 'center' | 'right',
   fontKey: string,
 ): string {
   const words = text.split(/\s+/).filter((w) => w.length > 0);
   const maxW = boxW - 2 * (PAD + inset);
   const leading = size * 1.15;
-  const lines = wrapLines(words, std, size, maxW);
+  const lines = wrapLines(words, driver, size, maxW);
   const [r, g, b] = color;
   const top = boxH - inset - PAD - size * 0.8;
-  let s = `BT\n/${fontKey} ${num(size)} Tf\n${num(r)} ${num(g)} ${num(b)} rg\n`;
+  let s = `BT\n/${escapeName(fontKey)} ${num(size)} Tf\n${num(r)} ${num(g)} ${num(b)} rg\n`;
   let prevX = 0, prevY = 0;
   lines.forEach((ln, i) => {
-    const bytes = encodeWinAnsi(ln);
-    const tw = measure(std, bytes, size);
+    const bytes = driver.encode(ln);
+    const tw = driver.measure(ln, size);
     let x = PAD + inset;
     if (align === 'center') x = inset + (boxW - 2 * inset - tw) / 2;
     else if (align === 'right') x = boxW - inset - PAD - tw;
@@ -351,7 +379,7 @@ function multilineText(text: string, da: ResolvedDA, g: WidgetGeom, inset: numbe
   let size = da.size > 0 ? da.size : 12;
   for (;;) {
     const leading = size * 1.15;
-    const lines = wrapLines(words, da.std, size, maxW);
+    const lines = wrapLines(words, winAnsiDriver(da.std), size, maxW);
     if (lines.length * leading <= g.h - 2 * inset || size <= 4) {
       const [r, gg, b] = da.color;
       const top = g.h - inset - PAD - size * 0.8;

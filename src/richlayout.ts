@@ -15,7 +15,7 @@ import { colorOf, trimWs } from './cssvalue.js';
 import { layoutRuns, winAnsiDriver, type FontDriver } from './layout.js';
 import type { StdFont } from './metrics.js';
 import { vmetricsFor } from './textdecor.js';
-import { serializeString } from './serialize.js';
+import { escapeName, serializeString } from './serialize.js';
 import { num } from './pagecontent.js';
 import { RICH_BLOCK_ELEMENTS } from './richtext.js';
 import { rethrowLimit } from './errors.js';
@@ -24,10 +24,12 @@ export type Family = 'Helvetica' | 'Times' | 'Courier';
 export type RichAlign = 'left' | 'center' | 'right' | 'justify';
 
 export interface RichStyle {
+  inheritedFont?: boolean;
   family: Family; bold: boolean; italic: boolean; size: number;
   color: [number, number, number]; underline: boolean; strike: boolean; align: RichAlign;
 }
 export interface RichRun {
+  inheritedFont?: boolean;
   text: string; face: StdFont; size: number;
   color: [number, number, number]; underline: boolean; strike: boolean;
 }
@@ -127,7 +129,7 @@ function applyFont(v: CssValue[], s: RichStyle): void {
     familyTokens.push(t);
   }
   const f = familyOf(familyTokens);
-  if (f) s.family = f;
+  if (f) { s.family = f; s.inheritedFont = false; }
 }
 
 /** `style` declarations over `s`. A declaration that does not parse, or names
@@ -156,7 +158,7 @@ export function applyStyle(css: string, s: RichStyle): RichStyle {
         break;
       case 'font-family': {
         const f = familyOf(v);
-        if (f) out.family = f;
+        if (f) { out.family = f; out.inheritedFont = false; }
         break;
       }
       case 'font':
@@ -187,7 +189,7 @@ export function applyStyle(css: string, s: RichStyle): RichStyle {
 }
 
 const sameStyle = (a: RichRun, b: RichRun): boolean =>
-  a.face === b.face && a.size === b.size && a.underline === b.underline && a.strike === b.strike
+  !!a.inheritedFont === !!b.inheritedFont && a.face === b.face && a.size === b.size && a.underline === b.underline && a.strike === b.strike
   && a.color[0] === b.color[0] && a.color[1] === b.color[1] && a.color[2] === b.color[2];
 
 /** Accumulates paragraphs while walking. */
@@ -216,6 +218,7 @@ class Builder {
     const runs = this.cur.runs;
     const last = runs[runs.length - 1];
     const run: RichRun = {
+      ...(s.inheritedFont ? { inheritedFont: true } : {}),
       text, face: faceOf(s), size: s.size, color: s.color, underline: s.underline, strike: s.strike,
     };
     if (last && sameStyle(last, run)) last.text += text;
@@ -320,6 +323,7 @@ function justifyTw(align: RichAlign, avail: number, line: { text: string; width:
  *  to fit. */
 export function richTextBody(
   paras: readonly RichParagraph[], boxW: number, boxH: number, inset: number,
+  bound?: { face: StdFont; key: string; driver: FontDriver },
 ): RichBody {
   const x0 = inset;
   const avail = Math.max(1, boxW - 2 * inset);
@@ -328,7 +332,11 @@ export function richTextBody(
   const drivers = new Map<StdFont, FontDriver>();
   const keyOf = (f: StdFont): string => {
     let k = keys.get(f);
-    if (k === undefined) { k = `F${keys.size}`; keys.set(f, k); faces.set(k, f); }
+    if (k === undefined) {
+      let i = keys.size;
+      do { k = `F${i++}`; } while (k === bound?.key || faces.has(k));
+      keys.set(f, k); faces.set(k, f);
+    }
     return k;
   };
   const driverOf = (f: StdFont): FontDriver => {
@@ -338,6 +346,7 @@ export function richTextBody(
   };
 
   const text: string[] = ['BT'];
+  const usesBound = (r: RichRun) => bound !== undefined && r.inheritedFont && r.face === bound.face;
   const rules: string[] = [];
   let top = boxH - inset;
   let curFont = '', curColor = '', curTw = 0;
@@ -346,7 +355,7 @@ export function richTextBody(
     if (p.runs.length === 0) continue;
     const base = p.runs[0].size;
     const laid = layoutRuns(
-      p.runs.map((r) => ({ text: r.text, driver: driverOf(r.face), fontSize: r.size })),
+      p.runs.map((r) => ({ text: r.text, driver: usesBound(r) ? bound!.driver : driverOf(r.face), fontSize: r.size })),
       avail, 1e9, base * 1.15, base,
     );
     for (const line of laid.lines) {
@@ -357,18 +366,34 @@ export function richTextBody(
       else if (p.align === 'right') x = x0 + avail - line.width;
       if (x < x0) x = x0;
       text.push(`1 0 0 1 ${num(x)} ${num(baseline)} Tm`);
-      if (tw !== curTw) { text.push(`${num(tw)} Tw`); curTw = tw; }
       for (const seg of line.segments) {
         const r = p.runs[seg.run];
         let spaces = 0;
         for (const ch of seg.text) if (ch === ' ') spaces++;
         const w = seg.width + tw * spaces;
         if (seg.bytes.length > 0) {
-          const font = `/${keyOf(r.face)} ${num(r.size)} Tf`;
+          const selected = usesBound(r) ? bound : undefined;
+          const key = selected?.key ?? keyOf(r.face);
+          // Tw only expands a single-byte code 32. A bound font may use an
+          // arbitrary code for U+0020, so adjust its text matrix with TJ.
+          const wordSpace = selected ? 0 : tw;
+          if (wordSpace !== curTw) { text.push(`${num(wordSpace)} Tw`); curTw = wordSpace; }
+          const font = `/${escapeName(key)} ${num(r.size)} Tf`;
           if (font !== curFont) { text.push(font); curFont = font; }
           const color = `${num(r.color[0])} ${num(r.color[1])} ${num(r.color[2])} rg`;
           if (color !== curColor) { text.push(color); curColor = color; }
-          text.push(`${serializeString(seg.bytes)} Tj`);
+          if (selected && tw > 0 && spaces > 0) {
+            const items: string[] = [];
+            const words = seg.text.split(' ');
+            for (let i = 0; i < words.length; i++) {
+              const gap = i + 1 < words.length;
+              items.push(serializeString(selected.driver.encode(words[i] + (gap ? ' ' : ''))));
+              if (gap) items.push(num(-1000 * tw / r.size));
+            }
+            text.push(`[${items.join(' ')}] TJ`);
+          } else {
+            text.push(`${serializeString(seg.bytes)} Tj`);
+          }
           if (r.underline || r.strike) {
             const vm = vmetricsFor(r.face);
             if (r.underline) {

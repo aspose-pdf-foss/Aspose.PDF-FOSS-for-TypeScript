@@ -1,6 +1,7 @@
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isString, name } from './types.js';
-import { PAD, buildAppearanceXObject, installAP, widgetGeom, wrapTextBody, type WidgetGeom } from './appearance.js';
+import { PAD, appearanceXObject, installAP, multiFontResources, widgetGeom, wrapTextBody, type WidgetGeom } from './appearance.js';
+import { freeTextFont } from './annotfont.js';
 import { num } from './pagecontent.js';
 import { cloudPath, type CloudPath } from './cloudborder.js';
 import { decodePdfByteString, decodePdfText } from './metadata.js';
@@ -11,6 +12,7 @@ import { readRichTextMarkup } from './richtext.js';
 import { encodeWinAnsi } from './encoding.js';
 import { serializeString } from './serialize.js';
 import type { LineEnding } from './annotation.js';
+import { readBorderStyle, readBorderWidth, readDashPattern } from './annotborder.js';
 
 /** The /Resources /Font key every annotation appearance registers its Standard-14
  *  face under. Single source: `installShapeAP` registers it and every body
@@ -133,16 +135,7 @@ export function drawSquiggly(qs: QuadCorners[], color: [number, number, number])
   return s;
 }
 
-/** Body for a text box of size w×h at the origin: optional fill, optional inset
- *  border stroke, then wrapped/aligned text (text inset by the border width). */
-export function freeTextBoxBody(
-  w: number, h: number, contents: string, fontSize: number,
-  textColor: [number, number, number], align: 'left' | 'center' | 'right',
-  color: [number, number, number], fill: [number, number, number] | undefined, width: number,
-): string {
-  return freeTextFrame(w, h, color, fill, width)
-    + wrapTextBody(contents, 'Helvetica', fontSize, textColor, w, h, width, align, AP_FONT_KEY);
-}
+
 
 /** Fill and inset border of a text box of size w×h at the origin — the part of
  *  a FreeText appearance that does not depend on its text, shared by the plain
@@ -166,22 +159,14 @@ export function freeTextFrame(
 export function installShapeAP(
   doc: Document, dict: PdfDict, g: WidgetGeom, body: string, opacity: number,
   faces: ReadonlyMap<string, StdFont> = new Map([[AP_FONT_KEY, 'Helvetica']]),
+  boundFont?: { key: string; entry: PdfObject },
 ): void {
   let full = '';
   if (opacity < 1) full += '/GS0 gs\n';
   full += body;
-  // The default reproduces the single-font call every caller made before
-  // v0tz.3, so only a rich FreeText, which names several faces, moves bytes.
-  const [[firstKey, firstFace], ...rest] = [...faces];
-  const stream = buildAppearanceXObject(doc, g, firstFace, firstKey, full);
-  const resources = stream.dict.get('Resources') as PdfDict;
-  const fonts = resources.get('Font') as PdfDict;
-  for (const [key, face] of rest) {
-    fonts.set(key, doc.allocObject(new Map<string, PdfObject>([
-      ['Type', name('Font')], ['Subtype', name('Type1')],
-      ['BaseFont', name(face)], ['Encoding', name('WinAnsiEncoding')],
-    ])));
-  }
+  const resources = multiFontResources(doc, faces);
+  if (boundFont) (resources.get('Font') as PdfDict).set(boundFont.key, boundFont.entry);
+  const stream = appearanceXObject(g, full, resources);
   if (opacity < 1) {
     const gsDict: PdfDict = new Map<string, PdfObject>([
       ['Type', name('ExtGState')], ['ca', opacity], ['CA', opacity],
@@ -428,16 +413,6 @@ function colorOf(doc: Document, o: PdfObject | undefined): RGB | undefined {
   return [c[0], c[1], c[2]];
 }
 
-/** Border width from /BS /W, defaulting to 1 as the Add* path does. */
-function widthOf(doc: Document, dict: PdfDict): number {
-  const bs = doc.resolve(dict.get('BS'));
-  if (isDict(bs)) {
-    const w = doc.resolve(bs.get('W'));
-    if (typeof w === 'number' && Number.isFinite(w) && w >= 0) return w;
-  }
-  return 1;
-}
-
 /** A flat finite-number list from an array entry; [] when absent or malformed. */
 function numsOf(doc: Document, o: PdfObject | undefined): number[] {
   const a = doc.resolve(o);
@@ -463,14 +438,38 @@ function endingsOf(doc: Document, dict: PdfDict): [LineEnding, LineEnding] {
   ];
 }
 
-/** Body for /Line, from /L and /LE. */
+/** /L contains the measured points. For a positive /LL the dimension line
+ *  lies to the left of the direction from the first point to the second. */
+function offsetLine(line: number[], distance: number): number[] {
+  const [x1, y1, x2, y2] = line;
+  const [ux, uy] = unitDir(x1, y1, x2, y2);
+  return [x1 - distance * uy, y1 + distance * ux, x2 - distance * uy, y2 + distance * ux];
+}
+
+export function leaderLength(doc: Document, dict: PdfDict): number {
+  const ll = doc.resolve(dict.get('LL'));
+  return typeof ll === 'number' && Number.isFinite(ll) ? ll : 0;
+}
+
+export function lineRect(line: number[], width: number, hasEndings: boolean, ll: number): [number, number, number, number] {
+  const margin = hasEndings ? Math.max(8, width * 3) : Math.max(width, 1);
+  return paddedRect([...line, ...offsetLine(line, ll)], margin);
+}
+
+/** Body for /Line, from /L, /LL and /LE. */
 function lineBody(doc: Document, dict: PdfDict, minX: number, minY: number, color: RGB, width: number): string | undefined {
   const l = numsOf(doc, dict.get('L'));
   if (l.length !== 4) return undefined;
   const [start, end] = endingsOf(doc, dict);
   const endingSize = Math.max(8, width * 3);
-  const ax = l[0] - minX, ay = l[1] - minY, bx = l[2] - minX, by = l[3] - minY;
+  const measured = toFormSpace(l, minX, minY);
+  const ll = leaderLength(doc, dict);
+  const [ax, ay, bx, by] = offsetLine(measured, ll);
   let body = `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width)} w\n`;
+  if (ll !== 0) {
+    body += `${num(measured[0])} ${num(measured[1])} m ${num(ax)} ${num(ay)} l S\n`;
+    body += `${num(measured[2])} ${num(measured[3])} m ${num(bx)} ${num(by)} l S\n`;
+  }
   body += `${num(ax)} ${num(ay)} m ${num(bx)} ${num(by)} l S\n`;
   const [ux, uy] = unitDir(ax, ay, bx, by);
   body += drawEnding(ax, ay, -ux, -uy, start, endingSize, color);
@@ -530,6 +529,7 @@ function inkBody(doc: Document, dict: PdfDict, minX: number, minY: number, color
  *  constant opacity (`v0tz.3`). */
 export interface FreeTextParts {
   g: WidgetGeom; body: string; faces: Map<string, StdFont>; opacity: number;
+  boundFont?: { key: string; entry: PdfObject };
 }
 
 /** The styled paragraphs a FreeText's /RC describes, over its /DA and /DS —
@@ -538,13 +538,15 @@ export interface FreeTextParts {
  *  emptier than its plain text (`v0tz.3`). */
 function richParagraphs(
   doc: Document, dict: PdfDict, face: StdFont, size: number,
-  color: [number, number, number], align: RichAlign,
+  color: [number, number, number], align: RichAlign, inheritedFont: boolean,
 ): RichParagraph[] | undefined {
   const rc = readRichTextMarkup(doc, dict, 'RC');
   if (rc === undefined) return undefined;
   const dsRaw = doc.resolve(dict.get('DS'));
   const ds = isString(dsRaw) ? decodePdfText(dsRaw.bytes) : undefined;
-  const paras = parseRichText(rc, ds, styleFromFace(face, size, color, align));
+  const base = styleFromFace(face, size, color, align);
+  base.inheritedFont = inheritedFont;
+  const paras = parseRichText(rc, ds, base);
   return paras !== undefined && paras.length > 0 ? paras : undefined;
 }
 
@@ -552,8 +554,8 @@ function richParagraphs(
  *  /Q and /RD either way, plus /CL when present. */
 function freeTextBody(
   doc: Document, dict: PdfDict, g: WidgetGeom, minX: number, minY: number,
-  color: RGB, fill: RGB | undefined, width: number,
-): { body: string; faces: Map<string, StdFont> } | undefined {
+  color: RGB, fill: RGB | undefined, width: number, writing: boolean,
+): Pick<FreeTextParts, 'body' | 'faces' | 'boundFont'> | undefined {
   const daRaw = doc.resolve(dict.get('DA'));
   const da = isString(daRaw) ? parseDA(decodePdfByteString(daRaw.bytes)) : undefined;
   const fontSize = da !== undefined && da.size > 0 ? da.size : 12;
@@ -569,20 +571,30 @@ function freeTextBody(
   const boxH = g.h - padT - padB;
   if (boxW <= 0 || boxH <= 0) return undefined;
 
-  const face = da !== undefined ? normalizeFont(da.fontName) : 'Helvetica';
-  const rich = richParagraphs(doc, dict, face, fontSize, textColor, align);
-  let inner: string;
+  const fontKey = da?.fontName ?? 'Helv';
+  const font = freeTextFont(doc, dict, fontKey, writing);
+  const face = normalizeFont(font.name);
+  const boundFont = font.entry === undefined ? undefined : { key: fontKey, entry: font.entry };
+  const rich = richParagraphs(doc, dict, face, fontSize, textColor, align, boundFont !== undefined);
+  const bulge = cloudBulge(doc, dict);
+  let inner = bulge !== undefined && width > 0
+    ? drawCloudRect({ w: boxW, h: boxH, rotate: 0 }, color, fill, width, bulge)
+    : freeTextFrame(boxW, boxH, color, fill, width);
+  // The form /BBox includes the whole callout. Clip the letters to the text
+  // box; the enclosing Q restores the graphics state before the leader.
+  if (padL || padT || padR || padB) inner += `0 0 ${num(boxW)} ${num(boxH)} re W n\n`;
   let faces: Map<string, StdFont>;
   if (rich !== undefined) {
-    const r = richTextBody(rich, boxW, boxH, width + PAD);
-    inner = freeTextFrame(boxW, boxH, color, fill, width) + r.body;
+    const r = richTextBody(rich, boxW, boxH, width + PAD,
+      boundFont && { face, key: fontKey, driver: font.driver });
+    inner += r.body;
     faces = r.faces;
   } else {
-    const contentsRaw = doc.resolve(dict.get('Contents'));
-    if (!isString(contentsRaw)) return undefined;
-    inner = freeTextBoxBody(
-      boxW, boxH, decodePdfText(contentsRaw.bytes), fontSize, textColor, align, color, fill, width);
-    faces = new Map([[AP_FONT_KEY, 'Helvetica']]);
+    const contents = doc.resolve(dict.get('Contents'));
+    if (!isString(contents)) return undefined;
+    inner += wrapTextBody(decodePdfText(contents.bytes), font.driver, fontSize, textColor,
+      boxW, boxH, width, align, boundFont?.key ?? AP_FONT_KEY);
+    faces = boundFont ? new Map() : new Map([[AP_FONT_KEY, face]]);
   }
 
   let body = `q 1 0 0 1 ${num(padL)} ${num(padB)} cm\n` + inner + '\nQ\n';
@@ -602,7 +614,7 @@ function freeTextBody(
       body += drawEnding(p[0], p[1], dx, dy, ending, Math.max(8, width * 3), color);
     }
   }
-  return { body, faces };
+  return { body, faces, boundFont };
 }
 
 /** Everything a FreeText's appearance needs, read from the dict and allocating
@@ -610,19 +622,19 @@ function freeTextBody(
  *  `annotappearance.ts`'s viewer fallback can wrap it inline (`v0tz.3`). One
  *  builder, two wrappers: the two provably cannot draw a FreeText differently.
  *  The reads are `regenerateAppearance`'s own helpers for the same reason. */
-export function freeTextParts(doc: Document, dict: PdfDict): FreeTextParts | undefined {
+export function freeTextParts(doc: Document, dict: PdfDict, writing = false): FreeTextParts | undefined {
   const g = widgetGeom(doc, dict);
   if (!g) return undefined;
   const rect = numsOf(doc, dict.get('Rect'));
   if (rect.length !== 4) return undefined;
   const color = colorOf(doc, dict.get('C')) ?? [0, 0, 0];
   const fill = colorOf(doc, dict.get('IC'));
-  const width = widthOf(doc, dict);
+  const width = readBorderWidth(doc, dict);
   const ca = doc.resolve(dict.get('CA'));
   const opacity = typeof ca === 'number' && ca >= 0 && ca <= 1 ? ca : 1;
   const parts = freeTextBody(
-    doc, dict, g, Math.min(rect[0], rect[2]), Math.min(rect[1], rect[3]), color, fill, width);
-  return parts && { g, body: parts.body, faces: parts.faces, opacity };
+    doc, dict, g, Math.min(rect[0], rect[2]), Math.min(rect[1], rect[3]), color, fill, width, writing);
+  return parts && { g, ...parts, opacity };
 }
 
 /** Regenerate the /AP /N appearance for an existing annotation dict, from the
@@ -651,8 +663,8 @@ export function freeTextParts(doc: Document, dict: PdfDict): FreeTextParts | und
  *
  *  One builder, so import and render provably cannot draw one annotation two
  *  ways — `freeTextParts`' rule, generalized from the one subtype to all. */
-export function shapeParts(doc: Document, dict: PdfDict): FreeTextParts | undefined {
-  const sub = dict.get('Subtype');
+export function shapeParts(doc: Document, dict: PdfDict, writing = false): FreeTextParts | undefined {
+  const sub = doc.resolve(dict.get('Subtype'));
   const subtype = isName(sub) ? sub.name : '';
   const g = widgetGeom(doc, dict);
   if (!g) return undefined;
@@ -664,7 +676,7 @@ export function shapeParts(doc: Document, dict: PdfDict): FreeTextParts | undefi
 
   const color = colorOf(doc, dict.get('C')) ?? [0, 0, 0];
   const fill = colorOf(doc, dict.get('IC'));
-  const width = widthOf(doc, dict);
+  const width = readBorderWidth(doc, dict);
   const ca = doc.resolve(dict.get('CA'));
   const opacity = typeof ca === 'number' && ca >= 0 && ca <= 1 ? ca : 1;
 
@@ -706,7 +718,7 @@ export function shapeParts(doc: Document, dict: PdfDict): FreeTextParts | undefi
     case 'FreeText':
       // Through freeTextParts, the builder the no-/AP viewer fallback shares,
       // so import and render cannot draw one comment two ways (v0tz.3).
-      return freeTextParts(doc, dict);
+      return freeTextParts(doc, dict, writing);
     case 'Caret': {
       const sy = doc.resolve(dict.get('Sy'));
       const symbol = isName(sy) && sy.name === 'P' ? 'paragraph' : 'none';
@@ -720,6 +732,11 @@ export function shapeParts(doc: Document, dict: PdfDict): FreeTextParts | undefi
   }
 
   if (body === undefined) return undefined;
+  if (['Square', 'Circle', 'Line', 'Polygon', 'PolyLine', 'Ink'].includes(subtype)
+      && readBorderStyle(doc, dict) === 'dashed') {
+    const pattern = readDashPattern(doc, dict) ?? [3];
+    body = `[${pattern.map(num).join(' ')}] 0 d\n` + body;
+  }
   // Only a Caret /Sy /P draws text at all, and it names AP_FONT_KEY for its ¶;
   // every other body here is pure geometry and needs no font resource. The
   // default keeps installShapeAP's pre-kapw single-font registration.
@@ -730,8 +747,8 @@ export function shapeParts(doc: Document, dict: PdfDict): FreeTextParts | undefi
  *  (ImportFdf/ImportXfdf with no usable appearance). True when one was
  *  installed. */
 export function regenerateAppearance(doc: Document, dict: PdfDict): boolean {
-  const parts = shapeParts(doc, dict);
+  const parts = shapeParts(doc, dict, true);
   if (parts === undefined) return false;
-  installShapeAP(doc, dict, parts.g, parts.body, parts.opacity, parts.faces);
+  installShapeAP(doc, dict, parts.g, parts.body, parts.opacity, parts.faces, parts.boundFont);
   return true;
 }

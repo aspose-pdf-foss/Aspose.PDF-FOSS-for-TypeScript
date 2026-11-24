@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Style review annotations and label printed sheets.** Drawing annotations
+  support dashed borders and signed line leaders. FreeText supports standard
+  and embedded fonts, insets and cloudy borders. Links expose activation
+  highlighting and border width. Page-information marks can label selected
+  pages with a page number and an optional timestamp. (4qhc.5)
+
 - **AutoTag recognizes lists, bookmark headings and repeated page furniture.**
   Use bookmark depth or explicit font-size thresholds for heading levels.
   Bullet and numbered items retain their labels, bodies and nested lists in

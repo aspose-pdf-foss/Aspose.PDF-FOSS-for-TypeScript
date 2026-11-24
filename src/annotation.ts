@@ -1,18 +1,25 @@
 import type { Document } from './document.js';
 import type { StructElement } from './struct.js';
 import type { Page } from './page.js';
+import type { FieldBorderStyle } from './fieldstyle.js';
+import {
+  drawingBorder, readBorderStyle, readBorderWidth, readDashPattern,
+  setBorderStyle, setBorderWidth, setDashPattern, type DrawingBorderOptions,
+} from './annotborder.js';
 import { PdfDict, PdfObject, PdfRef, PdfStream, isArray, isDict, isName, isRef, isStream, isString, name } from './types.js';
 import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
 import { widgetGeom, buildAppearanceXObject, installAP, type WidgetGeom } from './appearance.js';
 import {
-  quadsBBox, offsetQuads, installShapeAP, drawRect, drawEllipse, drawHighlight,
-  drawUnderline, drawStrikeOut, drawSquiggly, drawEnding, polyPathBody,
-  freeTextBoxBody, paddedRect, toFormSpace, unitDir, redactMarkBody, caretBody, AP_FONT_KEY,
-  type QuadCorners,
+  quadsBBox, offsetQuads, installShapeAP, leaderLength, lineRect, drawHighlight,
+  drawUnderline, drawStrikeOut, drawSquiggly, drawEnding,
+  paddedRect, redactMarkBody, caretBody, AP_FONT_KEY,
+  regenerateAppearance, type QuadCorners,
 } from './annotdraw.js';
 
 export { quadsBBox, offsetQuads, type QuadCorners };
-import { enc } from './serialize.js';
+import { enc, escapeName } from './serialize.js';
+import { freeTextFont, checkFreeTextFont, registerFreeTextFont } from './annotfont.js';
+import type { AuthoringFont } from './stamp.js';
 import { STAMP_FONT, stampCaption, stampLabelBody } from './annotstamp.js';
 import { parseDA } from './da.js';
 import { flattenAnnotation } from './flatten.js';
@@ -30,7 +37,8 @@ import { PdfParseError, UnsupportedFeatureError } from './errors.js';
 import type { Layer } from './ocg.js';
 import { buildRectilinearMeasure, readRectilinearMeasure, type RectilinearMeasure } from './measure.js';
 import {
-  colorBarMark, cornerMark, fitPrinterMarks, paintPrinterMarks, planPrinterMarks,
+  applyPrinterBoxes, colorBarMark, cornerMark, fittedPrinterBoxes, paintPrinterMarks, planPrinterMarks,
+  pageInformationMark, pageInformationText, type PageInformationOptions,
   printerMarkBoxes, printerMarkForm, registrationMark, type ColorsOfCMYK, type MarkDrawing,
   type PrinterMarkCornerPosition, type PrinterMarkSidePosition, type PrinterMarksOptions,
 } from './printermarks.js';
@@ -532,21 +540,38 @@ export class MarkupAnnotation extends Annotation {
   set QuadPoints(q: number[]) { writeQuadPoints(this.Dict, q); this.touch(); }
 }
 
-/** Border width from /BS /W; default 1 when absent or malformed. */
-function readBorderWidth(doc: Document, dict: PdfDict): number {
-  const bs = doc.resolve(dict.get('BS'));
-  if (isDict(bs)) {
-    const w = doc.resolve((bs as PdfDict).get('W'));
-    if (typeof w === 'number' && Number.isFinite(w)) return w;
+abstract class DrawingAnnotation extends Annotation {
+  /** /BS /S, or the effective style of the legacy /Border. */
+  get BorderStyle(): FieldBorderStyle { return readBorderStyle(this.doc, this.Dict); }
+  set BorderStyle(v: 'solid' | 'dashed') {
+    setBorderStyle(this.doc, this.Dict, v);
+    this.refreshDrawing();
   }
-  return 1;
-}
 
-/** Write /BS << /Type /Border /W v >>. Validates a non-negative finite number. */
-function setBorderWidth(dict: PdfDict, v: number): void {
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0)
-    throw new TypeError('BorderWidth must be a non-negative finite number');
-  dict.set('BS', new Map<string, PdfObject>([['Type', name('Border')], ['W', v]]));
+  /** The stated dash lengths in points. A dashed border defaults to [3]. */
+  get DashPattern(): number[] | undefined { return readDashPattern(this.doc, this.Dict); }
+  set DashPattern(v: number[] | undefined) {
+    setDashPattern(this.doc, this.Dict, v);
+    this.refreshDrawing();
+  }
+
+  get BorderWidth(): number { return readBorderWidth(this.doc, this.Dict); }
+  set BorderWidth(v: number) {
+    setBorderWidth(this.doc, this.Dict, v);
+    this.updateStrokeBounds();
+    this.refreshDrawing();
+  }
+
+  /** /Line derives its rectangle from the stroke and endpoints. */
+  protected updateStrokeBounds(): void {}
+
+  /** Install a fresh normal appearance from the live PDF properties. */
+  RegenerateAppearance(): boolean { return regenerateAppearance(this.doc, this.Dict); }
+
+  protected refreshDrawing(): void {
+    this.touch();
+    this.RegenerateAppearance();
+  }
 }
 
 /** 'square' or 'circle' — the two subtypes SquareCircleAnnotation covers. */
@@ -554,7 +579,7 @@ export type ShapeType = 'square' | 'circle';
 
 /** A /Square or /Circle annotation: a stroked (optionally filled) rectangle or
  *  inscribed ellipse in /Rect. */
-export class SquareCircleAnnotation extends Annotation {
+export class SquareCircleAnnotation extends DrawingAnnotation {
   /** 'circle' for /Circle, else 'square'. */
   get ShapeType(): ShapeType {
     return this.Subtype === 'Circle' ? 'circle' : 'square';
@@ -573,10 +598,6 @@ export class SquareCircleAnnotation extends Annotation {
     if (c.some((x) => x < 0 || x > 1)) throw new TypeError('InteriorColor components must be in 0..1');
     this.Dict.set('IC', c);
   }
-
-  /** Border width from /BS /W; 1 when absent. */
-  get BorderWidth(): number { return readBorderWidth(this.doc, this.Dict); }
-  set BorderWidth(v: number) { setBorderWidth(this.Dict, v); this.touch(); }
 }
 
 /** Supported /LE line-ending styles. */
@@ -586,15 +607,26 @@ const LINE_ENDINGS: ReadonlySet<string> = new Set<string>([
   'None', 'OpenArrow', 'ClosedArrow', 'Circle', 'Square',
 ]);
 
-function attachAnnotationMeasure(doc: Document, annotation: PdfDict, measure: PdfDict): void {
+function requireAnnotationVersion(doc: Document, minimum: '1.6' | '1.7'): void {
   // An incremental save keeps the original header and raises its effective
   // version through the catalog.
-  const version = doc.headerVersion();
-  if (version !== undefined && /^1\.[0-6]$/.test(version)) doc.catalog().set('Version', name('1.7'));
+  if (Number(doc.Version) < Number(minimum)) doc.catalog().set('Version', name(minimum));
+}
+
+function attachAnnotationMeasure(doc: Document, annotation: PdfDict, measure: PdfDict): void {
+  requireAnnotationVersion(doc, '1.7');
   annotation.set('Measure', measure);
 }
 
-abstract class MeasuredAnnotation extends Annotation {
+function writeLeaderLength(doc: Document, dict: PdfDict, value: number): void {
+  if (value === 0) dict.delete('LL');
+  else {
+    requireAnnotationVersion(doc, '1.6');
+    dict.set('LL', value);
+  }
+}
+
+abstract class MeasuredAnnotation extends DrawingAnnotation {
   /** Rectilinear measurement metadata. Assign undefined to remove it. */
   get Measure(): RectilinearMeasure | undefined {
     return readRectilinearMeasure(this.doc, this.Dict.get('Measure'));
@@ -618,14 +650,26 @@ export class LineAnnotation extends MeasuredAnnotation {
   }
 
   set Line(v: [number, number, number, number] | undefined) {
-    this.touch();
-    if (v === undefined) { this.Dict.delete('L'); return; }
+    if (v === undefined) { this.Dict.delete('L'); this.touch(); return; }
     this.Dict.set('L', checkNums('Line', v, 4));
+    this.updateStrokeBounds();
+    this.refreshDrawing();
   }
 
-  /** Border width from /BS /W; 1 when absent. */
-  get BorderWidth(): number { return readBorderWidth(this.doc, this.Dict); }
-  set BorderWidth(v: number) { setBorderWidth(this.Dict, v); this.touch(); }
+  /** Signed distance in points between the measured endpoints and the line. */
+  get LeaderLineLength(): number { return leaderLength(this.doc, this.Dict); }
+  set LeaderLineLength(v: number) {
+    if (!Number.isFinite(v)) throw new TypeError('LeaderLineLength must be finite');
+    writeLeaderLength(this.doc, this.Dict, v);
+    this.updateStrokeBounds();
+    this.refreshDrawing();
+  }
+
+  protected override updateStrokeBounds(): void {
+    const line = this.Line;
+    const hasEndings = this.LineEndings?.some(ending => ending !== 'None') ?? false;
+    if (line) this.Dict.set('Rect', lineRect(line, this.BorderWidth, hasEndings, this.LeaderLineLength));
+  }
 
   /** /LE endings [start, end]; undefined when absent or malformed. */
   get LineEndings(): [LineEnding, LineEnding] | undefined {
@@ -637,11 +681,14 @@ export class LineAnnotation extends MeasuredAnnotation {
   }
 
   set LineEndings(v: [LineEnding, LineEnding] | undefined) {
-    this.touch();
-    if (v === undefined) { this.Dict.delete('LE'); return; }
-    if (!Array.isArray(v) || v.length !== 2 || !LINE_ENDINGS.has(v[0]) || !LINE_ENDINGS.has(v[1]))
-      throw new TypeError('LineEndings must be [start, end] of supported ending names');
-    this.Dict.set('LE', [name(v[0]), name(v[1])]);
+    if (v === undefined) this.Dict.delete('LE');
+    else {
+      if (!Array.isArray(v) || v.length !== 2 || !LINE_ENDINGS.has(v[0]) || !LINE_ENDINGS.has(v[1]))
+        throw new TypeError('LineEndings must be [start, end] of supported ending names');
+      this.Dict.set('LE', [name(v[0]), name(v[1])]);
+    }
+    this.updateStrokeBounds();
+    this.refreshDrawing();
   }
 }
 
@@ -697,10 +744,6 @@ export class PolyAnnotation extends MeasuredAnnotation {
     this.Dict.set('IC', c);
   }
 
-  /** Border width from /BS /W; 1 when absent. */
-  get BorderWidth(): number { return readBorderWidth(this.doc, this.Dict); }
-  set BorderWidth(v: number) { setBorderWidth(this.Dict, v); this.touch(); }
-
   /** /LE endings [start, end] (for /PolyLine); undefined when absent/malformed. */
   get LineEndings(): [LineEnding, LineEnding] | undefined {
     const le = this.doc.resolve(this.Dict.get('LE'));
@@ -721,7 +764,7 @@ export class PolyAnnotation extends MeasuredAnnotation {
 
 /** An /Ink annotation: one or more freehand strokes, each a flat point list in
  *  /InkList. */
-export class InkAnnotation extends Annotation {
+export class InkAnnotation extends DrawingAnnotation {
   /** /InkList as one flat point list per stroke; [] when absent. Strokes with
    *  fewer than two points are dropped. */
   get InkList(): number[][] {
@@ -736,21 +779,108 @@ export class InkAnnotation extends Annotation {
     this.Dict.set('InkList', v.map((s) => checkVertices('ink stroke', s)));
     this.touch();
   }
-
-  /** Border width from /BS /W; 1 when absent. */
-  get BorderWidth(): number { return readBorderWidth(this.doc, this.Dict); }
-  set BorderWidth(v: number) { setBorderWidth(this.Dict, v); this.touch(); }
 }
 
 /** Build a /DA PDF string `/<font> <size> Tf r g b rg` (ASCII/latin1). */
 function buildDA(fontName: string, size: number, color: [number, number, number]): PdfObject {
   const [r, g, b] = color;
-  return { kind: 'string', bytes: enc(`/${fontName} ${num(size)} Tf ${num(r)} ${num(g)} ${num(b)} rg`) };
+  return { kind: 'string', bytes: enc(`/${escapeName(fontName)} ${num(size)} Tf ${num(r)} ${num(g)} ${num(b)} rg`) };
+}
+
+type FreeTextRect = [number, number, number, number];
+
+function rectDifferences(outer: FreeTextRect, inner: FreeTextRect): number[] {
+  const [x0, y0, x1, y1] = checkNums('innerRect', inner, 4);
+  const rd = [x0 - Math.min(outer[0], outer[2]), Math.max(outer[1], outer[3]) - y1,
+    Math.max(outer[0], outer[2]) - x1, y0 - Math.min(outer[1], outer[3])];
+  if (x1 <= x0 || y1 <= y0 || rd.some(d => d < 0))
+    throw new TypeError('innerRect must have positive area and lie within the annotation rectangle');
+  return rd;
+}
+
+function checkEffect(effect: 'none' | 'cloudy'): void {
+  if (effect !== 'none' && effect !== 'cloudy') throw new TypeError("borderEffect must be 'none' or 'cloudy'");
+}
+
+function checkIntensity(intensity: number): void {
+  if (!Number.isFinite(intensity) || intensity < 0 || intensity > 2)
+    throw new TypeError('borderEffectIntensity must be in 0..2');
 }
 
 /** A /FreeText annotation: text drawn directly on the page, optionally with a
  *  callout leader line (/CL, /IT FreeTextCallout, /LE ending). */
 export class FreeTextAnnotation extends Annotation {
+  /** Rebuild /AP /N from the current /DA, contents, rich text and geometry. */
+  RegenerateAppearance(): boolean { return regenerateAppearance(this.doc, this.Dict); }
+
+  /** Resolved font name, including the PDF subset prefix when present. */
+  get FontName(): string { return freeTextFont(this.doc, this.Dict, this.da().fontName).name; }
+
+  SetFont(font: AuthoringFont): void {
+    checkFreeTextFont(this.doc, font);
+    const { size, color } = this.da();
+    const key = registerFreeTextFont(this.doc, this.Dict, font);
+    this.Dict.set('DA', buildDA(key, size, color));
+    this.touch();
+    this.RegenerateAppearance();
+  }
+
+  /** The text box in page coordinates, derived from /Rect and /RD. */
+  get InnerRect(): FreeTextRect | undefined {
+    const r = this.Rect;
+    if (!r) return undefined;
+    const [l, t, right, b] = numArray(this.doc, this.Dict.get('RD'), 4) ?? [0, 0, 0, 0];
+    return [Math.min(r[0], r[2]) + l, Math.min(r[1], r[3]) + b,
+      Math.max(r[0], r[2]) - right, Math.max(r[1], r[3]) - t];
+  }
+
+  set InnerRect(v: FreeTextRect | undefined) {
+    if (v === undefined) this.Dict.delete('RD');
+    else {
+      const outer = this.Rect;
+      if (!outer) throw new TypeError('InnerRect requires an annotation rectangle');
+      this.Dict.set('RD', rectDifferences(outer, v));
+      requireAnnotationVersion(this.doc, '1.6');
+    }
+    this.touch();
+    this.RegenerateAppearance();
+  }
+
+  private effects(): PdfDict {
+    const be = this.doc.resolve(this.Dict.get('BE'));
+    return isDict(be) ? be : new Map();
+  }
+
+  get BorderEffect(): 'none' | 'cloudy' {
+    const s = this.doc.resolve(this.effects().get('S'));
+    return isName(s) && s.name === 'C' ? 'cloudy' : 'none';
+  }
+
+  set BorderEffect(v: 'none' | 'cloudy') {
+    checkEffect(v);
+    if (v === 'none') this.Dict.delete('BE');
+    else {
+      this.Dict.set('BE', new Map(this.effects()).set('S', name('C')));
+      requireAnnotationVersion(this.doc, '1.6');
+    }
+    this.touch();
+    this.RegenerateAppearance();
+  }
+
+  /** Effective cloud intensity, 0..2. An unspecified cloudy intensity draws at 1. */
+  get BorderEffectIntensity(): number {
+    const i = this.doc.resolve(this.effects().get('I'));
+    return typeof i === 'number' ? Math.min(2, Math.max(0, i)) : this.BorderEffect === 'cloudy' ? 1 : 0;
+  }
+
+  set BorderEffectIntensity(v: number) {
+    checkIntensity(v);
+    this.Dict.set('BE', new Map(this.effects()).set('I', v));
+    requireAnnotationVersion(this.doc, '1.6');
+    this.touch();
+    this.RegenerateAppearance();
+  }
+
   /** Parsed /DA (font resource name, size, color); Helvetica/0/black default. */
   private da(): { fontName: string; size: number; color: [number, number, number] } {
     return readDA(this.doc, this.Dict);
@@ -784,7 +914,7 @@ export class FreeTextAnnotation extends Annotation {
 
   /** Border width from /BS /W; 1 when absent. */
   get BorderWidth(): number { return readBorderWidth(this.doc, this.Dict); }
-  set BorderWidth(v: number) { setBorderWidth(this.Dict, v); this.touch(); }
+  set BorderWidth(v: number) { setBorderWidth(this.doc, this.Dict, v); this.touch(); }
 
   /** /IC interior (box background) color [r,g,b] in 0..1; undefined when absent. */
   get InteriorColor(): [number, number, number] | undefined {
@@ -974,9 +1104,52 @@ export type {
 /** @deprecated Use PdfAction. Retained so existing imports keep working. */
 export type LinkAction = PdfAction;
 
+const LINK_HIGHLIGHTS = { invert: 'I', none: 'N', outline: 'O', push: 'P' } as const;
+export type LinkHighlightMode = keyof typeof LINK_HIGHLIGHTS;
+
+function linkHighlightCode(mode: LinkHighlightMode): string {
+  if (typeof mode !== 'string' || !Object.hasOwn(LINK_HIGHLIGHTS, mode)) throw new TypeError('invalid link highlight mode');
+  return LINK_HIGHLIGHTS[mode];
+}
+
 /** A /Link annotation. Exposes the parsed /A action (GoTo / URI) and, for GoTo
  *  links, the resolved destination (also covering an explicit /Dest). */
 export class LinkAnnotation extends Annotation {
+  /** Viewer feedback on activation (/H). The PDF default is invert. */
+  get Highlight(): LinkHighlightMode {
+    const h = this.doc.resolve(this.Dict.get('H'));
+    if (isName(h)) {
+      for (const mode of Object.keys(LINK_HIGHLIGHTS) as LinkHighlightMode[]) {
+        if (LINK_HIGHLIGHTS[mode] === h.name) return mode;
+      }
+    }
+    return 'invert';
+  }
+
+  set Highlight(mode: LinkHighlightMode) {
+    const code = linkHighlightCode(mode);
+    if (mode === 'invert') this.Dict.delete('H');
+    else this.Dict.set('H', name(code));
+    this.touch();
+  }
+
+  /** Prefer /BS when present. Imported links without a border specification default to 1 pt. */
+  get BorderWidth(): number {
+    return readBorderWidth(this.doc, this.Dict);
+  }
+
+  set BorderWidth(width: number) {
+    if (!Number.isFinite(width) || width < 0) throw new TypeError('border must be a non-negative finite number');
+    if (isDict(this.doc.resolve(this.Dict.get('BS')))) setBorderWidth(this.doc, this.Dict, width);
+    else {
+      const original = this.doc.resolve(this.Dict.get('Border'));
+      const border = isArray(original) && original.length >= 3 ? [...original] : [0, 0, 0];
+      border[2] = width;
+      this.Dict.set('Border', border);
+    }
+    this.touch();
+  }
+
   /** The link's /A action as structured data; undefined when absent or of an
    *  unmodeled action type. */
   get Action(): PdfAction | undefined {
@@ -1021,8 +1194,6 @@ export class FileAttachmentAnnotation extends Annotation {
   }
 }
 
-/** Wrap an annotation dict in its typed handle, dispatching on /Subtype. Unknown
- *  subtypes fall back to the base `Annotation`. */
 /** A printable /PrinterMark annotation with a normal appearance. */
 export class PrinterMarkAnnotation extends Annotation {
   /** Mark identifier (/MN), which may be absent on an imported PDF. */
@@ -1037,8 +1208,7 @@ export class TrimMarkAnnotation extends PrinterMarkAnnotation {
   constructor(page: Page, position: PrinterMarkCornerPosition) {
     const boxes = printerMarkBoxes(page);
     const mark = cornerMark(boxes, 'trim', position);
-    fitPrinterMarks(page, boxes, [mark], true);
-    super(page.Document, attachPrinterMark(page, mark));
+    super(page.Document, attachSinglePrinterMark(page, boxes, mark));
   }
 }
 
@@ -1047,8 +1217,7 @@ export class BleedMarkAnnotation extends PrinterMarkAnnotation {
   constructor(page: Page, position: PrinterMarkCornerPosition) {
     const boxes = printerMarkBoxes(page);
     const mark = cornerMark(boxes, 'bleed', position);
-    fitPrinterMarks(page, boxes, [mark], true);
-    super(page.Document, attachPrinterMark(page, mark));
+    super(page.Document, attachSinglePrinterMark(page, boxes, mark));
   }
 }
 
@@ -1057,8 +1226,7 @@ export class RegistrationMarkAnnotation extends PrinterMarkAnnotation {
   constructor(page: Page, position: PrinterMarkSidePosition) {
     const boxes = printerMarkBoxes(page);
     const mark = registrationMark(boxes, position);
-    fitPrinterMarks(page, boxes, [mark], true);
-    super(page.Document, attachPrinterMark(page, mark));
+    super(page.Document, attachSinglePrinterMark(page, boxes, mark));
   }
 }
 
@@ -1067,37 +1235,93 @@ export class ColorBarAnnotation extends PrinterMarkAnnotation {
   constructor(page: Page, rect: Rect, colorOfCMYK: ColorsOfCMYK = 'Black') {
     const boxes = printerMarkBoxes(page);
     const mark = colorBarMark(boxes, rect, colorOfCMYK);
-    fitPrinterMarks(page, boxes, [mark], true);
-    super(page.Document, attachPrinterMark(page, mark));
+    super(page.Document, attachSinglePrinterMark(page, boxes, mark));
   }
+}
+
+/** A printable job label, page number and optional timestamp at a supplied rectangle. */
+export class PageInformationAnnotation extends PrinterMarkAnnotation {
+  constructor(page: Page, rect: Rect, options?: PageInformationOptions);
+  /** @internal Wrap an existing dictionary without allocating or repainting it. */
+  constructor(doc: Document, dict: PdfDict);
+  constructor(owner: Page | Document, target: Rect | PdfDict, options?: PageInformationOptions) {
+    if ('Document' in owner && Array.isArray(target)) {
+      const mark = pageInformationMark(target, pageInformationText(owner, options));
+      super(owner.Document, attachSinglePrinterMark(owner, printerMarkBoxes(owner), mark));
+    } else if (!('Document' in owner) && isDict(target)) {
+      super(owner, target);
+    } else {
+      throw new TypeError('expected a page and page information rectangle');
+    }
+  }
+
+  override get Contents(): string | undefined { return super.Contents; }
+  override set Contents(value: string | undefined) {
+    if (value !== undefined && typeof value !== 'string') throw new TypeError('Contents must be a string');
+    const rect = this.Rect;
+    if (!rect) throw new PdfParseError('page information annotation has no rectangle');
+    const mark = pageInformationMark(rect, value ?? '');
+    super.Contents = value;
+    installAP(this.doc, this.Dict, printerMarkForm(this.doc, mark));
+  }
+}
+
+function unsharePrinterAnnots(page: Page): void {
+  const existing = page.Document.resolve(page.Dict.get('Annots'));
+  if (isArray(existing)) page.Dict.set('Annots', [...existing]);
+}
+
+function attachSinglePrinterMark(page: Page, boxes: ReturnType<typeof printerMarkBoxes>, mark: MarkDrawing): PdfDict {
+  page.Document.pageRef(page.Number);
+  applyPrinterBoxes(page, fittedPrinterBoxes(boxes, [mark], true));
+  unsharePrinterAnnots(page);
+  return attachPrinterMark(page, mark);
 }
 
 function attachPrinterMark(page: Page, mark: MarkDrawing): PdfDict {
   const doc = page.Document;
-  const dict = createAnnotation(doc, page, { subtype: 'PrinterMark', rect: mark.rect });
+  const dict = createAnnotation(doc, page, { subtype: 'PrinterMark', rect: mark.rect, contents: mark.contents });
   dict.set('MN', name(mark.markName));
   dict.set('F', FLAG_PRINT | FLAG_READ_ONLY);
-  installAP(doc, dict, printerMarkForm(mark));
+  installAP(doc, dict, printerMarkForm(doc, mark));
   doc.markModified();
   return dict;
 }
 
 /** @internal Shared page-level layout for annotation and content output. */
-export function addPrinterMarks(page: Page, options: PrinterMarksOptions): PrinterMarkAnnotation[] {
-  const { mode = 'annotation', expandCropBox = true, kinds } = options;
+export function addPrinterMarks(pages: Page[], options: PrinterMarksOptions): PrinterMarkAnnotation[] {
+  const { mode = 'annotation', expandCropBox = true, kinds, pageInformation } = options;
   if (mode !== 'annotation' && mode !== 'content') throw new RangeError('invalid printer mark output mode');
   if (typeof expandCropBox !== 'boolean') throw new TypeError('expandCropBox must be a boolean');
-  const boxes = printerMarkBoxes(page);
-  const marks = planPrinterMarks(boxes, kinds);
-  if (marks.length === 0) return [];
-  fitPrinterMarks(page, boxes, marks, expandCropBox);
-  if (mode === 'content') {
-    paintPrinterMarks(page, marks);
-    return [];
+  const plans = pages.map((page) => {
+    const original = printerMarkBoxes(page);
+    const marks = planPrinterMarks(page, original, kinds, pageInformation);
+    // A parsed inline page leaf can carry content, but cannot supply an
+    // annotation's indirect /P. Discover it before changing earlier pages.
+    if (mode === 'annotation' && marks.length) page.Document.pageRef(page.Number);
+    const boxes = marks.length ? fittedPrinterBoxes(original, marks, expandCropBox) : original;
+    return { page, boxes, marks };
+  });
+  const annotations: PrinterMarkAnnotation[] = [];
+  for (const { page, boxes, marks } of plans) {
+    if (marks.length === 0) continue;
+    applyPrinterBoxes(page, boxes);
+    if (mode === 'content') paintPrinterMarks(page, marks);
+    else {
+      unsharePrinterAnnots(page);
+      for (const mark of marks) annotations.push(wrapPrinterMark(page.Document, attachPrinterMark(page, mark)));
+    }
   }
-  return marks.map((mark) => new PrinterMarkAnnotation(page.Document, attachPrinterMark(page, mark)));
+  return annotations;
 }
 
+function wrapPrinterMark(doc: Document, dict: PdfDict): PrinterMarkAnnotation {
+  const mn = doc.resolve(dict.get('MN'));
+  return isName(mn) && mn.name === 'PageInformation'
+    ? new PageInformationAnnotation(doc, dict) : new PrinterMarkAnnotation(doc, dict);
+}
+
+/** Wrap an annotation dict in its typed handle, dispatching on /Subtype. */
 export function wrapAnnotation(doc: Document, dict: PdfDict): Annotation {
   const st = doc.resolve(dict.get('Subtype'));
   const subtype = isName(st) ? st.name : '';
@@ -1120,7 +1344,7 @@ export function wrapAnnotation(doc: Document, dict: PdfDict): Annotation {
     case 'Redact': return new RedactAnnotation(doc, dict);
     case 'Caret': return new CaretAnnotation(doc, dict);
     case 'Popup': return new PopupAnnotation(doc, dict);
-    case 'PrinterMark': return new PrinterMarkAnnotation(doc, dict);
+    case 'PrinterMark': return wrapPrinterMark(doc, dict);
     default: return new Annotation(doc, dict);
   }
 }
@@ -1460,7 +1684,7 @@ function checkCallout(v: number[]): number[] {
 }
 
 /** Options for Page.AddSquare / Page.AddCircle. */
-export interface SquareCircleOptions {
+export interface SquareCircleOptions extends DrawingBorderOptions {
   rect: [number, number, number, number];
   /** Auto-attach a companion /Popup. */
   popup?: PopupSpec;
@@ -1481,22 +1705,19 @@ function addSquareCircle(doc: Document, page: Page, subtype: 'Square' | 'Circle'
   const color = checkOptColor('color', opts.color) ?? [0, 0, 0];
   const fill = checkOptColor('fill', opts.fill);
   const width = checkOptWidth(opts.width);
+  const bs = drawingBorder(width, opts);
   const opacity = checkOptOpacity(opts.opacity);
 
   const dict = createAnnotation(doc, page, { subtype, rect: opts.rect, color, contents: opts.contents, popup: opts.popup });
   const annot = new SquareCircleAnnotation(doc, dict);
-  setBorderWidth(dict, width);
+  dict.set('BS', bs);
   if (fill) annot.InteriorColor = fill;
   if (opacity !== undefined) annot.Opacity = opacity;
   // Record the border half-inset between /Rect and the drawn geometry.
   const half = width / 2;
   dict.set('RD', [half, half, half, half]);
 
-  const g = widgetGeom(doc, dict);
-  if (g) {
-    const body = subtype === 'Circle' ? drawEllipse(g, color, fill, width) : drawRect(g, color, fill, width);
-    installShapeAP(doc, dict, g, body, opacity ?? 1);
-  }
+  annot.RegenerateAppearance();
   return annot;
 }
 
@@ -1554,9 +1775,11 @@ export function addCaret(doc: Document, page: Page, opts: CaretOptions): CaretAn
 }
 
 /** Options for Page.AddLine. */
-export interface LineOptions {
+export interface LineOptions extends DrawingBorderOptions {
   /** Endpoints [x1,y1,x2,y2] in user space (sets /L). */
   line: [number, number, number, number];
+  /** Signed offset of the shaft from the endpoints, in points (/LL). */
+  leaderLineLength?: number;
   /** Rectilinear calibration metadata. */
   measure?: RectilinearMeasure;
   /** Auto-attach a companion /Popup. */
@@ -1581,46 +1804,35 @@ export function addLine(doc: Document, page: Page, opts: LineOptions): LineAnnot
   const line = checkNums('line', opts.line, 4);
   const color = checkOptColor('color', opts.color) ?? [0, 0, 0];
   const width = checkOptWidth(opts.width);
+  const bs = drawingBorder(width, opts);
   const opacity = checkOptOpacity(opts.opacity);
   const start = opts.startEnding ?? 'None';
   const end = opts.endEnding ?? 'None';
   if (!LINE_ENDINGS.has(start) || !LINE_ENDINGS.has(end))
     throw new TypeError('startEnding/endEnding must be a supported ending name');
 
-  const [x1, y1, x2, y2] = line;
+  const ll = opts.leaderLineLength === undefined ? 0 : opts.leaderLineLength;
+  if (!Number.isFinite(ll)) throw new TypeError('leaderLineLength must be finite');
   const hasEndings = start !== 'None' || end !== 'None';
-  const endingSize = Math.max(8, width * 3);
-  const margin = hasEndings ? endingSize : Math.max(width, 1);
-  const minX = Math.min(x1, x2) - margin, maxX = Math.max(x1, x2) + margin;
-  const minY = Math.min(y1, y2) - margin, maxY = Math.max(y1, y2) + margin;
+  const rect = lineRect(line, width, hasEndings, ll);
 
   const dict = createAnnotation(doc, page, {
-    subtype: 'Line', rect: [minX, minY, maxX, maxY], color,
+    subtype: 'Line', rect, color,
     contents: opts.contents, popup: opts.popup, measure: opts.measure,
   });
   const annot = new LineAnnotation(doc, dict);
-  annot.Line = [x1, y1, x2, y2];
-  setBorderWidth(dict, width);
-  if (hasEndings) annot.LineEndings = [start, end];
+  dict.set('L', line);
+  writeLeaderLength(doc, dict, ll);
+  dict.set('BS', bs);
+  if (hasEndings) dict.set('LE', [name(start), name(end)]);
   if (opacity !== undefined) annot.Opacity = opacity;
 
-  const g = widgetGeom(doc, dict);
-  if (g) {
-    // Endpoints translated into form space (origin at /Rect lower-left).
-    const ax = x1 - minX, ay = y1 - minY, bx = x2 - minX, by = y2 - minY;
-    let body = `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width)} w\n`;
-    body += `${num(ax)} ${num(ay)} m ${num(bx)} ${num(by)} l S\n`;
-    const len = Math.hypot(bx - ax, by - ay) || 1;
-    const ux = (bx - ax) / len, uy = (by - ay) / len;
-    body += drawEnding(ax, ay, -ux, -uy, start, endingSize, color); // start points away from p2
-    body += drawEnding(bx, by, ux, uy, end, endingSize, color);     // end points away from p1
-    installShapeAP(doc, dict, g, body, opacity ?? 1);
-  }
+  annot.RegenerateAppearance();
   return annot;
 }
 
 /** Options for Page.AddPolygon. */
-export interface PolygonOptions {
+export interface PolygonOptions extends DrawingBorderOptions {
   /** Flat vertex list [x1,y1,x2,y2,…] (≥2 points); sets /Vertices. */
   vertices: number[];
   /** Rectilinear calibration metadata. */
@@ -1646,6 +1858,7 @@ export function addPolygon(doc: Document, page: Page, opts: PolygonOptions): Pol
   const color = checkOptColor('color', opts.color) ?? [0, 0, 0];
   const fill = checkOptColor('fill', opts.fill);
   const width = checkOptWidth(opts.width);
+  const bs = drawingBorder(width, opts);
   const opacity = checkOptOpacity(opts.opacity);
   const rect = paddedRect(vertices, Math.max(width, 1));
 
@@ -1654,20 +1867,16 @@ export function addPolygon(doc: Document, page: Page, opts: PolygonOptions): Pol
   });
   const annot = new PolyAnnotation(doc, dict);
   annot.Vertices = vertices;
-  setBorderWidth(dict, width);
+  dict.set('BS', bs);
   if (fill) annot.InteriorColor = fill;
   if (opacity !== undefined) annot.Opacity = opacity;
 
-  const g = widgetGeom(doc, dict);
-  if (g) {
-    const pts = toFormSpace(vertices, rect[0], rect[1]);
-    installShapeAP(doc, dict, g, polyPathBody(pts, true, color, fill, width), opacity ?? 1);
-  }
+  annot.RegenerateAppearance();
   return annot;
 }
 
 /** Options for Page.AddPolyline. */
-export interface PolylineOptions {
+export interface PolylineOptions extends DrawingBorderOptions {
   /** Flat vertex list [x1,y1,x2,y2,…] (≥2 points); sets /Vertices. */
   vertices: number[];
   /** Rectilinear calibration metadata. */
@@ -1694,6 +1903,7 @@ export function addPolyline(doc: Document, page: Page, opts: PolylineOptions): P
   const vertices = checkVertices('vertices', opts.vertices);
   const color = checkOptColor('color', opts.color) ?? [0, 0, 0];
   const width = checkOptWidth(opts.width);
+  const bs = drawingBorder(width, opts);
   const opacity = checkOptOpacity(opts.opacity);
   const start = opts.startEnding ?? 'None';
   const end = opts.endEnding ?? 'None';
@@ -1709,27 +1919,16 @@ export function addPolyline(doc: Document, page: Page, opts: PolylineOptions): P
   });
   const annot = new PolyAnnotation(doc, dict);
   annot.Vertices = vertices;
-  setBorderWidth(dict, width);
+  dict.set('BS', bs);
   if (hasEndings) annot.LineEndings = [start, end];
   if (opacity !== undefined) annot.Opacity = opacity;
 
-  const g = widgetGeom(doc, dict);
-  if (g) {
-    const pts = toFormSpace(vertices, rect[0], rect[1]);
-    let body = polyPathBody(pts, false, color, undefined, width);
-    const n = pts.length;
-    // Endings point outward from the path: start away from v1, end away from vprev.
-    const [sx, sy] = unitDir(pts[2], pts[3], pts[0], pts[1]);
-    body += drawEnding(pts[0], pts[1], sx, sy, start, endingSize, color);
-    const [ex, ey] = unitDir(pts[n - 4], pts[n - 3], pts[n - 2], pts[n - 1]);
-    body += drawEnding(pts[n - 2], pts[n - 1], ex, ey, end, endingSize, color);
-    installShapeAP(doc, dict, g, body, opacity ?? 1);
-  }
+  annot.RegenerateAppearance();
   return annot;
 }
 
 /** Options for Page.AddInk. */
-export interface InkOptions {
+export interface InkOptions extends DrawingBorderOptions {
   /** Strokes, each a flat point list [x1,y1,x2,y2,…] (≥2 points); sets /InkList. */
   paths: number[][];
   /** Auto-attach a companion /Popup. */
@@ -1753,6 +1952,7 @@ export function addInk(doc: Document, page: Page, opts: InkOptions): InkAnnotati
   const paths = opts.paths.map((s) => checkVertices('ink stroke', s));
   const color = checkOptColor('color', opts.color) ?? [0, 0, 0];
   const width = checkOptWidth(opts.width);
+  const bs = drawingBorder(width, opts);
   const opacity = checkOptOpacity(opts.opacity);
   const rect = paddedRect(paths.flat(), Math.max(width, 1));
 
@@ -1761,25 +1961,22 @@ export function addInk(doc: Document, page: Page, opts: InkOptions): InkAnnotati
   });
   const annot = new InkAnnotation(doc, dict);
   annot.InkList = paths;
-  setBorderWidth(dict, width);
+  dict.set('BS', bs);
   if (opacity !== undefined) annot.Opacity = opacity;
 
-  const g = widgetGeom(doc, dict);
-  if (g) {
-    let body = `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width)} w\n`;
-    for (const stroke of paths) {
-      const pts = toFormSpace(stroke, rect[0], rect[1]);
-      body += `${num(pts[0])} ${num(pts[1])} m `;
-      for (let i = 2; i < pts.length; i += 2) body += `${num(pts[i])} ${num(pts[i + 1])} l `;
-      body += 'S\n';
-    }
-    installShapeAP(doc, dict, g, body, opacity ?? 1);
-  }
+  annot.RegenerateAppearance();
   return annot;
 }
 
 /** Options for Page.AddFreeText. */
 export interface FreeTextOptions {
+  /** A Latin Standard-14 font or an embedded font from the same document. */
+  font?: AuthoringFont;
+  /** Inner text box in page coordinates. */
+  innerRect?: FreeTextRect;
+  borderEffect?: 'none' | 'cloudy';
+  /** Cloud intensity in 0..2. */
+  borderEffectIntensity?: number;
   rect: [number, number, number, number];
   /** Displayed text (required, non-empty). */
   contents: string;
@@ -1846,51 +2043,36 @@ export function addFreeText(doc: Document, page: Page, opts: FreeTextOptions): F
     annotRect = [mnX, mnY, mxX, mxY];
   }
 
+  const inner = opts.innerRect ?? (callout ? [bx0, by0, bx1, by1] as FreeTextRect : undefined);
+  const rd = inner && rectDifferences(annotRect, inner);
+  if (opts.font !== undefined) checkFreeTextFont(doc, opts.font);
+  if (opts.borderEffect !== undefined) checkEffect(opts.borderEffect);
+  if (opts.borderEffectIntensity !== undefined) checkIntensity(opts.borderEffectIntensity);
+
   const dict = createAnnotation(doc, page, {
     subtype: 'FreeText', rect: annotRect, color, contents: opts.contents, popup: opts.popup,
   });
   const annot = new FreeTextAnnotation(doc, dict);
-  dict.set('DA', buildDA('Helv', fontSize, textColor));
-  annot.Alignment = align;
-  setBorderWidth(dict, width);
-  if (fill) annot.InteriorColor = fill;
-  if (opacity !== undefined) annot.Opacity = opacity;
-
+  // A FreeText /BS, /RD or /BE requires PDF 1.6 (ISO 32000-1, table 174).
+  requireAnnotationVersion(doc, '1.6');
+  const key = registerFreeTextFont(doc, dict, opts.font);
+  dict.set('DA', buildDA(key, fontSize, textColor));
+  writeAlignment(dict, align);
+  setBorderWidth(doc, dict, width);
+  if (fill) dict.set('IC', fill);
+  if (opacity !== undefined) dict.set('CA', opacity);
+  if (rd) dict.set('RD', rd);
+  if (opts.borderEffect === 'cloudy' || opts.borderEffectIntensity !== undefined) {
+    const be: PdfDict = new Map([['S', name(opts.borderEffect === 'cloudy' ? 'C' : 'S')]]);
+    if (opts.borderEffectIntensity !== undefined) be.set('I', opts.borderEffectIntensity);
+    dict.set('BE', be);
+  }
   if (callout) {
-    annot.CalloutLine = callout;
-    if (calloutEnding) annot.CalloutEnding = calloutEnding;
-    annot.Intent = 'FreeTextCallout';
-    // /RD padding from /Rect to the text box [left, top, right, bottom].
-    dict.set('RD', [bx0 - annotRect[0], annotRect[3] - by1, annotRect[2] - bx1, by0 - annotRect[1]]);
-  } else {
-    const half = width / 2;
-    dict.set('RD', [half, half, half, half]);
+    dict.set('CL', callout);
+    dict.set('LE', name(calloutEnding!));
+    dict.set('IT', name('FreeTextCallout'));
   }
-
-  const g = widgetGeom(doc, dict);
-  if (g) {
-    const boxW = bx1 - bx0, boxH = by1 - by0;
-    let body: string;
-    if (callout) {
-      const ox = bx0 - annotRect[0], oy = by0 - annotRect[1]; // text-box offset in BBox
-      body = `q 1 0 0 1 ${num(ox)} ${num(oy)} cm\n` +
-        freeTextBoxBody(boxW, boxH, opts.contents, fontSize, textColor, align, color, fill, width) + `\nQ\n`;
-      // Leader polyline (page → BBox space) stroked, plus a tip arrowhead.
-      const p = callout.map((v, i) => (i % 2 === 0 ? v - annotRect[0] : v - annotRect[1]));
-      body += `${num(color[0])} ${num(color[1])} ${num(color[2])} RG\n${num(width || 1)} w\n`;
-      body += `${num(p[0])} ${num(p[1])} m `;
-      for (let i = 2; i < p.length; i += 2) body += `${num(p[i])} ${num(p[i + 1])} l `;
-      body += `S\n`;
-      if (calloutEnding && calloutEnding !== 'None') {
-        const len = Math.hypot(p[0] - p[2], p[1] - p[3]) || 1;
-        const dx = (p[0] - p[2]) / len, dy = (p[1] - p[3]) / len; // outward at the tip
-        body += drawEnding(p[0], p[1], dx, dy, calloutEnding, Math.max(8, width * 3), color);
-      }
-    } else {
-      body = freeTextBoxBody(g.w, g.h, opts.contents, fontSize, textColor, align, color, fill, width);
-    }
-    installShapeAP(doc, dict, g, body, opacity ?? 1);
-  }
+  annot.RegenerateAppearance();
   return annot;
 }
 
@@ -2098,6 +2280,8 @@ export interface LinkOptions {
   action: PdfAction;
   /** /Border width in points; default 0 (invisible). */
   border?: number;
+  /** Feedback on activation. Defaults to 'invert'. */
+  highlight?: LinkHighlightMode;
 }
 
 /** Build and attach a /Link annotation to `page`; returns its LinkAnnotation
@@ -2110,6 +2294,7 @@ export function addLink(
 ): LinkAnnotation {
   const action = opts.action;
   const border = opts.border ?? 0;
+  const highlight = opts.highlight === undefined ? 'I' : linkHighlightCode(opts.highlight);
   if (typeof border !== 'number' || !Number.isFinite(border) || border < 0)
     throw new TypeError('border must be a non-negative finite number');
 
@@ -2119,5 +2304,6 @@ export function addLink(
   const dict = createAnnotation(doc, page, { subtype: 'Link', rect: opts.rect });
   dict.set('A', aDict);
   dict.set('Border', [0, 0, border]);
+  if (highlight !== 'I') dict.set('H', name(highlight));
   return new LinkAnnotation(doc, dict);
 }

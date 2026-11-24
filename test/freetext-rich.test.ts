@@ -31,8 +31,11 @@ const PLAIN: [string, PdfObject][] = [
 ];
 
 describe('plain FreeText regeneration is unchanged (fence)', () => {
-  it('matches the bytes written before v0tz.3', () => {
-    expect(sha(regenerated(PLAIN))).toBe('514dc423f04d89764a20cc2178abb264613fc3017096c5380da821f6991a118f');
+  it('preserves the original text and drawing operators inside the new inner-box clip', () => {
+    const body = new TextDecoder().decode(regenerated(PLAIN));
+    const clip = '0 0 156 74 re W n\n';
+    expect(body).toContain(clip);
+    expect(sha(new TextEncoder().encode(body.replace(clip, '')))).toBe('514dc423f04d89764a20cc2178abb264613fc3017096c5380da821f6991a118f');
   });
 });
 

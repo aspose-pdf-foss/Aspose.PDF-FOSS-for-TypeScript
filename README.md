@@ -3156,7 +3156,8 @@ page.AddHighlight({ quads, popup: { open: true } }); // one-call companion popup
 
 // Links: jump to a page, or open a URL.
 page.AddLink({ rect: [72, 500, 200, 514], action: { type: 'goto', page: 3 } });
-page.AddLink({ rect: [72, 480, 200, 494], action: { type: 'uri', uri: 'https://aspose.com' } });
+page.AddLink({ rect: [72, 480, 200, 494], action: { type: 'uri', uri: 'https://aspose.com' },
+  highlight: 'outline', border: 1 });
 
 // Delete.
 page.RemoveAnnotation(page.Annotations[0]);
@@ -3165,7 +3166,7 @@ page.RemoveAnnotation(page.Annotations[0]);
 `page.Annotations` returns `Annotation` handles whose subclass follows
 `/Subtype`: `TextAnnotation` (`Icon`/`Open`/`Author`/`State`/`StateModel`), `StampAnnotation`
 (`StampName`), `MarkupAnnotation` (`MarkupType`/`QuadPoints`), `LinkAnnotation`
-(`Action`/`Dest`), `FileAttachmentAnnotation` (`Icon`/`FileName`/`GetBytes()`),
+(`Action`/`Dest`/`Highlight`/`BorderWidth`), `FileAttachmentAnnotation` (`Icon`/`FileName`/`GetBytes()`),
 `SquareCircleAnnotation` (`ShapeType`/`InteriorColor`/`BorderWidth`),
 `LineAnnotation` (`Line`/`LineEndings`/`BorderWidth`/`Measure`),
 `PolyAnnotation` (`PolyType`/`Vertices`/`InteriorColor`/`BorderWidth`/`LineEndings`/`Measure`),
@@ -3175,6 +3176,19 @@ page.RemoveAnnotation(page.Annotations[0]);
 `PopupAnnotation` (`Open`/`Parent`), and `PrinterMarkAnnotation` (`MarkName`).
 Any markup-family `Add*` method accepts
 a `popup` option to attach a companion popup in one call.
+For a dashed square, circle, line, polygon, polyline or ink stroke, set
+`borderStyle: 'dashed'` and optionally `dashPattern: [6, 3]` (points).
+`leaderLineLength` on a line is a signed distance in points. Reversing its
+sign puts the leaders on the opposite side of the endpoints.
+
+`page.AddFreeText` accepts a standard font name or an embedded font returned
+by `doc.AddFont`. Supply `innerRect` in page coordinates and use
+`borderEffect: 'cloudy'` with `borderEffectIntensity` from 0 to 2 to control
+the outline. When editing a reopened annotation, call `SetFont` with a new
+embedded font if the replacement text needs glyphs missing from its saved subset.
+The corresponding handles expose `RegenerateAppearance()` to
+rebuild the normal appearance after editing the PDF dictionary directly.
+
 Every handle shares the base accessors
 (`Rect`, `Color`, `Contents`, `Name`, `ModDate`, `Flags`, `Print`, `Hidden`,
 `Opacity`) and a `.Dict` escape hatch. Created annotations default to printable
@@ -3220,12 +3234,24 @@ page.AddPrinterMarks({
 
 // Place a single trim mark when the job calls for an individual annotation.
 const mark = new TrimMarkAnnotation(page, PrinterMarkCornerPosition.TopLeft);
+
+// Use a fixed job timestamp on selected sheets.
+doc.AddPrinterMarks({
+  pages: '1,3',
+  kinds: ['pageInformation'],
+  pageInformation: { label: 'Proof A', timestamp: new Date('2026-11-24T12:00:00Z') },
+});
 ```
 
-`AddPrinterMarks()` defaults to all four families and returns printable
+`AddPrinterMarks()` defaults to trim, bleed, registration and color-bar marks and returns printable
 `PrinterMarkAnnotation` handles. Content mode writes the same vector marks as
 page artifacts and returns an empty array. Registration targets use the PDF
 `/Separation /All` colorant and color bars show 0% through 100% process tints.
+
+Choose `pageInformation` to print the job label, 1-based page number, and optional
+UTC timestamp. The label uses Helvetica's printable WinAnsi characters. Omit
+`timestamp` for a caption containing just the label and page number. The document
+method checks the geometry on every selected page before writing marks.
 
 Coordinates are in default PDF user space. The media and crop grow to fit the
 marks while preserving the original artwork, trim, and bleed. Pass
@@ -4056,7 +4082,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 534 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 543 public types plus 175
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4575,7 +4601,10 @@ for work-unit boundaries and mutation/lifetime rules.
 | `PolyAnnotation` | A `/Polygon` or `/PolyLine` annotation with vertices and optional measurement metadata. |
 | `PrinterMarkAnnotation` | A `/PrinterMark` annotation with an optional `MarkName` read from `/MN`. |
 | `PrinterMarkCornerPosition` | The four corners available to trim and bleed mark constructors. |
-| `PrinterMarkKind` | A trim, bleed, registration, or color-bar family. |
+| `PrinterMarkKind` | A trim, bleed, registration, color-bar or page-information mark. |
+| `PageInformationAnnotation` | Printable page information with an editable caption and normal appearance stream. |
+| `PageInformationOptions` | Optional job label and timestamp for a page-information mark. |
+| `DocumentPrinterMarksOptions` | Printer mark settings and a 1-based page selection. |
 | `PrinterMarkSidePosition` | The four sides available to registration mark constructors. |
 | `PrinterMarksOptions` | Select mark families, annotation or page content output, and whether to expand the crop. |
 | `RectilinearMeasure` | Scale ratio, axis calibrations, and ordered number formats for a rectilinear `/Measure` dictionary. |
@@ -4593,6 +4622,16 @@ for work-unit boundaries and mutation/lifetime rules.
 | `FileAttachmentOptions` | Options for AddFileAttachment. |
 | `ImportedAnnot` | An annotation that was applied to the document. |
 | `LinkOptions` | Options for Page.AddLink. |
+| `LinkHighlightMode` | Link activation feedback. Choose `invert` (default), `none`, `outline` or `push`. |
+| `FreeTextAnnotation` | Editable free-text annotation with text, font, callout and border settings. |
+| `InkAnnotation` | Editable freehand annotation with stroke and border settings. |
+| `SquareCircleAnnotation` | Editable square or circle annotation. |
+| `FreeTextOptions` | Text, styling and placement for `page.AddFreeText`. |
+| `InkOptions` | Strokes and appearance for `page.AddInk`. |
+| `LineOptions` | Endpoints, line endings, leaders and styling for `page.AddLine`. |
+| `PolygonOptions` | Vertices, fill and border for `page.AddPolygon`. |
+| `PolylineOptions` | Vertices, endings and border for `page.AddPolyline`. |
+| `SquareCircleOptions` | Bounds, fill and border for `page.AddSquare` and `page.AddCircle`. |
 | `MarkupOptions` | Options for the Page.Add{Highlight,Underline,StrikeOut,Squiggly} methods. |
 | `RedactAnnotationOptions` | Options for Page.AddRedact. |
 | `SkippedAnnot` | An annotation that was present in the data file but not applied. |
@@ -4992,6 +5031,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `textAnnotation.StateModel` | Read or set a state record's model. Switching models clears an incompatible state. Setting `undefined` clears both entries |
 | `page.AddStamp(opts)` | Add a `/Stamp` annotation (standard name, custom text, or image) with a generated appearance |
 | `page.AddPrinterMarks(opts?)` | Add prepress marks as separate annotations or artifact-marked page content and grow the page around them |
+| `doc.AddPrinterMarks(opts?)` | Place printer marks on selected pages after checking their geometry. Omit `pages` for the whole document. |
 | `page.AddHighlight(opts)` | Add a `/Highlight` markup over `/QuadPoints` with a fill appearance (translucent by default; pass `opacity` to override) |
 | `page.AddUnderline(opts)` | Add an `/Underline` markup over `/QuadPoints` |
 | `page.AddStrikeOut(opts)` | Add a `/StrikeOut` markup over `/QuadPoints` |

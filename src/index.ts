@@ -56,17 +56,18 @@ export type { FlattenLayersReport } from './ocflatten.js';
 export type { PagesToImagesOptions, SanitizeOptions, SanitizeReport } from './sanitize.js';
 export {
   Annotation, TextAnnotation, StampAnnotation, MarkupAnnotation, LinkAnnotation, FileAttachmentAnnotation,
-  RedactAnnotation, CaretAnnotation, LineAnnotation, PolyAnnotation,
-  PrinterMarkAnnotation, TrimMarkAnnotation, BleedMarkAnnotation, RegistrationMarkAnnotation, ColorBarAnnotation,
+  RedactAnnotation, CaretAnnotation, LineAnnotation, PolyAnnotation, SquareCircleAnnotation, InkAnnotation, FreeTextAnnotation,
+  PrinterMarkAnnotation, TrimMarkAnnotation, BleedMarkAnnotation, RegistrationMarkAnnotation, ColorBarAnnotation, PageInformationAnnotation,
 } from './annotation.js';
 export type {
   TextNoteOptions, AnnotationReplyOptions, ReplyType, StampAnnotationOptions, MarkupOptions, MarkupType,
   AnnotationState, AnnotationStateModel, AnnotationStateReplyOptions,
-  LinkOptions, LinkAction, FileAttachmentOptions, RedactAnnotationOptions, CaretOptions,
+  LinkOptions, LinkAction, LinkHighlightMode, FileAttachmentOptions, RedactAnnotationOptions, CaretOptions,
+  FreeTextOptions, InkOptions, LineOptions, PolygonOptions, PolylineOptions, SquareCircleOptions,
 } from './annotation.js';
 export type { RectilinearMeasure, MeasureNumberFormat } from './measure.js';
 export { PrinterMarkCornerPosition, PrinterMarkSidePosition, ColorsOfCMYK } from './printermarks.js';
-export type { PrinterMarkKind, PrinterMarksOptions } from './printermarks.js';
+export type { PrinterMarkKind, PrinterMarksOptions, DocumentPrinterMarksOptions, PageInformationOptions } from './printermarks.js';
 export { Attachment } from './embeddedfile.js';
 export type { AttachmentOptions } from './embeddedfile.js';
 export type { CollectionSettings, CollectionFieldDef, CollectionFieldType, CollectionView } from './collection.js';

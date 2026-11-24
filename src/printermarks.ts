@@ -1,6 +1,10 @@
 import type { Page } from './page.js';
+import type { Document } from './document.js';
+import { fontResources } from './appearance.js';
+import { encodeWinAnsi } from './encoding.js';
+import { measure } from './metrics.js';
 import { appendContent, ensureOwnSubdict, ensureUnsharedResources, freshKey, num, wrapArtifact } from './pagecontent.js';
-import { enc } from './serialize.js';
+import { enc, serializeString } from './serialize.js';
 import type { Rect } from './text.js';
 import { isArray, name, type PdfDict, type PdfObject, type PdfStream } from './types.js';
 
@@ -15,14 +19,27 @@ export type PrinterMarkSidePosition = keyof typeof PrinterMarkSidePosition;
 export const ColorsOfCMYK = { Cyan: 'Cyan', Magenta: 'Magenta', Yellow: 'Yellow', Black: 'Black' } as const;
 export type ColorsOfCMYK = keyof typeof ColorsOfCMYK;
 
-export type PrinterMarkKind = 'trim' | 'bleed' | 'registration' | 'colorBar';
+export type PrinterMarkKind = 'trim' | 'bleed' | 'registration' | 'colorBar' | 'pageInformation';
+export interface PageInformationOptions {
+  /** Optional job or file label in printable WinAnsi characters. */
+  label?: string;
+  /** Optional date and time to print in ISO 8601 format (UTC). */
+  timestamp?: Date;
+}
 export interface PrinterMarksOptions {
-  /** Mark families to add. Defaults to all four. */
+  /** Defaults to trim, bleed, registration and colorBar. */
   kinds?: readonly PrinterMarkKind[];
   /** Separate annotations by default, or graphics appended to the page. */
   mode?: 'annotation' | 'content';
   /** Grow the crop to display the new marks. Defaults to true. */
   expandCropBox?: boolean;
+  /** Text to include alongside the 1-based page number for pageInformation. */
+  pageInformation?: PageInformationOptions;
+}
+
+export interface DocumentPrinterMarksOptions extends PrinterMarksOptions {
+  /** 1-based page numbers or a range such as '1-3,5'. Defaults to every page. */
+  pages?: number[] | string;
 }
 
 const ALL_KINDS: readonly PrinterMarkKind[] = ['trim', 'bleed', 'registration', 'colorBar'];
@@ -43,9 +60,10 @@ interface PrintBoxes {
 }
 
 export interface MarkDrawing {
-  markName: 'TrimMark' | 'BleedMark' | 'RegistrationTarget' | 'ColorBar';
+  markName: 'TrimMark' | 'BleedMark' | 'RegistrationTarget' | 'ColorBar' | 'PageInformation';
   rect: Rect;
   body: string;
+  contents?: string;
 }
 
 function orderedBox(value: number[], label: string): Rect {
@@ -83,10 +101,15 @@ function sameBox(a: number[], b: Rect): boolean {
     Math.max(a[0], a[2]) === b[2] && Math.max(a[1], a[3]) === b[3];
 }
 
-export function fitPrinterMarks(page: Page, boxes: PrintBoxes, marks: MarkDrawing[], expandCropBox: boolean): void {
+export function fittedPrinterBoxes(boxes: PrintBoxes, marks: MarkDrawing[], expandCropBox: boolean): PrintBoxes {
   const ink = marks.map((mark) => orderedBox(mark.rect, 'printer mark bounds')).reduce(union);
   const crop = expandCropBox ? union(boxes.crop, ink) : boxes.crop;
   const media = orderedBox(union(union(boxes.media, crop), ink), 'expanded MediaBox');
+  return { ...boxes, crop, media };
+}
+
+export function applyPrinterBoxes(page: Page, boxes: PrintBoxes): void {
+  const { crop, media } = boxes;
   if (!sameBox(page.MediaBox, media)) page.MediaBox = media;
   if (!sameBox(page.CropBox, crop)) page.CropBox = crop;
   // Capture a crop-defined finish before a growing crop can move it.
@@ -198,7 +221,27 @@ export function colorBarMark(boxes: PrintBoxes, input: Rect, channel: ColorsOfCM
   return barMark([x0 + dx, y0, x1 + dx, y1], channel, horizontal);
 }
 
-export function planPrinterMarks(boxes: PrintBoxes, kinds: readonly PrinterMarkKind[] = ALL_KINDS): MarkDrawing[] {
+export function pageInformationText(page: Page, { label, timestamp }: PageInformationOptions = {}): string {
+  if (label !== undefined && typeof label !== 'string') throw new TypeError('page information label must be a string');
+  if (timestamp !== undefined && (!(timestamp instanceof Date) || !Number.isFinite(timestamp.getTime())))
+    throw new TypeError('page information timestamp must be a valid Date');
+  return [label, `Page ${page.Number}`, timestamp?.toISOString()].filter(Boolean).join('  ');
+}
+
+export function pageInformationMark(input: Rect, contents: string): MarkDrawing {
+  const rect = orderedBox(input, 'page information rectangle');
+  const [x0, y0, x1, y1] = rect;
+  const bytes = encodeWinAnsi(contents);
+  if (bytes.length !== contents.length) throw new RangeError('page information text requires printable WinAnsi characters');
+  const width = measure('Helvetica', bytes, 1);
+  const size = Math.min(6, (y1 - y0) / 1.25, width > 0 ? (x1 - x0) / width : 6);
+  const y = (y1 - y0 - size) / 2 + size * 0.2;
+  return { markName: 'PageInformation', rect, contents,
+    body: `0 0 0 1 k\nBT /Helv ${num(size)} Tf 0 ${num(y)} Td ${serializeString(bytes)} Tj ET` };
+}
+
+export function planPrinterMarks(page: Page, boxes: PrintBoxes, kinds: readonly PrinterMarkKind[] = ALL_KINDS,
+  info?: PageInformationOptions): MarkDrawing[] {
   if (!Array.isArray(kinds)) throw new TypeError('kinds must be an array of printer mark kinds');
   const marks: MarkDrawing[] = [];
   for (const kind of new Set(kinds)) {
@@ -224,6 +267,13 @@ export function planPrinterMarks(boxes: PrintBoxes, kinds: readonly PrinterMarkK
         });
         break;
       }
+      case 'pageInformation': {
+        // The targets and corner marks share the first 27.25 points outside
+        // the bleed. Give the caption its own row beyond their furthest ink.
+        const y = boxes.protected[3] + 30;
+        marks.push(pageInformationMark([boxes.trim[0], y, boxes.trim[2], y + 8], pageInformationText(page, info)));
+        break;
+      }
       default:
         throw new RangeError('unknown printer mark kind');
     }
@@ -231,8 +281,8 @@ export function planPrinterMarks(boxes: PrintBoxes, kinds: readonly PrinterMarkK
   return marks;
 }
 
-export function printerMarkForm(mark: MarkDrawing): PdfStream {
-  const resources: PdfDict = new Map();
+export function printerMarkForm(doc: Document, mark: MarkDrawing): PdfStream {
+  const resources: PdfDict = mark.markName === 'PageInformation' ? fontResources(doc, 'Helvetica', 'Helv') : new Map();
   if (mark.markName === 'RegistrationTarget') {
     const tint = new Map<string, PdfObject>([
       ['FunctionType', 2], ['Domain', [0, 1]], ['N', 1], ['C0', [0, 0, 0, 0]], ['C1', [1, 1, 1, 1]],
@@ -257,7 +307,7 @@ export function paintPrinterMarks(page: Page, marks: MarkDrawing[]): void {
   const commands: string[] = [];
   for (const mark of marks) {
     const key = freshKey(xobjects, 'PrinterMark');
-    xobjects.set(key, doc.allocObject(printerMarkForm(mark)));
+    xobjects.set(key, doc.allocObject(printerMarkForm(doc, mark)));
     commands.push(`q 1 0 0 1 ${num(mark.rect[0])} ${num(mark.rect[1])} cm /${key} Do Q`);
   }
   appendContent(doc, page, wrapArtifact(enc(commands.join('\n'))));

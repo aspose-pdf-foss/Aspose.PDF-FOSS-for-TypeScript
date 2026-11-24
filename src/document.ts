@@ -56,6 +56,9 @@ import { parseRdfPacket } from './xmprdf.js';
 import { XmpValue, findXmpValue } from './xmpvalue.js';
 import { planSync, infoSide, xmpSide, mirroredField, type MetadataSyncReport, type SyncDirection } from './metasync.js';
 import { Page } from './page.js';
+import { addPrinterMarks, type PrinterMarkAnnotation } from './annotation.js';
+import type { DocumentPrinterMarksOptions } from './printermarks.js';
+import { resolvePages } from './pagerange.js';
 import { planReplace } from './textedit.js';
 import { checkReplaceOptions, type ReplaceTextOptions } from './replacefont.js';
 import { restyleDocument, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
@@ -2617,6 +2620,11 @@ export class Document {
     return this.AddFont(new Uint8Array(readFileSync(fileName)), opts);
   }
 
+  /** @internal Only this document's finalizer can embed one of its handles. */
+  ownsEmbeddedFont(font: EmbeddedFont): boolean {
+    return this.embeddedFonts.includes(font);
+  }
+
   /**
    * Search `dir`, recursively, when resolving a font by name.
    *
@@ -3999,7 +4007,7 @@ export class Document {
       throw new UnsupportedFeatureError(
         `signature field '${opts.fieldName}' has ${widgets.length} widgets; exactly one is supported`);
     const widget = widgets[0];
-    const pageIndex = this.widgetPageIndex(widget);
+    const pageIndex = this.annotationPageIndex(widget);
     if (pageIndex === undefined)
       throw new UnsupportedFeatureError(`signature field '${opts.fieldName}' has no widget on any page`);
     const r = this.resolve(widget.get('Rect'));
@@ -4028,17 +4036,16 @@ export class Document {
     };
   }
 
-  /** 0-based index of the page carrying `widget`: its /P when that names a
-   *  page, else the page whose /Annots holds it. */
-  private widgetPageIndex(widget: PdfDict): number | undefined {
-    const p = widget.get('P');
+  /** @internal Zero-based page index from /P, or by membership in /Annots. */
+  annotationPageIndex(annotation: PdfDict): number | undefined {
+    const p = annotation.get('P');
     if (isRef(p)) {
       const i = this.pageObjNums.indexOf(p.num);
       if (i >= 0) return i;
     }
     for (let i = 0; i < this.Pages.length; i++) {
       const annots = this.resolve(this.Pages[i].Dict.get('Annots'));
-      if (isArray(annots) && annots.some((a) => this.resolve(a) === widget)) return i;
+      if (isArray(annots) && annots.some((a) => this.resolve(a) === annotation)) return i;
     }
     return undefined;
   }
@@ -4766,6 +4773,13 @@ export class Document {
    *  a box in default user space. Page numbers are one-based. */
   ResizePages(pages: readonly number[], box: readonly [number, number, number, number]): void {
     resizePages(this, pages, box);
+  }
+
+  /** Place prepress marks on selected pages after checking every page's layout. */
+  AddPrinterMarks(options: DocumentPrinterMarksOptions = {}): PrinterMarkAnnotation[] {
+    const pages = this.Pages;
+    const selected = resolvePages(options.pages, pages.length).map((n) => pages[n - 1]);
+    return addPrinterMarks(selected, options);
   }
 
   /** Stamp a repeating text or image watermark across a page range. Provide

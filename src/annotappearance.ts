@@ -12,7 +12,7 @@ import { STAMP_FONT, stampCaption, stampLabelBody } from './annotstamp.js';
 import { decodePdfText } from './metadata.js';
 import { placementMatrix, type Matrix } from './text.js';
 import { AP_FONT_KEY, freeTextParts, shapeParts } from './annotdraw.js';
-import { matrixFor } from './appearance.js';
+import { matrixFor, normalEntry } from './appearance.js';
 
 // Annotation flag bits (/F), PDF 32000-1 §12.5.3.
 export const FLAG_HIDDEN = 1 << 1; // bit 2, value 2 — not displayed at all
@@ -77,26 +77,6 @@ export interface AnnotAppearance {
   stream: PdfStream;
   /** Maps the /Matrix-transformed /BBox onto /Rect (PDF 32000-1 §12.5.5). */
   place: Matrix;
-}
-
-/** The raw /AP /N entry to draw. /N is either a single appearance stream or a
- *  state subdictionary keyed by the annotation's /AS appearance state. */
-function normalEntry(doc: Document, annot: PdfDict): PdfObject | undefined {
-  const ap = doc.resolve(annot.get('AP'));
-  if (!isDict(ap)) return undefined;
-
-  const n = ap.get('N');
-  const resolved = doc.resolve(n);
-  if (isStream(resolved)) return n;
-
-  if (isDict(resolved)) {
-    const as = doc.resolve(annot.get('AS'));
-    if (!isName(as)) return undefined;
-    const entry = resolved.get(as.name);
-    if (entry === undefined || !isStream(doc.resolve(entry))) return undefined;
-    return entry;
-  }
-  return undefined;
 }
 
 /**
@@ -321,6 +301,7 @@ function freeTextAppearance(doc: Document, annot: PdfDict): AnnotAppearance | un
       ['BaseFont', name(face)], ['Encoding', name('WinAnsiEncoding')],
     ]));
   }
+  if (parts.boundFont) fonts.set(parts.boundFont.key, parts.boundFont.entry);
   const resources = new Map<string, PdfObject>([['Font', fonts]]);
   let content = parts.body;
   if (parts.opacity < 1) {

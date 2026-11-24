@@ -4769,6 +4769,10 @@ Source (`src/`):
   `regenerateAppearance`, which builds an appearance from an existing dict
   rather than from an options object); appearance *resolution* for rendering and
   flattening lives in **annotappearance.ts**.
+  **annotborder.ts** reads drawing border styles from `/BS` and legacy
+  `/Border`. Copy the style dictionary when editing a shared border.
+  **annotfont.ts** resolves the FreeText `/DA` font for both appearance
+  generation and rendering. Preserve the font's encoding on reopened PDFs.
   **Invariant (`k4h1.1`):** authoring a reply relationship uses the current
   `/Annots` array for page membership. `/P` is optional, and a removed
   annotation can still have a page reference. `/IRT` reuses the parent's
@@ -4802,6 +4806,8 @@ Source (`src/`):
   encoding keeps the prior byte fallback. Binary payloads stay byte arrays.
   **printermarks.ts** lays out prepress marks and builds their normal
   appearance forms. Both annotation and content output use the same form.
+  Page information is opt-in. Its caption uses the original page number
+  and includes a UTC timestamp only when the caller supplies one.
   Registration strokes use `/Separation /All` so they reach spot plates as
   well as CMYK plates. A `/PrinterMark` carries exactly the Print and
   ReadOnly flags and a single normal appearance. Keep the finished boundary
