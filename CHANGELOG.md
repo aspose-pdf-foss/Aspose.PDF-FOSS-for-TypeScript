@@ -679,6 +679,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Honor load limits for incremental saves and DSS appends.** Both reuse the
+  cross-reference layout read under the document's policy. Unsupported bases
+  are rejected before save preparation or DSS allocation. Ordinary incremental
+  saves preserve live `/Root` and `/Info` references and their generations. (chp0.18)
+
 - **Require a unique CMS signer certificate match.** PDF signature
   verification supports issuer and serial and subject key identifier. Missing
   and ambiguous matches yield an invalid signature without changing the

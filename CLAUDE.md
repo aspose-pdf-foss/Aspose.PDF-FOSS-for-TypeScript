@@ -13627,6 +13627,13 @@ Source (`src/`):
   cross-reference layout and key to the placeholder writer. Cross-reference
   streams share the reopen's decode budget. A pending signed image from a full
   rewrite requires reopening before a signature or timestamp can append.
+  **Invariant (chp0.18):** incremental saves and DSS appends pass the checked
+  stored xref layout to the writer. The baseline and xref stream share the
+  active load policy and decode budget. Check the base before save preparation
+  or DSS allocation. DSS requires the stored catalog and live object numbering
+  to agree. Ordinary saves carry live indirect `/Root` and `/Info` overrides
+  with their generations. Verification uses the same load policy when comparing
+  cross-reference entries between revisions.
   **Invariant (chp0.8):** revocation verdicts use a cryptographically matched
   issuer. OCSP binds CertID and ResponderID and checks direct or delegated
   signing authority and freshness. CRLs require a current complete direct list.

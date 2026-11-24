@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildClassicPdf } from './helpers/build-pdf.js';
 import { buildEncryptedPdf } from './helpers/encrypt-pdf.js';
-import { Document } from '../src/document.js';
+import { Document, type SaveOptions } from '../src/document.js';
 import { diffObjects } from '../src/incrementaldelta.js';
 import { PdfObject } from '../src/types.js';
 
 /** Reach the private baseline for testing without widening the public API. */
 const baselineOf = (doc: Document): Map<number, PdfObject> =>
-  (doc as unknown as { baselineObjects(): Map<number, PdfObject> }).baselineObjects();
+  liveOf((doc as unknown as { preflightIncrementalSave(options: SaveOptions): { stored: Document } })
+    .preflightIncrementalSave({ incremental: true }).stored);
 const liveOf = (doc: Document): Map<number, PdfObject> =>
   (doc as unknown as { objects: Map<number, PdfObject> }).objects;
 
@@ -23,7 +24,7 @@ const numOf = (doc: Document, obj: PdfObject): number => {
   throw new Error('object not found in the live map');
 };
 
-describe('baselineObjects', () => {
+describe('incremental save baseline', () => {
   it('matches the live map exactly for an unmodified document', () => {
     const doc = Document.Open(buildClassicPdf(2));
     const d = diffObjects(baselineOf(doc), liveOf(doc));

@@ -272,6 +272,8 @@ type PubSecDecryption = ReturnType<typeof buildPubSecDecryptor>;
 type OpenSteps<T> = Generator<() => Promise<PubSecDecryption>, T, PubSecDecryption>;
 /** Layout already parsed under the policy used for this authenticated reopen. */
 interface OpenLayout { xref: XrefResult; budget: DecodeBudget }
+type AppendOperation = 'save' | 'sign' | 'timestamp' | 'add validation data';
+interface CheckedAppendBase extends AppendBase { stored: Document }
 
 /** True when the file ends with a startxref whose value is a plausible offset
  *  into it. Used only to classify *why* readXref failed — a pointer that is
@@ -1339,21 +1341,6 @@ export class Document {
    *  font). Only the caller that saw the flag clear beforehand may call it. */
   clearModifiedInternal(): void {
     this.modified = false;
-  }
-
-  /** A pristine object map re-parsed from the bytes this document was opened
-   *  from — the baseline an incremental save diffs the live model against.
-   *
-   *  Re-parsing rather than fingerprinting at open is deliberate: it puts the
-   *  whole cost inside the operation that asks for it, on a path that is
-   *  already writing a file, instead of taxing every `Open` in the library for
-   *  a feature most callers never use. */
-  private baselineObjects(): Map<number, PdfObject> {
-    if (!this.originalBytes)
-      throw new UnsupportedFeatureError(
-        'cannot compute an incremental delta: this document was authored in memory, '
-        + 'so there is no base byte image to compare against');
-    return this.reopen(this.originalBytes).objects;
   }
 
   /** Parse a fresh view of stored bytes under the original credentials and limits. */
@@ -2499,19 +2486,20 @@ export class Document {
     const version = this.#writeVersion;
     await control.checkpointAsync();
     this.requireCurrentWrite(version);
-    const base = this.requireIncrementalBase(options);
-    const baseline = (await this.reopenForOperation(base)).objects;
+    const base = await this.preflightAppend(this.requireIncrementalBase(options), 'save');
     control.checkpoint();
     return runOperationAsync('Save', options, (context) => {
       this.requireCurrentWrite(version);
-      return this.saveIncrementalSteps(options, context, baseline);
+      this.requireIncrementalBase(options);
+      this.checkAppendTrailer(base.xref, 'save');
+      return this.saveIncrementalSteps(base, context);
     });
   }
 
   private *saveSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
     // Incremental goes first so it can REFUSE a document signed in this
     // session, which the verbatim return below would otherwise hide.
-    if (options.incremental) return yield* this.saveIncrementalSteps(options, context);
+    if (options.incremental) return yield* this.saveIncrementalSteps(this.preflightIncrementalSave(options), context);
     // A completed signature fixes the exact bytes; return them verbatim so the
     // signed byte image is never re-serialized (which would break the digest).
     if (this.pendingSignedBytes) {
@@ -2542,13 +2530,6 @@ export class Document {
     );
   }
 
-  /** Append an incremental update carrying only what changed since `Open`.
-   *
-   *  The delta is REACHABILITY-BLIND, which is the exact inversion of `Save`'s
-   *  mark-sweep: an appended revision must write a changed object whether or
-   *  not it is still reachable from `/Root`, because earlier revisions still
-   *  point at the object it supersedes. Garbage-collecting here corrupts the
-   *  revision history this feature exists to provide. */
   private requireIncrementalBase(options: SaveOptions): Uint8Array {
     if (this.migratedToPdf20)
       throw new UnsupportedFeatureError('cannot save incrementally after ConvertToPdf20: write a standalone file with Save()');
@@ -2577,13 +2558,18 @@ export class Document {
     return this.originalBytes;
   }
 
-  private *saveIncrementalSteps(
-    options: SaveOptions, context: OperationContext, baseline?: Map<number, PdfObject>,
-  ): OperationSteps<Uint8Array> {
-    const base = this.requireIncrementalBase(options);
-    if (baseline === undefined && this.hasAsyncRecipient())
+  /** Reopen the pristine baseline before anything can change the live graph. */
+  private preflightIncrementalSave(options: SaveOptions): CheckedAppendBase {
+    const bytes = this.requireIncrementalBase(options);
+    if (this.hasAsyncRecipient())
       throw new UnsupportedFeatureError('PubSec: use SaveAsync for an incremental save with an asynchronous key transport');
+    const layout = this.readAppendLayout(bytes, 'save');
+    return this.checkedAppendBase(layout, this.reopen(layout.bytes, layout), 'save');
+  }
 
+  /** Keep changed objects even when they are unreachable from `/Root` in the
+   *  current graph. Earlier revisions still need their own definitions. */
+  private *saveIncrementalSteps(base: CheckedAppendBase, context: OperationContext): OperationSteps<Uint8Array> {
     // After the refusals, so a rejected call leaves the document untouched —
     // and before the diff, because font embedding allocates objects: taken
     // first, every font added since Open is missing from the revision. The
@@ -2593,7 +2579,7 @@ export class Document {
     yield* this.finalizeEmbeddedFontsSteps(context);
     yield context.progress('prepare', 2, 2);
 
-    const delta = yield* diffObjectsSteps(baseline ?? this.baselineObjects(), this.objects, context);
+    const delta = yield* diffObjectsSteps(base.stored.objects, this.objects, context);
     const objects = new Map<number, PdfObject>();
     for (const n of delta.replaced) objects.set(n, this.objects.get(n)!);
     for (const n of delta.added) objects.set(n, this.objects.get(n)!);
@@ -2603,9 +2589,9 @@ export class Document {
     return yield* appendIncrementalUpdateSteps(base, {
       objects,
       freed: delta.freed,
-      encryptor: this.preservedEncryptor,
-      rootNum: isRef(rootRef) ? rootRef.num : undefined,
-      infoNum: isRef(infoRef) ? infoRef.num : undefined,
+      encryptor: base.stored.preservedEncryptor,
+      rootRef: isRef(rootRef) ? rootRef : undefined,
+      infoRef: isRef(infoRef) ? infoRef : undefined,
     }, context);
   }
 
@@ -3470,9 +3456,8 @@ export class Document {
     if (!stored)
       throw new UnsupportedFeatureError('AddValidationData requires a signed document');
     const version = this.#writeVersion;
-    const base = this.snapshotForAuthentication(stored);
-    const needsReopen = this.pendingLayoutNeedsReopen;
-    const src = await this.reopenForOperation(base);
+    const base = await this.preflightAppend(stored, 'add validation data');
+    const src = base.stored;
     const sigs = src.Signatures.filter((s) => s.isSigned);
     if (sigs.length === 0)
       throw new UnsupportedFeatureError('AddValidationData: the document has no signatures');
@@ -3496,18 +3481,20 @@ export class Document {
 
     // Build the /DSS object graph, point the catalog at it, and append.
     this.requireCurrentWrite(version);
+    this.checkAppendTrailer(base.xref, 'add validation data');
+    const catalog = this.catalog();
+    const catRef = this.trailer.get('Root');
     const before = new Set(this.objects.keys());
     const dssRef = buildDss(this, entries);
-    this.catalog().set('DSS', dssRef);
+    catalog.set('DSS', dssRef);
     const collected = new Map<number, PdfObject>();
     for (const k of this.objects.keys()) if (!before.has(k)) collected.set(k, this.objects.get(k) ?? null);
-    const catRef = this.trailer.get('Root');
-    if (isRef(catRef)) collected.set(catRef.num, this.objects.get(catRef.num) ?? null);
+    if (isRef(catRef)) collected.set(catRef.num, catalog);
 
     this.storeSignedBytes(appendIncrementalUpdate(base, {
       objects: collected,
       encryptor: src.preservedEncryptor,
-    }), needsReopen);
+    }));
   }
 
   /** Append a document timestamp (`/DocTimeStamp`, ETSI.RFC3161) as an
@@ -3608,7 +3595,7 @@ export class Document {
     const checkStructure = src.signatureStructure(bytes);
     const reports: SignatureReport[] = [];
     for (const s of signed) {
-      const report = verifySignature(bytes, s, chain);
+      const report = verifySignature(bytes, s, chain, src.loadLimits);
       report.structureFindings = await checkStructure(s);
       reports.push(report);
     }
@@ -3660,7 +3647,7 @@ export class Document {
     // PAdES baseline level (structural presence): B-B → B-T → B-LT → B-LTA.
     const docTsValid = src.DocumentTimestamps
       .filter((t) => t.isSigned)
-      .some((t) => verifyDocumentTimestamp(bytes, t).timestamp.valid);
+      .some((t) => verifyDocumentTimestamp(bytes, t, src.loadLimits).timestamp.valid);
     reports.forEach((report) => {
       const hasT = report.timestamp?.valid === true || docTsValid;
       const hasLT = dssMaterial.has(report.name) || chain.extraCerts.length > 0;
@@ -3791,7 +3778,7 @@ export class Document {
     const checkStructure = src.signatureStructure(bytes);
     const reports: DocumentTimestampReport[] = [];
     for (const t of src.DocumentTimestamps.filter(hasSignatureData)) {
-      const report = verifyDocumentTimestamp(bytes, t);
+      const report = verifyDocumentTimestamp(bytes, t, src.loadLimits);
       report.structureFindings = await checkStructure(t);
       reports.push(report);
     }
@@ -3872,28 +3859,53 @@ export class Document {
   /** Validate and authenticate the exact byte image the writer will append to.
    *  Capture it before allocating fields, which invalidates pending bytes. */
   private async preflightSignatureAppend(operation: 'sign' | 'timestamp'): Promise<AppendBase & { encryptor?: Encryptor }> {
-    if (this.pendingLayoutNeedsReopen)
+    const { bytes, xref, stored } = await this.preflightAppend(this.signBase(), operation);
+    return { bytes, xref, encryptor: stored.preservedEncryptor };
+  }
+
+  private async preflightAppend(source: Uint8Array, operation: AppendOperation): Promise<CheckedAppendBase> {
+    const layout = this.readAppendLayout(source, operation);
+    const stored = await this.reopenForOperation(layout.bytes, layout);
+    return this.checkedAppendBase(layout, stored, operation);
+  }
+
+  /** Read the layout once. Its xref stream decode shares the baseline's budget. */
+  private readAppendLayout(source: Uint8Array, operation: AppendOperation): AppendBase & OpenLayout {
+    if (operation !== 'save' && this.pendingLayoutNeedsReopen)
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally after a signing rewrite: save and reopen the signed PDF first`);
-    const bytes = this.snapshotForAuthentication(this.signBase());
+    const bytes = this.snapshotForAuthentication(source);
     const limits = this.loadLimits;
-    limits.enforce('maxFileBytes', bytes.length, 'signature append base');
+    limits.enforce('maxFileBytes', bytes.length, 'incremental append base');
     const budget = new DecodeBudget(limits);
     const xref = readXref(bytes, limits, budget);
+    this.checkAppendTrailer(xref, operation);
+    return { bytes, xref, budget };
+  }
+
+  private checkAppendTrailer(xref: XrefResult, operation: AppendOperation): void {
     const root = xref.trailer.get('Root');
-    if (!isRef(root) || !equalPdfObjects(root, this.trailer.get('Root')))
-      throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored /Root must match the live indirect catalog`);
-    const entry = xref.entries.get(root.num);
-    if (!entry || entry.type === 'free' || (entry.type === 'offset' ? entry.gen : 0) !== root.gen)
-      throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored /Root has no matching cross-reference entry`);
+    const liveRoot = this.trailer.get('Root');
+    if (operation === 'save') {
+      if (!isRef(liveRoot) && !isRef(root))
+        throw new PdfParseError('cannot append: original /Root is not an indirect reference');
+    } else {
+      if (!isRef(root) || !equalPdfObjects(root, liveRoot))
+        throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored /Root must match the live indirect catalog`);
+      const entry = xref.entries.get(root.num);
+      if (!entry || entry.type === 'free' || (entry.type === 'offset' ? entry.gen : 0) !== root.gen)
+        throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored /Root has no matching cross-reference entry`);
+    }
     const encryption = xref.trailer.get('Encrypt');
     if (!equalPdfObjects(encryption, this.trailer.get('Encrypt'))
       || (encryption !== undefined && !isRef(encryption)))
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored encryption layout disagrees with the live trailer`);
-    const stored = await this.reopenForOperation(bytes, { xref, budget });
-    stored.assertNotRecovered(operation);
-    if ((encryption !== undefined) !== (stored.preservedEncryptor !== undefined))
+  }
+
+  private checkedAppendBase({ bytes, xref }: AppendBase, stored: Document, operation: AppendOperation): CheckedAppendBase {
+    stored.assertNotRecovered(operation === 'add validation data' ? 'add validation data to' : operation);
+    if (xref.trailer.has('Encrypt') !== (stored.preservedEncryptor !== undefined))
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally: unable to preserve the stored encryption`);
-    return { bytes, xref, encryptor: stored.preservedEncryptor };
+    return { bytes, xref, stored };
   }
 
   /** Snapshot the live values of `nums` for an incremental update's delta. */

@@ -11,6 +11,7 @@ import { rethrowLimit } from './errors.js';
 import type { UnsignedContentSummary } from './unsignedcontent.js';
 import type { ShadowAnalysis } from './shadowanalysis.js';
 import type { SignatureStructureFinding } from './sigstructure.js';
+import type { LoadLimits } from './loadlimits.js';
 
 /** A fetcher for revocation material: given the target and its issuer (DER),
  *  return the OCSP response / CRL bytes, or undefined when none is available.
@@ -127,7 +128,7 @@ export interface SignatureReport {
  *  `chain.trustAnchors` is supplied, the signer's certificate path is validated
  *  to an anchor and reported in `chain`. */
 export function verifySignature(
-  bytes: Uint8Array, sig: SignatureField, chain: ChainCheckOptions = {},
+  bytes: Uint8Array, sig: SignatureField, chain: ChainCheckOptions = {}, limits?: LoadLimits,
 ): SignatureReport {
   const base: SignatureReport = {
     name: sig.name,
@@ -171,7 +172,7 @@ export function verifySignature(
   }
 
   if (signedEnd !== undefined && signedEnd < bytes.length)
-    base.modifications = revisionChanges(bytes, signedEnd);
+    base.modifications = revisionChanges(bytes, signedEnd, limits);
   return base;
 }
 
@@ -196,7 +197,7 @@ export interface DocumentTimestampReport {
  *  recompute the `/ByteRange` content, check the token's message-imprint binding
  *  and the TSA's CMS signature, and diff what changed after the timestamp.
  *  Assumes `sig.isDocTimeStamp` and that `byteRange`/`contents` are present. */
-export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField): DocumentTimestampReport {
+export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField, limits?: LoadLimits): DocumentTimestampReport {
   const failed: TimestampInfo = {
     time: new Date(0), imprintMatches: false, tokenSignatureValid: false,
     valid: false, policy: '', serialNumber: '',
@@ -223,22 +224,22 @@ export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField):
   }
 
   if (signedEnd !== undefined && signedEnd < bytes.length)
-    report.modifications = revisionChanges(bytes, signedEnd);
+    report.modifications = revisionChanges(bytes, signedEnd, limits);
   return report;
 }
 
 /** Objects whose newest definition lies beyond `signedEnd` — i.e. written in a
  *  revision appended after the signature — tagged `added` or `modified`. */
-function revisionChanges(bytes: Uint8Array, signedEnd: number): Change[] {
+function revisionChanges(bytes: Uint8Array, signedEnd: number, limits: LoadLimits | undefined): Change[] {
   let full: ReturnType<typeof readXref>['entries'];
   try {
-    full = readXref(bytes).entries;
+    full = readXref(bytes, limits).entries;
   } catch (caught) { rethrowLimit(caught);
     return [];
   }
   let revivable: typeof full;
   try {
-    revivable = readXref(bytes.subarray(0, signedEnd)).entries;
+    revivable = readXref(bytes.subarray(0, signedEnd), limits).entries;
   } catch (caught) { rethrowLimit(caught);
     return [];
   }

@@ -1,5 +1,5 @@
 import { runOperation, type OperationContext, type OperationSteps } from './operation.js';
-import { PdfObject, PdfDict, isRef, isArray } from './types.js';
+import { PdfObject, PdfDict, type PdfRef, ref, isRef, isArray } from './types.js';
 import { enc, serializeObject } from './serialize.js';
 import { Encryptor } from './encrypt.js';
 import { readXref, XrefEntry, type XrefResult } from './xref.js';
@@ -41,19 +41,24 @@ export interface IncrementalUpdateOptions {
   rootNum?: number;
   /** `/Info` object number for the new trailer. Default: carried from original. */
   infoNum?: number;
+  /** Full trailer references, including generations, when supplied by the live document. */
+  rootRef?: PdfRef;
+  infoRef?: PdfRef;
   /** `/ID` array for the new trailer. Default: carried from original (kept
    *  identical, as signatures require). */
   id?: PdfObject;
 }
 
 /** Append an incremental update and return the full `original ++ appended` image. */
-export function appendIncrementalUpdate(original: Uint8Array, opts: IncrementalUpdateOptions): Uint8Array {
+export function appendIncrementalUpdate(original: Uint8Array | AppendBase, opts: IncrementalUpdateOptions): Uint8Array {
   return runOperation('appendIncrementalUpdate', undefined, (context) => appendIncrementalUpdateSteps(original, opts, context));
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* appendIncrementalUpdateSteps(original: Uint8Array, opts: IncrementalUpdateOptions, context: OperationContext): OperationSteps<Uint8Array> {
-  return (yield* layoutSteps(original, opts, undefined, context)).bytes;
+export function* appendIncrementalUpdateSteps(
+  original: Uint8Array | AppendBase, opts: IncrementalUpdateOptions, context: OperationContext,
+): OperationSteps<Uint8Array> {
+  return (yield* layoutSteps(resolveBase(original), opts, undefined, context)).bytes;
 }
 
 export interface SignatureUpdateOptions {
@@ -86,11 +91,15 @@ export interface AppendBase {
   xref: XrefResult;
 }
 
+function resolveBase(original: Uint8Array | AppendBase): AppendBase {
+  return 'xref' in original ? original : { bytes: original, xref: readXref(original) };
+}
+
 /** Append a signature-bearing incremental update with a `/Contents` placeholder
  *  and a computed `/ByteRange`. The returned bytes are ready to be digested over
  *  `byteRange`; pass the result and the DER CMS to `fillSignature` to finish. */
 export function appendSignatureUpdate(original: Uint8Array | AppendBase, opts: SignatureUpdateOptions): SignatureLayout {
-  const base = 'xref' in original ? original : { bytes: original, xref: readXref(original) };
+  const base = resolveBase(original);
   const placeholderBytes = opts.placeholderBytes ?? DEFAULT_PLACEHOLDER_BYTES;
   const objects = new Map<number, PdfObject>(opts.objects ?? []);
   // The signature object is built specially (placeholder + ByteRange slots), so
@@ -124,23 +133,19 @@ interface LayoutResult {
 /** Core append: concatenate `original`, the new objects (and optional raw
  *  signature-object text), a classic xref section, and a `/Prev`-chained trailer. */
 function layout(base: AppendBase, opts: IncrementalUpdateOptions, sigObject: { num: number; text: string }): LayoutResult {
-  return runOperation('layout', undefined, (context) => layoutSteps(base.bytes, opts, sigObject, context, base.xref));
+  return runOperation('layout', undefined, (context) => layoutSteps(base, opts, sigObject, context));
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* layoutSteps(
-  original: Uint8Array, opts: IncrementalUpdateOptions, sigObject: { num: number; text: string } | undefined,
-  context: OperationContext, prev = readXref(original),
+function* layoutSteps(
+  { bytes: original, xref: prev }: AppendBase, opts: IncrementalUpdateOptions,
+  sigObject: { num: number; text: string } | undefined, context: OperationContext,
 ): OperationSteps<LayoutResult> {
   const prevStartxref = prev.revisions.at(-1)!.xrefOffset;
 
-  const storedRoot = prev.trailer.get('Root');
-  const rootNum = opts.rootNum ?? refNum(storedRoot);
-  if (rootNum === undefined) throw new PdfParseError('cannot append: original /Root is not an indirect reference');
-  const rootGen = opts.rootNum === undefined && isRef(storedRoot) ? storedRoot.gen : 0;
-  const storedInfo = prev.trailer.get('Info');
-  const infoNum = opts.infoNum ?? refNum(storedInfo);
-  const infoGen = opts.infoNum === undefined && isRef(storedInfo) ? storedInfo.gen : 0;
+  const root = opts.rootRef ?? (opts.rootNum === undefined ? prev.trailer.get('Root') : ref(opts.rootNum));
+  if (!isRef(root)) throw new PdfParseError('cannot append: original /Root is not an indirect reference');
+  const info = opts.infoRef ?? (opts.infoNum === undefined ? prev.trailer.get('Info') : ref(opts.infoNum));
   const id = opts.id ?? prev.trailer.get('ID');
   const prevSize = typeof prev.trailer.get('Size') === 'number' ? (prev.trailer.get('Size') as number) : 0;
 
@@ -200,8 +205,8 @@ export function* layoutSteps(
   for (const n of opts.freed ?? []) if (n > maxNum) maxNum = n;
   const size = Math.max(prevSize, maxNum + 1);
 
-  let tr = `trailer\n<< /Size ${size} /Root ${rootNum} ${rootGen} R /Prev ${prevStartxref}`;
-  if (infoNum !== undefined) tr += ` /Info ${infoNum} ${infoGen} R`;
+  let tr = `trailer\n<< /Size ${size} /Root ${root.num} ${root.gen} R /Prev ${prevStartxref}`;
+  if (isRef(info)) tr += ` /Info ${info.num} ${info.gen} R`;
   if (id !== undefined) tr += ` /ID ${serializeValueLatin(id)}`;
   // The /Encrypt object already lives in the original bytes, so the appended
   // revision REFERENCES it. Omitting it is what made a reader take the newest
@@ -248,10 +253,6 @@ function buildXrefSection(rows: XrefRow[]): string {
 function prevGen(entries: Map<number, XrefEntry>, num: number): number {
   const e = entries.get(num);
   return e !== undefined && e.type === 'offset' ? e.gen : 0;
-}
-
-function refNum(o: PdfObject | undefined): number | undefined {
-  return o !== undefined && isRef(o) ? o.num : undefined;
 }
 
 function endsWithEol(buf: Uint8Array): boolean {

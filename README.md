@@ -4714,6 +4714,10 @@ final footer cannot be verified.
 report includes the asserted time, message-imprint and TSA-signature checks,
 byte coverage, later object modifications, and structural findings.
 
+After signing with a full rewrite, save and reopen the signed PDF before
+appending validation data or a document timestamp. Incremental saves and DSS
+appends apply the document's `LoadLimits` when reading the stored layout.
+
 | Class | Description |
 |---|---|
 | `doc.Sign(signer, opts?)` / `doc.Certify(signer, opts?)` | Create an approval or DocMDP certification signature. Read the signed bytes with `Save()` or `WriteTo()`. |
