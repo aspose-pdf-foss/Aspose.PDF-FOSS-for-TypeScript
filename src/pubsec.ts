@@ -14,7 +14,9 @@ import {
   Encryptor, makeEncryptor, permissionsToP, permissionsFromP,
   PubSecEncryptOptions, Permissions,
 } from './encrypt.js';
-import { buildEnvelopedData, openEnvelopedData, type PubSecKeyTransport } from './cms.js';
+import {
+  buildEnvelopedData, openEnvelopedData, openEnvelopedDataAsync, type PubSecKeyTransport, type AsyncPubSecKeyTransport,
+} from './cms.js';
 import { InvalidPasswordError, UnsupportedFeatureError } from './errors.js';
 
 const FF4 = Uint8Array.from([0xff, 0xff, 0xff, 0xff]);
@@ -118,15 +120,22 @@ export function buildPubSecEncryptor(opts: PubSecEncryptOptions): Encryptor {
 export type NormalizedRecipient = { certificate: string | Uint8Array } &
   ({ privateKey: KeyObject } | { keyTransport: PubSecKeyTransport });
 
-export function buildPubSecDecryptor(
-  encrypt: PdfDict, recipient: NormalizedRecipient,
-  resolve: (o: PdfObject | undefined) => PdfObject,
-): { decryptObject: Decryptor['decryptObject']; permissions: Permissions; keys: CryptKeys } {
+export interface NormalizedAsyncRecipient {
+  certificate: string | Uint8Array;
+  keyTransportAsync: AsyncPubSecKeyTransport;
+}
+
+interface PubSecDecryption {
+  decryptObject: Decryptor['decryptObject'];
+  permissions: Permissions;
+  keys: CryptKeys;
+}
+
+function readPubSecSettings(encrypt: PdfDict, resolve: (o: PdfObject | undefined) => PdfObject) {
   const V = asNum(resolve(encrypt.get('V'))) ?? 4;
   const length = asNum(resolve(encrypt.get('Length'))) ?? 128;
   const isV5 = V >= 5;
   const hash: 'sha1' | 'sha256' = isV5 ? 'sha256' : 'sha1';
-  const certDer = toCertDer(recipient.certificate);
 
   // Locate the crypt filter (V>=4: /CF /DefaultCryptFilter) and its /Recipients.
   const cf = resolve(encrypt.get('CF'));
@@ -146,16 +155,42 @@ export function buildPubSecDecryptor(
     blobs.push(recipientsArr.bytes);
   }
   if (blobs.length === 0) throw new UnsupportedFeatureError('PubSec: no /Recipients');
+  return { isV5, isAes, hash, length, encryptMetadata, blobs };
+}
 
+export function buildPubSecDecryptor(
+  encrypt: PdfDict, recipient: NormalizedRecipient,
+  resolve: (o: PdfObject | undefined) => PdfObject,
+): PubSecDecryption {
+  const settings = readPubSecSettings(encrypt, resolve);
+  const certDer = toCertDer(recipient.certificate);
   // Recover the 24-byte payload from the first envelope our key can open.
   const key = 'keyTransport' in recipient ? recipient.keyTransport : recipient.privateKey;
-  let payload: Uint8Array | undefined;
-  for (const blob of blobs) {
-    payload = openEnvelopedData(blob, key, certDer);
-    if (payload) break;
+  for (const blob of settings.blobs) {
+    const payload = openEnvelopedData(blob, key, certDer);
+    if (payload) return decryptorFromPayload(settings, payload);
   }
-  if (!payload || payload.length < 24) throw new InvalidPasswordError();
+  throw new InvalidPasswordError();
+}
 
+export async function buildPubSecDecryptorAsync(
+  encrypt: PdfDict, recipient: NormalizedAsyncRecipient,
+  resolve: (o: PdfObject | undefined) => PdfObject,
+): Promise<PubSecDecryption> {
+  const settings = readPubSecSettings(encrypt, resolve);
+  const certDer = toCertDer(recipient.certificate);
+  for (const blob of settings.blobs) {
+    const payload = await openEnvelopedDataAsync(blob, recipient.keyTransportAsync, certDer);
+    if (payload) return decryptorFromPayload(settings, payload);
+  }
+  throw new InvalidPasswordError();
+}
+
+function decryptorFromPayload(
+  { isV5, isAes, hash, length, encryptMetadata, blobs }: ReturnType<typeof readPubSecSettings>,
+  payload: Uint8Array,
+): PubSecDecryption {
+  if (payload.length < 24) throw new InvalidPasswordError();
   const seed = payload.subarray(0, 20);
   const P = ((payload[20] << 24) | (payload[21] << 16) | (payload[22] << 8) | payload[23]) | 0;
   const fileKey = deriveFileKey(seed, blobs, hash, length / 8, encryptMetadata);

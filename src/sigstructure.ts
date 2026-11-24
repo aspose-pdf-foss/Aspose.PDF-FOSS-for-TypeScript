@@ -26,8 +26,8 @@ export function hasSignatureData(sig: SignatureField): boolean {
 export function signatureStructureCheck(
   bytes: Uint8Array,
   revisions: readonly PdfRevision[],
-  signedFieldAt: (end: number, name: string, xrefOffset: number) => SignatureField | undefined,
-): (sig: SignatureField) => SignatureStructureFinding[] {
+  signedFieldAt: (end: number, name: string, xrefOffset: number) => Promise<SignatureField | undefined>,
+): (sig: SignatureField) => Promise<SignatureStructureFinding[]> {
   const byFooter = new Map<number, PdfRevision>();
   for (const revision of revisions) {
     const footer = revisionFooterEnd(revision);
@@ -36,7 +36,7 @@ export function signatureStructureCheck(
   const latest = revisions.at(-1);
   const lastFooter = latest && revisionFooterEnd(latest);
 
-  return (sig) => {
+  return async (sig) => {
     const findings: SignatureStructureFinding[] = [];
     const end = signatureRevisionEnd(sig.byteRange, bytes.length);
     const source = signatureDictionarySources.get(sig.valueDict);
@@ -62,7 +62,7 @@ export function signatureStructureCheck(
       else if (source && source.end > end) findings.push({ kind: 'signature-dictionary-unbound' });
       else if (source && boundary !== latest) {
         try {
-          const prior = signedFieldAt(end, sig.name, boundary.xrefOffset);
+          const prior = await signedFieldAt(end, sig.name, boundary.xrefOffset);
           const original = prior && signatureDictionarySources.get(prior.valueDict);
           if (original?.contents.start !== source.contents.start || original.contents.end !== source.contents.end)
             findings.push({ kind: 'signature-dictionary-unbound' });

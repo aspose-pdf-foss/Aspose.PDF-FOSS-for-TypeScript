@@ -546,11 +546,20 @@ export interface PubSecKeyTransport {
   unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-pkcs1-v1_5') => Uint8Array;
 }
 
+/** Promise-based provider for an external RSA recipient key. */
+export interface AsyncPubSecKeyTransport {
+  /** Explicit opt-in to RSAES-PKCS1-v1_5 key transport. */
+  algorithm: PubSecKeyTransport['algorithm'];
+  /** Unwrap a copy of the encrypted key with the same key sizes and failure
+   *  handling as {@link PubSecKeyTransport.unwrapKey}. */
+  unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-pkcs1-v1_5') => Promise<Uint8Array>;
+}
+
 /** Recover the CEK from a KeyAgreeRecipientInfo (ECDH-ES) if one
  *  RecipientEncryptedKey matches `want` (issuer/serial) and our key agrees;
  *  else undefined. */
 function openKeyAgree(
-  ri: Asn1Node, privateKey: KeyObject | PubSecKeyTransport, want: ReturnType<typeof certIssuerSerial>,
+  ri: Asn1Node, privateKey: KeyObject | undefined, want: ReturnType<typeof certIssuerSerial>,
 ): Uint8Array | undefined {
   // children: version, [0] originator, keyEncAlg SEQUENCE, recipientEncryptedKeys
   // (optional [1] ukm never emitted here). recipientEncryptedKeys is the last child.
@@ -560,7 +569,7 @@ function openKeyAgree(
 
   const rek = reks?.children.find((k) => matchesIssuerAndSerial(k.children[0], want));
   if (!rek) return undefined;
-  if (!(privateKey instanceof KeyObject))
+  if (!privateKey)
     throw new UnsupportedFeatureError('PubSec: external key transport supports RSAES-PKCS1-v1_5 only');
 
   // Rebuild the ephemeral public key as SPKISEQUENCE { algorithm, publicKey }.
@@ -613,9 +622,7 @@ function readContentCipher(eci: Asn1Node) {
   return { algorithm: profile.algorithm, keyBytes: profile.keyBytes, iv: iv.content };
 }
 
-function openExternalKeyTransport(
-  ri: Asn1Node, eci: Asn1Node, provider: PubSecKeyTransport, certDer: Uint8Array,
-): Uint8Array {
+function externalKeyRequest(ri: Asn1Node, eci: Asn1Node, certDer: Uint8Array) {
   if (ri.children[2] === undefined || !bytesEqual(ri.children[2].raw, RSA_PKCS1_ALGORITHM))
     throw new UnsupportedFeatureError('PubSec: unsupported external key transport algorithm or parameters');
 
@@ -634,16 +641,36 @@ function openExternalKeyTransport(
     || eci.children.length !== 3 || encryptedContent.raw[0] !== 0x80 || encryptedContent.length !== 32)
     throw new PdfParseError('PubSec: invalid external recipient key or encrypted content');
 
-  // The original envelope bytes also participate in PDF file-key derivation.
-  // Use one credential error for provider failures and unusable content keys.
+  return { cipher, encryptedContent: encryptedContent.content, wrappedKey: wrapped.content };
+}
+
+type ExternalKeyRequest = ReturnType<typeof externalKeyRequest>;
+
+function decryptExternalContent(request: ExternalKeyRequest, cek: Uint8Array): Uint8Array {
+  if (cek instanceof Uint8Array) {
+    const payload = decryptEnvelopedContent(request.cipher, request.encryptedContent, cek);
+    if (payload.length === 24) return payload;
+  }
+  throw new InvalidPasswordError('PubSec: recipient key transport failed');
+}
+
+function openExternalKeyTransport(request: ExternalKeyRequest, provider: PubSecKeyTransport): Uint8Array {
   try {
-    const cek = provider.unwrapKey(Uint8Array.from(wrapped.content), 'rsa-pkcs1-v1_5');
+    // The original envelope bytes also participate in PDF file-key derivation.
+    const cek = provider.unwrapKey(Uint8Array.from(request.wrappedKey), 'rsa-pkcs1-v1_5');
     // An incorrectly supplied async provider still fails synchronously.
     if (isPromise(cek)) void cek.catch(() => undefined);
-    if (cek instanceof Uint8Array) {
-      const payload = decryptEnvelopedContent(cipher, encryptedContent.content, cek);
-      if (payload.length === 24) return payload;
-    }
+    return decryptExternalContent(request, cek);
+  } catch (e) { rethrowLimit(e); }
+  throw new InvalidPasswordError('PubSec: recipient key transport failed');
+}
+
+async function openExternalKeyTransportAsync(
+  request: ExternalKeyRequest, provider: AsyncPubSecKeyTransport,
+): Promise<Uint8Array> {
+  try {
+    const cek = await provider.unwrapKey(Uint8Array.from(request.wrappedKey), 'rsa-pkcs1-v1_5');
+    return decryptExternalContent(request, cek);
   } catch (e) { rethrowLimit(e); }
   throw new InvalidPasswordError('PubSec: recipient key transport failed');
 }
@@ -661,7 +688,21 @@ function decryptEnvelopedContent(
 export function openEnvelopedData(
   envelope: Uint8Array, privateKey: KeyObject | PubSecKeyTransport, certDer: Uint8Array,
 ): Uint8Array | undefined {
-  const external = !(privateKey instanceof KeyObject);
+  if (privateKey instanceof KeyObject) return openEnvelope(envelope, privateKey, certDer);
+  return openEnvelope(envelope, undefined, certDer, (request) => openExternalKeyTransport(request, privateKey));
+}
+
+export async function openEnvelopedDataAsync(
+  envelope: Uint8Array, provider: AsyncPubSecKeyTransport, certDer: Uint8Array,
+): Promise<Uint8Array | undefined> {
+  return openEnvelope(envelope, undefined, certDer, (request) => openExternalKeyTransportAsync(request, provider));
+}
+
+function openEnvelope<T = never>(
+  envelope: Uint8Array, privateKey: KeyObject | undefined, certDer: Uint8Array,
+  openExternal?: (request: ExternalKeyRequest) => T,
+): Uint8Array | T | undefined {
+  const external = privateKey === undefined;
   const contentInfo = external ? parseExternalEnvelope(envelope) : parse(envelope);
   const [contentType, wrapper] = contentInfo.children;
   const envelopedData = wrapper?.children[0];               // [0] EXPLICIT EnvelopedData
@@ -682,7 +723,7 @@ export function openEnvelopedData(
       continue;
     }
     if (ri.raw[0] !== 0x30 || !matchesIssuerAndSerial(ri.children[1], want)) continue;
-    if (external) return openExternalKeyTransport(ri, eci!, privateKey, certDer);
+    if (!privateKey) return openExternal!(externalKeyRequest(ri, eci!, certDer));
 
     const keyEncOid = readOid(ri.children[2].children[0]);    // keyEncryptionAlgorithm
     const encryptedKey = ri.children[3].content;

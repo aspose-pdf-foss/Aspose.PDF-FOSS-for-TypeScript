@@ -13657,6 +13657,13 @@ Source (`src/`):
   16-byte IV encoded as an OCTET STRING. Local keys and external providers
   share this validation. The PDF crypt filter separately selects the file
   cipher, so a PDF using AESV3 can carry an AES-128-CBC recipient envelope.
+  **Invariant (`chp0.15`):** `OpenAsync` uses the same loader and recovery
+  ladder as `Open`. Authentication is the loader's suspension point. Only a
+  matched, validated recipient reaches the provider. Async writes authenticate
+  the stored baseline before mutating the
+  graph, and verification opens each historical byte image under the original
+  limits. Retain the normalized provider with its certificate and pass a copy
+  of the wrapped key on every request.
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
   **encoders** (`encodeStream`, `ascii85Encode`/`asciiHexEncode`/`lzwEncode`/
   `runLengthEncode`) and the `Save({ streamFilter })` re-filter pass.

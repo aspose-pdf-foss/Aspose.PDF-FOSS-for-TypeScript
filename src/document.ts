@@ -1,4 +1,4 @@
-import type { OperationControlOptions } from './checkpoint.js';
+import { createOperationControl, type OperationControlOptions } from './checkpoint.js';
 import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import { Lexer } from './lexer.js';
 import { preparePsPages, type PsPageOutput } from './pspdf.js';
@@ -199,7 +199,9 @@ import {
   type DssEntry, type ValidationDataOptions,
 } from './dss.js';
 import { buildDecryptor, Decryptor, CryptKeys, isEncryptDict } from './crypto.js';
-import { buildPubSecDecryptor, type NormalizedRecipient } from './pubsec.js';
+import {
+  buildPubSecDecryptor, buildPubSecDecryptorAsync, type NormalizedRecipient, type NormalizedAsyncRecipient,
+} from './pubsec.js';
 import { parsePkcs12 } from './pkcs12.js';
 import { Permissions, permissionsFromP, Encryptor, buildEncryptorFromKeys, type EncryptOptions } from './encrypt.js';
 import { X509Certificate } from 'node:crypto';
@@ -260,7 +262,14 @@ export interface OpenOptions {
   limits?: LoadLimits;
 }
 
-type OpenCredentials = Pick<OpenOptions, 'password' | 'recipient'>;
+export interface OpenAsyncOptions extends Omit<OpenOptions, 'recipient'> {
+  /** Recipient credential, including a certificate and promise-based key transport. */
+  recipient?: PubSecRecipient | NormalizedAsyncRecipient;
+}
+
+type OpenCredentials = Pick<OpenAsyncOptions, 'password' | 'recipient'>;
+type PubSecDecryption = ReturnType<typeof buildPubSecDecryptor>;
+type OpenSteps<T> = Generator<() => Promise<PubSecDecryption>, T, PubSecDecryption>;
 /** Layout already parsed under the policy used for this authenticated reopen. */
 interface OpenLayout { xref: XrefResult; budget: DecodeBudget }
 
@@ -327,7 +336,7 @@ interface BuildResult {
 }
 
 /** Resolve and retain the recipient credential with an owned DER certificate. */
-function normalizeRecipient(recipient: PubSecRecipient): NormalizedRecipient {
+function normalizeRecipient(recipient: NonNullable<OpenAsyncOptions['recipient']>): NormalizedRecipient | NormalizedAsyncRecipient {
   if ('pkcs12' in recipient) {
     const { privateKey, certificates } = parsePkcs12(recipient.pkcs12, recipient.passphrase ?? '');
     return { privateKey, certificate: new Uint8Array(certificates[0]) };
@@ -336,13 +345,18 @@ function normalizeRecipient(recipient: PubSecRecipient): NormalizedRecipient {
     typeof recipient.certificate === 'string'
       ? recipient.certificate : Buffer.from(recipient.certificate));
   const certificate = new Uint8Array(parsed.raw);
-  if ('keyTransport' in recipient) {
-    const provider = recipient.keyTransport;
-    if (provider?.algorithm !== 'rsa-pkcs1-v1_5' || typeof provider.unwrapKey !== 'function')
-      throw new UnsupportedFeatureError('PubSec: external key transport requires an RSAES-PKCS1-v1_5 provider');
-    return { certificate, keyTransport: { algorithm: provider.algorithm, unwrapKey: provider.unwrapKey.bind(provider) } };
-  }
+  if ('keyTransportAsync' in recipient)
+    return { certificate, keyTransportAsync: normalizeRecipientTransport(recipient.keyTransportAsync) };
+  if ('keyTransport' in recipient)
+    return { certificate, keyTransport: normalizeRecipientTransport(recipient.keyTransport) };
   return { privateKey: recipient.privateKey, certificate };
+}
+
+function normalizeRecipientTransport<T extends NormalizedAsyncRecipient['keyTransportAsync']
+  | Extract<NormalizedRecipient, { keyTransport: unknown }>['keyTransport']>(provider: T): T {
+  if (provider?.algorithm !== 'rsa-pkcs1-v1_5' || typeof provider.unwrapKey !== 'function')
+    throw new UnsupportedFeatureError('PubSec: external key transport requires an RSAES-PKCS1-v1_5 provider');
+  return { algorithm: provider.algorithm, unwrapKey: provider.unwrapKey.bind(provider) } as T;
 }
 
 /** Options for Save/WriteTo. */
@@ -468,6 +482,8 @@ export class Document {
   /** Retain the effective password or resolved recipient for fresh byte views.
    *  Keep it out of ordinary object inspection. */
   #openCredentials?: OpenCredentials;
+  /** Tracked edits and sealed writes invalidate a write preflight that is awaiting a credential. */
+  #writeVersion = 0;
   /** An Encryptor over the key and `/Encrypt` dict this document was opened
    *  with, so `Save` writes it encrypted again rather than silently in the
    *  clear. Absent for a plaintext document, which is what keeps an
@@ -710,7 +726,32 @@ export class Document {
     return Document.openBytes(buf, opts);
   }
 
-  private static openBytes(buf: Uint8Array, opts: OpenOptions, layout?: OpenLayout): Document {
+  /** Open bytes with the usual credentials or a promise-based PubSec key provider. */
+  static async OpenAsync(buf: Uint8Array, opts: OpenAsyncOptions = {}): Promise<Document> {
+    if (!opts.recipient || !('keyTransportAsync' in opts.recipient)) return Document.openBytes(buf, opts);
+    const limits = opts.limits ?? LoadLimits.defaults;
+    limits.enforce('maxFileBytes', buf.length, 'input');
+    return Document.openBytesAsync(Uint8Array.from(buf), { ...opts, limits });
+  }
+
+  private static openBytes(buf: Uint8Array, opts: OpenAsyncOptions, layout?: OpenLayout): Document {
+    const steps = Document.openSteps(buf, opts, layout);
+    const next = steps.next();
+    if (next.done) return next.value;
+    steps.return(undefined as unknown as Document);
+    throw new UnsupportedFeatureError('PubSec: use Document.OpenAsync with an asynchronous key transport');
+  }
+
+  private static async openBytesAsync(buf: Uint8Array, opts: OpenAsyncOptions, layout?: OpenLayout): Promise<Document> {
+    const steps = Document.openSteps(buf, opts, layout);
+    try {
+      let next = steps.next();
+      while (!next.done) next = steps.next(await next.value());
+      return next.value;
+    } finally { steps.return(undefined as unknown as Document); }
+  }
+
+  private static *openSteps(buf: Uint8Array, opts: OpenAsyncOptions, layout?: OpenLayout): OpenSteps<Document> {
     const limits = opts.limits ?? LoadLimits.defaults;
     // Before anything is read. The bound is on what a caller handed us, so it is
     // checked once against the whole input rather than per structure.
@@ -784,7 +825,7 @@ export class Document {
       // and assemble the real trailer afterwards from what that one pass produced.
       const provisional: PdfDict = existing ?? new Map<string, PdfObject>();
       if (encrypt) provisional.set('Encrypt', ref(encrypt.num));
-      const pass = Document.build(buf, merged, provisional, opts, sweep.candidates, budget);
+      const pass = yield* Document.build(buf, merged, provisional, opts, sweep.candidates, budget);
       let recovered = existing;
       if (!recovered) {
         const rebuilt = rebuildTrailer(pass.objects, merged, encrypt);
@@ -808,7 +849,7 @@ export class Document {
     // Unreachable: readXref either threw (handled above) or produced a trailer.
     if (!trailer) throw new PdfParseError('no trailer found');
 
-    let pass = Document.build(buf, entries, trailer, opts, undefined, budget);
+    let pass = yield* Document.build(buf, entries, trailer, opts, undefined, budget);
 
     // Three damage signals reachable from here: an object that would not parse
     // at the offset the xref gave, a /Root that is not a catalog (a byte shift
@@ -852,7 +893,7 @@ export class Document {
           merged.set(num, { type: 'offset', offset: c.offset, gen: c.gen });
         }
       }
-      pass = Document.build(buf, merged, trailer, opts, sweep.candidates, budget);
+      pass = yield* Document.build(buf, merged, trailer, { ...opts, ...pass.credentials }, sweep.candidates, budget);
       report.repaired = pass.repaired;
       // Strictness: reaching here means readXref succeeded, and the reason being
       // `object-parse-failure` means /Root resolved to a catalog (otherwise the
@@ -880,7 +921,7 @@ export class Document {
       // value position and is still refused.
       if (pass.failed.size > 0 && report.reason === 'object-parse-failure') {
         const retry = new Set(pass.failed);
-        pass = Document.build(buf, merged, trailer, opts, sweep.candidates, budget, retry);
+        pass = yield* Document.build(buf, merged, trailer, { ...opts, ...pass.credentials }, sweep.candidates, budget, retry);
         if (pass.failed.size > 0) throw new PdfParseError(report.detail);
         report.repaired = [...new Set([...pass.repaired, ...retry])];
       }
@@ -941,15 +982,15 @@ export class Document {
    *  object numbers whose parse threw rather than throwing on the first one.
    *  `alternates` supplies fallback offsets for an object whose entry does not
    *  parse; it is only ever set on the recovery path. */
-  private static build(
+  private static *build(
     buf: Uint8Array,
     entries: Map<number, XrefEntry>,
     trailer: PdfDict,
-    opts: OpenOptions,
+    opts: OpenAsyncOptions,
     alternates: Map<number, ObjCandidate[]> | undefined,
     budget: DecodeBudget,
     lenient?: ReadonlySet<number>,
-  ): BuildResult {
+  ): OpenSteps<BuildResult> {
     const limits = opts.limits ?? LoadLimits.defaults;
     // Raw (un-decrypted) resolver for the /Encrypt dict and /ID — these are never
     // encrypted, and must be read before a Decryptor exists.
@@ -980,7 +1021,9 @@ export class Document {
         const supplied = opts.recipient;
         if (!supplied) throw new InvalidPasswordError();
         const recipient = normalizeRecipient(supplied);
-        const result = buildPubSecDecryptor(encDict, recipient, resolveRaw);
+        const result = 'keyTransportAsync' in recipient
+          ? yield () => buildPubSecDecryptorAsync(encDict, recipient, resolveRaw)
+          : buildPubSecDecryptor(encDict, recipient, resolveRaw);
         decryptor = { decryptObject: result.decryptObject, keys: result.keys };
         credentials = { recipient };
         permissions = result.permissions;
@@ -1279,6 +1322,7 @@ export class Document {
    *  the in-place handle setters in `page.ts`/`annotation.ts`/`form.ts`, which
    *  edit live dicts/arrays without allocating a new object. */
   markModified(): void {
+    this.#writeVersion++;
     this.modified = true;
     this.pendingSignedBytes = undefined;
     this.pendingLayoutNeedsReopen = false;
@@ -1314,6 +1358,29 @@ export class Document {
   /** Parse a fresh view of stored bytes under the original credentials and limits. */
   private reopen(bytes: Uint8Array, layout?: OpenLayout): Document {
     return Document.openBytes(bytes, { ...this.#openCredentials, limits: this.loadLimits }, layout);
+  }
+
+  private hasAsyncRecipient(): boolean {
+    const recipient = this.#openCredentials?.recipient;
+    return recipient !== undefined && 'keyTransportAsync' in recipient;
+  }
+
+  private reopenForOperation(bytes: Uint8Array, layout?: OpenLayout): Document | Promise<Document> {
+    if (!this.hasAsyncRecipient()) return this.reopen(bytes, layout);
+    return Document.openBytesAsync(bytes, { ...this.#openCredentials, limits: this.loadLimits }, layout);
+  }
+
+  /** A byte image may be exposed by Save. Keep the image being authenticated
+   *  and the image being read or appended identical across an async callback. */
+  private snapshotForAuthentication(bytes: Uint8Array): Uint8Array {
+    if (!this.hasAsyncRecipient()) return bytes;
+    this.loadLimits.enforce('maxFileBytes', bytes.length, 'input');
+    return Uint8Array.from(bytes);
+  }
+
+  private requireCurrentWrite(version: number): void {
+    if (this.#writeVersion !== version)
+      throw new UnsupportedFeatureError('the document changed during authentication: retry with the current document');
   }
 
   /** The live /Info dict, or undefined when there is none. */
@@ -2422,7 +2489,22 @@ export class Document {
   /** Cooperatively yield between work units of {@link Save}.
    *  Cancellation leaves completed edits; do not mutate the document while pending. */
   SaveAsync(options: SaveOptions = {}): Promise<Uint8Array> {
+    if (options.incremental && this.hasAsyncRecipient()) return this.saveWithAsyncBaseline({ ...options });
     return runOperationAsync('Save', options, (context) => this.saveSteps(options, context));
+  }
+
+  private async saveWithAsyncBaseline(options: SaveOptions): Promise<Uint8Array> {
+    const control = createOperationControl(options);
+    const version = this.#writeVersion;
+    await control.checkpointAsync();
+    this.requireCurrentWrite(version);
+    const base = this.requireIncrementalBase(options);
+    const baseline = (await this.reopenForOperation(base)).objects;
+    control.checkpoint();
+    return runOperationAsync('Save', options, (context) => {
+      this.requireCurrentWrite(version);
+      return this.saveIncrementalSteps(options, context, baseline);
+    });
   }
 
   private *saveSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
@@ -2466,7 +2548,7 @@ export class Document {
    *  not it is still reachable from `/Root`, because earlier revisions still
    *  point at the object it supersedes. Garbage-collecting here corrupts the
    *  revision history this feature exists to provide. */
-  private *saveIncrementalSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
+  private requireIncrementalBase(options: SaveOptions): Uint8Array {
     if (this.migratedToPdf20)
       throw new UnsupportedFeatureError('cannot save incrementally after ConvertToPdf20: write a standalone file with Save()');
     // Signing can leave a placeholder in the object graph. Reopen the signed
@@ -2491,6 +2573,15 @@ export class Document {
     for (const k of ['encrypt', 'compressed', 'linearized', 'streamFilter'] as const)
       if (options[k])
         throw new UnsupportedFeatureError(`cannot save incrementally with \`${k}\``);
+    return this.originalBytes;
+  }
+
+  private *saveIncrementalSteps(
+    options: SaveOptions, context: OperationContext, baseline?: Map<number, PdfObject>,
+  ): OperationSteps<Uint8Array> {
+    const base = this.requireIncrementalBase(options);
+    if (baseline === undefined && this.hasAsyncRecipient())
+      throw new UnsupportedFeatureError('PubSec: use SaveAsync for an incremental save with an asynchronous key transport');
 
     // After the refusals, so a rejected call leaves the document untouched —
     // and before the diff, because font embedding allocates objects: taken
@@ -2501,14 +2592,14 @@ export class Document {
     yield* this.finalizeEmbeddedFontsSteps(context);
     yield context.progress('prepare', 2, 2);
 
-    const delta = yield* diffObjectsSteps(this.baselineObjects(), this.objects, context);
+    const delta = yield* diffObjectsSteps(baseline ?? this.baselineObjects(), this.objects, context);
     const objects = new Map<number, PdfObject>();
     for (const n of delta.replaced) objects.set(n, this.objects.get(n)!);
     for (const n of delta.added) objects.set(n, this.objects.get(n)!);
 
     const rootRef = this.trailer.get('Root');
     const infoRef = this.trailer.get('Info');
-    return yield* appendIncrementalUpdateSteps(this.originalBytes, {
+    return yield* appendIncrementalUpdateSteps(base, {
       objects,
       freed: delta.freed,
       encryptor: this.preservedEncryptor,
@@ -3082,7 +3173,10 @@ export class Document {
   async Certify(signer: Signer, opts: CertifyOptions = {}): Promise<void> {
     // Probe the authoritative byte image (a pending in-session signature fills
     // /Contents only there, not the live model), else the live/opened state.
-    const probe = this.pendingSignedBytes ? this.reopen(this.pendingSignedBytes) : this;
+    const version = this.#writeVersion;
+    const probe = this.pendingSignedBytes
+      ? await this.reopenForOperation(this.snapshotForAuthentication(this.pendingSignedBytes)) : this;
+    this.requireCurrentWrite(version);
     if (probe.Signatures.some((s) => s.isSigned))
       throw new UnsupportedFeatureError('cannot certify: the document is already signed (certification must be the first signature)');
     if (Document.permsHasDocMdp(probe))
@@ -3196,8 +3290,10 @@ export class Document {
     }
     // An unsigned plaintext PDF can still take the full rewrite when its
     // barcodes need refreshing. A signed base has to keep its earlier bytes.
+    const version = this.#writeVersion;
     const base = canAppend && (protectedInput || hasSignature || !needsBarcodeRefresh(this))
-      ? this.preflightSignatureAppend('sign') : undefined;
+      ? await this.preflightSignatureAppend('sign') : undefined;
+    this.requireCurrentWrite(version);
     if (!protectedInput) refreshBarcodeFields(this);
     this.finalizeEmbeddedFonts();
 
@@ -3369,11 +3465,13 @@ export class Document {
   async AddValidationData(opts: ValidationDataOptions = {}): Promise<void> {
     this.assertNotRecovered('add validation data to');
     this.requireSavedPdf20Migration('AddValidationData');
-    const base = this.pendingSignedBytes ?? this.originalBytes;
-    if (!base)
+    const stored = this.pendingSignedBytes ?? this.originalBytes;
+    if (!stored)
       throw new UnsupportedFeatureError('AddValidationData requires a signed document');
+    const version = this.#writeVersion;
+    const base = this.snapshotForAuthentication(stored);
     const needsReopen = this.pendingLayoutNeedsReopen;
-    const src = this.reopen(base);
+    const src = await this.reopenForOperation(base);
     const sigs = src.Signatures.filter((s) => s.isSigned);
     if (sigs.length === 0)
       throw new UnsupportedFeatureError('AddValidationData: the document has no signatures');
@@ -3396,6 +3494,7 @@ export class Document {
     }
 
     // Build the /DSS object graph, point the catalog at it, and append.
+    this.requireCurrentWrite(version);
     const before = new Set(this.objects.keys());
     const dssRef = buildDss(this, entries);
     this.catalog().set('DSS', dssRef);
@@ -3440,7 +3539,9 @@ export class Document {
         `signature field '${opts.fieldName}' is prepared for a signature with constraints `
         + '(/SV or /Lock); a document timestamp cannot honour them');
 
-    const base = this.preflightSignatureAppend('timestamp');
+    const version = this.#writeVersion;
+    const base = await this.preflightSignatureAppend('timestamp');
+    this.requireCurrentWrite(version);
     this.finalizeEmbeddedFonts();
 
     // Build the /DocTimeStamp value dict, then fill the prepared field or wire
@@ -3494,22 +3595,24 @@ export class Document {
    *  anchors or revocation material to evaluate the signer's certificate, and
    *  enable `shadowAnalysis` to compare signed and current page appearances. */
   async VerifySignatures(opts: VerifyOptions = {}): Promise<SignatureReport[]> {
-    const bytes = this.pendingSignedBytes ?? this.originalBytes;
-    if (!bytes) return [];
+    const stored = this.pendingSignedBytes ?? this.originalBytes;
+    if (!stored) return [];
+    const bytes = this.snapshotForAuthentication(stored);
     // Re-parse the stored bytes for the /ByteRange and /Contents as written.
-    const src = this.reopen(bytes);
+    const src = await this.reopenForOperation(bytes);
     const signed = src.Signatures.filter(hasSignatureData);
     // Chain validation (V2) is synchronous; feed it any /DSS-embedded certs as
     // extra intermediates and validate against the caller's trust anchors.
     const chain = { trustAnchors: opts.trustAnchors, at: opts.at, extraCerts: readDssCerts(src) };
     const checkStructure = src.signatureStructure(bytes);
-    const reports = signed.map((s) => {
+    const reports: SignatureReport[] = [];
+    for (const s of signed) {
       const report = verifySignature(bytes, s, chain);
-      report.structureFindings = checkStructure(s);
-      return report;
-    });
-    const openSignedRevision = (end: number) => src.reopen(bytes.subarray(0, end));
-    attachUnsignedContentSummary(src, signed, reports, bytes.length, openSignedRevision);
+      report.structureFindings = await checkStructure(s);
+      reports.push(report);
+    }
+    const openSignedRevision = (end: number) => src.reopenForOperation(bytes.subarray(0, end));
+    await attachUnsignedContentSummary(src, signed, reports, bytes.length, openSignedRevision);
     if (opts.shadowAnalysis) {
       for (let i = 0; i < reports.length; i++) {
         const report = reports[i];
@@ -3522,7 +3625,7 @@ export class Document {
           continue;
         }
         let revision: Document;
-        try { revision = openSignedRevision(end); }
+        try { revision = await openSignedRevision(end); }
         catch (caught) {
           rethrowLimit(caught);
           continue;
@@ -3565,19 +3668,19 @@ export class Document {
     });
     // DocMDP enforcement (V4): when the document is certified, evaluate the
     // changes appended after the certification signature against its level.
-    Document.applyDocMdp(src, bytes, signed, reports);
+    await Document.applyDocMdp(src, bytes, signed, reports);
     // An APPROVAL signature whose lock sets a level (/Lock /P, PDF 2.0) is
     // judged against that level exactly as a certification is (puep.7).
-    Document.applyApprovalLockLevel(src, bytes, signed, reports);
+    await Document.applyApprovalLockLevel(src, bytes, signed, reports);
     // Field locks (puep.4): a signature carrying a FieldMDP transform freezes
     // the fields its lock names; report a later change to any of them.
-    Document.applyFieldMdp(src, bytes, signed, reports);
+    await Document.applyFieldMdp(src, bytes, signed, reports);
     return reports;
   }
 
   private signatureStructure(bytes: Uint8Array) {
-    return signatureStructureCheck(bytes, this.revisions, (end, name, xrefOffset) => {
-      const prior = this.reopen(bytes.subarray(0, end));
+    return signatureStructureCheck(bytes, this.revisions, async (end, name, xrefOffset) => {
+      const prior = await this.reopenForOperation(bytes.subarray(0, end));
       if (prior.recovery || prior.Revisions.at(-1)?.xrefOffset !== xrefOffset)
         throw new PdfParseError('could not open the signed revision at its cross-reference section');
       const field = prior.Form.Get(name);
@@ -3585,10 +3688,10 @@ export class Document {
     });
   }
 
-  private verificationRevision(bytes: Uint8Array, end: number): Document | undefined {
+  private async verificationRevision(bytes: Uint8Array, end: number): Promise<Document | undefined> {
     if (end === bytes.length) return this;
     try {
-      return this.reopen(bytes.subarray(0, end));
+      return await this.reopenForOperation(bytes.subarray(0, end));
     } catch (caught) { rethrowLimit(caught);
       return undefined;
     }
@@ -3601,15 +3704,15 @@ export class Document {
    *  signed revision, never the current field: a lock rewritten afterwards must
    *  not loosen anything, the rule `applyFieldMdp` already follows. pyHanko reads
    *  the current field here; this is the one place the two differ. */
-  private static applyApprovalLockLevel(
+  private static async applyApprovalLockLevel(
     src: Document, bytes: Uint8Array, signed: SignatureField[], reports: SignatureReport[],
-  ): void {
+  ): Promise<void> {
     for (let i = 0; i < signed.length; i++) {
       const sig = signed[i];
       const report = reports[i];
       const signedEnd = signatureRevisionEnd(sig.byteRange, bytes.length);
       if (report.docMDP !== 'n/a' || signedEnd === undefined) continue;
-      const prevDoc = src.verificationRevision(bytes, signedEnd);
+      const prevDoc = await src.verificationRevision(bytes, signedEnd);
       if (!prevDoc) continue;
       const carried = readFieldMdpLock(sig.valueDict, (o) => src.resolve(o ?? null))?.permissions;
       const fieldThen = prevDoc.Form.Get(sig.name);
@@ -3638,9 +3741,9 @@ export class Document {
    *
    *  Field identity comes from {@link Form}, the one owner of the tree walk; an
    *  identity map from dict to object number joins it to the change list. */
-  private static applyFieldMdp(
+  private static async applyFieldMdp(
     src: Document, bytes: Uint8Array, signed: SignatureField[], reports: SignatureReport[],
-  ): void {
+  ): Promise<void> {
     let numOf: Map<PdfObject, number> | undefined;
     for (let i = 0; i < signed.length; i++) {
       const sig = signed[i];
@@ -3652,7 +3755,7 @@ export class Document {
       if (signedEnd === bytes.length) {
         report.fieldMDP = 'ok'; report.lockedFieldsChanged = []; continue;
       }
-      const prior = src.verificationRevision(bytes, signedEnd);
+      const prior = await src.verificationRevision(bytes, signedEnd);
       if (!prior) continue;
 
       numOf ??= new Map([...src.objects].map(([n, o]) => [o, n] as [PdfObject, number]));
@@ -3680,24 +3783,27 @@ export class Document {
    *  each token's message-imprint binding to the `/ByteRange` and the TSA's CMS
    *  signature, returning one {@link DocumentTimestampReport} per field. */
   async VerifyDocumentTimestamps(): Promise<DocumentTimestampReport[]> {
-    const bytes = this.pendingSignedBytes ?? this.originalBytes;
-    if (!bytes) return [];
-    const src = this.reopen(bytes);
+    const stored = this.pendingSignedBytes ?? this.originalBytes;
+    if (!stored) return [];
+    const bytes = this.snapshotForAuthentication(stored);
+    const src = await this.reopenForOperation(bytes);
     const checkStructure = src.signatureStructure(bytes);
-    return src.DocumentTimestamps.filter(hasSignatureData).map((t) => {
+    const reports: DocumentTimestampReport[] = [];
+    for (const t of src.DocumentTimestamps.filter(hasSignatureData)) {
       const report = verifyDocumentTimestamp(bytes, t);
-      report.structureFindings = checkStructure(t);
-      return report;
-    });
+      report.structureFindings = await checkStructure(t);
+      reports.push(report);
+    }
+    return reports;
   }
 
   /** Set the certification signature's `docMDP` verdict (V4). Finds the field
    *  pointed at by catalog `/Perms /DocMDP`, reads its permitted level, and
    *  classifies the objects changed after the certified revision; non-cert
    *  signatures keep `n/a`. */
-  private static applyDocMdp(
+  private static async applyDocMdp(
     src: Document, bytes: Uint8Array, signed: SignatureField[], reports: SignatureReport[],
-  ): void {
+  ): Promise<void> {
     const perms = src.resolve(src.catalog().get('Perms'));
     if (!isDict(perms)) return;
     const certDict = src.resolve(perms.get('DocMDP'));
@@ -3713,7 +3819,7 @@ export class Document {
     if (signedEnd === undefined) return;
     if (signedEnd === bytes.length) { reports[idx].docMDP = 'ok'; return; }
 
-    const prevDoc = src.verificationRevision(bytes, signedEnd);
+    const prevDoc = await src.verificationRevision(bytes, signedEnd);
     if (!prevDoc) return;
     const view = (d: Document): DocMdpDoc => ({ getObject: (n) => d.getObject(n), resolve: (o) => d.resolve(o ?? null) });
     const rootRef = src.trailer.get('Root');
@@ -3756,6 +3862,7 @@ export class Document {
   }
 
   private storeSignedBytes(bytes: Uint8Array, needsReopen = false): void {
+    this.#writeVersion++;
     this.pendingSignedBytes = bytes;
     this.pendingLayoutNeedsReopen = needsReopen;
     this.signedInSession = true;
@@ -3763,10 +3870,10 @@ export class Document {
 
   /** Validate and authenticate the exact byte image the writer will append to.
    *  Capture it before allocating fields, which invalidates pending bytes. */
-  private preflightSignatureAppend(operation: 'sign' | 'timestamp'): AppendBase & { encryptor?: Encryptor } {
+  private async preflightSignatureAppend(operation: 'sign' | 'timestamp'): Promise<AppendBase & { encryptor?: Encryptor }> {
     if (this.pendingLayoutNeedsReopen)
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally after a signing rewrite: save and reopen the signed PDF first`);
-    const bytes = this.signBase();
+    const bytes = this.snapshotForAuthentication(this.signBase());
     const limits = this.loadLimits;
     limits.enforce('maxFileBytes', bytes.length, 'signature append base');
     const budget = new DecodeBudget(limits);
@@ -3781,7 +3888,7 @@ export class Document {
     if (!equalPdfObjects(encryption, this.trailer.get('Encrypt'))
       || (encryption !== undefined && !isRef(encryption)))
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally: stored encryption layout disagrees with the live trailer`);
-    const stored = this.reopen(bytes, { xref, budget });
+    const stored = await this.reopenForOperation(bytes, { xref, budget });
     stored.assertNotRecovered(operation);
     if ((encryption !== undefined) !== (stored.preservedEncryptor !== undefined))
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally: unable to preserve the stored encryption`);

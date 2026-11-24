@@ -638,6 +638,27 @@ handling that avoids exposing a padding oracle. Provider errors and unusable key
 `UnsupportedFeatureError`. Keep the provider available for operations such as
 incremental saving and signature verification, which can reopen encrypted bytes.
 
+For a provider that returns a promise, use `Document.OpenAsync` with
+`keyTransportAsync`.
+
+```ts
+const opened = await Document.OpenAsync(bytes, {
+  recipient: {
+    certificate: recipientCertPem,
+    keyTransportAsync: {
+      algorithm: 'rsa-pkcs1-v1_5',
+      unwrapKey: (wrappedKey, algorithm) => asyncProvider.unwrapKey(wrappedKey, algorithm),
+    },
+  },
+});
+```
+
+Use `await opened.SaveAsync({ incremental: true })` to append changes. The
+library authenticates the stored baseline before writing. Signing, timestamps,
+validation-data collection, and signature verification can also await the
+provider to open stored bytes and earlier revisions. Each reopen applies the
+document's original `LoadLimits`. Keep the provider available for these operations.
+
 ### Split and Merge Documents
 
 ```ts
@@ -3999,7 +4020,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 529 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 531 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4332,6 +4353,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `OoxmlPart` | One part of an OPC package. |
 | `OoxmlRelationship` | One entry of a `.rels` file. |
 | `OpenOptions` | `password`, `recipient` and `limits` (a `LoadLimits`). |
+| `OpenAsyncOptions` | Open options that also accept a certificate with `keyTransportAsync`. |
 | `OptimizeImageOptions` | Target for the lossy image pass. |
 | `OperationControlOptions` | Optional `signal` and synchronous `onProgress` callback for cooperative operations. |
 | `OperationProgress` | Phase-local completed counts, optional total, and one-based page number. |
@@ -4699,6 +4721,7 @@ byte coverage, later object modifications, and structural findings.
 | `Permissions` | PDF permission flags for printing, editing, copying, annotation, forms, accessibility, and assembly. |
 | `PubSecEncryptOptions` | Certificate encryption options for recipients, algorithm, permissions, key wrapping, and metadata encryption. |
 | `PubSecKeyTransport` | Synchronous RSAES-PKCS1-v1_5 provider that unwraps an AES-128-CBC or AES-256-CBC CMS content key for an addressed recipient. |
+| `AsyncPubSecKeyTransport` | Promise-based RSAES-PKCS1-v1_5 provider for `Document.OpenAsync`. |
 | `PubSecRecipientCert` | Recipient certificate and optional recipient-specific permission flags. |
 | `SignOptions` | Signature metadata, subfilter, target field, appearance, timestamp provider, CAdES attributes, placeholder size, and first-write password encryption. |
 | `SignatureAppearance` | A visible signature appearance request. |
@@ -4829,6 +4852,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 |---|---|
 | `Document.New(format?)` | Create a document from scratch: zero pages, or one page of `format` |
 | `Document.Open(buf, opts?)` | Parse a PDF from a `Uint8Array` |
+| `Document.OpenAsync(buf, opts?)` | Parse PDF bytes and await a PubSec recipient key provider when supplied. |
 | `Document.OpenFile(name, opts?)` | Parse a PDF from disk |
 | `splitPdfFile(inputPath, outDir, opts?)` | Split a PDF on disk into `page-N.pdf` files |
 | `readMetadataFile(inputPath)` | A PDF's `/Info` metadata, read from disk |

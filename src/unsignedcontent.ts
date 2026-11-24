@@ -31,10 +31,10 @@ export interface UnsignedContentSummary {
 
 /** Attribute changes only for the latest signed byte extent. Field order and
  *  timestamps claimed by a signer have no bearing on revision order. */
-export function attachUnsignedContentSummary(
+export async function attachUnsignedContentSummary(
   doc: Document, signatures: readonly SignatureField[], reports: SignatureReport[], length: number,
-  openSignedRevision: (end: number) => Document,
-): void {
+  openSignedRevision: (end: number) => Document | Promise<Document>,
+): Promise<void> {
   let latest: SignatureReport | undefined;
   let end = 0;
   for (let i = 0; i < signatures.length; i++) {
@@ -44,14 +44,12 @@ export function attachUnsignedContentSummary(
     latest = reports[i];
   }
   if (latest?.integrity === 'valid' && latest.signature === 'valid') {
-    let previous: Document | null | undefined;
-    latest.unsignedContent = summarize(doc, latest.modifications, (num) => {
-      if (previous === undefined) {
-        try { previous = openSignedRevision(end); }
-        catch (caught) { rethrowLimit(caught); previous = null; }
-      }
-      return previous?.getObject(num);
-    });
+    let previous: Document | undefined;
+    if (latest.modifications.length > 0) {
+      try { previous = await openSignedRevision(end); }
+      catch (caught) { rethrowLimit(caught); }
+    }
+    latest.unsignedContent = summarize(doc, latest.modifications, (num) => previous?.getObject(num));
   }
 }
 

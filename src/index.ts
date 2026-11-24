@@ -12,7 +12,7 @@ export { Document } from './document.js';
 export type { DocumentId, Pdf20MigrationChange, Pdf20MigrationReport } from './pdf20.js';
 export type { OperationProgress, OperationControlOptions } from './checkpoint.js';
 export type {
-  SplitOptions, ExtractPagesOptions, InsertPagesOptions, OpenOptions, SaveOptions,
+  SplitOptions, ExtractPagesOptions, InsertPagesOptions, OpenOptions, OpenAsyncOptions, SaveOptions,
   PubSecRecipient, RecoveryReport, TrailerChoice,
 } from './document.js';
 export type { LoadFontOptions, FontMatch, FontFamily } from './fontmatch.js';
@@ -251,7 +251,7 @@ export type {
   StampPosition, WatermarkOptions, HeaderFooterOptions, HeaderFooterBand, BatesOptions,
 } from './decorate.js';
 export type { EncryptOptions, Permissions, PubSecEncryptOptions, PubSecRecipientCert } from './encrypt.js';
-export type { PubSecKeyTransport } from './cms.js';
+export type { PubSecKeyTransport, AsyncPubSecKeyTransport } from './cms.js';
 export { verifyLinearization } from './linearize.js';
 export type { LinearizationCheck } from './linearize.js';
 export type { Metadata, MetadataUpdate } from './metadata.js';

@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Open PubSec PDFs with promise-based RSA key providers.** Supply
+  `keyTransportAsync` to `Document.OpenAsync`. Incremental `SaveAsync`, signing,
+  timestamping, DSS collection, and verification reauthenticate the relevant
+  byte images with the retained provider and load limits. (chp0.15)
+
 - **Open Go-produced AES-256 PubSec PDFs.** The recipient envelope can use
   AES-256-CBC with a 32-byte content key and a 16-byte IV. Both local RSA
   private keys and external RSA key transport providers can open these
