@@ -13,4 +13,4 @@ For a separate producer corpus, AutoTag ran with furniture detection enabled on 
 | PdfWithTable.pdf | 2 | Disabled |
 | word-umlauts.pdf | 1 | Disabled |
 
-Beads issue `scsg` tracks the nested-table extractor recursion encountered with table detection enabled on the last two PDFs. The corpus comparison checks preservation and round-trip stability. Expected hierarchy and reading order are asserted separately by the automated fixtures.
+The initial run disabled table detection on the last two PDFs because nested-table extraction exceeded the call stack. After the `scsg` fix, default `AutoTag()` tagged one table on each of their three pages. All three pages retained their extracted text and the SHA-256 hash of their rendered image at scale 0.35 after saving and reopening. The automated fixtures check the expected hierarchy and reading order separately.

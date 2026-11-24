@@ -1,6 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/index.js';
+import { isNestedRegion } from '../src/table.js';
 import { buildTablePdf, hline, vline, text } from './helpers/build-table-pdf.js';
+
+describe('nested ruled region bounds', () => {
+  const parent: [number, number, number, number] = [0, 0, 100, 100];
+
+  it('requires a distinct region at the detector’s snapping precision', () => {
+    expect(isNestedRegion(parent, parent)).toBe(false);
+    expect(isNestedRegion(parent, [1, 1, 99, 99])).toBe(false);
+    expect(isNestedRegion(parent, [0, 0, 100, 50])).toBe(true);
+  });
+
+  it('allows a slightly misaligned shared edge while requiring the area to decrease', () => {
+    expect(isNestedRegion(parent, [-1, 0, 100, 50])).toBe(true);
+    expect(isNestedRegion(parent, [-5, 0, 100, 50])).toBe(false);
+    expect(isNestedRegion(parent, [-2, -2, 97, 102])).toBe(false);
+  });
+});
 
 /** Outer 2×2 grid (x50..250 split 150, y50..250 split 150). Bottom-right cell
  *  [150,50,250,150] contains an inset 2×2 grid (x170..230 split 200,
@@ -105,6 +122,18 @@ const spanStream =
   text(120, 200, 'Header') + text(70, 100, 'a') + text(170, 100, 'b');
 
 describe('geometry nested tables — spanning-cell control', () => {
+  it('preserves a spanning header when outside strokes overhang the grid', () => {
+    const stream = hline(50, 270, 250) + hline(50, 250, 50) +
+      vline(50, 50, 250) + vline(250, 50, 270) +
+      hline(50, 235, 150) + vline(150, 50, 235) +
+      text(70, 200, 'Header') + text(70, 100, 'Left') + text(170, 100, 'Right');
+    const tables = Document.Open(buildTablePdf(stream)).Pages[0].GetTables();
+    expect(tables).toHaveLength(1);
+    const [header, body] = tables[0].rows;
+    expect(header.cells).toMatchObject([{ text: 'Header', colSpan: 2 }]);
+    expect(body.cells.map(c => c.text)).toEqual(['Left', 'Right']);
+  });
+
   it('treats a lone partial divider as a spanning cell, not a nested table', () => {
     const tables = Document.Open(buildTablePdf(spanStream)).Pages[0].GetTables();
     expect(tables).toHaveLength(1);

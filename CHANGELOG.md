@@ -709,6 +709,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ruled table extraction preserves cells when a candidate spans the whole
+  table.** `GetTables()` and default `AutoTag()` could exhaust the call stack
+  on these layouts. The extractor now keeps the rules and text in the current
+  table and descends only into a smaller region. (scsg)
+
 - **Materialize inherited page attributes in linearized PDFs.** The writer
   copies effective page boxes, rotation, and resources into page dictionaries
   before building the hint tables, while preserving the input graph. (u0af)

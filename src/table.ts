@@ -104,6 +104,13 @@ const rectContains = (outer: Rect, inner: Rect): boolean =>
   inner[0] >= outer[0] - SNAP && inner[1] >= outer[1] - SNAP
   && inner[2] <= outer[2] + SNAP && inner[3] <= outer[3] + SNAP;
 
+const rectArea = (b: Rect): number => (b[2] - b[0]) * (b[3] - b[1]);
+
+/** @internal A shared border can drift by SNAP. Require both a distinct
+ *  footprint and strictly decreasing area on every recursive descent. */
+export function isNestedRegion(parent: Rect, child: Rect): boolean {
+  return rectContains(parent, child) && !rectContains(child, parent) && rectArea(child) < rectArea(parent);
+}
 
 /** Build one Table from clustered rules + fragments within its region. */
 function assembleTable(horiz: Rule[], vert: Rule[], frags: TextFragment[]): Table | undefined {
@@ -191,6 +198,9 @@ function buildRuledRegion(horiz: Rule[], vert: Rule[], frags: TextFragment[], bb
         cand = assembleTable(usedH, usedV, fragsC);
       }
       if (!cand || cand.rowCount < 2 || cand.colCount < 2) continue;
+      // Stroke endpoints can overhang the grid. Dividers that cover its
+      // entire footprint belong to this table even when bbox is larger.
+      if (rectContains(cand.quad, coarse.quad) || !isNestedRegion(bbox, cand.quad)) continue;
       nested.push({ horiz: usedH, vert: usedV, bbox: cand.quad });
       for (const r of inH) consumed.add(r);
       for (const r of inV) consumed.add(r);
@@ -307,7 +317,6 @@ function classifyRules(segs: [number, number, number, number][]): { horiz: Rule[
 function buildTables(horiz: Rule[], vert: Rule[], frags: TextFragment[]): Table[] {
   const out: Table[] = [];
   const comps = partitionRules(horiz, vert).map((c) => ({ ...c, bbox: ruleBbox(c.horiz, c.vert) }));
-  const rectArea = (b: Rect): number => (b[2] - b[0]) * (b[3] - b[1]);
   for (const top of comps) {
     if (comps.some((o) => o !== top && rectArea(o.bbox) > rectArea(top.bbox) && rectContains(o.bbox, top.bbox))) continue;
     const cHoriz: Rule[] = [], cVert: Rule[] = [];
