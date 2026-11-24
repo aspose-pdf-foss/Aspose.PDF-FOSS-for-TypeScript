@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Open Go-produced AES-256 PubSec PDFs.** The recipient envelope can use
+  AES-256-CBC with a 32-byte content key and a 16-byte IV. Both local RSA
+  private keys and external RSA key transport providers can open these
+  documents. The Go fixture verifies page text and recipient permissions.
+  (chp0.17)
+
 - **Sign a newly authored PDF with password encryption.** Pass `encrypt` to
   `Sign` or `Certify` to create an encrypted base in memory and append the
   signature in the same operation. `Save()` returns the sealed bytes and

@@ -13641,11 +13641,16 @@ Source (`src/`):
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
   **Invariant (`chp0.10`):** CMS validates the addressed recipient's issuer and
-  serial, RSAES-PKCS1-v1_5 algorithm and parameters, and AES-128-CBC parameters
+  serial, RSAES-PKCS1-v1_5 algorithm and parameters, and AES-CBC parameters
   before calling an external key transport provider. Pass a copy of the wrapped
   key because file-key derivation hashes the original envelope. A failed
   addressed callback ends the open. The existing private Open credential retains
   the normalized certificate and provider for baseline and revision reopens.
+  **Invariant (`chp0.17`):** the CMS content cipher OID selects AES-128-CBC
+  or AES-256-CBC and determines the required content key size. Both use a
+  16-byte IV encoded as an OCTET STRING. Local keys and external providers
+  share this validation. The PDF crypt filter separately selects the file
+  cipher, so a PDF using AESV3 can carry an AES-128-CBC recipient envelope.
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
   **encoders** (`encodeStream`, `ascii85Encode`/`asciiHexEncode`/`lzwEncode`/
   `runLengthEncode`) and the `Save({ streamFilter })` re-filter pass.

@@ -11,6 +11,7 @@ import { buildSigner } from './helpers/build-signer.js';
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/pubsec-go/${name}`, import.meta.url));
 const pdf = fixture('aes128.pdf');
+const pdf256 = fixture('aes256.pdf');
 const certificate = fixture('recipient-cert.pem').toString('ascii');
 const privateKey = createPrivateKey(fixture('recipient-key.pem'));
 const algorithm = 'rsa-pkcs1-v1_5';
@@ -20,8 +21,8 @@ const provider = (unwrapKey: PubSecKeyTransport['unwrapKey'] = unwrap): PubSecKe
 
 // Replace a same-length DER fragment in the last /Recipients envelope, leaving
 // the PDF offsets and the first (unrelated) envelope intact.
-function withEnvelopeChange(before: string, after: string): Uint8Array {
-  const bytes = pdf.toString('latin1');
+function withEnvelopeChange(before: string, after: string, source = pdf): Uint8Array {
+  const bytes = source.toString('latin1');
   // Go emits a literal PDF string and escapes the CR in the RSA OID.
   const escapedDer = (hex: string) => Buffer.from(hex, 'hex').toString('latin1').replaceAll('\r', '\\r');
   const from = escapedDer(before);
@@ -31,6 +32,35 @@ function withEnvelopeChange(before: string, after: string): Uint8Array {
   expect(to).toHaveLength(from.length);
   return Buffer.from(bytes.slice(0, at) + to + bytes.slice(at + from.length), 'latin1');
 }
+
+describe('Go-produced AES-256 PubSec', () => {
+  it.each([
+    ['a local private key', { privateKey }],
+    ['an external key provider', { keyTransport: provider() }],
+  ] as const)('opens with %s and recovers the addressed recipient permissions', (_, credential) => {
+    const doc = Document.Open(pdf256, { recipient: { certificate, ...credential } });
+    expect(doc.Pages[0].GetText()).toContain('Go PubSec AES-256 fixture text');
+    expect(doc.Permissions).toMatchObject({ printing: true, copying: false });
+  });
+
+  it('refuses an unknown CMS cipher even with a local private key', () => {
+    const altered = withEnvelopeChange('060960864801650304012a0410', '06096086480165030401160410', pdf256);
+    expect(() => Document.Open(altered, { recipient: { certificate, privateKey } }))
+      .toThrow(UnsupportedFeatureError);
+  });
+
+  it('rejects a local key whose unwrapped size disagrees with the CMS cipher', () => {
+    const altered = withEnvelopeChange('060960864801650304012a0410', '06096086480165030401020410', pdf256);
+    expect(() => Document.Open(altered, { recipient: { certificate, privateKey } }))
+      .toThrow(InvalidPasswordError);
+  });
+
+  it('requires a 32-byte key from the provider for AES-256-CBC', () => {
+    const keyTransport = provider((key) => unwrap(key).subarray(0, 16));
+    expect(() => Document.Open(pdf256, { recipient: { certificate, keyTransport } }))
+      .toThrow(InvalidPasswordError);
+  });
+});
 
 describe('external PubSec RSA key transport', () => {
   it('opens a Go-produced AES-128 PDF and keeps recipient bytes intact if the provider mutates its input', () => {
@@ -70,7 +100,7 @@ describe('external PubSec RSA key transport', () => {
     ['unknown key transport OID', '06092a864886f70d0101010500', '06092a864886f70d01017f0500'],
     ['OAEP OID', '06092a864886f70d0101010500', '06092a864886f70d0101070500'],
     ['invalid RSA parameters', '06092a864886f70d0101010500', '06092a864886f70d0101010400'],
-    ['unsupported CMS cipher', '06096086480165030401020410', '060960864801650304012a0410'],
+    ['unsupported CMS cipher', '06096086480165030401020410', '06096086480165030401160410'],
     ['invalid CMS IV type', '06096086480165030401020410', '06096086480165030401020310'],
   ])('rejects %s before invoking the provider', (_, before, after) => {
     let calls = 0;
@@ -91,9 +121,10 @@ describe('external PubSec RSA key transport', () => {
   });
 
   it.each([
-    ['wrapped RSA key', 255, 32],
-    ['encrypted CMS payload', 256, 16],
-  ] as const)('refuses a short %s without calling the provider', (_, wrappedLength, encryptedLength) => {
+    ['wrapped RSA key', 255, 32, 16, PdfParseError],
+    ['encrypted CMS payload', 256, 16, 16, PdfParseError],
+    ['CMS IV', 256, 32, 15, UnsupportedFeatureError],
+  ] as const)('refuses a short %s without calling the provider', (_, wrappedLength, encryptedLength, ivLength, error) => {
     const certDer = new X509Certificate(certificate).raw;
     const [contentType, inner] = parse(buildEnvelopedData([certDer], new Uint8Array(24))).children;
     const [version, recipients, eci] = inner.children[0].children;
@@ -104,12 +135,14 @@ describe('external PubSec RSA key transport', () => {
     );
     const encryptedPayload = der.octetString(encrypted.content.subarray(0, encryptedLength));
     encryptedPayload[0] = 0x80;
+    const [cipherOid, iv] = cipher.children;
+    const cipherWithIv = der.sequence(cipherOid.raw, der.octetString(iv.content.subarray(0, ivLength)));
     const envelope = der.sequence(contentType.raw, der.explicit(0, der.sequence(
-      version.raw, der.set(shortRecipient), der.sequence(dataType.raw, cipher.raw, encryptedPayload),
+      version.raw, der.set(shortRecipient), der.sequence(dataType.raw, cipherWithIv, encryptedPayload),
     )));
     let calls = 0;
     const keyTransport = provider((key) => { calls++; return unwrap(key); });
-    expect(() => openEnvelopedData(envelope, keyTransport, certDer)).toThrow(PdfParseError);
+    expect(() => openEnvelopedData(envelope, keyTransport, certDer)).toThrow(error);
     expect(calls).toBe(0);
   });
 

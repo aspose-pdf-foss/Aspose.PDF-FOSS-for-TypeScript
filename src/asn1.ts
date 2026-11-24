@@ -43,6 +43,7 @@ export const OID = {
   signedData: '1.2.840.113549.1.7.2',
   envelopedData: '1.2.840.113549.1.7.3',
   aes128CBC: '2.16.840.1.101.3.4.1.2',
+  aes256CBC: '2.16.840.1.101.3.4.1.42',
   // ECDH-ES key agreement (RFC 5753) + AES key wrap (RFC 3394)
   dhSinglePassStdDHsha1: '1.3.133.16.840.63.0.2', // X9.63; openssl's default KDF
   dhSinglePassStdDHsha256: '1.3.132.1.11.1',

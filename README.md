@@ -630,9 +630,10 @@ const opened = Document.Open(bytes, {
 ```
 
 The callback receives a copy of the wrapped key after the certificate's issuer
-and serial match the CMS recipient. It returns the 16-byte AES-128-CBC content
-key as a `Uint8Array`. The provider must implement PKCS#1 v1.5 failure handling
-that avoids exposing a padding oracle. Provider errors and unusable keys cause
+and serial match the CMS recipient. It returns the CMS content key as a
+`Uint8Array`. The envelope specifies AES-128-CBC with a 16-byte key or
+AES-256-CBC with a 32-byte key. The provider must implement PKCS#1 v1.5 failure
+handling that avoids exposing a padding oracle. Provider errors and unusable keys cause
 `InvalidPasswordError`. Unsupported algorithms or parameters cause
 `UnsupportedFeatureError`. Keep the provider available for operations such as
 incremental saving and signature verification, which can reopen encrypted bytes.
@@ -4691,7 +4692,7 @@ byte coverage, later object modifications, and structural findings.
 | `EncryptOptions` | Password encryption options for credentials, algorithm, permissions, and metadata encryption. |
 | `Permissions` | PDF permission flags for printing, editing, copying, annotation, forms, accessibility, and assembly. |
 | `PubSecEncryptOptions` | Certificate encryption options for recipients, algorithm, permissions, key wrapping, and metadata encryption. |
-| `PubSecKeyTransport` | Synchronous RSAES-PKCS1-v1_5 provider that unwraps the AES-128 CMS content key for an addressed recipient. |
+| `PubSecKeyTransport` | Synchronous RSAES-PKCS1-v1_5 provider that unwraps an AES-128-CBC or AES-256-CBC CMS content key for an addressed recipient. |
 | `PubSecRecipientCert` | Recipient certificate and optional recipient-specific permission flags. |
 | `SignOptions` | Signature metadata, subfilter, target field, appearance, timestamp provider, CAdES attributes, placeholder size, and first-write password encryption. |
 | `SignatureAppearance` | A visible signature appearance request. |

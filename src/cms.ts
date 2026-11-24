@@ -512,7 +512,8 @@ function oaepHashFromParams(params: Asn1Node | undefined): 'sha1' | 'sha256' {
 export interface PubSecKeyTransport {
   /** Explicit opt-in to RSAES-PKCS1-v1_5 key transport. */
   algorithm: 'rsa-pkcs1-v1_5';
-  /** Unwrap a copy of the CMS encrypted key and return the 16-byte content key.
+  /** Unwrap a copy of the CMS encrypted key and return the content key
+   * (16 bytes for AES-128-CBC or 32 bytes for AES-256-CBC).
    * The provider must handle PKCS#1 v1.5 failures without exposing a padding
    * oracle. Operations that reopen encrypted revisions may call it again. */
   unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-pkcs1-v1_5') => Uint8Array;
@@ -564,7 +565,10 @@ function openKeyAgree(
 const RSA_PKCS1_ALGORITHM = der.sequence(der.oid(OID.rsaEncryption), der.null_());
 const CMS_ENVELOPED_DATA = der.oid(OID.envelopedData);
 const CMS_DATA = der.oid(OID.data);
-const AES_128_CBC_OID = der.oid(OID.aes128CBC);
+const CMS_CONTENT_CIPHERS = [
+  { oid: der.oid(OID.aes128CBC), algorithm: 'aes-128-cbc', keyBytes: 16 },
+  { oid: der.oid(OID.aes256CBC), algorithm: 'aes-256-cbc', keyBytes: 32 },
+] as const;
 
 function parseExternalEnvelope(envelope: Uint8Array): Asn1Node {
   try {
@@ -576,18 +580,25 @@ function parseExternalEnvelope(envelope: Uint8Array): Asn1Node {
   }
 }
 
+function readContentCipher(eci: Asn1Node) {
+  const [contentType, cipher] = eci.children;
+  const [cipherOid, iv] = cipher?.children ?? [];
+  const profile = cipherOid && CMS_CONTENT_CIPHERS.find(({ oid }) => bytesEqual(cipherOid.raw, oid));
+  if (!contentType || !bytesEqual(contentType.raw, CMS_DATA)
+    || cipher?.raw[0] !== 0x30 || cipher.children.length !== 2 || !profile
+    || iv.raw[0] !== 0x04 || iv.length !== 16)
+    throw new UnsupportedFeatureError('PubSec: unsupported CMS content algorithm or parameters');
+  return { algorithm: profile.algorithm, keyBytes: profile.keyBytes, iv: iv.content };
+}
+
 function openExternalKeyTransport(
   ri: Asn1Node, eci: Asn1Node, provider: PubSecKeyTransport, certDer: Uint8Array,
 ): Uint8Array {
   if (ri.children[2] === undefined || !bytesEqual(ri.children[2].raw, RSA_PKCS1_ALGORITHM))
     throw new UnsupportedFeatureError('PubSec: unsupported external key transport algorithm or parameters');
 
-  const [contentType, cipher, encryptedContent] = eci.children;
-  const [cipherOid, iv] = cipher?.children ?? [];
-  if (!contentType || !bytesEqual(contentType.raw, CMS_DATA)
-    || cipher?.raw[0] !== 0x30 || cipher.children.length !== 2
-    || !bytesEqual(cipherOid.raw, AES_128_CBC_OID) || iv.raw[0] !== 0x04 || iv.length !== 16)
-    throw new UnsupportedFeatureError('PubSec: unsupported external CMS content algorithm or parameters');
+  const cipher = readContentCipher(eci);
+  const encryptedContent = eci.children[2];
 
   const publicKey = new X509Certificate(certDer).publicKey;
   const modulusBits = publicKey.asymmetricKeyDetails?.modulusLength;
@@ -607,18 +618,19 @@ function openExternalKeyTransport(
     const cek = provider.unwrapKey(Uint8Array.from(wrapped.content), 'rsa-pkcs1-v1_5');
     // An incorrectly supplied async provider still fails synchronously.
     if (isPromise(cek)) void cek.catch(() => undefined);
-    if (cek instanceof Uint8Array && cek.byteLength === 16) {
-      const payload = decryptEnvelopedContent(eci, cek);
+    if (cek instanceof Uint8Array) {
+      const payload = decryptEnvelopedContent(cipher, encryptedContent.content, cek);
       if (payload.length === 24) return payload;
     }
   } catch (e) { rethrowLimit(e); }
   throw new InvalidPasswordError('PubSec: recipient key transport failed');
 }
 
-function decryptEnvelopedContent(eci: Asn1Node, cek: Uint8Array): Uint8Array {
-  const iv = eci.children[1].children[1].content;            // algorithm params OCTET STRING
-  const encryptedContent = eci.children[2].content;          // [0] IMPLICIT OCTET STRING
-  const decipher = createDecipheriv('aes-128-cbc', cek, iv);
+function decryptEnvelopedContent(
+  cipher: ReturnType<typeof readContentCipher>, encryptedContent: Uint8Array, cek: Uint8Array,
+): Uint8Array {
+  if (cek.byteLength !== cipher.keyBytes) throw new InvalidPasswordError('PubSec: invalid CMS content key length');
+  const decipher = createDecipheriv(cipher.algorithm, cek, cipher.iv);
   return new Uint8Array(Buffer.concat([decipher.update(Buffer.from(encryptedContent)), decipher.final()]));
 }
 
@@ -663,7 +675,7 @@ export function openEnvelopedData(
     }
     break;
   }
-  return cek ? decryptEnvelopedContent(eci!, cek) : undefined;
+  return cek ? decryptEnvelopedContent(readContentCipher(eci!), eci!.children[2].content, cek) : undefined;
 }
 
 export interface CmsVerifyResult {
