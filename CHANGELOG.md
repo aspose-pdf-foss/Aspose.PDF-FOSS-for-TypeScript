@@ -663,6 +663,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Skip malformed embedded certificates when verifying PDF signatures.**
+  Certificate path building continues to later issuer candidates when a DSS
+  certificate stream decodes but contains invalid certificate data. The PDF
+  integrity and signature verdicts remain independent of chain trust. (chp0.13)
+
 - **Preflight the stored PDF before appending a signature.** Approval,
   certification, and document timestamp appends use the stored revision and
   the document's load limits. A rejected layout leaves the fields and signed

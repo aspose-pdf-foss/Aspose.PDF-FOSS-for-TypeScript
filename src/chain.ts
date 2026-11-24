@@ -74,9 +74,13 @@ function withinValidity(cert: X509Certificate, at: Date): boolean {
 /** Whether `issuer` issued `cert`: issuer-name chaining plus a signature that
  *  verifies against the issuer's public key. */
 function issued(certDer: Uint8Array, issuerDer: Uint8Array): boolean {
-  if (!bytesEqual(issuerRaw(certDer), subjectRaw(issuerDer))) return false;
-  try { return x509(certDer).verify(x509(issuerDer).publicKey); }
-  catch (caught) { rethrowLimit(caught); return false; }
+  try {
+    if (!bytesEqual(issuerRaw(certDer), subjectRaw(issuerDer))) return false;
+    return x509(certDer).verify(x509(issuerDer).publicKey);
+  } catch (caught) {
+    rethrowLimit(caught);
+    return false;
+  }
 }
 
 /** Two certificates identify the same trust anchor (same subject + same key). */
