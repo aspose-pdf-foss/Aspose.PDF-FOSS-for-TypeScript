@@ -125,6 +125,11 @@ function certIssuerSerial(certDer: Uint8Array): { issuer: Uint8Array; serial: Ui
   return { serial: tbs.children[i].raw, issuer: tbs.children[i + 2].raw };
 }
 
+function matchesIssuerAndSerial(id: Asn1Node | undefined, want: ReturnType<typeof certIssuerSerial>): boolean {
+  return id?.raw[0] === 0x30 && id.children.length === 2
+    && bytesEqual(id.children[0].raw, want.issuer) && bytesEqual(id.children[1].raw, want.serial);
+}
+
 /** ESS `SigningCertificateV2` (RFC 5035) over the signer certificate: a single
  *  `ESSCertIDv2` carrying the cert hash (under `alg`) and its `IssuerSerial`
  *  (issuer as a directoryName `GeneralName`, plus the serial). The
@@ -261,7 +266,7 @@ export interface ParsedCms {
   signatureAlgorithm: string;       // OID name or dotted
   signature: Uint8Array;
   certificates: Uint8Array[];       // embedded certs (DER)
-  signerCertificate: Uint8Array;    // the signer's cert (matched by issuer/serial)
+  signerCertificate?: Uint8Array;   // the unique certificate matching SignerIdentifier
   /** RFC 3161 timestamp token (a ContentInfo) from the `id-aa-timeStampToken`
    *  unsigned attribute, when present. */
   timestampToken?: Uint8Array;
@@ -298,7 +303,7 @@ export function parseSignedData(cms: Uint8Array): ParsedCms {
   const digestOid = readOid(signerInfo.children[2].children[0]);
   const digestAlgorithm = (oidName(digestOid) ?? digestOid) as DigestAlgorithm;
 
-  const signedAttrsNode = signerInfo.children.find((c) => c.tagClass === 2 && c.tag === 0)!;
+  const signedAttrsNode = signerInfo.children.find((c) => c.raw[0] === 0xa0)!;
   // messageDigest attribute value
   let messageDigest: Uint8Array = new Uint8Array(0);
   for (const attr of signedAttrsNode.children) {
@@ -328,7 +333,7 @@ export function parseSignedData(cms: Uint8Array): ParsedCms {
   const sigAlgNode = signerInfo.children[sigIdx - 1];
   const signatureAlgorithm = oidName(readOid(sigAlgNode.children[0])) ?? readOid(sigAlgNode.children[0]);
 
-  const sid = signerInfo.children[1]; // issuerAndSerialNumber SEQUENCE
+  const sid = signerInfo.children[1];
   const signerCertificate = matchCert(certificates, sid);
 
   // Optional [1] unsignedAttrs: pull out the id-aa-timeStampToken value, if any.
@@ -368,17 +373,39 @@ function parseSignerLocation(node: Asn1Node): SignerLocation {
   return loc;
 }
 
-function matchCert(certs: Uint8Array[], sid: Asn1Node): Uint8Array {
-  const wantIssuer = sid.children[0].raw;
-  const wantSerial = sid.children[1].content;
+const SUBJECT_KEY_IDENTIFIER = der.oid('2.5.29.14');
+
+function certificateKeyIdentifier(cert: Uint8Array): Uint8Array | undefined {
+  const tbs = parse(cert).children[0];
+  const extensions = tbs?.children.find((c) => c.raw[0] === 0xa3)?.children[0];
+  const identifiers = extensions?.children.filter((ext) =>
+    ext.children[0] && bytesEqual(ext.children[0].raw, SUBJECT_KEY_IDENTIFIER));
+  if (identifiers?.length !== 1) return undefined;
+  const value = identifiers[0].children.at(-1);
+  if (value?.raw[0] !== 0x04) return undefined;
+  const identifier = parseBoundedDer(value.content, value.length);
+  return identifier.raw[0] === 0x04 && identifier.length > 0 ? identifier.content : undefined;
+}
+
+function matchCert(certs: Uint8Array[], sid: Asn1Node): Uint8Array | undefined {
+  const keyIdentifier = sid.raw[0] === 0x80 ? sid.content : undefined;
+  let matched: Uint8Array | undefined;
   for (const cert of certs) {
-    const tbs = parse(cert).children[0];
-    let i = 0; if (tbs.children[0].tagClass === 2) i = 1;
-    const serial = tbs.children[i].content;
-    const issuer = tbs.children[i + 2].raw;
-    if (bytesEqual(issuer, wantIssuer) && bytesEqual(serial, wantSerial)) return cert;
+    if (cert[0] !== 0x30 || (matched && bytesEqual(matched, cert))) continue;
+    try {
+      if (keyIdentifier) {
+        const candidate = certificateKeyIdentifier(cert);
+        if (!candidate || !bytesEqual(candidate, keyIdentifier)) continue;
+      } else if (!matchesIssuerAndSerial(sid, certIssuerSerial(cert))) continue;
+      new X509Certificate(cert);
+    } catch (caught) {
+      rethrowLimit(caught);
+      continue;
+    }
+    if (matched) return undefined;
+    matched = cert;
   }
-  return certs[0];
+  return matched;
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -519,11 +546,6 @@ export interface PubSecKeyTransport {
   unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-pkcs1-v1_5') => Uint8Array;
 }
 
-function matchesRecipient(rid: Asn1Node | undefined, want: ReturnType<typeof certIssuerSerial>): boolean {
-  return rid?.raw[0] === 0x30 && rid.children.length === 2
-    && bytesEqual(rid.children[0].raw, want.issuer) && bytesEqual(rid.children[1].raw, want.serial);
-}
-
 /** Recover the CEK from a KeyAgreeRecipientInfo (ECDH-ES) if one
  *  RecipientEncryptedKey matches `want` (issuer/serial) and our key agrees;
  *  else undefined. */
@@ -536,7 +558,7 @@ function openKeyAgree(
   const reks = ri.children[ri.children.length - 1];
   const keyEncAlg = ri.children[ri.children.length - 2]; // algid SEQUENCE before reks
 
-  const rek = reks?.children.find((k) => matchesRecipient(k.children[0], want));
+  const rek = reks?.children.find((k) => matchesIssuerAndSerial(k.children[0], want));
   if (!rek) return undefined;
   if (!(privateKey instanceof KeyObject))
     throw new UnsupportedFeatureError('PubSec: external key transport supports RSAES-PKCS1-v1_5 only');
@@ -659,7 +681,7 @@ export function openEnvelopedData(
       if (cek) break;
       continue;
     }
-    if (ri.raw[0] !== 0x30 || !matchesRecipient(ri.children[1], want)) continue;
+    if (ri.raw[0] !== 0x30 || !matchesIssuerAndSerial(ri.children[1], want)) continue;
     if (external) return openExternalKeyTransport(ri, eci!, privateKey, certDer);
 
     const keyEncOid = readOid(ri.children[2].children[0]);    // keyEncryptionAlgorithm
@@ -681,20 +703,24 @@ export function openEnvelopedData(
 export interface CmsVerifyResult {
   signatureValid: boolean;  // signature over signedAttrs verifies against the signer cert
   digestMatches: boolean;   // messageDigest attribute equals the expected content digest
-  signerCertificate: Uint8Array;
+  signerCertificate?: Uint8Array;
 }
 
-export function verifySignedData(cms: Uint8Array, expectedDigest: Uint8Array | undefined): CmsVerifyResult {
-  const p = parseSignedData(cms);
+export function verifySignedData(cms: Uint8Array | ParsedCms, expectedDigest: Uint8Array | undefined): CmsVerifyResult {
+  const p = cms instanceof Uint8Array ? parseSignedData(cms) : cms;
   const digestMatches = expectedDigest !== undefined && bytesEqual(p.messageDigest, expectedDigest);
+  const signerCertificate = p.signerCertificate;
+  if (!signerCertificate) return { signatureValid: false, digestMatches };
 
   // Signature is computed over the signedAttrs as a SET OF (0x31), not [0].
   const signedAttrsSet = Uint8Array.from(p.signedAttrs);
   signedAttrsSet[0] = 0x31;
 
-  const cert = new X509Certificate(Buffer.from(p.signerCertificate));
-  const scheme = schemeFromSigAlg(p.signatureAlgorithm);
-  const signatureValid = verifyData(signedAttrsSet, cert.publicKey, p.signature, scheme, p.digestAlgorithm);
-
-  return { signatureValid, digestMatches, signerCertificate: p.signerCertificate };
+  let signatureValid = false;
+  try {
+    const cert = new X509Certificate(signerCertificate);
+    const scheme = schemeFromSigAlg(p.signatureAlgorithm);
+    signatureValid = verifyData(signedAttrsSet, cert.publicKey, p.signature, scheme, p.digestAlgorithm);
+  } catch (caught) { rethrowLimit(caught); }
+  return { signatureValid, digestMatches, signerCertificate };
 }

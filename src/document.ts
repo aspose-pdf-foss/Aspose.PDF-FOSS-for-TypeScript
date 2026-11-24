@@ -3385,6 +3385,7 @@ export class Document {
       const cms = sig.cmsLength !== undefined ? sig.contents.subarray(0, sig.cmsLength) : sig.contents;
       const parsed = parseSignedData(cms);
       const signer = parsed.signerCertificate;
+      if (!signer) throw new PdfParseError('AddValidationData: CMS SignerIdentifier has no unique certificate match');
       const issuer = findIssuer(signer, parsed.certificates);
       const certs = dedupBlobs([signer, ...parsed.certificates, ...(opts.extraCerts ?? [])]);
       const ocsps: Uint8Array[] = [];

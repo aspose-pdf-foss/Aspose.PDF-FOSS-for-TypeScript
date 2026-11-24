@@ -215,7 +215,7 @@ export function verifyTimestampToken(token: Uint8Array, signedValue: Uint8Array 
   const tstInfoBytes = extractTstInfoBytes(token);
   const parsed = parseSignedData(token);
   const tstDigest = new Uint8Array(createHash(parsed.digestAlgorithm).update(tstInfoBytes).digest());
-  const r = verifySignedData(token, tstDigest);
+  const r = verifySignedData(parsed, tstDigest);
   const tokenSignatureValid = r.signatureValid && r.digestMatches;
 
   return {

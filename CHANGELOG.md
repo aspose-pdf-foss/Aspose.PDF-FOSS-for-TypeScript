@@ -669,6 +669,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Require a unique CMS signer certificate match.** PDF signature
+  verification supports issuer and serial and subject key identifier. Missing
+  and ambiguous matches yield an invalid signature without changing the
+  byte-range digest verdict. Verified against OpenSSL-signed PDFs. (chp0.14)
+
 - **Skip malformed embedded certificates when verifying PDF signatures.**
   Certificate path building continues to later issuer candidates when a DSS
   certificate stream decodes but contains invalid certificate data. The PDF

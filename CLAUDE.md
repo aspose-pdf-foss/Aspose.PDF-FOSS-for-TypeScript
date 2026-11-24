@@ -13632,6 +13632,12 @@ Source (`src/`):
   signing authority and freshness. CRLs require a current complete direct list.
   Bounded DER failures produce inconclusive revocation evidence and keep the
   PDF integrity, signature, and chain verdicts independent.
+  **Invariant (chp0.14):** CMS verification resolves `SignerIdentifier` to
+  exactly one distinct embedded certificate by issuer and serial or subject key
+  identifier. The primitive `[0]` key identifier is separate from constructed
+  `[0]` signed attributes. An unresolved signer leaves the byte-range digest
+  verdict available, omits the certificate summary, and leaves chain and
+  revocation unchecked.
   **Invariant (chp0.9):** `revocation-discovery.ts` runs after existing evidence
   and only for reports with valid integrity and signatures and a matched
   issuer. The exact-origin policy authorizes requests, and the caller's

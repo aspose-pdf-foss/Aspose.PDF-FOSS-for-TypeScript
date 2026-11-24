@@ -110,7 +110,7 @@ export interface SignatureReport {
   /** RFC 3161 signature-timestamp verdict (time + imprint/TSA-signature checks),
    *  present only when the signature carries an `id-aa-timeStampToken`. */
   timestamp?: TimestampInfo;
-  /** The signer's certificate summary, when the CMS could be parsed. */
+  /** Certificate summary for a unique match to the CMS SignerIdentifier. */
   signerCert?: CertInfo;
   /** CAdES commitment-type (friendly name or OID), when the signature carries it. */
   commitmentType?: string;
@@ -148,10 +148,11 @@ export function verifySignature(
   try {
     const parsed = parseSignedData(cms);
     const expectedDigest = signedEnd === undefined ? undefined : digestByteRange(bytes, sig.byteRange, parsed.digestAlgorithm);
-    const res = verifySignedData(cms, expectedDigest);
+    const res = verifySignedData(parsed, expectedDigest);
     base.integrity = res.digestMatches ? 'valid' : 'tampered';
     base.signature = res.signatureValid ? 'valid' : 'invalid';
-    base.signerCert = certInfo(res.signerCertificate);
+    const signer = res.signerCertificate;
+    if (signer) base.signerCert = certInfo(signer);
     base.commitmentType = parsed.commitmentType;
     base.signerLocation = parsed.signerLocation;
     // RFC 3161 signature timestamp, when embedded as an unsigned attribute.
@@ -160,10 +161,10 @@ export function verifySignature(
       catch (caught) { rethrowLimit(caught); /* malformed token: omit the timestamp verdict */ }
     }
     // Certificate-path validation to the caller's trust anchors (V2).
-    if (chain.trustAnchors && chain.trustAnchors.length) {
+    if (signer && chain.trustAnchors?.length) {
       const at = base.timestamp?.valid ? base.timestamp.time : chain.at;
       const pool = [...parsed.certificates, ...(chain.extraCerts ?? [])];
-      base.chain = verifyCertChain(parsed.signerCertificate, pool, { trustAnchors: chain.trustAnchors, at }).status;
+      base.chain = verifyCertChain(signer, pool, { trustAnchors: chain.trustAnchors, at }).status;
     }
   } catch (caught) { rethrowLimit(caught);
     return base; // unparseable CMS -> invalid/tampered
@@ -215,7 +216,8 @@ export function verifyDocumentTimestamp(bytes: Uint8Array, sig: SignatureField):
     // malformed token: keep the failed verdict
   }
   try {
-    report.signerCert = certInfo(parseSignedData(token).signerCertificate);
+    const signer = parseSignedData(token).signerCertificate;
+    if (signer) report.signerCert = certInfo(signer);
   } catch (caught) { rethrowLimit(caught);
     // no signer cert available
   }
@@ -261,6 +263,7 @@ export async function checkSignatureRevocation(
   try {
     const cms = sig.cmsLength !== undefined ? sig.contents.subarray(0, sig.cmsLength) : sig.contents;
     const parsed = parseSignedData(cms);
+    if (!parsed.signerCertificate) return { status: 'unchecked' };
     signer = parsed.signerCertificate;
     issuer = matchRevocationIssuer(signer, [...parsed.certificates, ...extraCerts, ...(opts.trustAnchors ?? [])]);
   } catch (caught) { rethrowLimit(caught);

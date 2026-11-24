@@ -4622,6 +4622,12 @@ also includes byte coverage, revocation status, and any applicable DocMDP and
 FieldMDP verdicts. The signature with the latest usable signed byte range
 carries `unsignedContent` when both its digest and CMS signature verify.
 
+CMS signature verification requires one distinct embedded certificate matching
+the signer's issuer and serial number or subject key identifier. A missing or
+ambiguous match yields `signature: 'invalid'`. The `integrity` verdict still
+reports whether the byte-range digest matches, and chain and revocation remain
+`unchecked`.
+
 For encrypted PDFs, supply the password or recipient credential when you open
 the document. Signature and document timestamp verification reuse it when
 reading the current file and earlier signed revisions.
