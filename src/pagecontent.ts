@@ -358,7 +358,11 @@ export function registerOcProperty(doc: Document, page: Page, ocg: PdfRef): stri
  *  streams), keeping only entries that resolve to streams. */
 function normalizeContents(doc: Document, c: PdfObject | undefined): PdfRef[] {
   if (c === undefined) return [];
-  if (isRef(c)) return isStream(doc.resolve(c)) ? [c] : [];
+  if (isRef(c)) {
+    const value = doc.resolve(c);
+    if (isStream(value)) return [c];
+    c = value; // /Contents can point to an indirect array of stream refs.
+  }
   if (isStream(c)) return [doc.allocObject(c)];
   if (isArray(c)) {
     const out: PdfRef[] = [];
@@ -437,9 +441,9 @@ export function appendContent(doc: Document, page: Page, body: Uint8Array): void
 /** Wrap **all** existing page content in `q <cm> ... Q`, so the whole page is
  *  rendered through `cm` (a global transform — used by Resize/Scale). Existing
  *  streams are kept by reference; the save/restore isolates the transform. */
-export function transformContent(doc: Document, page: Page, cm: Matrix): void {
+export function transformContent(doc: Document, page: Page, cm: Matrix, format = num): void {
   const existing = normalizeContents(doc, page.Dict.get('Contents'));
-  const head = doc.allocObject(streamOf(enc(`q\n${cm.map(num).join(' ')} cm\n`)));
+  const head = doc.allocObject(streamOf(enc(`q\n${cm.map(format).join(' ')} cm\n`)));
   const tail = doc.allocObject(streamOf(enc('\nQ')));
   page.Dict.set('Contents', [head, ...existing, tail]);
 }

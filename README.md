@@ -2858,6 +2858,17 @@ document ID, no rich text and no annotations are carried, and
 `ExportXml({ file })` / `ExportXml({ annotations })` throw rather than
 ignoring them.
 
+### Resize Pages with Interactive Geometry
+
+```ts
+// Fit pages 1 and 3 to US Letter in PDF points.
+doc.ResizePages([1, 3], [0, 0, 612, 792]);
+```
+
+Each page uses its own CropBox and retains its rotation. A highlight follows
+its text, and a bookmark or a link from page 2 follows its target on page 3.
+Explicit BleedBox, TrimBox and ArtBox values retain their original coordinates.
+
 ### Read and Write Outlines (Bookmarks)
 
 ```ts
@@ -4950,6 +4961,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.BleedBox` / `page.TrimBox` / `page.ArtBox` | Print boxes (own key only, fall back to `CropBox`; settable) |
 | `page.Rotate` | Rotation in degrees (settable) |
 | `page.Resize(box, opts?)` | Set MediaBox+CropBox to `box`; `scaleContent` scales content to fill it (Bleed/Trim/Art untouched) |
+| `doc.ResizePages(pages, box)` | Fit each selected page's CropBox and content to `[left, bottom, right, top]` in unrotated page coordinates. Updates MediaBox, CropBox, annotation geometry and incoming local destinations together. Page numbers are one-based, duplicates count once, and an empty selection is valid. The batch is validated before edits. |
 | `page.Scale(factor)` | Uniformly scale content and every present boundary box by `factor > 0` |
 | `page.Contents` | Decoded content stream bytes |
 | `page.Annotations` | Typed `Annotation[]` handles (`.Dict` for the raw dict) |

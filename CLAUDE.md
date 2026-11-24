@@ -7070,6 +7070,9 @@ Source (`src/`):
   raw `/Annots` splice, because that is what calls `untagObjects`. A tagged
   annotation is also named by an `/OBJR` reachable from `/Root`, so a splice
   leaves a `/Redact` in the saved bytes with no `/Annots` entry anywhere.
+- **resizepages.ts** — `Document.ResizePages` plans page-space geometry per
+  selected page and local explicit destinations by resolved array identity.
+  All geometry is computed before the first content stream is allocated.
 - **compose.ts**, **booklet.ts** — page composition (`StampWith`, `Overlay`,
   `NUp`, `Resize`, `Scale`) via shared imported Form XObjects. `booklet.ts` is
   the pure saddle-stitch model behind `Document.Booklet` — padding to a multiple

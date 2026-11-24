@@ -125,6 +125,7 @@ import {
 } from './extractor.js';
 import { preserveStructure, PageOrigin } from './structpreserve.js';
 import { overlay, OverlayOptions, placeFitted, resolveNUpBorder, NUpOptions } from './compose.js';
+import { resizePages } from './resizepages.js';
 import { PageGraphics, buildTilingPattern, type VectorGraphics } from './graphics.js';
 import { Template } from './template.js';
 import type {
@@ -4757,6 +4758,12 @@ export class Document {
    *  `opacity` / `rotate` to control placement. See `Page.StampWith`. */
   Overlay(src: Page | Document, opts?: OverlayOptions): void {
     overlay(this, src, opts ?? {});
+  }
+
+  /** Fit selected pages, their annotations and incoming local destinations to
+   *  a box in default user space. Page numbers are one-based. */
+  ResizePages(pages: readonly number[], box: readonly [number, number, number, number]): void {
+    resizePages(this, pages, box);
   }
 
   /** Stamp a repeating text or image watermark across a page range. Provide

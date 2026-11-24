@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Resize pages together with their links and annotations.** `doc.ResizePages([1, 3], box)`
+  fits each selected page to the target rectangle using its own CropBox. A link on
+  another page and a bookmark can share the same destination and still land at
+  the correct coordinates after saving. The batch validates before editing. (4qhc.1)
+
 - **Open PubSec PDFs with external RSAES-OAEP keys.** Synchronous and
   promise-based providers can opt into `rsa-oaep` and receive the validated
   hash, MGF1 hash, and label. OpenSSL envelopes cover SHA-1 and SHA-256 with
