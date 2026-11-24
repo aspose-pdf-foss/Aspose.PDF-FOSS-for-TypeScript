@@ -14347,6 +14347,10 @@ Source (`src/`):
   three nearest it in order of distance, but of a magnitude the affine
   fixture's Lab agreement does not account for.
 - **linearize.ts** — linearized (Fast Web View) output + `verifyLinearization`.
+  Before mark-and-sweep, an output-only page-tree overlay copies inheritable
+  attributes to their leaves and removes them from internal `/Pages` nodes.
+  This keeps inherited resource dependencies in the per-page hint groups
+  and leaves the live document graph intact (`u0af`).
 - **checkpoint.ts** — cooperative operation controls (`u34c.1`). The public
   `OperationControlOptions` and `OperationProgress` types are exported by `index.ts`;
   the factory and checkpoint implementation remain internal.

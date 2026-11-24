@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { Document } from '../src/document.js';
 import { serializeLinearized, verifyLinearization } from '../src/linearize.js';
+import { serializeDocument } from '../src/serializer.js';
+import { type PdfDict, isName, name } from '../src/types.js';
 import {
-  singlePageDoc, multiPageDoc, sharedResourceDoc,
+  singlePageDoc, multiPageDoc, sharedResourceDoc, inheritedAttributesDoc,
 } from './helpers/build-linear-fixtures.js';
 
 const save = (live: { objects: any; trailer: any }) =>
@@ -113,5 +115,40 @@ describe('Save({ linearized: true }) — full path', () => {
     const out = doc.Save({ linearized: true });
     expect(vl(out).errors).toEqual([]);
     expect(Document.Open(out).Pages.length).toBe(2);
+  });
+
+  it.each(['1.7', '2.0'])('materializes inherited page attributes in PDF %s', async (version) => {
+    const { objects, trailer } = inheritedAttributesDoc();
+    if (version === '2.0') (objects.get(1) as PdfDict).set('Version', name('2.0'));
+    const doc = Document.Open(serializeDocument(objects, trailer));
+    const before = structuredClone([...doc.objectEntries()]);
+    const out = doc.Save({ linearized: true });
+    expect(await doc.SaveAsync({ linearized: true })).toEqual(out);
+    expect([...doc.objectEntries()]).toEqual(before);
+    expect(verifyLinearization(out)).toEqual({ linearized: true, errors: [] });
+    expect(new TextDecoder().decode(out.subarray(0, 8))).toBe(`%PDF-${version}`);
+
+    const reopened = Document.Open(out);
+    const attributes = ['MediaBox', 'CropBox', 'Rotate', 'Resources'];
+    expect(reopened.Pages.map((page) => attributes.filter((key) => !page.Dict.has(key))))
+      .toEqual([[], [], [], []]);
+    expect(reopened.Pages.map((page) => [page.MediaBox, page.CropBox, page.Rotate])).toEqual([
+      [[0, 0, 220, 240], [10, 20, 180, 190], 180],
+      [[0, 0, 220, 240], [4, 5, 196, 195], 180],
+      [[0, 0, 220, 240], [4, 5, 196, 195], 90],
+      [[0, 0, 200, 200], [5, 10, 190, 180], 0],
+    ]);
+    expect(reopened.Pages.map((page) => {
+      const fonts = reopened.resolve(page.Resources?.get('Font')) as PdfDict;
+      const font = reopened.resolve(fonts.get('F1')) as PdfDict;
+      return font.get('BaseFont');
+    })).toEqual([name('Courier'), name('Courier'), name('Helvetica'), name('Times-Roman')]);
+    for (const [, obj] of reopened.objectEntries()) {
+      if (!(obj instanceof Map)) continue;
+      const type = obj.get('Type');
+      if (isName(type) && type.name === 'Pages') {
+        expect(attributes.filter((key) => obj.has(key))).toEqual([]);
+      }
+    }
   });
 });

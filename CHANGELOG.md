@@ -679,6 +679,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Materialize inherited page attributes in linearized PDFs.** The writer
+  copies effective page boxes, rotation, and resources into page dictionaries
+  before building the hint tables, while preserving the input graph. (u0af)
+
 - **Honor load limits for incremental saves and DSS appends.** Both reuse the
   cross-reference layout read under the document's policy. Unsupported bases
   are rejected before save preparation or DSS allocation. Ordinary incremental

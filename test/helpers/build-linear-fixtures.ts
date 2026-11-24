@@ -88,6 +88,45 @@ export function sharedResourceDoc(pageCount = 3): LiveDoc {
   return { objects, trailer: dict([['Root', ref(1)]]) };
 }
 
+/** Four pages with attributes inherited from the root and two nested levels. */
+export function inheritedAttributesDoc(): LiveDoc {
+  const live = multiPageDoc(4);
+  const { objects } = live;
+  const [first, second, third, fourth] = [3, 6, 9, 12].map((n) => objects.get(n) as PdfDict);
+  const root = objects.get(2) as PdfDict;
+  root.set('Kids', [ref(17), ref(19)]);
+  root.set('MediaBox', ref(20));
+  root.set('CropBox', [4, 5, 196, 195]);
+  root.set('Rotate', 90);
+  root.set('Resources', ref(15));
+  objects.set(15, third.get('Resources')!);
+  objects.set(16, first.get('Resources')!);
+  objects.set(17, dict([
+    ['Type', name('Pages')], ['Parent', ref(2)], ['Count', 2], ['Kids', [ref(18), ref(6)]],
+    ['Rotate', 180], ['Resources', ref(16)],
+  ]));
+  objects.set(18, dict([
+    ['Type', name('Pages')], ['Parent', ref(17)], ['Count', 1], ['Kids', ref(21)],
+    ['CropBox', [10, 20, 180, 190]],
+  ]));
+  objects.set(19, dict([
+    ['Type', name('Pages')], ['Parent', ref(2)], ['Count', 2], ['Kids', [ref(9), ref(12)]],
+  ]));
+  objects.set(20, [0, 0, 220, 240]);
+  objects.set(21, [ref(3)]);
+  (objects.get(5) as PdfDict).set('BaseFont', name('Courier'));
+  (objects.get(14) as PdfDict).set('BaseFont', name('Times-Roman'));
+  for (const [page, parent] of [[first, 18], [second, 17], [third, 19]] as const) {
+    page.set('Parent', ref(parent));
+    page.delete('MediaBox');
+    page.delete('Resources');
+  }
+  fourth.set('Parent', ref(19));
+  fourth.set('CropBox', [5, 10, 190, 180]);
+  fourth.set('Rotate', 0);
+  return live;
+}
+
 /** A document with no pages (empty page tree) — linearization must reject it. */
 export function noPageDoc(): LiveDoc {
   const objects = new Map<number, PdfObject>();

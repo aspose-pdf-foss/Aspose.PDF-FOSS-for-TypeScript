@@ -4,6 +4,7 @@ import {
   PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isArray, isStream, isName, ref, name,
 } from './types.js';
 import { UnsupportedFeatureError, PdfParseError, rethrowLimit } from './errors.js';
+import { INHERITABLE_PAGE_KEYS } from './extractor.js';
 import { enc, serializeObject, serializeValue } from './serialize.js';
 import type { Plan } from './serializer.js';
 
@@ -66,6 +67,55 @@ function nbits(v: number): number {
   return n;
 }
 
+/** ISO 32000-1 §7.7.3.4 requires each inherited attribute on the leaf itself.
+ *  Build output-only replacements before planning so the page's hint entries
+ *  include any indirect objects it inherited. */
+function* materializePageAttributes(
+  objects: Map<number, PdfObject>, catalog: PdfObject | undefined, context: OperationContext,
+): OperationSteps<Map<number, PdfDict>> {
+  const replacements = new Map<number, PdfDict>();
+  const pages = isDict(catalog) ? catalog.get('Pages') : undefined;
+  if (!isRef(pages)) return replacements;
+
+  const pending = [{ num: pages.num, inherited: new Map<string, PdfObject>() }];
+  const seen = new Set<number>();
+  while (pending.length > 0) {
+    const { num, inherited } = pending.pop()!;
+    if (seen.has(num)) continue;
+    seen.add(num);
+    const node = objects.get(num);
+    if (!isDict(node)) continue;
+
+    const type = node.get('Type');
+    const kidsEntry = node.get('Kids');
+    const kids = isRef(kidsEntry) ? objects.get(kidsEntry.num) : kidsEntry;
+    let replacement: PdfDict | undefined;
+    if (isArray(kids) && !(isName(type) && type.name === 'Page')) {
+      const attributes = new Map(inherited);
+      for (const key of INHERITABLE_PAGE_KEYS) {
+        const value = node.get(key);
+        if (value === undefined) continue;
+        attributes.set(key, value);
+        (replacement ??= new Map(node)).delete(key);
+      }
+      // The linearized layout walks direct /Kids arrays. Inline the array in
+      // the output view so an indirect array's children participate as well.
+      if (isRef(kidsEntry)) (replacement ??= new Map(node)).set('Kids', kids);
+      for (let i = kids.length - 1; i >= 0; i--) {
+        const kid = kids[i];
+        if (isRef(kid)) pending.push({ num: kid.num, inherited: attributes });
+      }
+    } else {
+      for (const [key, value] of inherited) {
+        if (!node.has(key)) (replacement ??= new Map(node)).set(key, value);
+      }
+    }
+    if (replacement) replacements.set(num, replacement);
+    yield context.progress('pageAttributes', seen.size);
+  }
+  return replacements;
+}
+
 /** Re-run the mark-sweep plan locally (no runtime import of serializer.ts, which
  *  imports this module). Mirrors `planDocument`. */
 /** @internal Shared resumable algorithm; delegate within the parent context. */
@@ -75,7 +125,9 @@ export function* planLocalSteps(
   const rootRef = trailer.get('Root');
   if (!isRef(rootRef)) throw new PdfParseError('cannot serialize: /Root is not an indirect reference');
   const infoRef = trailer.get('Info');
-  const sourceObject = (num: number) => num === rootRef.num && outputCatalog ? outputCatalog : objects.get(num);
+  const catalog = outputCatalog ?? objects.get(rootRef.num);
+  const pageObjects = yield* materializePageAttributes(objects, catalog, context);
+  const sourceObject = (num: number) => num === rootRef.num ? catalog : pageObjects.get(num) ?? objects.get(num);
   const oldToNew = new Map<number, number>();
   const order: number[] = [];
   const queue: number[] = [];
@@ -360,7 +412,7 @@ function computeLinearLayout(plan: Plan): LinearLayout {
     if (node === undefined) return;
     const type = node.get('Type');
     const kids = node.get('Kids');
-    if ((isName(type) && type.name === 'Page') || !isArray(kids) || kids.length === 0) {
+    if ((isName(type) && type.name === 'Page') || !isArray(kids)) {
       leaves.push(num);
       return;
     }
