@@ -288,11 +288,11 @@ export function retargetMcid(
 /** Tag an annotation object: allocate an object /StructParent key, set
  *  ParentTree[key] = element ref, and append an OBJR to the element's /K. The
  *  page is derived from the annotation's /P. */
-export function tagAnnotation(doc: Document, element: StructElement, annot: Annotation): void {
+export function tagAnnotation(doc: Document, element: StructElement, annot: Annotation, containingPage?: Page): void {
   const elemRef = element.Ref;
   if (elemRef === undefined) throw new Error('cannot tag an annotation to an element with no ref');
   const pRef = annot.Dict.get('P');
-  const page = isRef(pRef) ? doc.pageForRef(pRef) : undefined;
+  const page = containingPage ?? (isRef(pRef) ? doc.pageForRef(pRef) : undefined);
   if (!page) throw new UnsupportedFeatureError('annotation has no page (/P) to tag against');
 
   // Find (and promote to indirect if needed) the annotation's ref in /Annots.
@@ -302,22 +302,47 @@ export function tagAnnotation(doc: Document, element: StructElement, annot: Anno
     for (let i = 0; i < annots.length; i++) {
       if (doc.resolve(annots[i]) === annot.Dict) {
         annotRef = isRef(annots[i]) ? (annots[i] as PdfRef) : doc.allocObject(annot.Dict);
-        if (!isRef(annots[i])) annots[i] = annotRef;
+        if (!isRef(annots[i])) {
+          // An inline dictionary may occur more than once in a live page
+          // array. Saving a second inline copy would split its identity.
+          for (let j = i; j < annots.length; j++) if (annots[j] === annot.Dict) annots[j] = annotRef;
+        }
         break;
       }
     }
   }
   if (annotRef === undefined) throw new UnsupportedFeatureError('annotation is not on its page /Annots');
 
-  const nums = parentTreeNums(doc, element.Root.Dict);
-  const key = takeNextKey(doc, element.Root.Dict);
-  annot.Dict.set('StructParent', key);
-  nums.push(key, elemRef);
+  const existing = doc.resolve(annot.Dict.get('StructParent'));
+  if (typeof existing !== 'number' || element.Root.ElementForObject(existing)?.Dict !== element.Dict) {
+    const nums = parentTreeNums(doc, element.Root.Dict);
+    const key = takeNextKey(doc, element.Root.Dict);
+    annot.Dict.set('StructParent', key);
+    nums.push(key, elemRef);
+    doc.markModified();
+  }
+  if (annotationObjects(doc, element.Dict).some(obj => obj === annot.Dict)) return;
   const k = kArray(doc, element.Dict);
   k.push(new Map<string, PdfObject>([
     ['Type', name('OBJR')], ['Pg', doc.pageRef(page.Number)], ['Obj', annotRef],
   ]));
   doc.markModified();
+}
+
+/** The forward links are authoritative even when an annotation has lost its
+ *  reverse /StructParent. Read /K directly: finding /Obj needs no inherited /Pg. */
+export function annotationObjects(doc: Document, elem: PdfDict): PdfDict[] {
+  const objects: PdfDict[] = [];
+  for (const raw of kidsOf(doc, elem).arr) {
+    const kid = doc.resolve(raw);
+    if (!isDict(kid)) continue;
+    const type = doc.resolve(kid.get('Type'));
+    if (isName(type) && type.name === 'OBJR') {
+      const object = doc.resolve(kid.get('Obj'));
+      if (isDict(object)) objects.push(object);
+    }
+  }
+  return objects;
 }
 
 /** Structure types that describe an *annotation* rather than the ink it draws.

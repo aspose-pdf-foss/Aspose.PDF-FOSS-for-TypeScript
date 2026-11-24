@@ -167,7 +167,7 @@ export class Annotation {
 
   /** /Subtype name without leading '/'; '' when missing. */
   get Subtype(): string {
-    const s = this.Dict.get('Subtype');
+    const s = this.doc.resolve(this.Dict.get('Subtype'));
     return isName(s) ? s.name : '';
   }
 
@@ -1099,7 +1099,7 @@ export function addPrinterMarks(page: Page, options: PrinterMarksOptions): Print
 }
 
 export function wrapAnnotation(doc: Document, dict: PdfDict): Annotation {
-  const st = dict.get('Subtype');
+  const st = doc.resolve(dict.get('Subtype'));
   const subtype = isName(st) ? st.name : '';
   switch (subtype) {
     case 'Text': return new TextAnnotation(doc, dict);

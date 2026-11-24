@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AutoTag links, form widgets and annotations in reading order.** AutoTag sets
+  structure-based tab order on pages with annotations. A link appears under the
+  paragraph, heading or table cell containing its anchor. Unmatched annotations
+  follow in their original page order. Forced runs reuse existing annotation
+  tags, and `report.annotations` counts newly attached annotations. (4qhc.3)
+
 - **Edit bookmarks without losing their actions.** `OutlineItem.Action` accepts the
   same five action kinds as a link annotation. Renaming or restyling a bookmark
   in its source document preserves its original action, including unknown action

@@ -1,13 +1,14 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import type { StructTreeRoot } from './struct.js';
+import type { StructElement, StructTreeRoot } from './struct.js';
 import { visitContent, type Rect, type ImageEvent } from './text.js';
 import type { Table } from './tablemodel.js';
 import type { TableAttributes } from './structattr.js';
 import { dominantSize, headingRanks } from './textrank.js';
 import { EditableContent } from './editcontent.js';
 import { wrapRegionOps, regionOpSpan } from './structwrite.js';
-import { name } from './types.js';
+import { existingAnnotationOwners, tagPageAnnotations, type TextRegion } from './autotagannot.js';
+import { name, type PdfDict } from './types.js';
 import { UnsupportedFeatureError } from './errors.js';
 
 /** Options for {@link Document.AutoTag}. */
@@ -32,6 +33,8 @@ export interface AutoTagReport {
   figures: number;
   artifacts: number;
   tables: number;
+  /** Annotations newly attached to the structure tree. */
+  annotations: number;
 }
 
 const SCOPES = new Set(['Row', 'Column', 'Both']);
@@ -47,7 +50,7 @@ function centerInside(box: Rect, region: Rect): boolean {
 /** Tag each table as Table > TR > TH/TD, marking cell content. The first row of a
  *  multi-row table is treated as a header (TH, scope Column) unless a cell already
  *  declares isHeader. Returns the number of tables tagged. */
-function tagTables(doc: Document, root: StructTreeRoot, page: Page, tables: Table[]): number {
+function tagTables(root: StructTreeRoot, page: Page, tables: Table[], regions?: TextRegion[]): number {
   let count = 0;
   for (const table of tables) {
     const tEl = root.Append('Table');
@@ -68,6 +71,7 @@ function tagTables(doc: Document, root: StructTreeRoot, page: Page, tables: Tabl
         if (scope) attrs.scope = scope;
         if (Object.keys(attrs).length > 0) cellEl.SetTableAttributes(attrs);
         cellEl.MarkContent(page, cell.quad);
+        regions?.push({ quad: cell.quad, owner: cellEl });
       }
     });
     count++;
@@ -91,11 +95,16 @@ export function autoTag(doc: Document, opts: AutoTagOptions = {}): AutoTagReport
   }
 
   const ranks = headingRanks(doc);
-  const report: AutoTagReport = { headings: 0, paragraphs: 0, figures: 0, artifacts: 0, tables: 0 };
+  const report: AutoTagReport = { headings: 0, paragraphs: 0, figures: 0, artifacts: 0, tables: 0, annotations: 0 };
+  const owners = doc.Pages.some(p => p.Dict.has('Annots'))
+    ? existingAnnotationOwners(doc, root) : new Map<PdfDict, StructElement>();
+  const seenAnnotations = new Set<PdfDict>();
 
   for (const page of doc.Pages) {
+    const annotations = page.Annotations;
+    const regions: TextRegion[] | undefined = annotations.some(a => a.Subtype === 'Link') ? [] : undefined;
     const tables = (opts.tables ?? true) ? page.GetTables() : [];
-    report.tables += tagTables(doc, root, page, tables);
+    report.tables += tagTables(root, page, tables, regions);
     const tableQuads = tables.map((t) => t.quad);
 
     for (const block of page.GetStructuredText()) {
@@ -105,6 +114,7 @@ export function autoTag(doc: Document, opts: AutoTagOptions = {}): AutoTagReport
       const isHeading = level !== undefined && block.lines.length <= 2;
       const el = root.Append(isHeading ? `H${level}` : 'P');
       el.MarkContent(page, block.quad);
+      if (regions) for (const line of block.lines) regions.push({ quad: line.quad, owner: el });
       if (isHeading) report.headings++; else report.paragraphs++;
     }
 
@@ -130,6 +140,7 @@ export function autoTag(doc: Document, opts: AutoTagOptions = {}): AutoTagReport
         }
       }
     }
+    report.annotations += tagPageAnnotations(doc, root, page, annotations, regions ?? [], owners, seenAnnotations);
   }
   return report;
 }

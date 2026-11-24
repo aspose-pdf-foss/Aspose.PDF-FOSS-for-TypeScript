@@ -4230,7 +4230,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `AddTableOptions` | Options for drawTable / `page.AddTable`. |
 | `AddTableResult` | The outcome of drawTable / `page.AddTable`. |
 | `AutoTagOptions` | Options for AutoTag. |
-| `AutoTagReport` | Counts of the elements AutoTag produced. |
+| `AutoTagReport` | Counts of headings, paragraphs, figures, artifacts, tables and newly tagged annotations. |
 | `BackgroundStyle` | A fill painted behind the glyphs. |
 | `BarcodeFieldInit` | Options for Form.AddBarcodeField / Page.AddBarcodeField: `symbology`, `ecLevel`/`columns` (PDF417), `ecc` (QR), `encoding` (`tab`, `json`, `value`), `fields`, `fieldNames`, `compress`, `value`. |
 | `BarcodeRefreshReport` | What `Form.RefreshBarcodes` did: `updated` field names, and `notRecomputed` entries naming a field, a `reason` and, for `unprobed-value`, the carried field it stopped at. |
@@ -5109,7 +5109,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.FlattenLayers()` | Keep only what the default optional-content configuration shows, then delete the hidden spans, the surviving `/OC` wrappers and keys, and `/OCProperties` → `FlattenLayersReport` (`pagesChanged`, `hiddenSections`, `unwrappedSections`, `hiddenDraws`, `removedXObjects`, `hiddenAnnotations`, `unresolved`). One-way; throws `UnsupportedFeatureError` on a signed document |
 | `doc.Sanitize(opts?)` | Remove hidden data in place — `metadata`, `actions`, `attachments`, `annotations`, `forms` (flattened), `layers` (flattened), `privateData` (`/PieceInfo`, `/Thumb`, `/SpiderInfo`, page `/ID`, `/Perms`), each on by default, plus opt-in `pagesToImages` (`{ dpi?, format?, quality? }`), which replaces every page with its rendering and drops the structure tree → `SanitizeReport`, a section per category, `undefined` when kept. Throws `TypeError` for an unknown option and `UnsupportedFeatureError` on a signed document, before changing anything; afterwards `Save({ incremental: true })` is refused |
 | `doc.ConvertXfaToAcroForm(opts?)` | Convert an XFA form to a real `/AcroForm`: widgets with rects where the template lays out, on the pages its pagination produces (a dynamic form's placeholder replaced), geometry-less field dicts otherwise; removes `/XFA` + `/NeedsRendering` unless `{ removeXfa: false }` → `XfaConvertReport` (`fields`, `skipped`, `dataOnly`, `pagesCreated`, `chromePages`). Throws `UnsupportedFeatureError` on a signed document |
-| `doc.AutoTag(opts?)` | Infer a `/StructTreeRoot` (headings/paragraphs/figures/tables) from layout; marks Tagged; returns per-type counts |
+| `doc.AutoTag(opts?)` | Infer headings, paragraphs, figures and tables. Tag visible links, widgets and other eligible annotations, and set structure-based tab order on annotated pages. Returns per-type counts. |
 | `element.MarkContent(page, region)` | Tag existing page content under a structure element (returns the MCID) |
 | `page.ToSvg(options?)` | Render the page to a standalone `<svg>` string (paths, `<text>`, images, clipping, gradients, annotation `/AP` appearances; honors `/Rotate` + `CropBox`; `{ box: 'media' }` for the MediaBox, `{ annotations: false }` for content only) |
 | `page.PathsToSvg(paths)` | Export selected `PagePath` snapshots as one standalone SVG in the page's rotated CropBox viewport. |

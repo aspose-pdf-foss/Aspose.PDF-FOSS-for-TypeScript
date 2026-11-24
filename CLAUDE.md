@@ -8214,9 +8214,13 @@ Source (`src/`):
   `extractTaggedTables` filters by. Keying on `el.Page` is what made the
   semantic HTML export emit zero tables from a 33-table tree.
 - **struct.ts**, **structwrite.ts**, **structattr.ts**, **structpreserve.ts**,
-  **autotag.ts** — tagged-PDF logical structure: read (`GetStructTree`), author
+  **autotag.ts**, **autotagannot.ts** — tagged-PDF logical structure: read (`GetStructTree`), author
   (`CreateStructTree`, `tag`, `MarkContent`), typed `/A`+`/C` attribute views,
   structure preservation across split/merge/extract, and heuristic `AutoTag`.
+  AutoTag reuses existing annotation owners on forced runs. A Link OBJR goes
+  under its covered paragraph, heading or cell. Other newly tagged annotations
+  follow in page-array order. Page tab order and OBJR ownership use the page
+  containing the annotation, including when the optional annotation /P is absent.
   **Invariant:** `MarkContent` marks EVERY content stream its region covers, one
   balanced `BDC … EMC` per stream with its own MCID, all appended as kids of the
   one element (`regionOpSpans`). A page's `/Contents` is an array as often as
