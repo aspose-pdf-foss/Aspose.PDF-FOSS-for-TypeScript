@@ -6,10 +6,10 @@ import type { TextBlock, TextFragment } from './text.js';
 export function roundSize(s: number): number { return Math.round(s * 2) / 2; }
 
 /** The size bucket with the most characters among `fragments`. */
-export function dominantFragmentSize(fragments: TextFragment[]): number {
+export function dominantFragmentSize(fragments: TextFragment[], bucket = roundSize): number {
   const chars = new Map<number, number>();
   for (const f of fragments) {
-    const sz = roundSize(f.fontSize);
+    const sz = bucket(f.fontSize);
     chars.set(sz, (chars.get(sz) ?? 0) + f.text.length);
   }
   let best = 0, bestC = -1;
@@ -18,8 +18,8 @@ export function dominantFragmentSize(fragments: TextFragment[]): number {
 }
 
 /** The size bucket with the most characters among a block's fragments. */
-export function dominantSize(block: TextBlock): number {
-  return dominantFragmentSize(block.lines.flatMap((l) => l.fragments));
+export function dominantSize(block: TextBlock, bucket = roundSize): number {
+  return dominantFragmentSize(block.lines.flatMap((l) => l.fragments), bucket);
 }
 
 /** Heading-size → level map (largest = H1, capped at H6), from every fragment

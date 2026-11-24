@@ -8214,7 +8214,9 @@ Source (`src/`):
   `extractTaggedTables` filters by. Keying on `el.Page` is what made the
   semantic HTML export emit zero tables from a 33-table tree.
 - **struct.ts**, **structwrite.ts**, **structattr.ts**, **structpreserve.ts**,
-  **autotag.ts**, **autotagannot.ts** — tagged-PDF logical structure: read (`GetStructTree`), author
+  **autotag.ts**, **autotagannot.ts**, **autotagheading.ts**, **autotaglist.ts**,
+  **autotagfurniture.ts**, **autotaglisttable.ts**, **autotagmcid.ts**, **autotagpaint.ts**
+  — tagged-PDF logical structure: read (`GetStructTree`), author
   (`CreateStructTree`, `tag`, `MarkContent`), typed `/A`+`/C` attribute views,
   structure preservation across split/merge/extract, and heuristic `AutoTag`.
   AutoTag reuses existing annotation owners on forced runs. A Link OBJR goes

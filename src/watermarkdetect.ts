@@ -123,17 +123,11 @@ export function findWatermarks(doc: Document, opts: FindWatermarksOptions = {}):
     }
   }
   // Text: grouped by text with digit runs folded, then by place.
-  const byText = new Map<string, typeof toccs>();
-  for (const o of toccs) { const l = byText.get(o.key) ?? []; l.push(o); byText.set(o.key, l); }
-  for (const list of byText.values()) {
-    for (const group of byPlace(list, tolerance)) {
-      const pages = distinctPages(group);
-      if (pages.length < minPages) continue;
-      out.push({
-        kind: 'text', text: group[0].text, pages, bbox: group[0].bbox,
-        occurrences: group.map((o) => ({ page: o.page, bbox: o.bbox, text: o.text })),
-      });
-    }
+  for (const group of repeatedTextGroups(toccs, minPages, tolerance)) {
+    out.push({
+      kind: 'text', text: group[0].text, pages: distinctPages(group), bbox: group[0].bbox,
+      occurrences: group.map((o) => ({ page: o.page, bbox: o.bbox, text: o.text })),
+    });
   }
   // Most widespread first; ties by where they first occur.
   return out.sort((a, b) => b.pages.length - a.pages.length || a.pages[0] - b.pages[0]);
@@ -146,13 +140,30 @@ function distinctPages(group: { page: number }[]): number[] {
 /** Split `list` into groups whose boxes agree, edge by edge, within `tol` of
  *  the group's first box. First-come: a group is anchored where it was first
  *  seen, so it cannot drift by small steps across the page. */
-function byPlace<T extends { bbox: Rect }>(list: T[], tol: number): T[][] {
+const sameBox = (a: Rect, b: Rect, tolerance: number) => a.every((v, i) => Math.abs(v - b[i]) <= tolerance);
+
+function byPlace<T extends { bbox: Rect }>(list: T[], tol: number, atPlace = (a: T, b: T) => sameBox(a.bbox, b.bbox, tol)): T[][] {
   const groups: T[][] = [];
   for (const o of list) {
-    const g = groups.find((x) => x[0].bbox.every((v, i) => Math.abs(v - o.bbox[i]) <= tol));
+    const g = groups.find((x) => atPlace(x[0], o));
     if (g) g.push(o); else groups.push([o]);
   }
   return groups;
+}
+
+/** Shared recurrence rule. Callers supply the text identity and may allow a
+ *  folio to grow in width while keeping its baseline and alignment. */
+export function repeatedTextGroups<T extends { key: string; bbox: Rect; page: number }>(
+  lines: T[], minPages: number, tolerance: number, atPlace?: (a: T, b: T) => boolean,
+): T[][] {
+  const byText = new Map<string, T[]>();
+  for (const line of lines) {
+    let group = byText.get(line.key);
+    if (!group) byText.set(line.key, group = []);
+    group.push(line);
+  }
+  return [...byText.values()].flatMap(list =>
+    byPlace(list, tolerance, atPlace).filter(group => distinctPages(group).length >= minPages));
 }
 
 /** Top-level `Do`s of a Form or image XObject outside every artifact and
@@ -226,21 +237,30 @@ function drawnBox(doc: Document, x: PdfStream, ctm: Matrix): Rect | undefined {
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
-/** Untagged top-level text, one entry per laid-out line. */
-function textLines(doc: Document, page: Page, n: number): { page: number; bbox: Rect; text: string; key: string }[] {
+/** Untagged top-level text, one entry per laid-out line. During AutoTag,
+ *  addresses are returned only if every contributing show belongs wholly
+ *  to that line. This is stricter than the read-only watermark report. */
+export function textLines(doc: Document, page: Page, n: number, captureOps = false): {
+  page: number; bbox: Rect; text: string; key: string; ops?: ContentAddr[];
+}[] {
   const runs: RefRun<GlyphEvent>[] = [];
+  const counts = captureOps ? new Map<ContentAddr, number>() : undefined;
   try {
     visitContent(doc, page, {
       glyph: (e) => {
         if (e.artifact || e.mcid !== undefined || e.addr.path.length > 0) return;
         runs.push(runFromGlyph(e, e));
+        // layoutLines returns one reference per UTF-16 code unit. Count at
+        // least one for an unmapped glyph, so a partial reading cannot claim
+        // its show. All glyphs from that show share the ContentAddr object.
+        if (counts) counts.set(e.addr, (counts.get(e.addr) ?? 0) + Math.max(1, e.text.length));
       },
     });
   } catch (caught) { rethrowLimit(caught);
     return [];
   }
   const { text, refs } = layoutLines(runs);
-  const out: { page: number; bbox: Rect; text: string; key: string }[] = [];
+  const out: ReturnType<typeof textLines> = [];
   let start = 0;
   for (const line of text.split('\n')) {
     const glyphs = refs.slice(start, start + line.length).filter((g): g is GlyphEvent => g !== undefined);
@@ -251,7 +271,13 @@ function textLines(doc: Document, page: Page, n: number): { page: number; bbox: 
       Math.min(...glyphs.map((g) => g.quad[0])), Math.min(...glyphs.map((g) => g.quad[1])),
       Math.max(...glyphs.map((g) => g.quad[2])), Math.max(...glyphs.map((g) => g.quad[3])),
     ];
-    out.push({ page: n, bbox, text: t, key: t.replace(/\d+/g, '#') });
+    let ops: ContentAddr[] | undefined;
+    if (counts) {
+      const seen = new Map<ContentAddr, number>();
+      for (const glyph of glyphs) seen.set(glyph.addr, (seen.get(glyph.addr) ?? 0) + 1);
+      if ([...seen].every(([addr, count]) => count === counts.get(addr))) ops = [...seen.keys()];
+    }
+    out.push({ page: n, bbox, text: t, key: t.replace(/\d+/g, '#'), ops });
   }
   return out;
 }

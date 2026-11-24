@@ -1,14 +1,17 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement, StructTreeRoot } from './struct.js';
-import { visitContent, type Rect, type ImageEvent } from './text.js';
+import { blockFromLines, extractStructured, visitContent, type ImageEvent, type Rect, type TextBlock } from './text.js';
 import type { Table } from './tablemodel.js';
 import type { TableAttributes } from './structattr.js';
-import { dominantSize, headingRanks } from './textrank.js';
-import { EditableContent } from './editcontent.js';
-import { wrapRegionOps, regionOpSpan } from './structwrite.js';
+import { prepareHeadings } from './autotagheading.js';
+import { prepareFurniture } from './autotagfurniture.js';
+import { listCandidateBlocks, tagListBlock } from './autotaglist.js';
+import { isListTable } from './autotaglisttable.js';
+import { stripOrphanPageMcids } from './autotagmcid.js';
+import { centerInside, markPagePaint } from './autotagpaint.js';
 import { existingAnnotationOwners, tagPageAnnotations, type TextRegion } from './autotagannot.js';
-import { name, type PdfDict } from './types.js';
+import type { PdfDict } from './types.js';
 import { UnsupportedFeatureError } from './errors.js';
 
 /** Options for {@link Document.AutoTag}. */
@@ -24,6 +27,16 @@ export interface AutoTagOptions {
   alt?: (image: ImageEvent) => string | undefined;
   /** Detect and tag tables (via GetTables). Default true. */
   tables?: boolean;
+  /** Heading source. Defaults to document-wide font size ranking. */
+  headingStrategy?: 'fontSize' | 'outline' | 'thresholds';
+  /** One to six strictly descending minimum sizes in points for H1 through H6. */
+  headingThresholds?: readonly number[];
+  /** Recognize corroborated list items. Default true. */
+  lists?: boolean;
+  /** Mark recurring marginal headers and footers as pagination artifacts. */
+  furniture?: boolean;
+  /** Confirm a recurring text candidate as a watermark, including in the page body. */
+  watermark?: (text: string) => boolean;
 }
 
 /** Counts of the elements AutoTag produced. */
@@ -33,50 +46,66 @@ export interface AutoTagReport {
   figures: number;
   artifacts: number;
   tables: number;
+  /** List containers, including nested lists. */
+  lists: number;
   /** Annotations newly attached to the structure tree. */
   annotations: number;
 }
 
 const SCOPES = new Set(['Row', 'Column', 'Both']);
 
-/** True when the center of `box` lies inside `region`. */
-function centerInside(box: Rect, region: Rect): boolean {
-  const cx = (box[0] + box[2]) / 2, cy = (box[1] + box[3]) / 2;
-  const x0 = Math.min(region[0], region[2]), x1 = Math.max(region[0], region[2]);
-  const y0 = Math.min(region[1], region[3]), y1 = Math.max(region[1], region[3]);
-  return cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1;
+/** The first row of a multi-row table supplies column headers by default. */
+function tagTable(root: StructTreeRoot, table: Table, regions: TextRegion[]): void {
+  const tEl = root.Append('Table');
+  if (table.summary) tEl.SetTableAttributes({ summary: table.summary });
+  const multiRow = table.rowCount >= 2;
+  table.rows.forEach((row, ri) => {
+    const trEl = tEl.Append('TR');
+    for (const cell of row.cells) {
+      const heuristicHeader = multiRow && ri === 0;
+      const isHeader = cell.isHeader === true || heuristicHeader;
+      const cellEl = trEl.Append(isHeader ? 'TH' : 'TD');
+      const attrs: Partial<TableAttributes> = {};
+      if (cell.rowSpan > 1) attrs.rowSpan = cell.rowSpan;
+      if (cell.colSpan > 1) attrs.colSpan = cell.colSpan;
+      const scope = cell.scope && SCOPES.has(cell.scope)
+        ? (cell.scope as 'Row' | 'Column' | 'Both')
+        : (heuristicHeader ? 'Column' : undefined);
+      if (scope) attrs.scope = scope;
+      if (Object.keys(attrs).length > 0) cellEl.SetTableAttributes(attrs);
+      regions.push({ quad: cell.quad, owner: cellEl });
+    }
+  });
 }
 
-/** Tag each table as Table > TR > TH/TD, marking cell content. The first row of a
- *  multi-row table is treated as a header (TH, scope Column) unless a cell already
- *  declares isHeader. Returns the number of tables tagged. */
-function tagTables(root: StructTreeRoot, page: Page, tables: Table[], regions?: TextRegion[]): number {
-  let count = 0;
-  for (const table of tables) {
-    const tEl = root.Append('Table');
-    if (table.summary) tEl.SetTableAttributes({ summary: table.summary });
-    const multiRow = table.rowCount >= 2;
-    table.rows.forEach((row, ri) => {
-      const trEl = tEl.Append('TR');
-      for (const cell of row.cells) {
-        const heuristicHeader = multiRow && ri === 0;
-        const isHeader = cell.isHeader === true || heuristicHeader;
-        const cellEl = trEl.Append(isHeader ? 'TH' : 'TD');
-        const attrs: Partial<TableAttributes> = {};
-        if (cell.rowSpan > 1) attrs.rowSpan = cell.rowSpan;
-        if (cell.colSpan > 1) attrs.colSpan = cell.colSpan;
-        const scope = cell.scope && SCOPES.has(cell.scope)
-          ? (cell.scope as 'Row' | 'Column' | 'Both')
-          : (heuristicHeader ? 'Column' : undefined);
-        if (scope) attrs.scope = scope;
-        if (Object.keys(attrs).length > 0) cellEl.SetTableAttributes(attrs);
-        cellEl.MarkContent(page, cell.quad);
-        regions?.push({ quad: cell.quad, owner: cellEl });
-      }
-    });
-    count++;
+type LayoutItem = { kind: 'table'; value: Table; quad: Rect }
+  | { kind: 'text'; value: TextBlock; quad: Rect }
+  | { kind: 'image'; value: ImageEvent; quad: Rect; index: number };
+
+function pageLayout(doc: Document, page: Page, tables: Table[], blocks: TextBlock[], lists: boolean): LayoutItem[] {
+  const items: LayoutItem[] = tables.map(value => ({ kind: 'table', value, quad: value.quad }));
+  for (const value of blocks) items.push({ kind: 'text', value, quad: value.quad });
+  let index = 0;
+  visitContent(doc, page, { image: value => {
+    if (!value.addr.path.length && !value.artifact && value.mcid === undefined)
+      items.push({ kind: 'image', value, quad: value.quad, index: index++ });
+  } }, { skipHidden: true });
+  items.sort((a, b) => b.quad[3] - a.quad[3] || a.quad[0] - b.quad[0]);
+  if (!lists) return items;
+  const layout: LayoutItem[] = [];
+  for (let i = 0; i < items.length;) {
+    const item = items[i++];
+    if (item.kind !== 'text') { layout.push(item); continue; }
+    const run = [item.value];
+    while (i < items.length) {
+      const next = items[i];
+      if (next.kind !== 'text') break;
+      run.push(next.value);
+      i++;
+    }
+    for (const value of listCandidateBlocks(run)) layout.push({ kind: 'text', value, quad: value.quad });
   }
-  return count;
+  return layout;
 }
 
 /** Infer and author a /StructTreeRoot for `doc` from page layout. */
@@ -84,6 +113,12 @@ export function autoTag(doc: Document, opts: AutoTagOptions = {}): AutoTagReport
   if (doc.IsTagged && !opts.force)
     throw new UnsupportedFeatureError('document is already tagged; pass { force: true } to re-tag');
 
+  const headingLevel = prepareHeadings(doc, opts);
+  if (opts.lists !== undefined && typeof opts.lists !== 'boolean') throw new TypeError('lists must be a boolean');
+  if (opts.furniture !== undefined && typeof opts.furniture !== 'boolean') throw new TypeError('furniture must be a boolean');
+  if (opts.watermark !== undefined && typeof opts.watermark !== 'function') throw new TypeError('watermark must be a function');
+  stripOrphanPageMcids(doc);
+  const markFurniture = prepareFurniture(doc, opts.furniture ?? false, opts.watermark);
   const root = doc.CreateStructTree(); // marks the document Tagged
   if (opts.lang !== undefined) doc.Lang = opts.lang;
   if (opts.title !== undefined) {
@@ -94,53 +129,43 @@ export function autoTag(doc: Document, opts: AutoTagOptions = {}): AutoTagReport
     doc.DisplayDocTitle = true;
   }
 
-  const ranks = headingRanks(doc);
-  const report: AutoTagReport = { headings: 0, paragraphs: 0, figures: 0, artifacts: 0, tables: 0, annotations: 0 };
+  const report: AutoTagReport = { headings: 0, paragraphs: 0, figures: 0, artifacts: 0, tables: 0, lists: 0, annotations: 0 };
   const owners = doc.Pages.some(p => p.Dict.has('Annots'))
     ? existingAnnotationOwners(doc, root) : new Map<PdfDict, StructElement>();
   const seenAnnotations = new Set<PdfDict>();
 
   for (const page of doc.Pages) {
     const annotations = page.Annotations;
-    const regions: TextRegion[] | undefined = annotations.some(a => a.Subtype === 'Link') ? [] : undefined;
-    const tables = (opts.tables ?? true) ? page.GetTables() : [];
-    report.tables += tagTables(root, page, tables, regions);
-    const tableQuads = tables.map((t) => t.quad);
-
-    for (const block of page.GetStructuredText()) {
-      if (block.text.trim().length === 0) continue;
-      if (tableQuads.some((q) => centerInside(block.quad, q))) continue; // tagged as a cell
-      const level = ranks.get(dominantSize(block));
-      const isHeading = level !== undefined && block.lines.length <= 2;
-      const el = root.Append(isHeading ? `H${level}` : 'P');
-      el.MarkContent(page, block.quad);
-      if (regions) for (const line of block.lines) regions.push({ quad: line.quad, owner: el });
-      if (isHeading) report.headings++; else report.paragraphs++;
-    }
-
-    // Images: Figure with /Alt when described, else /Artifact.
-    const images: ImageEvent[] = [];
-    visitContent(doc, page, { image: (e) => { if (e.addr.path.length === 0) images.push(e); } });
-    for (const img of images) {
-      const alt = opts.alt?.(img);
-      if (alt !== undefined) {
-        const el = root.Append('Figure', { alt });
-        if (el.MarkContent(page, img.quad) >= 0) report.figures++;
+    const detected = (opts.tables ?? true) ? page.GetTables() : [];
+    const tables = opts.lists === false ? detected : detected.filter(t => !isListTable(t));
+    report.artifacts += markFurniture(page, tables.map(t => t.quad));
+    const blocks = extractStructured(doc, page, undefined, g =>
+      !g.artifact && g.mcid === undefined && !tables.some(t => centerInside(g.quad, t.quad)));
+    const regions: TextRegion[] = [], images: (StructElement | 'artifact')[] = [];
+    const tagProse = (block: TextBlock) => {
+      if (!block.text.trim()) return;
+      const level = headingLevel(page, block, blocks);
+      const owner = root.Append(level === undefined ? 'P' : `H${level}`);
+      for (const line of block.lines) regions.push({ owner, quad: line.quad });
+      if (level === undefined) report.paragraphs++; else report.headings++;
+    };
+    for (const item of pageLayout(doc, page, tables, blocks, opts.lists !== false)) {
+      if (item.kind === 'table') {
+        tagTable(root, item.value, regions);
+        report.tables++;
+      } else if (item.kind === 'image') {
+        const alt = opts.alt?.(item.value);
+        images[item.index] = alt === undefined ? 'artifact' : root.Append('Figure', { alt });
+        if (alt === undefined) report.artifacts++; else report.figures++;
       } else {
-        const span = regionOpSpan(doc, page, img.quad);
-        if (span) {
-          const ec = new EditableContent(doc, page);
-          wrapRegionOps(
-            ec, span.streamIndex, span.min, span.max,
-            { operator: 'BMC', operands: [name('Artifact')] },
-            { operator: 'EMC', operands: [] },
-          );
-          ec.commit();
-          report.artifacts++;
-        }
+        const lists = opts.lists === false ? 0 : tagListBlock(doc, root, page, item.value, regions,
+          lines => tagProse(blockFromLines(lines)));
+        if (lists) report.lists += lists;
+        else tagProse(item.value);
       }
     }
-    report.annotations += tagPageAnnotations(doc, root, page, annotations, regions ?? [], owners, seenAnnotations);
+    markPagePaint(doc, page, regions, images);
+    report.annotations += tagPageAnnotations(doc, root, page, annotations, regions, owners, seenAnnotations);
   }
   return report;
 }

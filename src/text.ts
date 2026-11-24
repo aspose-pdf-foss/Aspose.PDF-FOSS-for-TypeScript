@@ -1364,10 +1364,12 @@ export function scriptByGlyph(glyphs: GlyphEvent[]): Map<GlyphEvent, 'sub' | 'su
 /** Walk a page's content and group consecutive glyphs into positioned fragments,
  *  in content order. The thin positioned counterpart to `extractText`. */
 export function extractFragments(
-  doc: Document, page: Page, opts?: ExtractOptions,
+  doc: Document, page: Page, opts?: ExtractOptions, include?: (g: GlyphEvent) => boolean,
 ): TextFragment[] {
   const glyphs: GlyphEvent[] = [];
-  visitContent(doc, page, { glyph: (e) => glyphs.push(e) }, walkOpts(opts));
+  visitContent(doc, page, { glyph: (e) => {
+    if (!include || include(e)) glyphs.push(e);
+  } }, walkOpts(opts));
   return fragmentsFromGlyphs(glyphs);
 }
 
@@ -1406,6 +1408,11 @@ export interface TextBlock {
   lines: TextLine[];
 }
 
+/** Rebuild a paragraph-like block after a semantic boundary splits its lines. */
+export function blockFromLines(lines: TextLine[]): TextBlock {
+  return { text: lines.map(l => l.text).join('\n'), quad: bbox(lines.map(l => l.quad)), lines };
+}
+
 function bbox(quads: [number, number, number, number][]): [number, number, number, number] {
   return [
     Math.min(...quads.map((q) => q[0])), Math.min(...quads.map((q) => q[1])),
@@ -1437,9 +1444,9 @@ export function groupLineBlocks(lines: readonly { quad: [number, number, number,
 /** Assemble positioned fragments into lines (by baseline) and paragraph-like
  *  blocks (by vertical gap and left-edge alignment), ordered top-to-bottom. */
 export function extractStructured(
-  doc: Document, page: Page, opts?: ExtractOptions,
+  doc: Document, page: Page, opts?: ExtractOptions, include?: (g: GlyphEvent) => boolean,
 ): TextBlock[] {
-  const frags = extractFragments(doc, page, opts);
+  const frags = extractFragments(doc, page, opts, include);
   if (frags.length === 0) return [];
 
   // Group fragments into lines by baseline (PDF Y up: larger Y first).
@@ -1496,7 +1503,7 @@ export function extractStructured(
     let j = i;
     while (j < lines.length && blockOf[j] === blockOf[i]) j++;
     const group = lines.slice(i, j);
-    blocks.push({ text: group.map((l) => l.text).join('\n'), quad: bbox(group.map((l) => l.quad)), lines: group });
+    blocks.push(blockFromLines(group));
     i = j;
   }
   return blocks;

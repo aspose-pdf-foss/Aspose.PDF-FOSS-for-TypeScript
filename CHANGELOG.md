@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AutoTag recognizes lists, bookmark headings and repeated page furniture.**
+  Use bookmark depth or explicit font-size thresholds for heading levels.
+  Bullet and numbered items retain their labels, bodies and nested lists in
+  reading order. Opt-in header, footer and text-watermark matching keeps the
+  original ink visible while excluding decoration from the structure tree. (4qhc.4)
+
 - **AutoTag links, form widgets and annotations in reading order.** AutoTag sets
   structure-based tab order on pages with annotations. A link appears under the
   paragraph, heading or table cell containing its anchor. Unmatched annotations

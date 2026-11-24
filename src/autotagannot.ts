@@ -78,7 +78,7 @@ function containsPoint(quad: Point[], x: number, y: number): boolean {
 
 function orderedGlyphs(doc: Document, page: Page): GlyphEvent[] {
   const glyphs: GlyphEvent[] = [];
-  visitContent(doc, page, { glyph: g => glyphs.push(g) }, { skipHidden: true });
+  visitContent(doc, page, { glyph: g => { if (!g.artifact) glyphs.push(g); } }, { skipHidden: true });
   const { refs } = layoutLines(glyphs.map(g => runFromGlyph(g, g)));
   return Array.from(new Set(refs.filter((g): g is GlyphEvent => g !== undefined)));
 }

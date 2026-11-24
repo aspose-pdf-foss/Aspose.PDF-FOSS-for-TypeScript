@@ -297,11 +297,23 @@ export function classifyBlock(lines: TextLine[], ctx: ClassifyContext): LineClas
   // A marked line forms an item only with corroboration: an adjacent marked
   // line, or a following line indented to its own body x. Without this,
   // '1990. It was a good year' is a list.
+  let precedingItem: LineMarker | undefined;
   const item = markers.map((m, i) => {
-    if (!m) return false;
-    if (markers[i - 1] || markers[i + 1]) return true;
+    if (!m) {
+      if (code[i] || (precedingItem && Math.abs(lines[i].quad[0] - precedingItem.bodyX) > tol))
+        precedingItem = undefined;
+      return false;
+    }
     const next = lines[i + 1];
-    return next !== undefined && !code[i + 1] && Math.abs(next.quad[0] - m.bodyX) <= tol;
+    // A hanging continuation separates two item markers on the page. The
+    // same marker indent and numbering form resume that established list.
+    const resumes = precedingItem !== undefined && precedingItem.ordered === m.ordered
+      && Math.abs(m.markerX - precedingItem.markerX) <= tol
+      && (m.ordinal === undefined || precedingItem.ordinal === undefined || m.ordinal === precedingItem.ordinal + 1);
+    const confirmed = !!(markers[i - 1] || markers[i + 1]) || resumes
+      || (next !== undefined && !code[i + 1] && Math.abs(next.quad[0] - m.bodyX) <= tol);
+    precedingItem = confirmed ? m : undefined;
+    return confirmed;
   });
 
   // Depth is the rank of the marker's x bucket among the buckets in this block.
