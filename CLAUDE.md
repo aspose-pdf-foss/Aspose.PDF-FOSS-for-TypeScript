@@ -13647,7 +13647,7 @@ Source (`src/`):
 - **encrypt.ts** / **crypto.ts** (standard handler) plus **pubsec.ts**
   (certificate-based `/Adobe.PubSec` encrypt/decrypt).
   **Invariant (`chp0.10`):** CMS validates the addressed recipient's issuer and
-  serial, RSAES-PKCS1-v1_5 algorithm and parameters, and AES-CBC parameters
+  serial, RSA key transport algorithm and parameters, and AES-CBC parameters
   before calling an external key transport provider. Pass a copy of the wrapped
   key because file-key derivation hashes the original envelope. A failed
   addressed callback ends the open. The existing private Open credential retains
@@ -13664,6 +13664,10 @@ Source (`src/`):
   graph, and verification opens each historical byte image under the original
   limits. Retain the normalized provider with its certificate and pass a copy
   of the wrapped key on every request.
+  **Invariant (`chp0.16`):** external RSAES-OAEP requires a parameter SEQUENCE,
+  SHA-1 or SHA-256 with matching MGF1, and an empty label. Apply defaults only
+  to omitted fields within that SEQUENCE. Validate each field and match the
+  provider's declared algorithm before calling it.
 - **filters.ts**, **streamfilter.ts**, **ascii.ts**, **lzw.ts** — stream
   **encoders** (`encodeStream`, `ascii85Encode`/`asciiHexEncode`/`lzwEncode`/
   `runLengthEncode`) and the `Save({ streamFilter })` re-filter pass.

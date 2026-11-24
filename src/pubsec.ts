@@ -16,6 +16,7 @@ import {
 } from './encrypt.js';
 import {
   buildEnvelopedData, openEnvelopedData, openEnvelopedDataAsync, type PubSecKeyTransport, type AsyncPubSecKeyTransport,
+  type PubSecOaepKeyTransport, type AsyncPubSecOaepKeyTransport,
 } from './cms.js';
 import { InvalidPasswordError, UnsupportedFeatureError } from './errors.js';
 
@@ -118,11 +119,11 @@ export function buildPubSecEncryptor(opts: PubSecEncryptOptions): Encryptor {
 }
 
 export type NormalizedRecipient = { certificate: string | Uint8Array } &
-  ({ privateKey: KeyObject } | { keyTransport: PubSecKeyTransport });
+  ({ privateKey: KeyObject } | { keyTransport: PubSecKeyTransport | PubSecOaepKeyTransport });
 
 export interface NormalizedAsyncRecipient {
   certificate: string | Uint8Array;
-  keyTransportAsync: AsyncPubSecKeyTransport;
+  keyTransportAsync: AsyncPubSecKeyTransport | AsyncPubSecOaepKeyTransport;
 }
 
 interface PubSecDecryption {

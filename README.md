@@ -615,7 +615,7 @@ Opening a PubSec document without a matching `recipient` throws
 `InvalidPasswordError`.
 
 To use an external RSA key, pass the recipient certificate and a synchronous
-`keyTransport` provider that explicitly supports RSAES-PKCS1-v1_5.
+`keyTransport` provider with the recipient's key transport algorithm.
 
 ```ts
 const opened = Document.Open(bytes, {
@@ -638,8 +638,16 @@ handling that avoids exposing a padding oracle. Provider errors and unusable key
 `UnsupportedFeatureError`. Keep the provider available for operations such as
 incremental saving and signature verification, which can reopen encrypted bytes.
 
+For RSAES-OAEP, set `algorithm: 'rsa-oaep'`. The callback receives
+`unwrapKey(wrappedKey, algorithm, parameters)`, with `parameters.hash`,
+`parameters.mgf1Hash`, and `parameters.label` validated from the envelope. Use
+SHA-1 or SHA-256 with MGF1 using the same digest and an empty label. An empty
+OAEP parameter sequence selects the CMS defaults. Unsupported parameters or a
+different transport algorithm cause `UnsupportedFeatureError` before the key
+provider is called.
+
 For a provider that returns a promise, use `Document.OpenAsync` with
-`keyTransportAsync`.
+`keyTransportAsync`. Both transport algorithms are available in this form.
 
 ```ts
 const opened = await Document.OpenAsync(bytes, {
@@ -4020,7 +4028,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 531 public types plus 171
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 534 public types plus 171
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4722,6 +4730,9 @@ byte coverage, later object modifications, and structural findings.
 | `PubSecEncryptOptions` | Certificate encryption options for recipients, algorithm, permissions, key wrapping, and metadata encryption. |
 | `PubSecKeyTransport` | Synchronous RSAES-PKCS1-v1_5 provider that unwraps an AES-128-CBC or AES-256-CBC CMS content key for an addressed recipient. |
 | `AsyncPubSecKeyTransport` | Promise-based RSAES-PKCS1-v1_5 provider for `Document.OpenAsync`. |
+| `PubSecOaepKeyTransport` | Synchronous RSAES-OAEP provider receiving the validated hash, MGF1 hash, and label. |
+| `AsyncPubSecOaepKeyTransport` | Promise-based RSAES-OAEP provider for `Document.OpenAsync`. |
+| `PubSecOaepParameters` | Validated SHA-1 or SHA-256 OAEP hash, matching MGF1 hash, and empty label. |
 | `PubSecRecipientCert` | Recipient certificate and optional recipient-specific permission flags. |
 | `SignOptions` | Signature metadata, subfilter, target field, appearance, timestamp provider, CAdES attributes, placeholder size, and first-write password encryption. |
 | `SignatureAppearance` | A visible signature appearance request. |

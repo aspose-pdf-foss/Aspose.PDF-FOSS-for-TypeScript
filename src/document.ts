@@ -354,8 +354,9 @@ function normalizeRecipient(recipient: NonNullable<OpenAsyncOptions['recipient']
 
 function normalizeRecipientTransport<T extends NormalizedAsyncRecipient['keyTransportAsync']
   | Extract<NormalizedRecipient, { keyTransport: unknown }>['keyTransport']>(provider: T): T {
-  if (provider?.algorithm !== 'rsa-pkcs1-v1_5' || typeof provider.unwrapKey !== 'function')
-    throw new UnsupportedFeatureError('PubSec: external key transport requires an RSAES-PKCS1-v1_5 provider');
+  if ((provider?.algorithm !== 'rsa-pkcs1-v1_5' && provider?.algorithm !== 'rsa-oaep')
+    || typeof provider.unwrapKey !== 'function')
+    throw new UnsupportedFeatureError('PubSec: external key transport requires an RSAES-PKCS1-v1_5 or RSAES-OAEP provider');
   return { algorithm: provider.algorithm, unwrapKey: provider.unwrapKey.bind(provider) } as T;
 }
 

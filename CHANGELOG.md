@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Open PubSec PDFs with external RSAES-OAEP keys.** Synchronous and
+  promise-based providers can opt into `rsa-oaep` and receive the validated
+  hash, MGF1 hash, and label. OpenSSL envelopes cover SHA-1 and SHA-256 with
+  matching MGF1 and an empty label. (chp0.16)
+
 - **Open PubSec PDFs with promise-based RSA key providers.** Supply
   `keyTransportAsync` to `Document.OpenAsync`. Incremental `SaveAsync`, signing,
   timestamping, DSS collection, and verification reauthenticate the relevant

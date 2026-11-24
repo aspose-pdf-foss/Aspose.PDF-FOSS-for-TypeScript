@@ -111,7 +111,7 @@ describe('external PubSec RSA key transport', () => {
     expect(calls).toBe(0);
   });
 
-  it('preserves local RSA OAEP support while refusing that envelope with an external provider', () => {
+  it('opens an OAEP envelope with a local key and rejects a PKCS#1 v1.5 provider', () => {
     const bytes = Document.New(PageFormat.A4).Save({
       encrypt: { recipients: [{ certificate }], keyWrap: 'oaep' },
     });

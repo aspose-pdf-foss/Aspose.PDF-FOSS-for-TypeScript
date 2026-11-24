@@ -555,6 +555,28 @@ export interface AsyncPubSecKeyTransport {
   unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-pkcs1-v1_5') => Promise<Uint8Array>;
 }
 
+/** Validated RSAES-OAEP inputs. MGF1 uses the same hash and the label is empty. */
+export interface PubSecOaepParameters {
+  readonly hash: 'sha1' | 'sha256';
+  readonly mgf1Hash: 'sha1' | 'sha256';
+  readonly label: Uint8Array;
+}
+
+/** Synchronous provider for an external RSA recipient using RSAES-OAEP. */
+export interface PubSecOaepKeyTransport {
+  algorithm: 'rsa-oaep';
+  /** Unwrap a copy of the CMS encrypted key using the validated OAEP parameters.
+   *  Return the same content key bytes as {@link PubSecKeyTransport.unwrapKey}. */
+  unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-oaep', parameters: PubSecOaepParameters) => Uint8Array;
+}
+
+/** Promise-based provider for an external RSA recipient using RSAES-OAEP. */
+export interface AsyncPubSecOaepKeyTransport {
+  algorithm: 'rsa-oaep';
+  /** Asynchronous counterpart to {@link PubSecOaepKeyTransport.unwrapKey}. */
+  unwrapKey: (wrappedKey: Uint8Array, algorithm: 'rsa-oaep', parameters: PubSecOaepParameters) => Promise<Uint8Array>;
+}
+
 /** Recover the CEK from a KeyAgreeRecipientInfo (ECDH-ES) if one
  *  RecipientEncryptedKey matches `want` (issuer/serial) and our key agrees;
  *  else undefined. */
@@ -570,7 +592,7 @@ function openKeyAgree(
   const rek = reks?.children.find((k) => matchesIssuerAndSerial(k.children[0], want));
   if (!rek) return undefined;
   if (!privateKey)
-    throw new UnsupportedFeatureError('PubSec: external key transport supports RSAES-PKCS1-v1_5 only');
+    throw new UnsupportedFeatureError('PubSec: external key transport requires an RSA recipient envelope');
 
   // Rebuild the ephemeral public key as SPKISEQUENCE { algorithm, publicKey }.
   // The originator's OriginatorPublicKey algorithm may omit the EC curve params
@@ -594,6 +616,11 @@ function openKeyAgree(
 }
 
 const RSA_PKCS1_ALGORITHM = der.sequence(der.oid(OID.rsaEncryption), der.null_());
+const RSA_OAEP_OID = der.oid(OID.rsaesOaep);
+const MGF1_OID = der.oid(OID.mgf1);
+const OAEP_SHA1_OID = der.oid(OAEP_HASH_OID.sha1);
+const OAEP_SHA256_OID = der.oid(OAEP_HASH_OID.sha256);
+const OAEP_EMPTY_LABEL = der.sequence(der.oid(OID.pSpecified), der.octetString(new Uint8Array()));
 const CMS_ENVELOPED_DATA = der.oid(OID.envelopedData);
 const CMS_DATA = der.oid(OID.data);
 const CMS_CONTENT_CIPHERS = [
@@ -622,9 +649,56 @@ function readContentCipher(eci: Asn1Node) {
   return { algorithm: profile.algorithm, keyBytes: profile.keyBytes, iv: iv.content };
 }
 
+function unsupportedExternalOaep(): never {
+  throw new UnsupportedFeatureError('PubSec: unsupported RSAES-OAEP parameters');
+}
+
+function readExternalOaepHash(algorithm: Asn1Node): PubSecOaepParameters['hash'] {
+  const [oid, parameters] = algorithm.children;
+  if (algorithm.raw[0] !== 0x30 || !oid || algorithm.children.length > 2
+    || (parameters && (parameters.raw[0] !== 0x05 || parameters.length !== 0)))
+    return unsupportedExternalOaep();
+  if (bytesEqual(oid.raw, OAEP_SHA1_OID)) return 'sha1';
+  if (bytesEqual(oid.raw, OAEP_SHA256_OID)) return 'sha256';
+  return unsupportedExternalOaep();
+}
+
+/** RFC 3560 §3 defaults apply inside the required parameter SEQUENCE. */
+function readExternalOaepParameters(params: Asn1Node): PubSecOaepParameters {
+  if (params.raw[0] !== 0x30) return unsupportedExternalOaep();
+  let hash: PubSecOaepParameters['hash'] = 'sha1';
+  let mgf1Hash: PubSecOaepParameters['mgf1Hash'] = 'sha1';
+  let previousTag = 0x9f;
+  for (const field of params.children) {
+    const tag = field.raw[0];
+    if (tag <= previousTag || tag > 0xa2 || field.children.length !== 1) return unsupportedExternalOaep();
+    previousTag = tag;
+    const algorithm = field.children[0];
+    if (tag === 0xa0) {
+      hash = readExternalOaepHash(algorithm);
+    } else if (tag === 0xa1) {
+      const [oid, digest] = algorithm.children;
+      if (algorithm.raw[0] !== 0x30 || algorithm.children.length !== 2 || !bytesEqual(oid.raw, MGF1_OID))
+        return unsupportedExternalOaep();
+      mgf1Hash = readExternalOaepHash(digest);
+    } else if (!bytesEqual(algorithm.raw, OAEP_EMPTY_LABEL)) {
+      return unsupportedExternalOaep();
+    }
+  }
+  if (hash !== mgf1Hash) return unsupportedExternalOaep();
+  return { hash, mgf1Hash, label: new Uint8Array() };
+}
+
+function readExternalKeyAlgorithm(algorithm: Asn1Node | undefined) {
+  if (algorithm && bytesEqual(algorithm.raw, RSA_PKCS1_ALGORITHM)) return { algorithm: 'rsa-pkcs1-v1_5' } as const;
+  if (algorithm?.raw[0] === 0x30 && algorithm.children.length === 2 && bytesEqual(algorithm.children[0].raw, RSA_OAEP_OID)) {
+    return { algorithm: 'rsa-oaep', parameters: readExternalOaepParameters(algorithm.children[1]) } as const;
+  }
+  throw new UnsupportedFeatureError('PubSec: unsupported external key transport algorithm or parameters');
+}
+
 function externalKeyRequest(ri: Asn1Node, eci: Asn1Node, certDer: Uint8Array) {
-  if (ri.children[2] === undefined || !bytesEqual(ri.children[2].raw, RSA_PKCS1_ALGORITHM))
-    throw new UnsupportedFeatureError('PubSec: unsupported external key transport algorithm or parameters');
+  const transport = readExternalKeyAlgorithm(ri.children[2]);
 
   const cipher = readContentCipher(eci);
   const encryptedContent = eci.children[2];
@@ -641,10 +715,24 @@ function externalKeyRequest(ri: Asn1Node, eci: Asn1Node, certDer: Uint8Array) {
     || eci.children.length !== 3 || encryptedContent.raw[0] !== 0x80 || encryptedContent.length !== 32)
     throw new PdfParseError('PubSec: invalid external recipient key or encrypted content');
 
-  return { cipher, encryptedContent: encryptedContent.content, wrappedKey: wrapped.content };
+  return { transport, cipher, encryptedContent: encryptedContent.content, wrappedKey: wrapped.content };
 }
 
 type ExternalKeyRequest = ReturnType<typeof externalKeyRequest>;
+
+type ExternalKeyTransport<T> =
+  | { algorithm: 'rsa-pkcs1-v1_5'; unwrapKey: (...args: Parameters<PubSecKeyTransport['unwrapKey']>) => T }
+  | { algorithm: 'rsa-oaep'; unwrapKey: (...args: Parameters<PubSecOaepKeyTransport['unwrapKey']>) => T };
+
+function prepareExternalUnwrap<T>(request: ExternalKeyRequest, provider: ExternalKeyTransport<T>): () => T {
+  // The original envelope bytes also participate in PDF file-key derivation.
+  const { transport, wrappedKey } = request;
+  if (transport.algorithm === 'rsa-oaep' && provider.algorithm === 'rsa-oaep')
+    return () => provider.unwrapKey(Uint8Array.from(wrappedKey), transport.algorithm, transport.parameters);
+  if (transport.algorithm === 'rsa-pkcs1-v1_5' && provider.algorithm === 'rsa-pkcs1-v1_5')
+    return () => provider.unwrapKey(Uint8Array.from(wrappedKey), transport.algorithm);
+  throw new UnsupportedFeatureError('PubSec: external key transport does not support the addressed envelope algorithm');
+}
 
 function decryptExternalContent(request: ExternalKeyRequest, cek: Uint8Array): Uint8Array {
   if (cek instanceof Uint8Array) {
@@ -654,10 +742,10 @@ function decryptExternalContent(request: ExternalKeyRequest, cek: Uint8Array): U
   throw new InvalidPasswordError('PubSec: recipient key transport failed');
 }
 
-function openExternalKeyTransport(request: ExternalKeyRequest, provider: PubSecKeyTransport): Uint8Array {
+function openExternalKeyTransport(request: ExternalKeyRequest, provider: ExternalKeyTransport<Uint8Array>): Uint8Array {
+  const unwrap = prepareExternalUnwrap(request, provider);
   try {
-    // The original envelope bytes also participate in PDF file-key derivation.
-    const cek = provider.unwrapKey(Uint8Array.from(request.wrappedKey), 'rsa-pkcs1-v1_5');
+    const cek = unwrap();
     // An incorrectly supplied async provider still fails synchronously.
     if (isPromise(cek)) void cek.catch(() => undefined);
     return decryptExternalContent(request, cek);
@@ -666,10 +754,11 @@ function openExternalKeyTransport(request: ExternalKeyRequest, provider: PubSecK
 }
 
 async function openExternalKeyTransportAsync(
-  request: ExternalKeyRequest, provider: AsyncPubSecKeyTransport,
+  request: ExternalKeyRequest, provider: ExternalKeyTransport<Promise<Uint8Array>>,
 ): Promise<Uint8Array> {
+  const unwrap = prepareExternalUnwrap(request, provider);
   try {
-    const cek = await provider.unwrapKey(Uint8Array.from(request.wrappedKey), 'rsa-pkcs1-v1_5');
+    const cek = await unwrap();
     return decryptExternalContent(request, cek);
   } catch (e) { rethrowLimit(e); }
   throw new InvalidPasswordError('PubSec: recipient key transport failed');
@@ -686,14 +775,14 @@ function decryptEnvelopedContent(
 /** Recover the enveloped content if one RecipientInfo matches `certDer`
  *  (by issuer/serial) and decrypts with the supplied key or provider. */
 export function openEnvelopedData(
-  envelope: Uint8Array, privateKey: KeyObject | PubSecKeyTransport, certDer: Uint8Array,
+  envelope: Uint8Array, privateKey: KeyObject | PubSecKeyTransport | PubSecOaepKeyTransport, certDer: Uint8Array,
 ): Uint8Array | undefined {
   if (privateKey instanceof KeyObject) return openEnvelope(envelope, privateKey, certDer);
   return openEnvelope(envelope, undefined, certDer, (request) => openExternalKeyTransport(request, privateKey));
 }
 
 export async function openEnvelopedDataAsync(
-  envelope: Uint8Array, provider: AsyncPubSecKeyTransport, certDer: Uint8Array,
+  envelope: Uint8Array, provider: AsyncPubSecKeyTransport | AsyncPubSecOaepKeyTransport, certDer: Uint8Array,
 ): Promise<Uint8Array | undefined> {
   return openEnvelope(envelope, undefined, certDer, (request) => openExternalKeyTransportAsync(request, provider));
 }
