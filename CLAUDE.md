@@ -11013,6 +11013,12 @@ Source (`src/`):
   at the left edge (`test/helpers/build-untagged-list-pdf.ts`), the shape a
   third-party producer emits. Building them with `AddMarkdown` measures our
   renderer, not the inference.
+- **xlsxpackage.ts** writes ordered worksheets for the tables-first exporter
+  (`cfgh.1`). It passes workbook and worksheet parts to `buildOoxmlPackage`.
+  Cell types come from the input values, so identifiers and formula-like text
+  keep their spelling. Merge coordinates are zero-based, and only the anchor
+  can hold a value. `scripts/check-xlsx-package.py` opens the generated test
+  workbook in openpyxl and checks the cell types, ordering and merge.
 - **zip.ts**, **ooxml.ts**, **docxpackage.ts**, **crc32.ts** — the OOXML package
   writer behind DOCX export (`8yt9`). Three layers, each ignorant of the one
   above: `zip.ts` turns entries into archive bytes over `node:zlib`'s
