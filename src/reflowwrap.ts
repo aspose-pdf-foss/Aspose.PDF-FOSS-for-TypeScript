@@ -7,6 +7,13 @@ import type { Paragraph } from './reflowpara.js';
 import { layoutRuns, type FontDriver, type LayoutRun } from './layout.js';
 import type { Hyphenator } from './hyphenate.js';
 
+/** Start of an existing or rewrapped line inside its paragraph bounds. @internal */
+export function alignedLineX(align: Paragraph['align'], left: number, right: number, width: number, indentedLeft: number): number {
+  if (align === 'right') return right - width;
+  if (align === 'center') return (left + right) / 2 - width / 2;
+  return indentedLeft;
+}
+
 export interface WrapInput {
   para: Paragraph;
   advanceOf: (g: GlyphEvent) => number;
@@ -128,9 +135,7 @@ export function wrapParagraph(inp: WrapInput): WrapResult {
     const lineWidth = ws.reduce((s, w, i) => s + width(w) + (i > 0 ? p.gaps[w] : 0), 0);
     const left = boxLeft + (k === 0 ? indent : 0);
     const isLast = k === newLines.length - 1 && used === newLines.length;
-    let x = p.align === 'right' ? boxRight - lineWidth
-      : p.align === 'center' ? (boxLeft + boxRight) / 2 - lineWidth / 2
-      : left;
+    let x = alignedLineX(p.align, boxLeft, boxRight, lineWidth, left);
     const extra = p.align === 'justify' && !isLast && ws.length > 1
       ? (boxRight - left - lineWidth) / (ws.length - 1) : 0;
     ws.forEach((w, i) => {
@@ -313,9 +318,7 @@ function wrapHyphenated(inp: WrapInput, hy: HyphenWrap): WrapResult | undefined 
     const left = boxLeft + (k === 0 ? indent : 0);
     const isLast = k === lines.length - 1 && used === lines.length;
     const gapCount = ents.filter((e, idx) => gapsBefore(e, idx)).length;
-    let x = p.align === 'right' ? boxRight - lineWidth
-      : p.align === 'center' ? (boxLeft + boxRight) / 2 - lineWidth / 2
-      : left;
+    let x = alignedLineX(p.align, boxLeft, boxRight, lineWidth, left);
     const extra = p.align === 'justify' && !isLast && gapCount > 0 ? (boxRight - left - lineWidth) / gapCount : 0;
     ents.forEach((e, idx) => {
       const { u } = e;

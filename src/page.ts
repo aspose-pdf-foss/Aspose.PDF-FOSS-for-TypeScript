@@ -4,8 +4,9 @@ import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream, type PdfRef }
 import { inflateStream } from './flate.js';
 import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
-import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions, type TextReadOptions } from './text.js';
-import { readParagraphs, type ExtractedParagraph, type ParagraphReadOptions } from './paragraphread.js';
+import { extractText, extractStructured, walkOpts, TextBlock, type ExtractOptions, type TextReadOptions } from './text.js';
+import { readParagraphs, type ParagraphReadOptions } from './paragraphread.js';
+import { editableFragments, type EditableTextFragment, type EditableParagraph } from './texttarget.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
 import type { ReplaceTextOptions } from './replacefont.js';
 import { restyleText, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
@@ -542,8 +543,8 @@ export class Page {
    *  Content the document's default optional-content configuration HIDES is
    *  absent; pass `{ includeHidden: true }` to read what the file contains
    *  rather than what it shows. */
-  GetTextFragments(options?: ExtractOptions): TextFragment[] {
-    return extractFragments(this.doc, this, options);
+  GetTextFragments(options?: ExtractOptions): EditableTextFragment[] {
+    return editableFragments(this.doc, this, options);
   }
 
   /** Extract structured text: positioned fragments grouped into lines (by
@@ -558,7 +559,7 @@ export class Page {
   }
 
   /** Read paragraphs down each column, optionally joining continuations on this page. */
-  GetParagraphs(options?: ParagraphReadOptions): ExtractedParagraph[] {
+  GetParagraphs(options?: ParagraphReadOptions): EditableParagraph[] {
     return readParagraphs([this], options);
   }
 

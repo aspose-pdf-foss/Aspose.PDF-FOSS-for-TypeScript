@@ -160,12 +160,12 @@ function deviceBbox(subpaths: PathSubpath[], ctm: Matrix): [number, number, numb
   return x0 === Infinity ? [0, 0, 0, 0] : [x0, y0, x1, y1];
 }
 
-interface Source { stream: WeakRef<PdfStream>; digest: string; }
-interface Invocation { addr: ContentAddr; source: Source; }
+export interface StreamSource { stream: WeakRef<PdfStream>; digest: string; }
+interface Invocation { addr: ContentAddr; source: StreamSource; }
 interface PageSource {
   doc: WeakRef<Document>;
   dict: WeakRef<PdfDict>;
-  top: readonly Source[];
+  top: readonly StreamSource[];
 }
 interface Origin {
   page: PageSource;
@@ -174,7 +174,11 @@ interface Origin {
 }
 const origins = new WeakMap<PagePath, Origin>();
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
-const snapshot = (stream: PdfStream, bytes: Uint8Array): Source => ({ stream: new WeakRef(stream), digest: digest(bytes) });
+/** Snapshot and verify content shared by path and text handles. @internal */
+export const snapshotStream = (stream: PdfStream, bytes: Uint8Array): StreamSource => ({ stream: new WeakRef(stream), digest: digest(bytes) });
+export function sameStream(source: StreamSource, stream: PdfStream, bytes: Uint8Array): boolean {
+  return stream === source.stream.deref() && digest(bytes) === source.digest;
+}
 
 function stalePath(): RangeError {
   return new RangeError('PagePath no longer addresses the page content. Call page.GetPaths() again.');
@@ -390,7 +394,7 @@ function walk(
           let childBytes: Uint8Array;
           try { childBytes = inflateStream(xo); }
           catch (caught) { rethrowLimit(caught); seen.delete(xo.dict); break; }
-          const draw: Invocation = { addr: Object.freeze(addr), source: snapshot(xo, childBytes) };
+          const draw: Invocation = { addr: Object.freeze(addr), source: snapshotStream(xo, childBytes) };
           walk(ctx, [{ bytes: childBytes, streamIndex: 0 }], childRes,
             Object.freeze([...path, xn.name]), [...trail, draw], childCtm, seen);
           seen.delete(xo.dict);
@@ -414,7 +418,7 @@ export function extractPaths(doc: Document, page: Page, opts: ContentWalkOptions
   const source: PageSource = {
     doc: new WeakRef(doc),
     dict: new WeakRef(page.Dict),
-    top: streams.map((stream, i) => snapshot(stream, bytes[i])),
+    top: streams.map((stream, i) => snapshotStream(stream, bytes[i])),
   };
   const ctx: Ctx = { doc, source, out: [], tokens: { tokens: 0 }, oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined };
   walk(ctx, bytes.map((b, i) => ({ bytes: b, streamIndex: i })), page.Resources, Object.freeze([]), [], IDENTITY, new Set());
@@ -440,13 +444,13 @@ function sourcesMatch(doc: Document, page: Page, origin: Origin): boolean {
   const top = origin.page.top;
   if (streams.length !== top.length || streams.some((stream, i) => stream !== top[i].stream.deref())) return false;
   const bytes = decodePageContentStreams(streams);
-  if (bytes.some((value, i) => digest(value) !== top[i].digest)) return false;
+  if (bytes.some((value, i) => !sameStream(top[i], streams[i], value))) return false;
 
   let resources = page.Resources;
   for (let i = 0; i < origin.trail.length; i++) {
     const { source } = origin.trail[i];
     const form = resolveForm(doc, resources, origin.addr.end.path[i]);
-    if (!form || form !== source.stream.deref() || digest(inflateStream(form)) !== source.digest) return false;
+    if (!form || form !== source.stream.deref() || !sameStream(source, form, inflateStream(form))) return false;
     resources = formResources(doc, form, resources);
   }
   return true;

@@ -446,13 +446,14 @@ export interface ReplacePlan {
  *  page leaves the others untouched. */
 export function planReplace(
   doc: Document, page: Page, pageNumber: number, find: string | RegExp, replacement: string | RestyleRequest,
-  opts: ReplaceTextOptions,
+  opts: ReplaceTextOptions, identified?: GlyphEvent[],
 ): ReplacePlan {
   // An EDIT acts on what the file CONTAINS. Rewriting only the occurrences a
   // viewer is currently shown would leave the rest behind, so a caller's own
   // `includeHidden` cannot narrow this below true.
-  const { text, refs, all, inks, whole } = pageLayout(doc, page, { ...opts, includeHidden: true });
-  const ranges = text.length === 0 ? [] : findRanges(text, find, opts);
+  const { text, refs, all, inks, whole } = identified
+    ? identifiedLayout(identified) : pageLayout(doc, page, { ...opts, includeHidden: true });
+  const ranges: [number, number][] = identified ? [[0, text.length]] : text.length ? findRanges(text, find, opts) : [];
   if (ranges.length === 0) return { count: 0, apply: () => {} };
 
   // The character plan: which positions a match covers, and where each
@@ -616,7 +617,14 @@ export function planReplace(
       };
       for (let p = gs; p < ge; p++) {
         const ins = insertAt.get(p);
-        if (ins !== undefined) { flushResidue(); assignRuns(ins, replTiers, runs, missing[matchAt[p]], ins ? styleOf(g) : undefined); }
+        if (ins !== undefined) {
+          flushResidue();
+          if (identified && restyle && opts.font === undefined) {
+            // The target is a whole encoded range. Restyling a ligature or a
+            // many-to-one mapping must retain its original code and outline.
+            runs.push({ font: 'original', bytes: identifiedBytes(doc, page, identified), style: styleOf(g) });
+          } else assignRuns(ins, replTiers, runs, missing[matchAt[p]], ins ? styleOf(g) : undefined);
+        }
         if (!covered[p]) residue += text[p];
       }
       // Layout trims whitespace at a line's end, so a glyph's span may be only a
@@ -682,6 +690,19 @@ export function planReplace(
   if (opts.adjust === 'shiftRest' || opts.adjust === 'spaceWidth') {
     planLineAdjust(doc, page, pageNumber, opts.adjust, streams, streamFor, all, text, refs, covered, spans, matchAt, opts.region ? whole() : undefined, chainGapFor(doc, page));
   }
+  if (identified) {
+    // A handle owns one contiguous encoded range. Restore its original pen
+    // advance even when the next show lives in another content stream.
+    const g = identified[0], s = streamFor(g.addr);
+    const edits = s.perOp.get(g.addr.opIndex) ?? [];
+    if (edits.length) {
+      const delta = runsAdvance(edits[0].runs, g) - identified.reduce((v, member) => v + glyphAdvance(member), 0);
+      const value = delta * 1000 / (g.fontSize * g.hscale);
+      if (!Number.isFinite(value)) throw new UnsupportedFeatureError('Cannot preserve this fragment’s pen advance');
+      if (value) s.inserts.set(g.addr.opIndex, [{ addr: g.addr, elementIndex: g.elementIndex, byteStart: edits[0].end,
+        piece: { kind: 'kern', value } }]);
+    }
+  }
   const unreflowable: UnreflowableText[] = [];
   const annotWrites: (() => void)[] = [];
   const targets = new Map<GlyphEvent, [number, number]>();
@@ -734,6 +755,8 @@ export function planReplace(
     throw new UnsupportedFeatureError(
       `ReplaceText: ${pageLabel(pageNumber)}: no available font can draw ${chars.map((c) => JSON.stringify(c)).join(', ')}`);
   }
+  if (identified && streams.size > 1)
+    throw new UnsupportedFeatureError('This fragment edit would write to multiple content streams');
   return {
     // **Invariant (u3l5.7):** a match made only of spaces layout inserted draws
     // nothing and edits nothing, so it is not counted. A match in a form an
@@ -746,12 +769,40 @@ export function planReplace(
       return [p.join('\0'), [...p]] as const;
     })).values()].filter((p) => p.length > 0) : undefined,
     apply: () => {
-      applyEdits(doc, page, streams.values(), paint.copies);
+      const trail = identified?.[0].drawnBy;
+      if (trail?.length) {
+        if (paint.copies.length || opts.font !== undefined)
+          throw new UnsupportedFeatureError('This Form occurrence needs additional resources to apply the requested style');
+        const s = streams.values().next().value!;
+        new EditableContent(doc, page).editFormOccurrence(trail, source => {
+          // Decorations can sit before BT and after ET, outside the selected show.
+          const indexes = [s.addr.opIndex, ...s.before.keys(), ...s.after.keys(), ...s.perOp.keys()];
+          const first = Math.min(...indexes), end = Math.max(...indexes) + 1;
+          const noNewFont = () => { throw new UnsupportedFeatureError('Cannot register a font in this Form occurrence'); };
+          const ops = source.ops.slice(first, end).flatMap((op, i) => rewriteEditedOp(s, op, first + i, noNewFont));
+          return { first, end, ops };
+        });
+      } else applyEdits(doc, page, streams.values(), paint.copies);
       for (const w of annotWrites) w();
       for (const u of undrawable) opts.onUndrawable?.({ ...u, missing: [...u.missing] });
       for (const u of unreflowable) opts.onUnreflowable?.({ ...u });
     },
   };
+}
+
+function identifiedLayout(all: GlyphEvent[]) {
+  const text = all.map(g => g.text).join('');
+  const refs = all.flatMap(g => Array<GlyphEvent>(g.text.length).fill(g));
+  return { text, refs, all, inks: [], whole: () => ({ text, refs }) };
+}
+
+function identifiedBytes(doc: Document, page: Page, glyphs: GlyphEvent[]): Uint8Array {
+  const g = glyphs[0], last = glyphs[glyphs.length - 1];
+  const op = readScopeOps(doc, page, g.addr.path)[g.addr.streamIndex][g.addr.opIndex];
+  const operand = op.operands[op.operator === '"' ? 2 : 0];
+  const str = isArray(operand) ? operand[g.elementIndex] : operand;
+  if (!isString(str)) throw new UnsupportedFeatureError('Cannot locate the selected encoded text');
+  return str.bytes.subarray(g.byteStart, last.byteStart + last.byteLen);
 }
 
 /**
@@ -820,7 +871,8 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>, c
   for (const c of copies) {
     ensureOwnSubdict(doc, ec.ownXObjectResources(c.path), c.category).set(c.key, c.value);
   }
-  for (const { addr, perOp, kerns, restore, inserts, after, before, compact } of streams) {
+  for (const s of streams) {
+    const { addr, compact } = s;
     any = true;
     const ops = addr.path.length === 0 ? ec.topOps(addr.streamIndex) : ec.xobjectOps(addr.path);
     let fonts: PdfDict | undefined;
@@ -835,22 +887,31 @@ function applyEdits(doc: Document, page: Page, streams: Iterable<StreamEdits>, c
     };
     const out: ContentOp[] = [];
     ops.forEach((op, i) => {
-      out.push(...(before.get(i) ?? []));
-      const e = perOp.get(i) ?? [], k = kerns.get(i) ?? [], ins = inserts.get(i) ?? [];
-      if (e.length === 0 && k.length === 0 && ins.length === 0) out.push(op);
-      else if (ins.length > 0 || e.some(hasForeign) || e.some((x) => x.breaks)) {
-        out.push(...splitShowOp(op, showPieces(op, e, k, keyFor, ins), restore.get(i) ?? NO_RESTORE));
-      } else {
-        const next = spliceShowOp(op, e, k);
-        if (!emptiedTj(op, next)) out.push(next);
-      }
-      out.push(...(after.get(i) ?? []));
+      out.push(...rewriteEditedOp(s, op, i, keyFor));
     });
     const final = compact ? dropDeadPositioning(out) : out;
     if (addr.path.length === 0) ec.setTopOps(addr.streamIndex, final);
     else ec.setXobjectOps(addr.path, final);
   }
   if (any) ec.commit();
+}
+
+function rewriteEditedOp(s: StreamEdits, op: ContentOp, i: number, keyFor: (f: AuthoringFont) => string): ContentOp[] {
+  const edits = s.perOp.get(i) ?? [], kerns = s.kerns.get(i) ?? [], inserts = s.inserts.get(i) ?? [];
+  let result: ContentOp[];
+  if (!edits.length && !kerns.length && !inserts.length) result = [op];
+  else if (inserts.length || edits.some(e => hasForeign(e) || e.breaks)) {
+    result = splitShowOp(op, showPieces(op, edits, kerns, keyFor, inserts), s.restore.get(i) ?? NO_RESTORE);
+  } else {
+    const next = spliceShowOp(op, edits, kerns);
+    result = emptiedTj(op, next) ? [] : [next];
+  }
+  return [...s.before.get(i) ?? [], ...result, ...s.after.get(i) ?? []];
+}
+
+/** Insert reversible positioning around encoded glyphs with the reflow show splitter. @internal */
+export function insertTextPositions(op: ContentOp, inserts: ShowInsert[]): ContentOp[] {
+  return splitShowOp(op, showPieces(op, [], [], () => '', inserts), NO_RESTORE);
 }
 
 /** A foreign run's bytes — and, when its spaces must be widened, the `TJ`

@@ -5671,6 +5671,12 @@ Source (`src/`):
   **Note, measured:** all 18 mutations aimed at these modules and their wiring
   redden, dropping the unknown-type filter only after the fall-through case
   above was added.
+- **texttarget.ts** — binds public fragment and paragraph snapshots to page
+  streams, Form invocation addresses and encoded glyph ranges. Revalidate
+  before writing. A replacement compensates the original pen advance. A move
+  brackets an encoded range with reversible TJ and Ts changes, so a subsequent
+  relative line still uses its original text line matrix. Form edits reuse the
+  path editor's occurrence copy. A joined paragraph cannot be aligned as one.
 - **paragraphread.ts** — column-aware paragraph extraction for pages and
   documents. A joined paragraph retains its first page and quad. Its text and
   lines include every joined segment, each also located by a continuation.

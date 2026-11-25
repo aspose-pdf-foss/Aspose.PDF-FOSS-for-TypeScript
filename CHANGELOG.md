@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Edit a single text occurrence or align an extracted paragraph.**
+  Fragments returned by `GetTextFragments()` can replace, restyle, or move
+  their source text while preserving the following pen position. Paragraphs
+  returned by `GetParagraphs()` can align their existing lines within their
+  original bounds. Source checks catch stale handles before writing. (kprh.3)
+
 - **Extract report columns and follow paragraphs across pages.** `page.GetText()`
   now offers raw drawing order, a fixed-pitch grid, and glyph clipping to a
   rectangle or the visible page. `GetParagraphs()` on a page or document can

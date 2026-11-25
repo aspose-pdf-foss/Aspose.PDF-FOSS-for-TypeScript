@@ -637,11 +637,16 @@ export function walkOpts(o: ExtractOptions | undefined): ContentWalkOptions {
 export function visitContent(
   doc: Document, page: Page, visitor: ContentVisitor, opts: ContentWalkOptions = {},
 ): void {
+  visitPageBytes(doc, page, visitor, opts, contentStreamBytes(doc, page));
+}
+
+/** Walk the same decoded bytes captured for a source-bound read. @internal */
+export function visitPageBytes(doc: Document, page: Page, visitor: ContentVisitor, opts: ContentWalkOptions, bytes: Uint8Array[]): void {
   const ctx: Ctx = {
     doc, visitor, fontCache: new Map(), tokens: { tokens: 0 },
     oc: opts.skipHidden ? ocVisibilityFor(doc) : undefined,
   };
-  const streams = contentStreamBytes(doc, page).map((bytes, i) => ({ bytes, streamIndex: i }));
+  const streams = bytes.map((bytes, i) => ({ bytes, streamIndex: i }));
   walkScope(ctx, streams, page.Resources, [], IDENTITY, 0, new Set());
 }
 
@@ -1201,7 +1206,7 @@ export function fragmentsFromGlyphs(glyphs: GlyphEvent[]): TextFragment[] {
  *  a pair of indices is the whole of the provenance. Recording it here rather
  *  than re-deriving it outside is what keeps `scriptByGlyph` from owning a
  *  second copy of the merge rule. */
-function buildFragments(glyphs: GlyphEvent[], spans?: [number, number][]): TextFragment[] {
+export function buildFragments(glyphs: GlyphEvent[], spans?: [number, number][]): TextFragment[] {
   const out: TextFragment[] = [];
   type Cur = TextFragment & {
     font: TextFont; end: number; line: number; angle: number; vert: boolean; from: number;

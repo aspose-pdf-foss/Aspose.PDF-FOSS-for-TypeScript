@@ -1,4 +1,5 @@
 import type { Page } from './page.js';
+import { editableParagraph, type EditableParagraph } from './texttarget.js';
 import { blocksFromFragments, type ExtractOptions, type Rect, type TextBlock, type TextFragment, type TextLine } from './text.js';
 
 export interface ParagraphReadOptions extends ExtractOptions {
@@ -85,7 +86,7 @@ function appendContinuation(carrier: ExtractedParagraph, part: ExtractedParagrap
 }
 
 /** @internal */
-export function readParagraphs(pages: Page[], options?: ParagraphReadOptions): ExtractedParagraph[] {
+export function readParagraphs(pages: Page[], options?: ParagraphReadOptions): EditableParagraph[] {
   const result: ExtractedParagraph[] = [];
   let carrier: ExtractedParagraph | undefined;
   for (const page of pages) {
@@ -118,5 +119,5 @@ export function readParagraphs(pages: Page[], options?: ParagraphReadOptions): E
       }
     }
   }
-  return result;
+  return result.map(editableParagraph);
 }

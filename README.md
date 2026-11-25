@@ -1926,6 +1926,31 @@ for (const f of doc.Pages[0].GetTextFragments()) {
 }
 ```
 
+To edit one occurrence, keep the fragment returned for that occurrence. For
+example, this moves the second label 12 points to the right, even when the
+first label has identical text.
+
+```ts
+const labels = page.GetTextFragments().filter(f => f.text === 'Total');
+labels[1]?.MoveBy(12, 0);
+const amount = page.GetTextFragments().find(f => f.text === '19.50');
+amount?.ReplaceText('21.00');
+page.GetParagraphs()[0]?.Align('center');
+```
+
+`Restyle(style)` accepts the same style fields as `page.RestyleText()`.
+Each edit takes effect immediately. Read again after editing to get current
+positions and handles. A stale handle throws `RangeError`. A fragment edit
+requires a contiguous range in one text-show string. An edit involving
+vertical, unmapped or clipping glyphs, or a Form occurrence requiring new
+font or paint resources, throws `UnsupportedFeatureError`.
+
+`Align` keeps the original paragraph bounds and line breaks. It accepts
+`left`, `center`, `right`, `justify` (keeps the last line left aligned), and
+`fullJustify` (also spreads the last line's word gaps). Alignment requires
+horizontal lines from one content stream and drawing. A paragraph joined
+across columns or pages has several bounds and cannot be aligned as a unit.
+
 Fragments are emitted in content order; a new fragment begins when the font,
 size, or baseline changes, or a wide horizontal gap opens. Image-only pages
 return `[]`.
@@ -4117,7 +4142,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 547 public types plus 175
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 549 public types plus 175
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4460,6 +4485,8 @@ for work-unit boundaries and mutation/lifetime rules.
 | `PageLabel` | A logical page-label range in the /Root /PageLabels number tree. |
 | `PagePath` | Snapshot of a drawn or clipping path with geometry, paint state, and its `Addr` operator span. |
 | `EditablePagePath` | A `PagePath` returned by `GetPaths()` that can edit its source draw with `Remove()`, `Recolor(options)`, and `Transform(matrix)`. |
+| `EditableParagraph` | An extracted paragraph with `Align(alignment)` for positioning its lines inside the original bounds. |
+| `EditableTextFragment` | A positioned fragment with `ReplaceText(text)`, `Restyle(style)`, and `MoveBy(dx, dy)` for its source occurrence. |
 | `PagePathAddr` | Inclusive path construction-to-paint span and enclosing Form draw addresses. |
 | `PathRecolorOptions` | Fill and/or stroke as DeviceRGB components from 0 to 1. |
 | `PathEvent` | A painted vector path, its subpaths flattened to page-space segments. |
@@ -5150,8 +5177,8 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.EmbedFonts(opts?)` | Embed the fonts the document names and does not embed — simple or `Identity-H` composite, indirect or direct — from a TrueType, OpenType-CFF or Type 1 face in a registered font folder found by name and style (a symbolic font through the face's symbol cmap), keeping each only when every shown code has a glyph and a matching width; returns `EmbedFontsReport` (`subset`, `bundledStandard14`) |
 | `doc.ReplaceFont(from, to, opts?)` | Draw every glyph shown in `from` (a font name, with or without its subset tag, or an entry of `doc.Fonts`) in `to` (a Standard-14 face or a font from `AddFont`/`LoadFontByName`): each `Tf` and ExtGState selecting `from` selects `to` in page content, forms, annotation appearances, tiling patterns and Type 3 glyph procedures, each show string is re-encoded from its Unicode text, and form `/DA` strings follow for a Standard-14 `to`; glyphs keep their positions unless `positions: 'natural'`; a glyph `to` cannot draw goes to the first of `fallbackFonts` that can, else stays in `from` and is reported; returns `ReplaceFontReport` |
 | `page.GetText(options?)` | Extract visible text in reading order (default), raw drawing order, or a fixed-pitch grid. Use `rectangle` and `limitToPageBounds` for glyph clipping, `actualText` for marked-content replacements, and `includeHidden` for switched-off layers. |
-| `page.GetParagraphs(options?)` / `doc.GetParagraphs(options?)` | Read paragraphs in column order. Joining is opt-in with `{ joinContinuations: true }`. The page method joins within one page and the document method also follows continuations onto later pages. |
-| `page.GetTextFragments(options?)` | Extract positioned text as `TextFragment[]` (`text`, page-space `quad`, `fontSize`, `fontName`, `bold`/`italic`, and `script: 'sub' \| 'super'` for a run that reads as a sub/superscript of its line; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
+| `page.GetParagraphs(options?)` / `doc.GetParagraphs(options?)` | Read `EditableParagraph[]` in column order. Call `Align` on a single-part paragraph. Joining is opt-in with `{ joinContinuations: true }`. The page method joins within one page and the document method also follows continuations onto later pages. |
+| `page.GetTextFragments(options?)` | Extract positioned text as `EditableTextFragment[]` with `text`, page-space `quad`, `fontSize`, `fontName`, `bold`/`italic`, and optional subscript or superscript information. Call `ReplaceText`, `Restyle`, or `MoveBy` on a selected fragment. Pass `{ includeHidden: true }` to include switched-off optional-content layers. Returns `[]` on an empty page. |
 | `page.GetStructuredText(options?)` | Extract text as a `TextBlock[]` tree (blocks → lines → fragments, each with `text` + page-space `quad`; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
 | `page.GetPaths(options?)` | Extract painted vector paths as `EditablePagePath[]` (user-space `subpaths` of line/cubic segments + `ctm`, device `bbox`, resolved `fill`/`stroke` `{rgb, space}`, `fillRule`, `lineWidth`, `clip`, `mcid`/`artifact`; descends into Form XObjects; `[]` if none). Pass `{ includeHidden: true }` to include paths on switched-off optional-content layers. |
 | `page.Artifacts` | The `/Artifact` marked-content scopes the page declares as `PageArtifact[]` (`type`/`subtype`/`attached`/`properties` from the property list, `bbox` + `bboxSource` declared or measured, `addr`, `parent`; descends into Form XObjects; `[]` if none); each entry's `Remove()` deletes it |
