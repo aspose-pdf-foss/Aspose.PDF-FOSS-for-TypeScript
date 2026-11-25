@@ -4,7 +4,7 @@ import {
   PdfObject, PdfDict, PdfRef, PdfStream,
   isDict, isArray, isStream, isRef, name,
 } from './types.js';
-import { enc, escapeName } from './serialize.js';
+import { enc, escapeName, serializeValue } from './serialize.js';
 import type { Matrix } from './text.js';
 import { parseContentStream } from './content.js';
 import { inflateStream } from './flate.js';
@@ -446,6 +446,20 @@ export function transformContent(doc: Document, page: Page, cm: Matrix, format =
   const head = doc.allocObject(streamOf(enc(`q\n${cm.map(format).join(' ')} cm\n`)));
   const tail = doc.allocObject(streamOf(enc('\nQ')));
   page.Dict.set('Contents', [head, ...existing, tail]);
+}
+
+/** Paint on a private draft page with an isolated CTM. Keep both groups of
+ * streams by reference so only the newly drawn group receives the transform. */
+export function appendTransformedDrawing(doc: Document, page: Page, matrix: Matrix, paint: () => void): void {
+  const before = normalizeContents(doc, page.Dict.get('Contents'));
+  page.Dict.delete('Contents');
+  paint();
+  const drawing = normalizeContents(doc, page.Dict.get('Contents'));
+  const push = (operators: string) => doc.allocObject(streamOf(enc(operators)));
+  page.Dict.set('Contents', [
+    ...(before.length ? [push('q'), ...before, push('Q')] : []),
+    push(`q\n${matrix.map(serializeValue).join(' ')} cm`), ...drawing, push('Q'),
+  ]);
 }
 
 /** Splice `body` into /Contents BEFORE existing content, so it draws behind it

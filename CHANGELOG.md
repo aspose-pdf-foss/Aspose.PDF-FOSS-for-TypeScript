@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Edit rotated detected tables in place.** `table.Remove()` and
+  `table.Replace(builder)` check ownership along the detected table axes.
+  Replacement retains the table's angle, anchor, and width, including the
+  placement of clickable links. (kprh.6)
+
 - **Remove all text drawn on a selected page.** `page.RemoveAllText()` strips
   text-show operators and matching marked-content `/ActualText`, including
   inside shared Forms. Graphics and images retain their original operators.

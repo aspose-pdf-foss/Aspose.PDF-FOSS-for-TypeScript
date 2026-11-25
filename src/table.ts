@@ -6,7 +6,7 @@ import type {
   CellBorders, Rect, TableExtractOptions, TableCell, TableRow,
 } from './tablemodel.js';
 import { extractTaggedTables } from './tablestruct.js';
-import { dominantAngle, rot, ANGLE_EPS, type Seg } from './tableorient.js';
+import { dominantAngle, rot, glyphInFrame, ANGLE_EPS, type Seg } from './tableorient.js';
 import { collectPageInk, edgeAt, fillUnder, type PageInk } from './tableink.js';
 import { buildCells, cellText, centroid, contains, rowBbox } from './tablegrid.js';
 import { segmentBlocks } from './tablestream.js';
@@ -424,14 +424,11 @@ export function extractTables(doc: Document, page: Page, options: TableExtractOp
   const { horiz, vert } = classifyRules(rSeg);
   const rGlyphs = glyphs
     .filter((g) => inReg((g.quad[0] + g.quad[2]) / 2, (g.quad[1] + g.quad[3]) / 2))
-    .map((g) => {
-      const [ox, oy] = apply(R, g.quad[0], g.quad[1]);
-      const w = g.advance * g.fontSize;   // upright baseline width (approx)
-      return { ...g, quad: [ox, oy, ox + w, oy + g.fontSize] as Rect, angle: 0 };
-    });
+    .map(g => glyphInFrame(g, R, theta));
   const frags = fragmentsFromGlyphs(rGlyphs);
   const tables = buildTables(horiz, vert, frags);
   for (const t of tables) t.angle = theta;
+  if (tables.length) bindDetectedTables(page, tables, page.GetPaths(options), glyphs, options);
   return tables;
 }
 

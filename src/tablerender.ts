@@ -15,6 +15,8 @@ import type { Undrawable } from './textcoverage.js';
 import type { SpanGrid } from './tablespan.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import type { AuthoringFont } from './stamp.js';
+import { appendTransformedDrawing } from './pagecontent.js';
+import { bounds, boxCorners, rot } from './tableorient.js';
 
 /** Options for {@link drawTable} / `page.AddTable`. */
 export interface AddTableOptions {
@@ -269,7 +271,7 @@ function paintPlaced(
 /** Draw a complete replacement into the transaction's private page. Resolve
  * the same cells as AddTable, including spans, images and styled runs. Font
  * subsetting records glyph usage, so the draft needs its own font handles. */
-export function drawFittedTable(page: Page, table: TableBuilder, box: [number, number, number, number], owner: Document): void {
+export function drawFittedTable(page: Page, table: TableBuilder, box: [number, number, number, number], owner: Document, angle: number): void {
   const [x, bottom, right, top] = box;
   const width = right - x;
   const widths = table.resolveColumnWidths(width);
@@ -292,7 +294,21 @@ export function drawFittedTable(page: Page, table: TableBuilder, box: [number, n
     cell.style.font = local(cell.style.font);
     if (Array.isArray(cell.text)) cell.text = cell.text.map(run => run.font ? { ...run, font: local(run.font) } : run);
   }
-  paintPlaced(page.Document, page, placed, table.defaults.outerBorder, { x, bottom: top - totalHeight, w: width, h: totalHeight }, false);
+  const paint = () => paintPlaced(page.Document, page, placed, table.defaults.outerBorder,
+    { x, bottom: top - totalHeight, w: width, h: totalHeight }, false);
+  if (!angle) { paint(); return; }
+  const priorAnnotations = page.Annotations.length;
+  const matrix = rot(angle);
+  appendTransformedDrawing(page.Document, page, matrix, paint);
+  // Text-run links are annotations, outside the graphics state's CTM. Their
+  // QuadPoints describe the clickable area at an oblique angle.
+  for (const link of page.Annotations.slice(priorAnnotations)) {
+    const rect = link.Rect;
+    if (!rect) continue;
+    const corners = boxCorners(rect, matrix);
+    link.Rect = bounds(corners);
+    link.Dict.set('QuadPoints', corners.flat());
+  }
 }
 
 /** Paint the rows named by `rowIndices` with the first row's top at `sliceTop`,

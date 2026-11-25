@@ -7,12 +7,13 @@ import { EditableContent, type ContentAddr } from './editcontent.js';
 import type { ContentOpSource, ContentSplice } from './content.js';
 import { rewritePath } from './pathedit.js';
 import { rewriteShowOp } from './redact.js';
-import { type PagePath, type StreamSource, sameStream, snapshotStream } from './paths.js';
+import { type PagePath, type StreamSource, deviceBbox, sameStream, snapshotStream } from './paths.js';
 import { pageContentStreams } from './pagecontent.js';
 import { scopeStream } from './textedit.js';
 import { deviceSegments } from './tableink.js';
 import { cellText } from './tablegrid.js';
-import { buildFragments, visitContent, type GlyphEvent, type TextFragment } from './text.js';
+import { buildFragments, mul, visitContent, type GlyphEvent, type TextFragment } from './text.js';
+import { boxCorners, glyphCorners, glyphInFrame, rot, touchesBox } from './tableorient.js';
 import { UnsupportedFeatureError } from './errors.js';
 import type { PdfDict } from './types.js';
 import { extractTaggedTables } from './tablestruct.js';
@@ -39,12 +40,13 @@ interface PageSource {
 }
 interface Target {
   source: PageSource;
+  angle: number;
   box: Rect;
   cells: { box: Rect; text: string }[];
 }
 const targets = new WeakMap<Table, Target>();
 
-/** Bind only results produced by upright geometry detection. Keep the selection
+/** Bind only results produced by geometry detection. Keep the selection
  * independent of the publicly mutable cells, bounds and page number. */
 export function bindDetectedTables(page: Page, tables: Table[], paths: PagePath[], glyphs: GlyphEvent[], options: TableExtractOptions): void {
   if (!tables.length) return;
@@ -66,7 +68,7 @@ export function bindDetectedTables(page: Page, tables: Table[], paths: PagePath[
   for (const t of tables) {
     const cells = t.rows.flatMap(row => row.cells);
     if (cells.some(c => c.tables?.length)) continue;
-    targets.set(t, { source, box: [...t.quad], cells: cells.map(c => ({ box: [...c.quad], text: c.text })) });
+    targets.set(t, { source, angle: t.angle, box: [...t.quad], cells: cells.map(c => ({ box: [...c.quad], text: c.text })) });
   }
 }
 
@@ -115,10 +117,12 @@ interface StreamEdits {
 }
 
 function planRemoval(page: Page, target: Target) {
-  const doc = page.Document, { box, cells, source } = target;
-  if (extractTaggedTables(doc, page, { includeHidden: true }).some(t => intersects(t.quad, box)))
+  const doc = page.Document, { angle, box, cells, source } = target;
+  const frame = angle === 0 ? undefined : rot(-angle);
+  const pageBoxTouches = (r: Rect) => frame ? touchesBox(boxCorners(r, frame), box) : intersects(r, box);
+  if (extractTaggedTables(doc, page, { includeHidden: true }).some(t => pageBoxTouches(t.quad)))
     throw refuse('the selected region intersects a tagged table');
-  if (source.regional && !page.GetTables({ structure: 'off', includeHidden: source.includeHidden }).some(t => sameBox(t.quad, box)))
+  if (source.regional && !page.GetTables({ structure: 'off', includeHidden: source.includeHidden }).some(t => near(t.angle, angle) && sameBox(t.quad, box)))
     throw refuse('the selected region contains only part of a table');
   const edits = new Map<number, StreamEdits>();
   let drawing: readonly ContentAddr[] | undefined;
@@ -132,23 +136,38 @@ function planRemoval(page: Page, target: Target) {
   }
   const boxes = cells.map(c => c.box);
   for (const annot of page.Annotations) {
-    if (annot.Rect && intersects(box, annot.Rect)) throw refuse('overlapping annotation');
+    if (annot.Rect && pageBoxTouches(annot.Rect)) throw refuse('overlapping annotation');
   }
   for (const p of page.GetPaths({ includeHidden: true })) {
-    const [x, y, u, v] = p.bbox, radius = p.stroke ? p.lineWidth / 2 : 0;
-    if ((!p.stroke && !p.fill) || !intersects([x - radius, y - radius, u + radius, v + radius], box)) continue;
-    if (p.mcid !== undefined || !source.paths.has(pathKey(p)) || !ownedPath(p, boxes))
+    if (!p.fill && !p.stroke) continue;
+    const ctm = frame && mul(p.ctm, frame);
+    const local = ctm ? { ...p, ctm, bbox: deviceBbox(p.subpaths, ctm) } : p;
+    const radius = p.stroke ? p.lineWidth / 2 : 0;
+    const padded: Rect = [box[0] - radius, box[1] - radius, box[2] + radius, box[3] + radius];
+    if (!intersects(local.bbox, padded)) continue;
+    if (frame && !p.fill && !p.subpaths.some(s => s.segments.some(v => v.op === 'cubic')) &&
+        deviceSegments(local).every(([x, y, u, v]) => !touchesBox([[x, y], [u, v], [u, v], [x, y]], padded))) continue;
+    if (p.mcid !== undefined || !source.paths.has(pathKey(p)) || !ownedPath(local, boxes))
       throw refuse('overlapping or ambiguous vector drawing');
     if (p.Addr.start.streamIndex !== p.Addr.end.streamIndex) throw refuse('a path spans content streams');
     group(p.addr, p.Addr.invocations).paths.push(p);
   }
   const glyphs: GlyphEvent[] = [];
   visitContent(doc, page, { glyph: g => glyphs.push(g), image: image => {
-    if (intersects(image.quad, box)) throw refuse('overlapping image');
+    if (frame ? touchesBox(boxCorners([0, 0, 1, 1], mul(image.ctm, frame)), box) : intersects(image.quad, box))
+      throw refuse('overlapping image');
   } });
   const spans: [number, number][] = [], members = cells.map((): TextFragment[] => []);
   const selected = new Set<GlyphEvent>();
-  for (const [i, f] of buildFragments(glyphs, spans).entries()) {
+  const touching: boolean[] = [];
+  const localGlyphs = frame ? glyphs.map(g => {
+    const corners = glyphCorners(g, frame);
+    touching.push(touchesBox(corners, box));
+    return glyphInFrame(g, frame, angle, corners);
+  }) : glyphs;
+  for (const [i, f] of buildFragments(localGlyphs, spans).entries()) {
+    const [start, end] = spans[i];
+    if (frame && !touching.slice(start, end).some(Boolean)) continue;
     if (!intersects(f.quad, box)) continue;
     const ci = cells.findIndex(c => inside(f.quad, c.box));
     if (ci < 0) throw refuse('text crosses a cell boundary');
@@ -156,13 +175,15 @@ function planRemoval(page: Page, target: Target) {
         Math.min(f.quad[3], other.quad[3]) - Math.max(f.quad[1], other.quad[1]) > 0.5))
       throw refuse('overlapping text in a cell');
     members[ci].push(f);
-    const [start, end] = spans[i];
-    for (let j = start; j < end; j++) selected.add(glyphs[j]);
+    for (let j = start; j < end; j++) {
+      if (frame && !inside(localGlyphs[j].quad, cells[ci].box)) throw refuse('text crosses a cell boundary');
+      selected.add(glyphs[j]);
+    }
   }
   if (cells.some((c, i) => c.text !== cellText(members[i]))) throw stale();
-  for (const g of glyphs) {
-    if (!intersects(g.quad, box)) continue;
-    if (!selected.has(g) || g.mcid !== undefined || g.vertical || Math.abs(g.angle) > 0.001 ||
+  for (const [index, g] of glyphs.entries()) {
+    if (!(frame ? touching[index] : intersects(g.quad, box))) continue;
+    if (!selected.has(g) || g.mcid !== undefined || g.vertical || Math.abs(localGlyphs[index].angle) > 0.001 ||
         (g.renderMode ?? 0) >= 3 || !source.glyphs.has(glyphKey(g))) throw refuse('ambiguous or marked cell text');
     const { shows } = group(g.addr, g.drawnBy);
     if (!shows.has(g.addr.opIndex)) shows.set(g.addr.opIndex, []);
@@ -187,7 +208,7 @@ function splices(source: ContentOpSource, edits: StreamEdits): ContentSplice[] {
 
 export function editDetectedTable(table: Table, builder?: TableBuilder): void {
   const target = targets.get(table);
-  if (!target) throw refuse('requires an upright, untagged single-page table without nesting');
+  if (!target) throw refuse('requires an untagged single-page table without nesting');
   const { source } = target, doc = source.doc.deref(), dict = source.dict.deref();
   const number = doc && dict && doc.pageNumberOf(dict);
   if (!doc || !number) throw stale();
@@ -210,6 +231,6 @@ export function editDetectedTable(table: Table, builder?: TableBuilder): void {
       }
       ec.writeTopStreams(bytes);
     }
-    if (builder) drawFittedTable(draft, builder, target.box, doc);
+    if (builder) drawFittedTable(draft, builder, target.box, doc, target.angle);
   });
 }

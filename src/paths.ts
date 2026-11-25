@@ -147,7 +147,7 @@ function lookupCs(
   return { conv, space: csFamily(doc, csObj) };
 }
 
-function deviceBbox(subpaths: PathSubpath[], ctm: Matrix): [number, number, number, number] {
+export function deviceBbox(subpaths: PathSubpath[], ctm: Matrix): [number, number, number, number] {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const add = (p: Pt) => {
     const [dx, dy] = apply(ctm, p[0], p[1]);

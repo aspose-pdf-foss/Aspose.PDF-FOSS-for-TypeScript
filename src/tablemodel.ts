@@ -103,10 +103,10 @@ export class Table {
    *  `angle` about the origin. */
   angle = 0;
 
-  /** Remove the content owned by this upright, single-page detected table. */
+  /** Remove the content owned by this single-page detected table at its original angle. */
   Remove(): void { editDetectedTable(this); }
 
-  /** Replace this table within its original rectangle. Preflight errors leave the page intact. */
+  /** Redraw within this table's original oriented rectangle. Preflight errors leave the page intact. */
   Replace(builder: TableBuilder): void {
     if (!builder) throw new TypeError('Replace requires a table builder');
     editDetectedTable(this, builder);
