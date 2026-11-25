@@ -71,7 +71,7 @@ export class TableTagger {
     const parent = opts.structParent;
     // A /Table parent is continuation, not nesting: a manual-pagination loop
     // hands back the previous call's element so a three-page table is one table.
-    this.table = parent !== undefined && parent.Type === 'Table'
+    this.table = parent !== undefined && parent.StandardType === 'Table'
       ? parent
       : (parent ?? doc.CreateStructTree()).Append('Table');
   }

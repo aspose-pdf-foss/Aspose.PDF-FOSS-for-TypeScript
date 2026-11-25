@@ -2,6 +2,7 @@ import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
 import { Table } from './tablemodel.js';
+import { bindTaggedTable } from './taggedtableedit.js';
 import type { Rect, TableCell, TableRow, TableExtractOptions } from './tablemodel.js';
 
 const ZERO: Rect = [0, 0, 0, 0];
@@ -152,6 +153,7 @@ export function extractTaggedTables(doc: Document, page: Page, options: TableExt
     const t = buildTable(te, page);
     if (!t || !t.rows.length) continue;
     if (options.region && !contains(options.region, ...centroid(t.quad))) continue;
+    bindTaggedTable(t, page, te);
     out.push(t);
   }
   return out;

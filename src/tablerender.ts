@@ -271,7 +271,7 @@ function paintPlaced(
 /** Draw a complete replacement into the transaction's private page. Resolve
  * the same cells as AddTable, including spans, images and styled runs. Font
  * subsetting records glyph usage, so the draft needs its own font handles. */
-export function drawFittedTable(page: Page, table: TableBuilder, box: [number, number, number, number], owner: Document, angle: number): void {
+export function drawFittedTable(page: Page, table: TableBuilder, box: [number, number, number, number], owner: Document, angle: number, tagger?: TableTagger): void {
   const [x, bottom, right, top] = box;
   const width = right - x;
   const widths = table.resolveColumnWidths(width);
@@ -281,7 +281,7 @@ export function drawFittedTable(page: Page, table: TableBuilder, box: [number, n
   if (!widths.length || !Number.isFinite(totalHeight) || totalHeight > top - bottom + 1e-6 ||
       Math.abs(columns[columns.length - 1] - right) > 1e-6)
     throw new RangeError('Replacement table must fit the original width and height');
-  const placed = placeRows(table, rangeIndices(0, table.rows.length), rowHeights, grid, columns, widths, top);
+  const placed = placeRows(table, rangeIndices(0, table.rows.length), rowHeights, grid, columns, widths, top, undefined, tagger);
   const fonts = new Map<EmbeddedFont, EmbeddedFont>();
   const local = (font: AuthoringFont): AuthoringFont => {
     if (!(font instanceof EmbeddedFont)) return font;
@@ -291,11 +291,12 @@ export function drawFittedTable(page: Page, table: TableBuilder, box: [number, n
     return copy;
   };
   for (const cell of placed) {
+    cell.struct?.SetLayoutAttributes({ bbox: [cell.x, cell.bottom, cell.x + cell.w, cell.bottom + cell.h] });
     cell.style.font = local(cell.style.font);
     if (Array.isArray(cell.text)) cell.text = cell.text.map(run => run.font ? { ...run, font: local(run.font) } : run);
   }
   const paint = () => paintPlaced(page.Document, page, placed, table.defaults.outerBorder,
-    { x, bottom: top - totalHeight, w: width, h: totalHeight }, false);
+    { x, bottom: top - totalHeight, w: width, h: totalHeight }, !!tagger);
   if (!angle) { paint(); return; }
   const priorAnnotations = page.Annotations.length;
   const matrix = rot(angle);

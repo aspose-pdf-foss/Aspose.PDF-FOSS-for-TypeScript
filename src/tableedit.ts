@@ -10,13 +10,14 @@ import { rewriteShowOp } from './redact.js';
 import { type PagePath, type StreamSource, deviceBbox, sameStream, snapshotStream } from './paths.js';
 import { pageContentStreams } from './pagecontent.js';
 import { scopeStream } from './textedit.js';
-import { deviceSegments } from './tableink.js';
+import { deviceSegments, ownedPath } from './tableink.js';
 import { cellText } from './tablegrid.js';
 import { buildFragments, mul, visitContent, type GlyphEvent, type TextFragment } from './text.js';
 import { boxCorners, glyphCorners, glyphInFrame, rot, touchesBox } from './tableorient.js';
 import { UnsupportedFeatureError } from './errors.js';
 import type { PdfDict } from './types.js';
 import { extractTaggedTables } from './tablestruct.js';
+import { editTaggedTable } from './taggedtableedit.js';
 
 const refuse = (reason: string) => new UnsupportedFeatureError('Cannot edit detected table: ' + reason);
 const stale = () => new RangeError('Detected table is stale. Call GetTables() again.');
@@ -70,45 +71,6 @@ export function bindDetectedTables(page: Page, tables: Table[], paths: PagePath[
     if (cells.some(c => c.tables?.length)) continue;
     targets.set(t, { source, angle: t.angle, box: [...t.quad], cells: cells.map(c => ({ box: [...c.quad], text: c.text })) });
   }
-}
-
-/** Every point of a ruled segment must belong to recovered cell sides. A line
- * that crosses a grid or merely ends on an edge is neighboring artwork. */
-function isEdge(segment: number[], boxes: Rect[]): boolean {
-  const [x, y, u, v] = segment;
-  const horizontal = near(y, v);
-  if (!horizontal && !near(x, u)) return false;
-  const a = horizontal ? 0 : 1, b = horizontal ? 1 : 0;
-  const fixed = horizontal ? y : x;
-  const lo = Math.min(segment[a], segment[a + 2]), hi = Math.max(segment[a], segment[a + 2]);
-  if (near(lo, hi)) return false;
-  const sides = boxes.filter(r => (near(fixed, r[b]) || near(fixed, r[b + 2])) &&
-    r[a] >= lo - 0.001 && r[a + 2] <= hi + 0.001).sort((l, r) => l[a] - r[a]);
-  let end = lo;
-  for (const side of sides) {
-    if (side[a] > end + 0.001) break;
-    end = Math.max(end, side[a + 2]);
-  }
-  return near(end, hi);
-}
-
-function ownedPath(p: PagePath, boxes: Rect[]): boolean {
-  if (p.subpaths.some(s => s.segments.some(c => c.op === 'cubic'))) return false;
-  const segments = deviceSegments(p).filter(([x, y, u, v]) => !near(x, u) || !near(y, v));
-  if (!segments.length) return false;
-  if (p.fill) {
-    const r = p.bbox;
-    const edges = new Set(segments.map(([x, y, u, v]) =>
-      near(x, u) ? 'x' + x : near(y, v) ? 'y' + y : 'diagonal'));
-    if (p.subpaths.length !== 1 || segments.length !== 4 || edges.size !== 4 ||
-        !segments.every(s => isEdge(s, [r]))) return false;
-    if (boxes.some(box => sameBox(box, r))) return true;
-    // Thin filled rectangles can be grid rules. Match their centerline.
-    const [x, y, u, v] = r;
-    return !p.stroke && ((v - y <= 3 && isEdge([x, (y + v) / 2, u, (y + v) / 2], boxes)) ||
-      (u - x <= 3 && isEdge([(x + u) / 2, y, (x + u) / 2, v], boxes)));
-  }
-  return !!p.stroke && segments.every(s => isEdge(s, boxes));
 }
 
 interface StreamEdits {
@@ -207,8 +169,9 @@ function splices(source: ContentOpSource, edits: StreamEdits): ContentSplice[] {
 }
 
 export function editDetectedTable(table: Table, builder?: TableBuilder): void {
+  if (editTaggedTable(table, builder)) return;
   const target = targets.get(table);
-  if (!target) throw refuse('requires an untagged single-page table without nesting');
+  if (!target) throw refuse('requires a single-page table without nesting');
   const { source } = target, doc = source.doc.deref(), dict = source.dict.deref();
   const number = doc && dict && doc.pageNumberOf(dict);
   if (!doc || !number) throw stale();

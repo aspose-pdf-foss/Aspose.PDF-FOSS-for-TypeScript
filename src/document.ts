@@ -11,7 +11,7 @@ import { ObjectParser } from './object-parser.js';
 import { readXref, XrefEntry, PdfRevision, type XrefResult } from './xref.js';
 import { sweepObjects, ObjCandidate, SweepResult } from './recover.js';
 import {
-  expandObjectStreams, findEncryptDict, rebuildTrailer, TrailerChoice,
+  expandObjectStreams, findEncryptDict, reachableFrom, rebuildTrailer, TrailerChoice,
 } from './rebuild.js';
 import { decodeObjStm, ObjStmDamage } from './objstm.js';
 import { PdfObject, PdfDict, PdfRef, PdfStream, isRef, isDict, isStream, isName, isArray, isString, ref, name } from './types.js';
@@ -609,10 +609,14 @@ export class Document {
     return stitchTables(this.Pages.map((p) => p.GetTables(options)), options);
   }
 
-  /** @internal Stage content surgery and untagged table authoring against a private
-   * page dictionary and object map. The planners copy edited streams, Forms and
-   * resource subdictionaries. Only fresh indirect objects can enter the live map. */
-  editTablePage(page: Page, prepare: (page: Page) => void): void {
+  /** @internal Revision captured by tagged table handles, including structure-only edits. */
+  get tableEditRevision(): number { return this.#writeVersion; }
+
+  /** @internal Stage page content and any affected structure dictionaries. The
+   * planner replaces shared children before writing to them. Publish into the
+   * original dictionaries so existing page and structure handles see the edit. */
+  editTablePage(page: Page, prepare: (page: Page) => void,
+    structure?: { dictionaries: PdfRef[]; detached: Set<number> }): void {
     const version = this.#writeVersion;
     const last = this.maxObjNum();
     const dict = new Map(page.Dict);
@@ -624,12 +628,31 @@ export class Document {
     if (!number || this.pageObjNums.indexOf(number) !== this.pageObjNums.lastIndexOf(number))
       throw new UnsupportedFeatureError('table edit requires a uniquely owned page');
     objects.set(number, dict);
+    const staged = new Map<PdfDict, PdfDict>();
+    for (const r of structure?.dictionaries ?? []) {
+      const original = this.resolve(r);
+      if (!isDict(original)) throw new RangeError('Missing table structure dictionary');
+      if (staged.has(original)) continue;
+      const copy = new Map(original);
+      staged.set(original, copy);
+      objects.set(r.num, copy);
+    }
     const draft = new Document(objects, this.trailer, this.loadLimits, this.decodeBudget);
     prepare(draft.Pages[page.Number - 1]);
     if (this.#writeVersion !== version) throw new RangeError('Page changed during table edit');
+    const root = this.trailer.get('Root');
+    if (structure && isRef(root)) {
+      const reachable = reachableFrom(objects, root.num);
+      for (const id of structure.detached) if (reachable.has(id))
+        throw new UnsupportedFeatureError('An external reference points to a removed table element');
+    }
     for (const [id, obj] of objects) if (id > last) this.install(id, obj);
+    for (const [original, copy] of staged) {
+      original.clear();
+      for (const [key, value] of copy) original.set(key, value);
+    }
     for (const font of draft.embeddedFonts) this.embeddedFonts.push(font);
-    for (const key of ['Contents', 'Resources', 'Annots']) {
+    for (const key of ['Contents', 'Resources', 'Annots', 'StructParents']) {
       const value = dict.get(key);
       if (value !== undefined) page.Dict.set(key, value);
     }

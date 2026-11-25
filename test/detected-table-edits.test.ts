@@ -3,6 +3,7 @@ import { createTable, Document, UnsupportedFeatureError } from '../src/index.js'
 import { buildTablePdf, hline, rotate, text, vline } from './helpers/build-table-pdf.js';
 import { buildTaggedTablePdf } from './helpers/build-tagged-table-pdf.js';
 import { appendContent } from '../src/pagecontent.js';
+import { lookupNameTree } from '../src/nametree.js';
 
 const grid = [hline(20, 180, 120), hline(20, 180, 160), hline(20, 180, 200),
   vline(20, 120, 200), vline(100, 120, 200), vline(180, 120, 200),
@@ -88,9 +89,98 @@ it('rejects an overlapping drawing and a glyph run crossing the boundary atomica
   }
 });
 
-it('refuses edits through a tagged table result', () => {
+it('removes a tagged table and releases its MCIDs while preserving the following paragraph', () => {
   const d = Document.Open(buildTaggedTablePdf());
-  expect(() => d.Pages[0].GetTables()[0].Remove()).toThrow(UnsupportedFeatureError);
+  d.Pages[0].AddText('neighbor', 50, 80, { tag: d.GetStructTree()!.Append('P') });
+  const [table] = d.Pages[0].GetTables();
+  table.Remove();
+  expect(() => table.Remove()).toThrow(/stale/i);
+  const saved = Document.Open(d.Save()), root = saved.GetStructTree()!;
+  expect(saved.Pages[0].GetText()).toBe('neighbor');
+  expect(root.Children.map(e => e.Type)).toEqual(['P']);
+  for (let i = 0; i < 10; i++) expect(root.ElementFor(0, i)).toBeUndefined();
+  expect(root.ElementFor(0, 10)?.GetText()).toBe('neighbor');
+});
+
+it('rebuilds tagged cells in reading order and rolls back an unsuccessful redraw', () => {
+  const d = Document.Open(buildTaggedTablePdf()), p = d.Pages[0];
+  p.AddText('neighbor', 50, 80, { tag: d.GetStructTree()!.Append('P') });
+  const [table] = p.GetTables(), before = d.Save();
+  const bad = createTable({ background: [1, 0, 0] });
+  bad.addRow(['first', [{ text: 'bad', color: [2, 0, 0] }]]);
+  expect(() => table.Replace(bad)).toThrow(/color/i);
+  expect(d.Save()).toEqual(before);
+  const good = createTable({ border: { color: [0, 0, 0], width: 1 } });
+  good.addRow().addCell('Heading', { header: 'column' });
+  good.addRow(['Value']);
+  table.Replace(good);
+  const saved = Document.Open(d.Save()), root = saved.GetStructTree()!;
+  expect(root.Children.map(e => e.Type)).toEqual(['Table', 'P']);
+  const [edited] = saved.Pages[0].GetTables();
+  expect(edited.rows.map(r => r.cells[0].text)).toEqual(['Heading', 'Value']);
+  expect(edited.rows[0].cells[0].scope).toBe('Column');
+  expect(root.ElementFor(0, 0)).toBeUndefined();
+  edited.Remove();
+  expect(saved.Pages[0].GetPaths()).toHaveLength(0);
+  expect(saved.Pages[0].GetText()).toBe('neighbor');
+});
+
+it('rejects an external reference to a disappearing tagged header before writing', () => {
+  const d = Document.Open(buildTaggedTablePdf()), root = d.GetStructTree()!;
+  const cell = root.Children[0].Children[0].Children[0].Children[0];
+  root.Append('P').Dict.set('Ref', [cell.Ref!]);
+  const before = d.Save(), [table] = d.Pages[0].GetTables();
+  expect(() => table.Remove()).toThrow(/external reference/i);
+  expect(() => table.Replace(replacement())).toThrow(/external reference/i);
+  expect(d.Save()).toEqual(before);
+});
+
+it('recovers the ruled cell boxes in older tagged files that omit layout attributes', () => {
+  const d = Document.New(), p = d.AddPage().page;
+  const old = replacement();
+  old.addRow(['a', 'b']);
+  const { struct } = p.AddTable(old, 20, 180, { tagged: true, width: 200 });
+  for (const row of struct!.Children) for (const cell of row.Children) cell.Dict.delete('A');
+  const reopened = Document.Open(d.Save()), pg = reopened.Pages[0];
+  pg.GetTables()[0].Replace(replacement());
+  expect(pg.GetTables()[0].quad).toEqual([20, expect.any(Number), 220, 180]);
+  pg.GetTables()[0].Remove();
+  expect(pg.GetPaths().filter(p => p.fill || p.stroke)).toHaveLength(0);
+});
+
+it('allows removal under a separate tagged paragraph but blocks painting a replacement over it', () => {
+  const d = Document.Open(buildTaggedTablePdf()), p = d.Pages[0];
+  p.AddText('survivor', 70, 310, { tag: d.GetStructTree()!.Append('P') });
+  const before = d.Save(), [table] = p.GetTables();
+  expect(() => table.Replace(replacement())).toThrow(/overlap/i);
+  expect(d.Save()).toEqual(before);
+  table.Remove();
+  expect(Document.Open(d.Save()).Pages[0].GetText()).toBe('survivor');
+});
+
+it('preserves unrelated ID-tree entries and blocks a surviving header association', () => {
+  const d = Document.Open(buildTaggedTablePdf()), p = d.Pages[0], root = d.GetStructTree()!;
+  const cell = root.Children[0].Children[0].Children[0].Children[0];
+  const sibling = root.Append('TD');
+  sibling.SetTableAttributes({ headers: ['h1'] });
+  const key = { kind: 'string' as const, bytes: new TextEncoder().encode('other') };
+  sibling.Dict.set('ID', key);
+  root.Dict.set('IDTree', new Map([['Names', [cell.Dict.get('ID')!, cell.Ref!, key, sibling.Ref!]]]));
+  const before = d.Save();
+  expect(() => p.GetTables()[0].Remove()).toThrow(/external reference/i);
+  expect(d.Save()).toEqual(before);
+  sibling.SetTableAttributes({ headers: [] });
+  p.GetTables()[0].Remove();
+  const saved = Document.Open(d.Save()), r = saved.GetStructTree()!, tree = r.Dict.get('IDTree')!;
+  expect(lookupNameTree(saved, tree, 'h1')).toBeUndefined();
+  expect(saved.resolve(lookupNameTree(saved, tree, 'other'))).toBe(r.Children[0].Dict);
+});
+
+it('clears superseded table-level ActualText when replacing the cell contents', () => {
+  const d = Document.Open(buildTaggedTablePdf());
+  d.GetStructTree()!.Children[0].ActualText = 'obsolete';
+  d.Pages[0].GetTables()[0].Replace(replacement());
+  expect(Document.Open(d.Save()).GetStructTree()!.Children[0].ActualText).toBeUndefined();
 });
 
 it.each([30, 90, -30, 180])('replaces a %i-degree table at its original angle and anchor after reopen', degrees => {

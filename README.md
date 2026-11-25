@@ -1115,6 +1115,18 @@ use the rotated footprint. Nested tables and ambiguous overlaps with neighboring
 text, graphics, images or annotations raise `UnsupportedFeatureError`.
 Ownership and redraw failures leave the page intact.
 
+For a tagged single-page table in page content, the same methods edit the PDF
+structure tree and the page's marked content together. A replacement keeps the
+table's position in reading order and gets its rows, cells, spans, and header
+scopes from the builder. Removing a table releases its marked-content IDs.
+The fit check uses cell layout bounds, a matching ruled grid, or the extracted
+text bounds when the file provides neither.
+References from surviving structure elements to a disappearing cell, including
+header associations, raise `UnsupportedFeatureError`. Tagged edits also reject
+nested or multi-page tables, cells drawn in Forms, rotated or clipping text,
+and cells with annotation object references. Read a tagged table again after
+editing the document.
+
 #### Multi-page tables
 
 A table taller than the space on the page paginates. `AddTable` returns an
@@ -4337,7 +4349,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `StructRetagResult` | What a structure-type change reached: the marked-content tags it rewrote, and those it could not address. |
 | `StructTreeRoot` | The document's logical structure tree: a live handle over /StructTreeRoot. |
 | `SubmitAction` | A SubmitForm action: send the form's field values to `url`. |
-| `Table` | Reconstructed rows and cells with quads, text, HTML and Markdown export. An untagged single-page table from `page.GetTables()` supports `Remove()` and `Replace(builder)` at its detected angle. |
+| `Table` | Reconstructed rows and cells with quads, text, HTML and Markdown export. Single-page tables from `page.GetTables()` support `Remove()` and `Replace(builder)`. Tagged tables update the structure tree. Untagged tables retain their detected angle. |
 | `TableBuilder` | A page-independent table: ordered rows over shared text defaults. |
 | `Template` | A reusable piece of drawn content, placed on any number of pages from a single Form XObject. |
 | `TextChange` | One run of a text comparison: `op` (`equal`, `delete`, `insert`), `oldText`/`newText`, and `old`/`new` `TextSpan`s placing it on each document's pages. |

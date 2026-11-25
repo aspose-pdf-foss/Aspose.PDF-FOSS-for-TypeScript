@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Edit tagged tables in reading order.** `Table.Remove()` releases the table's marked-content IDs, and `Table.Replace(builder)` writes the new cells and header scopes at the original structure-tree position. Both operations preserve unrelated tagged content and reject edits that would leave a surviving reference to a removed cell. Replacement cells record their layout bounds for subsequent edits. (kprh.7)
+
 - **Edit rotated detected tables in place.** `table.Remove()` and
   `table.Replace(builder)` check ownership along the detected table axes.
   Replacement retains the table's angle, anchor, and width, including the

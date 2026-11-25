@@ -122,7 +122,7 @@ const INFO_KEYS = [
 ] as const;
 
 /** Object numbers reachable from `start` by following every ref in the graph. */
-function reachableFrom(objects: Map<number, PdfObject>, start: number): Set<number> {
+export function reachableFrom(objects: Map<number, PdfObject>, start: number): Set<number> {
   const seen = new Set<number>();
   const stack: PdfObject[] = [ref(start)];
   while (stack.length > 0) {
