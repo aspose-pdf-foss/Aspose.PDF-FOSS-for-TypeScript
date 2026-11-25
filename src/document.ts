@@ -1649,7 +1649,7 @@ export class Document {
     return renderDocumentToDocxAsync(this, options);
   }
 
-  /** Export selected PDF tables as worksheets, in document order. */
+  /** Export detected tables or full-page worksheets, in document order. */
   ToXlsx(options: XlsxExportOptions = {}): Uint8Array {
     return runOperation('ToXlsx', options, context => xlsxSteps(this, options, context));
   }

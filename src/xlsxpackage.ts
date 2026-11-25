@@ -1,8 +1,9 @@
 import { buildOoxmlPackage, type OoxmlPart, type OoxmlRelationship } from './ooxml.js';
 import { escapeXml } from './xml.js';
+import { addSheetDrawing, OFFICE_REL as REL_NS, type XlsxPicture } from './xlsxdrawing.js';
+import type { EncodedImage } from './imagehref.js';
 
 const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.';
 const WORKBOOK = 'xl/workbook.xml';
 const MAX_ROWS = 1048576;
@@ -25,6 +26,8 @@ export interface XlsxSheet {
   /** Array positions are worksheet coordinates. Nulls and holes are blanks. */
   rows: readonly (readonly Cell[])[];
   merges?: readonly XlsxMerge[];
+  grid?: { columnWidths: number[]; rowHeights: number[] };
+  pictures?: readonly XlsxPicture[];
 }
 
 /** ST_Xstring quotes literal escape prefixes before introducing any escapes.
@@ -101,11 +104,15 @@ function worksheetXml(sheet: XlsxSheet): string {
       }
       cells.push(cellXml(value, ref));
     });
-    if (cells.length) rows.push(`<row r="${row + 1}">${cells.join('')}</row>`);
+    const size = sheet.grid ? ` ht="${sheet.grid.rowHeights[row]}" customHeight="1"` : '';
+    if (size || cells.length) rows.push(`<row r="${row + 1}"${size}>${cells.join('')}</row>`);
   });
   startMergesThrough(MAX_ROWS);
   const ranges = mergeCells.length ? `<mergeCells count="${mergeCells.length}">${mergeCells.join('')}</mergeCells>` : '';
-  return `${DECL}<worksheet xmlns="${MAIN_NS}"><sheetData>${rows.join('')}</sheetData>${ranges}</worksheet>`;
+  const columns = sheet.grid ? '<cols>' + sheet.grid.columnWidths.map((width, i) =>
+    `<col min="${i + 1}" max="${i + 1}" width="${width}" customWidth="1"/>`).join('') + '</cols>' : '';
+  const drawing = sheet.pictures?.length ? `<drawing xmlns:r="${REL_NS}" r:id="rId1"/>` : '';
+  return `${DECL}<worksheet xmlns="${MAIN_NS}">${columns}<sheetData>${rows.join('')}</sheetData>${ranges}${drawing}</worksheet>`;
 }
 
 /** Package already-typed table data as XLSX. Each string is literal cell text. */
@@ -116,6 +123,7 @@ export function writeXlsx(sheets: readonly XlsxSheet[]): Uint8Array {
     { source: '', id: 'rId1', type: REL_NS + '/officeDocument', target: WORKBOOK },
   ];
   const names = new Set<string>();
+  const mediaIds = new Map<EncodedImage, number>();
   const sheetList = sheets.map((sheet, index) => {
     const { name } = sheet;
     const key = name.toUpperCase();
@@ -125,6 +133,7 @@ export function writeXlsx(sheets: readonly XlsxSheet[]): Uint8Array {
     }
     names.add(key);
     const id = index + 1;
+    if (sheet.pictures?.length) addSheetDrawing(id, sheet.pictures, mediaIds, parts, rels);
     const target = `worksheets/sheet${id}.xml`;
     parts.push({ path: 'xl/' + target, bytes: encoder.encode(worksheetXml(sheet)), contentType: CONTENT_TYPE + 'worksheet+xml' });
     rels.push({ source: WORKBOOK, id: `rId${id}`, type: REL_NS + '/worksheet', target });

@@ -59,7 +59,42 @@ def check_pdf_tables():
     workbook.close()
 
 
+def check_go_fixtures():
+    # xlsx_write_test.go at dfa75dbfb300e6eb5a8e5d2199f81d07ed602916.
+    # The TypeScript policy keeps source text literal in both modes.
+    workbook = read_generated("""
+        import { buildXlsxGoTable } from './test/helpers/build-xlsx-page-pdf.ts';
+        process.stdout.write(buildXlsxGoTable().ToXlsx());
+    """)
+    table = workbook.active
+    assert list(table.values) == [("Item", "Qty", "Price"), ("Apples", "3", "€4.50"),
+                                  ("Pears", "2", "€5.25"), ("Total", None, "€9.75")]
+    assert {str(r) for r in table.merged_cells.ranges} == {"A4:B4"}
+    workbook.close()
+
+    workbook = read_generated("""
+        import { buildXlsxPageDoc } from './test/helpers/build-xlsx-page-pdf.ts';
+        process.stdout.write(await buildXlsxPageDoc().ToXlsxAsync({mode: 'pages'}));
+    """)
+    assert workbook.sheetnames == ["Page 1", "Page 2"]
+    sheet = workbook.worksheets[0]
+    rows = [[cell for cell in row if cell.value is not None] for row in sheet]
+    title, amounts = [row for row in rows if row]
+    assert [cell.value for cell in title + amounts] == ["Report Title", "Revenue", "1200"]
+    assert amounts[1].data_type == "s" and amounts[1].column > amounts[0].column
+    assert amounts[0].column == title[0].column
+    assert [cell.value for row in workbook.worksheets[1] for cell in row if cell.value] == ["Second page"]
+    assert sheet.column_dimensions["A"].width > 0 and sheet.row_dimensions[1].height > 0
+    for page in workbook:
+        pic, = page._images
+        assert (pic.width, pic.height) == (2, 1)
+        assert (pic.anchor.pos.x, pic.anchor.pos.y) == (762000, 2844800)
+        assert (pic.anchor.ext.cx, pic.anchor.ext.cy) == (457200, 228600)
+    workbook.close()
+
+
 if __name__ == "__main__":
     check_package()
     check_pdf_tables()
-    print("Verified the package writer, stitched PDF table, and nested PDF worksheets.")
+    check_go_fixtures()
+    print("Verified XLSX packaging, table and page layouts, literal values, and picture anchors.")

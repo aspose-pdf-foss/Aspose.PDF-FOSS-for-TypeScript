@@ -1,16 +1,18 @@
 import type { OperationControlOptions } from './checkpoint.js';
 import type { Document } from './document.js';
 import type { OperationContext, OperationSteps } from './operation.js';
+import { pageWorkbookSteps } from './xlsxpages.js';
 import { resolvePages } from './pagerange.js';
 import type { Table, TableExtractOptions } from './tablemodel.js';
 import { groupTables, repeatsHeader, type TablePart, type TableStitchOptions } from './tablestitch.js';
 import { address, writeXlsx, type XlsxMerge, type XlsxSheet } from './xlsxpackage.js';
 
-/** PDF table structure omitted from the workbook. Locations are one-based.
+/** PDF table structure or page picture omitted from the workbook. Locations are one-based.
  * Table numbers here are local to the source page; row and column are local
  * to the original table, including a nested table's own grid. */
 export interface XlsxSkipped {
-  kind: 'summary' | 'row-section' | 'header-metadata' | 'cell-style' | 'repeated-header' | 'no-tables';
+  kind: 'summary' | 'row-section' | 'header-metadata' | 'cell-style' | 'repeated-header' | 'no-tables'
+    | 'unsupported-image' | 'image-limit';
   sheetName?: string;
   pageNumber?: number;
   tableNumber?: number;
@@ -19,6 +21,12 @@ export interface XlsxSkipped {
 }
 
 export interface XlsxExportOptions extends TableExtractOptions, TableStitchOptions, OperationControlOptions {
+  /** Tables by default; pages lays positioned content onto one sheet per selected page. */
+  mode?: 'tables' | 'pages';
+  /** Page mode: maximum pixels per image or mask. Default 8 MiPixels. */
+  maxImagePixels?: number;
+  /** Page mode: total bytes of unique workbook media. Default 32 MiB. */
+  maxImageBytes?: number;
   /** One-based page numbers or a range such as "1-3,5". */
   pages?: number[] | string;
   /** One-based logical table numbers after page filtering and stitching. */
@@ -89,6 +97,13 @@ function mapSheet(
 export function* xlsxSteps(doc: Document, opts: XlsxExportOptions, context: OperationContext): OperationSteps<Uint8Array> {
   const { onSkipped } = opts;
   if (onSkipped !== undefined && typeof onSkipped !== 'function') throw new TypeError('onSkipped must be a function');
+  if (opts.mode === 'pages') {
+    if (opts.tables !== undefined || opts.stitch !== undefined || opts.region !== undefined || opts.structure !== undefined) {
+      throw new TypeError('Table selection and extraction options require XLSX tables mode');
+    }
+    return yield* pageWorkbookSteps(doc, opts, context);
+  }
+  if (opts.mode !== undefined && opts.mode !== 'tables') throw new TypeError('Unknown XLSX export mode');
   const pages = doc.Pages;
   const selected = resolvePages(opts.pages, pages.length);
   // Keep slots for unselected pages: two selected pages separated by a gap

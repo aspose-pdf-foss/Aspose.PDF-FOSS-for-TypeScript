@@ -1,0 +1,7 @@
+# Optional page worksheets (cfgh.3)
+
+Add `mode: 'pages'` to both XLSX entry points. Emit a worksheet named for the original page number for each selected page, in document order. Use displayed CropBox coordinates, editable literal text, reproducible column widths and row heights, and embedded DrawingML pictures for supported image placements. Keep blank pages and the existing tables default. The caller approved literal text for numeric-looking values such as 1200.
+
+Map positioned fragments to cells using page geometry. Preserve spacing between text columns and lines, deduplicate encoded media across worksheets, and check image size and workbook budgets before retaining assets. Report skipped pictures through the existing omission callback. Verify both table and page fixture expectations from the pinned Go export tests with an independent XLSX reader, documenting the intentional cell-type differences.
+
+The independent-reader check transcribes two [Go XLSX fixtures](https://github.com/aspose-pdf-foss/Aspose-PDF-FOSS-for-Go/blob/dfa75dbfb300e6eb5a8e5d2199f81d07ed602916/xlsx_write_test.go#L83-L181). For TablesOnly it checks the three columns and the two-column Total merge; the TypeScript cells keep the quantity and currency spellings, with no number formats or header styling. For FullPage it checks two page-named sheets, the report title, the revenue label and its separate amount, and the second page's text. Go's numeric 1200 reads as the string "1200" in TypeScript. Additional TypeScript fixture images exercise shared media, placement and extents.

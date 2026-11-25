@@ -528,7 +528,8 @@ export interface MarkedContentEvent {
 
 export interface ContentVisitor {
   glyph?(e: GlyphEvent): void;
-  image?(e: ImageEvent): void;
+  /** Inline samples are available to encoders without synthesizing an XObject for other visitors. */
+  image?(e: ImageEvent, inline?: ContentOp['inlineImage']): void;
   path?(e: PathEvent): void;
   artifact?(e: ArtifactEvent): void;
   marked?(e: MarkedContentEvent): void;
@@ -1002,7 +1003,7 @@ function walkScope(
           if (mcPropsStack.length) mcProps = mcPropsStack.pop();
           oc.emc();
           break;
-        case 'BI': if (op.inlineImage && !oc.hidden) emitImage(ctx, curCtm, addr, 'inline', activeMcid, artScope); break;
+        case 'BI': if (op.inlineImage && !oc.hidden) emitImage(ctx, curCtm, addr, 'inline', activeMcid, artScope, undefined, op.inlineImage); break;
         case 'Do': {
           const xn = op.operands[0];
           if (!isName(xn) || !xobjects) break;
@@ -1115,12 +1116,12 @@ function emitGlyphArray(ctx: Ctx, st: TextState, arrObj: PdfObject, ctm: Matrix,
 }
 
 /** Emit an image-placement event for the unit square under the current CTM. */
-function emitImage(ctx: Ctx, ctm: Matrix, addr: ContentAddr, kind: 'xobject' | 'inline', mcid?: number, artScope?: ContentAddr, stream?: PdfStream): void {
+function emitImage(ctx: Ctx, ctm: Matrix, addr: ContentAddr, kind: 'xobject' | 'inline', mcid?: number, artScope?: ContentAddr, stream?: PdfStream, inline?: ContentOp['inlineImage']): void {
   if (!ctx.visitor.image) return;
   ctx.visitor.image({
     addr, quad: bboxOfUnitSquare(ctm), ctm, kind, stream, mcid,
     artifact: artScope ? true : undefined, artifactScope: artScope,
-  });
+  }, inline);
 }
 
 function bboxOfUnitSquare(ctm: Matrix): [number, number, number, number] {

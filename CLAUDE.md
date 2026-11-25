@@ -11013,6 +11013,11 @@ Source (`src/`):
   at the left edge (`test/helpers/build-untagged-list-pdf.ts`), the shape a
   third-party producer emits. Building them with `AddMarkdown` measures our
   renderer, not the inference.
+- **xlsxpages.ts** maps the displayed CropBox to worksheet tracks. **xlsxmedia.ts** checks
+  image and mask dimensions and workbook budgets, and interns identical encoded bytes.
+  **xlsxdrawing.ts** writes picture anchors in EMUs and the worksheet-to-drawing-to-media
+  relationships. `scripts/check-xlsx-package.py` reads both Go fixture layouts using
+  openpyxl, including the deliberate literal text treatment of quantities (`cfgh.3`).
 - **xlsxexport.ts** maps selected original page tables to worksheets. It shares the continuation groups in `tablestitch.ts` while retaining source row numbers for omission reporting. Nested worksheets name the parent sheet ID and its destination cell after stitching. Both public methods drive the same generator (cfgh.2).
 - **xlsxpackage.ts** writes ordered worksheets for the tables-first exporter
   (`cfgh.1`). It passes workbook and worksheet parts to `buildOoxmlPackage`.
