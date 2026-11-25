@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Remove all text drawn on a selected page.** `page.RemoveAllText()` strips
+  text-show operators and matching marked-content `/ActualText`, including
+  inside shared Forms. Graphics and images retain their original operators.
+  A clipping text show rejects the edit before the page changes. (kprh.5)
+
 - **Remove or replace a detected table in place.** Single-page table results
   expose `Remove()` and `Replace(builder)`. Replacement reuses the original
   position and width. Ambiguous ownership and redraw failures leave the page

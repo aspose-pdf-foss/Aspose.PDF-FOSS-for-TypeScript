@@ -2242,6 +2242,32 @@ with unchanged text is no change. `CompareRendering` covers that: it renders bot
 reports which pixels changed, as page-space regions and an optional difference image (the
 second document faded, changes in red) — where something changed, though not what.
 
+### Remove page text
+
+```ts
+const doc = Document.Open(bytes);
+doc.Pages[0].RemoveAllText();
+const cleaned = doc.Save();
+```
+
+`RemoveAllText()` removes the four PDF text-show operators from one page and
+the Form XObjects it draws, including text on hidden layers and text whose font
+cannot be decoded. It preserves the spacing and line moves in the two quote
+operators. Marked-content sequences that contained removed text lose their
+`/ActualText`. A sequence describing only an image keeps its label. The edit
+copies shared Forms and property lists so their other uses retain the original.
+
+Text drawn in clipping modes 4–7 can shape later artwork. The method raises
+`UnsupportedFeatureError` before editing if it encounters such a glyph show,
+a recursive or excessively deep Form chain, or a Form that needs cloning
+and carries a structure-parent key. Ordinary vector clips remain active.
+Document load limits also apply.
+
+This is page-content cleanup. Annotation appearances, tiling patterns, soft
+masks, Type 3 glyph programs, and the document structure tree are outside its
+scope. Original strings can remain in shared resources, tags, or metadata.
+Use the redaction APIs below for sensitive content.
+
 ### Redact Content
 
 ```ts

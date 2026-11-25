@@ -8,6 +8,7 @@ import { extractText, extractStructured, walkOpts, TextBlock, type ExtractOption
 import { readParagraphs, type ParagraphReadOptions } from './paragraphread.js';
 import { editableFragments, type EditableTextFragment, type EditableParagraph } from './texttarget.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
+import { removeAllText } from './removetext.js';
 import type { ReplaceTextOptions } from './replacefont.js';
 import { restyleText, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
 import { searchAnnotations, searchAnnotationText, type AnnotationMatch, type AnnotationTextMatch } from './annotsearch.js';
@@ -1034,6 +1035,11 @@ export class Page {
   Scale(factor: number): void {
     scalePage(this.doc, this, factor);
   }
+
+  /** Strip text-show operators and associated marked-content ActualText from the
+   * page and the Forms it draws. A clipping text show refuses the entire edit.
+   * Scope and limitations are described under "Remove page text" in the README. */
+  RemoveAllText(): void { removeAllText(this.doc, this); }
 
   /** Redact every region in `rects` (each `[x0, y0, x1, y1]` in PDF user space):
    *  truly remove covered text and images, prune the resources they leave

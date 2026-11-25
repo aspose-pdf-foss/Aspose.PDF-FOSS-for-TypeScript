@@ -36,7 +36,7 @@ function drawName(op: ContentOp | undefined): string | undefined {
 }
 
 /** Reserve unresolved names in joined page content and reachable resource streams. */
-function reserveAliasNames(doc: Document, page: Page, pageResources: PdfDict | undefined): Set<string> {
+export function reserveAliasNames(doc: Document, page: Page, pageResources: PdfDict | undefined, prefix = ALIAS_PREFIX): Set<string> {
   const names = new Set<string>();
   const tokens: ContentTokenBudget = { tokens: 0 };
   const scopes = new Map([[pageResources, 0]]);
@@ -74,26 +74,23 @@ function reserveAliasNames(doc: Document, page: Page, pageResources: PdfDict | u
     }
   };
   const scan = (refs: ReturnType<typeof referencedNames>, scope: PdfDict | undefined, depth: number) => {
+    for (const keys of refs.values()) for (const key of keys) if (key.startsWith(prefix)) names.add(key);
     const xobjects = dictOf(doc, scope?.get('XObject'));
     for (const key of refs.get('XObject') ?? []) {
-      if (key.startsWith(ALIAS_PREFIX)) names.add(key);
       const target = doc.resolve(xobjects?.get(key));
       if (isStream(target) && !isImage(doc, target)) queue(target, dictOf(doc, target.dict.get('Resources')) ?? scope, depth + 1);
     }
     const patterns = dictOf(doc, scope?.get('Pattern'));
     for (const key of refs.get('Pattern') ?? []) {
-      if (key.startsWith(ALIAS_PREFIX)) names.add(key);
       const pattern = doc.resolve(patterns?.get(key));
       if (isStream(pattern)) queueProgram(pattern, dictOf(doc, pattern.dict.get('Resources')), depth + 1);
     }
     const fonts = dictOf(doc, scope?.get('Font'));
     for (const key of refs.get('Font') ?? []) {
-      if (key.startsWith(ALIAS_PREFIX)) names.add(key);
       queueFont(fonts?.get(key), depth + 1);
     }
     const states = dictOf(doc, scope?.get('ExtGState'));
     for (const key of refs.get('ExtGState') ?? []) {
-      if (key.startsWith(ALIAS_PREFIX)) names.add(key);
       const state = dictOf(doc, states?.get(key));
       const mask = doc.resolve(dictOf(doc, state?.get('SMask'))?.get('G'));
       if (isStream(mask)) queueProgram(mask, dictOf(doc, mask.dict.get('Resources')), depth + 1);
