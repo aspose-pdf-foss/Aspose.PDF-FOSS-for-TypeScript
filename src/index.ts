@@ -81,6 +81,7 @@ export { EditableContent } from './editcontent.js';
 export type { ContentAddr } from './editcontent.js';
 export { visitContent, mapRegions } from './text.js';
 export type { GlyphEvent, ImageEvent, PathEvent, ArtifactEvent, ContentVisitor, ContentWalkOptions, ExtractOptions, TextReadOptions, Rect, RegionHits, TextFragment, TextLine, TextBlock } from './text.js';
+export type { ExtractedParagraph, ParagraphContinuation, ParagraphReadOptions } from './paragraphread.js';
 export { extractTables, Table } from './table.js';
 export { extractTaggedTables } from './tablestruct.js';
 export { stitchTables } from './tablestitch.js';

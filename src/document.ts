@@ -64,6 +64,7 @@ import { checkReplaceOptions, type ReplaceTextOptions } from './replacefont.js';
 import { restyleDocument, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
 import { stitchTables, type TableStitchOptions } from './tablestitch.js';
 import type { Table, TableExtractOptions } from './tablemodel.js';
+import { readParagraphs, type ExtractedParagraph, type ParagraphReadOptions } from './paragraphread.js';
 import type { Rect } from './text.js';
 import type { RedactOptions } from './redact.js';
 import { compareText, type CompareTextOptions, type TextComparison } from './compare.js';
@@ -593,6 +594,11 @@ export class Document {
     this.Pages = tree.pages;
     this.pageObjNums = tree.pageObjNums;
     this.rootPagesNum = tree.rootPagesNum;
+  }
+
+  /** Read paragraphs across pages, optionally joining continuations in reading order. */
+  GetParagraphs(options?: ParagraphReadOptions): ExtractedParagraph[] {
+    return readParagraphs(this.Pages, options);
   }
 
   /** Extract tables from every page and stitch continuations across page

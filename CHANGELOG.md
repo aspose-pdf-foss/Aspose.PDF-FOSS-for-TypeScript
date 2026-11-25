@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Extract report columns and follow paragraphs across pages.** `page.GetText()`
+  now offers raw drawing order, a fixed-pitch grid, and glyph clipping to a
+  rectangle or the visible page. `GetParagraphs()` on a page or document can
+  join prose across column and page breaks on request. Each continuation keeps
+  its own page number, bounds, and lines. (kprh.2)
+
 - **Read and search marked-content replacement text.** Pass `{ actualText: true }` to `page.GetText()` or `page.Search()` to read the text a PDF author supplied for a glyph or marked sequence. A match on part of a replacement returns the entire span’s painted glyphs and one box per physical line, including when a Form is drawn in several places. (kprh.1)
 
 - **Style review annotations and label printed sheets.** Drawing annotations

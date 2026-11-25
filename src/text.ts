@@ -616,6 +616,12 @@ export interface ContentWalkOptions { skipHidden?: boolean }
 export interface ExtractOptions { includeHidden?: boolean }
 
 export interface TextReadOptions extends ExtractOptions {
+  /** Layout in reading order (default), content-stream order, or on a fixed-pitch grid. */
+  mode?: 'reading' | 'raw' | 'grid';
+  /** Include glyphs whose entire baseline advance lies in this PDF page-space rectangle. */
+  rectangle?: Rect;
+  /** Intersect the extraction region with the page's effective CropBox. */
+  limitToPageBounds?: boolean;
   /** Read each glyph-backed marked sequence using its outermost /ActualText.
    *  Defaults to false. */
   actualText?: boolean;
@@ -1463,7 +1469,11 @@ export function groupLineBlocks(lines: readonly { quad: [number, number, number,
 export function extractStructured(
   doc: Document, page: Page, opts?: ExtractOptions, include?: (g: GlyphEvent) => boolean,
 ): TextBlock[] {
-  const frags = extractFragments(doc, page, opts, include);
+  return blocksFromFragments(extractFragments(doc, page, opts, include));
+}
+
+/** Assemble fragments already restricted to one page or column. @internal */
+export function blocksFromFragments(frags: TextFragment[]): TextBlock[] {
   if (frags.length === 0) return [];
 
   // Group fragments into lines by baseline (PDF Y up: larger Y first).
@@ -1535,23 +1545,13 @@ export type TextSource = { glyph: GlyphEvent; line: number; offset: number }[];
 export function actualTextLayout(
   doc: Document, page: Page, opts: ExtractOptions, accepts?: (g: GlyphEvent) => boolean,
 ): { text: string; refs: (TextSource | undefined)[] } {
-  const runs: RefRun<GlyphEvent>[] = [];
-  const excluded = new Set<NonNullable<GlyphEvent['actualTextSpan']>>();
-  visitContent(doc, page, { glyph(g) {
-    const span = g.actualTextSpan;
-    if (accepts && !accepts(g)) {
-      if (span) excluded.add(span);
-      return;
-    }
-    if (!span && !g.text) return;
+  const runs = readGlyphs(doc, page, opts, true, accepts).map(g => {
     const run = runFromGlyph(g, g);
     // Keep even unmapped glyphs and painted whitespace in the physical layout.
-    if (span) run.text = '\uFFFC';
-    runs.push(run);
-  } }, walkOpts(opts));
-  const physical = layoutLines(excluded.size
-    ? runs.filter(r => !r.ref?.actualTextSpan || !excluded.has(r.ref.actualTextSpan))
-    : runs);
+    if (g.actualTextSpan) run.text = '\uFFFC';
+    return run;
+  });
+  const physical = layoutLines(runs);
   const sources = new Map<NonNullable<GlyphEvent['actualTextSpan']>, TextSource>();
   const parts: string[] = [];
   const refs: (TextSource | undefined)[] = [];
@@ -1598,15 +1598,142 @@ export function actualTextLayout(
 
 /** Walk a page's content, collect positioned runs, assemble into text. */
 export function extractText(doc: Document, page: Page, opts?: TextReadOptions): string {
-  if (opts?.actualText) return actualTextLayout(doc, page, opts).text;
+  const clip = textClip(page, opts);
+  if (opts?.mode === 'raw' || opts?.mode === 'grid') {
+    const glyphs = readGlyphs(doc, page, opts, !!opts.actualText, clip);
+    return spatialText(glyphs, opts.mode, !!opts.actualText);
+  }
+  if (opts?.actualText) return actualTextLayout(doc, page, opts, clip).text;
   const runs: Run[] = [];
-  visitContent(doc, page, {
-    glyph: (e) => {
-      if (!e.text) return;
-      runs.push(runFromGlyph(e));
-    },
-  }, walkOpts(opts));
+  visitContent(doc, page, { glyph(g) {
+    if (g.text && (!clip || clip(g))) runs.push(runFromGlyph(g));
+  } }, walkOpts(opts));
   return assembleLines(runs);
+}
+
+function textClip(page: Page, opts?: TextReadOptions): ((g: GlyphEvent) => boolean) | undefined {
+  if (!opts?.rectangle && !opts?.limitToPageBounds) return;
+  const box = opts.limitToPageBounds ? page.CropBox : [-Infinity, -Infinity, Infinity, Infinity];
+  const rect = opts.rectangle ?? box;
+  const left = Math.max(Math.min(box[0], box[2]), Math.min(rect[0], rect[2]));
+  const bottom = Math.max(Math.min(box[1], box[3]), Math.min(rect[1], rect[3]));
+  const right = Math.min(Math.max(box[0], box[2]), Math.max(rect[0], rect[2]));
+  const top = Math.min(Math.max(box[1], box[3]), Math.max(rect[1], rect[3]));
+  if (left > right || bottom > top) return () => false;
+  // Match the reference's hundredth-point allowance for matrix and advance rounding.
+  const inside = (x: number, y: number) => left - 0.01 <= x && x <= right + 0.01 && bottom - 0.01 <= y && y <= top + 0.01;
+  return g => {
+    const [endX, endY] = g.penEnd;
+    if (!inside(endX, endY)) return false;
+    if (!g.vertical) return inside(g.quad[0], g.quad[1]);
+    // The vertical cell is centred on the starting pen, and spans both pen Ys.
+    const [x0, y0, x1, y1] = g.quad;
+    return inside((x0 + x1) / 2, endY === y0 ? y1 : y0);
+  };
+}
+
+function readGlyphs(doc: Document, page: Page, opts: ExtractOptions, semantic: boolean,
+  accepts?: (g: GlyphEvent) => boolean): GlyphEvent[] {
+  const glyphs: GlyphEvent[] = [];
+  const excluded = new Set<NonNullable<GlyphEvent['actualTextSpan']>>();
+  visitContent(doc, page, { glyph(g) {
+    const span = semantic && g.actualTextSpan;
+    if (accepts && !accepts(g)) {
+      if (span) excluded.add(span);
+    } else if (span || g.text) glyphs.push(g);
+  } }, walkOpts(opts));
+  return excluded.size ? glyphs.filter(g => !g.actualTextSpan || !excluded.has(g.actualTextSpan)) : glyphs;
+}
+
+function rawRows(glyphs: GlyphEvent[]): GlyphEvent[][] {
+  const rows: GlyphEvent[][] = [[]];
+  let previous: Run | undefined;
+  for (const g of glyphs) {
+    const run = runFromGlyph(g);
+    if (previous && (Math.abs(axisKeys(run).line - axisKeys(previous).line) > 0.5 * (run.size || 12) ||
+        previous.vertical !== run.vertical || Math.abs((run.angle ?? 0) - (previous.angle ?? 0)) > ANGLE_TOL)) rows.push([]);
+    rows[rows.length - 1].push(g);
+    previous = run;
+  }
+  return rows;
+}
+
+/** Lay out whole fragments. Sorting individual letters would interleave two overlapping words. */
+function gridLayout(glyphs: GlyphEvent[]) {
+  const spans: [number, number][] = [];
+  const fragments = buildFragments(glyphs.map(g => g.text ? g : { ...g, text: '\uFFFC' }), spans);
+  const widths: number[] = [];
+  const starts = new Set<GlyphEvent>();
+  let origin = Infinity;
+  const runs = spans.map(([from, to], index) => {
+    const run = runFromGlyph(glyphs[from], spans[index]);
+    const last = runFromGlyph(glyphs[to - 1]);
+    run.endX = last.endX;
+    run.endY = last.endY;
+    run.text = 'x'; // One sortable position per fragment, including unmapped ActualText members.
+    starts.add(glyphs[from]);
+    const { start, end } = axisKeys(run);
+    origin = Math.min(origin, start);
+    const width = (end - start) / [...fragments[index].text].length;
+    if (width > 0 && Number.isFinite(width)) widths.push(width);
+    return run;
+  });
+  const layout = layoutLines(runs);
+  const rows: GlyphEvent[][] = [[]];
+  for (let i = 0; i < layout.text.length; i++) {
+    const span = layout.refs[i];
+    if (span) {
+      for (let j = span[0]; j < span[1]; j++) rows[rows.length - 1].push(glyphs[j]);
+    } else if (layout.text[i] === '\n') rows.push([]);
+  }
+  widths.sort((a, b) => a - b);
+  const pitch = Math.max(0.5, widths[Math.floor(widths.length / 2)] ?? 6);
+  return { rows, starts, origin, pitch };
+}
+
+function spatialText(glyphs: GlyphEvent[], mode: 'raw' | 'grid', semantic: boolean): string {
+  const grid = mode === 'grid' ? gridLayout(glyphs) : undefined;
+  const rows = grid?.rows ?? rawRows(glyphs);
+  const emitted = new Set<NonNullable<GlyphEvent['actualTextSpan']>>();
+  const result: string[] = [];
+  let previousLine: number | undefined;
+  for (const row of rows) {
+    let line = '', column = 0;
+    let keepThrough = 0;
+    let prevEnd: number | undefined;
+    for (const g of row) {
+      const { start, end } = axisKeys(runFromGlyph(g));
+      const gap = prevEnd === undefined ? 0 : start - prevEnd;
+      prevEnd = end;
+      const span = semantic && g.actualTextSpan;
+      if (span && emitted.has(span)) continue;
+      if (span) emitted.add(span);
+      const value = span ? span.text : g.text;
+      if (!value) continue;
+      const wordGap = gap > (grid ? 0.25 : 0.2) * (g.fontSize || 12);
+      if (!line || wordGap || grid?.starts.has(g)) {
+        // Cap the grid index so a distant stamp cannot allocate a line as wide
+        // as its numeric coordinate. Overlapping words retain a separator at a gap.
+        let spaces = wordGap && line && !line.endsWith(' ') && !value.startsWith(' ') ? 1 : 0;
+        if (grid) {
+          const target = Math.min(4096, Math.round((start - grid.origin) / grid.pitch));
+          if (line && grid.starts.has(g) && target < column) spaces = 1;
+          if (target > column) spaces = Math.max(spaces, target - column);
+        }
+        line += ' '.repeat(spaces);
+        column += spaces;
+      }
+      line += value;
+      column += [...value].length;
+      if (span) keepThrough = line.length;
+    }
+    if (!line) continue;
+    const baseline = axisKeys(runFromGlyph(row[0])).line;
+    if (mode === 'grid' && previousLine !== undefined && baseline - previousLine > 1.5 * row[0].fontSize) result.push('');
+    result.push(line.slice(0, keepThrough) + line.slice(keepThrough).trimEnd());
+    previousLine = baseline;
+  }
+  return result.join('\n');
 }
 
 function isFormXObject(doc: Document, d: PdfDict): boolean {

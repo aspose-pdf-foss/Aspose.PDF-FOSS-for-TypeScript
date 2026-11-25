@@ -5,6 +5,7 @@ import { inflateStream } from './flate.js';
 import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
 import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions, type TextReadOptions } from './text.js';
+import { readParagraphs, type ExtractedParagraph, type ParagraphReadOptions } from './paragraphread.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
 import type { ReplaceTextOptions } from './replacefont.js';
 import { restyleText, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
@@ -521,7 +522,8 @@ export class Page {
     return removeArtifacts(this.doc, this, filter);
   }
 
-  /** Extract visible text from the page with reasonable word/line ordering.
+  /** Extract visible text in reading order (default), raw drawing order, or a fixed-pitch grid.
+   *  A rectangle or the CropBox can limit extraction to fully contained glyph advances.
    *  Decodes through simple-font encodings, /ToUnicode CMaps, and Type0 fonts.
    *  Pass `{ actualText: true }` to use marked-content replacement strings.
    *  Returns "" for pages with no text-showing operators.
@@ -553,6 +555,11 @@ export class Page {
    *  rather than what it shows. */
   GetStructuredText(options?: ExtractOptions): TextBlock[] {
     return extractStructured(this.doc, this, options);
+  }
+
+  /** Read paragraphs down each column, optionally joining continuations on this page. */
+  GetParagraphs(options?: ParagraphReadOptions): ExtractedParagraph[] {
+    return readParagraphs([this], options);
   }
 
   /** Reconstruct tables on the page. When the page is tagged and exposes

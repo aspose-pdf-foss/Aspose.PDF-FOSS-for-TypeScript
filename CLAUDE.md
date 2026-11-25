@@ -5671,9 +5671,17 @@ Source (`src/`):
   **Note, measured:** all 18 mutations aimed at these modules and their wiring
   redden, dropping the unknown-type filter only after the fall-through case
   above was added.
+- **paragraphread.ts** — column-aware paragraph extraction for pages and
+  documents. A joined paragraph retains its first page and quad. Its text and
+  lines include every joined segment, each also located by a continuation.
+  Page-local structured extraction and the paragraph reader share line assembly
+  through `blocksFromFragments`.
 - **text.ts** — coordinate-based text extraction (`Page.GetText()`): walks
   content ops, emits positioned glyph runs, and assembles them into words/lines
   (affine matrix helpers live here too).
+  `kprh.2` clips both baseline advance endpoints in PDF page coordinates before
+  layout. A partly selected ActualText span is excluded in every mode. The grid
+  orders whole fragments so overlapping words retain their letters in order.
   **Invariant (`q1g2.3`), and the POLARITY is the safety property:**
   `ContentWalkOptions.skipHidden` defaults to FALSE — today's behaviour — so
   every consumer that must see what the file CONTAINS is safe BY CONSTRUCTION

@@ -1869,6 +1869,41 @@ const doc = Document.Open(bytes);
 console.log(doc.Pages[0].GetText());   // visible text, with word/line breaks
 ```
 
+Use raw order to follow the sequence in which the PDF draws text. Use grid
+output for fixed-format reports whose columns you want to read in a monospace font.
+Grid spacing uses the median character advance across fragments. A large baseline
+gap leaves a blank line. Grid positioning caps a fragment's target column at
+4,096 to bound padding for text drawn far off the page.
+
+```ts
+const page = doc.Pages[0];
+const raw = page.GetText({ mode: 'raw' });
+const report = page.GetText({ mode: 'grid', limitToPageBounds: true });
+const excerpt = page.GetText({ rectangle: [72, 100, 450, 200] });
+```
+
+The rectangle uses PDF page coordinates before the viewer applies page rotation.
+A glyph is included when both ends
+of its baseline advance lie inside. Set `limitToPageBounds` to clip to the
+CropBox as well. With `actualText: true`, clipping away any glyph in a
+replacement span omits the whole replacement.
+
+To read paragraphs down each column, call `page.GetParagraphs()`. To join
+paragraphs that appear to continue in the next column or on the next page,
+use the document method. The paragraph's page number and box locate its first
+segment. Its text and lines include all joined segments. Each continuation
+identifies its own source page and box. Joining is heuristic and considers
+font size, line width, indentation and sentence endings.
+
+```ts
+for (const paragraph of doc.GetParagraphs({ joinContinuations: true })) {
+  console.log(paragraph.pageNumber, paragraph.text);
+  for (const part of paragraph.continuations ?? []) {
+    console.log(part.pageNumber, part.quad);
+  }
+}
+```
+
 Decodes simple-font encodings (WinAnsi/MacRoman/Standard/PDFDoc + `/Differences`),
 `/ToUnicode` CMaps, and composite (Type0) fonts, whose `/Encoding` resolves through
 an embedded CMap stream or one of the 195 bundled predefined Adobe CMaps (including
@@ -4082,7 +4117,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 544 public types plus 175
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 547 public types plus 175
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4471,7 +4506,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `SanitizeOptions` | Which categories `Sanitize` removes; each defaults to `true` except the lossy `pagesToImages`. |
 | `SanitizeReport` | What each `Sanitize` category removed; `undefined` for a category that was kept. |
 | `SearchOptions` | Text search options include `region`, `includeHidden`, `ignoreCase`, `wholeWord`, and opt-in `actualText` for page content. A region must contain the centroids of all visible glyphs in a replacement span for that span to match. |
-| `TextReadOptions` | `page.GetText({ actualText: true })` reads a marked span's PDF replacement string once. The outermost replacement covers nested spans, and an empty string suppresses the span's text. `includeHidden` also includes glyphs on hidden layers. |
+| `TextReadOptions` | Select `mode` (`reading`, `raw`, or `grid`) and clip to a page-space `rectangle`, the CropBox (`limitToPageBounds`), or their intersection. `actualText` reads the outermost replacement once, including empty replacements. `includeHidden` includes glyphs on hidden layers. |
 | `SeedCertRequirement` | A certificate seed-value entry that has a `/Cert /Ff` bit: `subject`, `issuer`, `subjectDN`, `keyUsage`, `url`. |
 | `SeedCertValue` | A certificate seed value (`/Cert`): allowed signer and issuer certificates, subject DN attributes, key-usage profiles and an enrolment URL. |
 | `SeedDigestMethod` | A `/DigestMethod` a seed value may name: `SHA1`, `SHA256`, `SHA384`, `SHA512`, `RIPEMD160`. |
@@ -4498,6 +4533,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `TableStitchOptions` | Interface with 1 property. |
 | `TargetSpace` | The device space a conversion targets: `gray`, `rgb` or `cmyk`. |
 | `TextBlock` | A paragraph-like cluster of consecutive lines, ordered top-to-bottom. |
+| `ExtractedParagraph` | A paragraph with its text, lines, source page number, bounds, and any joined continuations. |
+| `ParagraphContinuation` | A joined paragraph segment with its 1-based page number, page-space bounds (`quad`), and lines. |
+| `ParagraphReadOptions` | Set `joinContinuations` to follow prose across column or page breaks. Set `includeHidden` to include switched-off layers. |
 | `TextFieldInit` | Options for Form.AddTextField / Page.AddTextField. |
 | `TextFragment` | A positioned text run sharing one font, size, and baseline — the public unit of structured extraction (`Page.GetTextFragments`). |
 | `TextLine` | Extracted text and fragments with line bounds and optional inferred styles. |
@@ -5111,7 +5149,8 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.Fonts` | Every font the pages' resources reach, once each, as `DocumentFont[]`: name and subset tag, subtype, `embedded` and `program` kind, encoding, and the pages that declare it (`declaredOn`) beside the pages that draw a glyph in it (`usedOn`) |
 | `doc.EmbedFonts(opts?)` | Embed the fonts the document names and does not embed — simple or `Identity-H` composite, indirect or direct — from a TrueType, OpenType-CFF or Type 1 face in a registered font folder found by name and style (a symbolic font through the face's symbol cmap), keeping each only when every shown code has a glyph and a matching width; returns `EmbedFontsReport` (`subset`, `bundledStandard14`) |
 | `doc.ReplaceFont(from, to, opts?)` | Draw every glyph shown in `from` (a font name, with or without its subset tag, or an entry of `doc.Fonts`) in `to` (a Standard-14 face or a font from `AddFont`/`LoadFontByName`): each `Tf` and ExtGState selecting `from` selects `to` in page content, forms, annotation appearances, tiling patterns and Type 3 glyph procedures, each show string is re-encoded from its Unicode text, and form `/DA` strings follow for a Standard-14 `to`; glyphs keep their positions unless `positions: 'natural'`; a glyph `to` cannot draw goes to the first of `fallbackFonts` that can, else stays in `from` and is reported; returns `ReplaceFontReport` |
-| `page.GetText(options?)` | Extract visible text in reading order. Pass `{ actualText: true }` to use marked-content replacement strings for glyph-backed spans, or `{ includeHidden: true }` to include switched-off layers. |
+| `page.GetText(options?)` | Extract visible text in reading order (default), raw drawing order, or a fixed-pitch grid. Use `rectangle` and `limitToPageBounds` for glyph clipping, `actualText` for marked-content replacements, and `includeHidden` for switched-off layers. |
+| `page.GetParagraphs(options?)` / `doc.GetParagraphs(options?)` | Read paragraphs in column order. Joining is opt-in with `{ joinContinuations: true }`. The page method joins within one page and the document method also follows continuations onto later pages. |
 | `page.GetTextFragments(options?)` | Extract positioned text as `TextFragment[]` (`text`, page-space `quad`, `fontSize`, `fontName`, `bold`/`italic`, and `script: 'sub' \| 'super'` for a run that reads as a sub/superscript of its line; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
 | `page.GetStructuredText(options?)` | Extract text as a `TextBlock[]` tree (blocks → lines → fragments, each with `text` + page-space `quad`; `[]` if none). Pass `{ includeHidden: true }` to read what the file **contains** rather than what it shows — content on a switched-off optional-content layer is otherwise absent, as it is from a render. |
 | `page.GetPaths(options?)` | Extract painted vector paths as `EditablePagePath[]` (user-space `subpaths` of line/cubic segments + `ctm`, device `bbox`, resolved `fill`/`stroke` `{rgb, space}`, `fillRule`, `lineWidth`, `clip`, `mcid`/`artifact`; descends into Form XObjects; `[]` if none). Pass `{ includeHidden: true }` to include paths on switched-off optional-content layers. |
