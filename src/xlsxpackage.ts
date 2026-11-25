@@ -34,7 +34,7 @@ function xstring(value: string): string {
     ch => '_x' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0') + '_'));
 }
 
-function address(row: number, column: number): string {
+export function address(row: number, column: number): string {
   let letters = '';
   for (let n = column + 1; n > 0; n = Math.floor((n - 1) / 26)) {
     letters = String.fromCharCode(65 + (n - 1) % 26) + letters;

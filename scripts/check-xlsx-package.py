@@ -9,14 +9,18 @@ from subprocess import check_output
 from openpyxl import load_workbook
 
 
+def read_generated(generate):
+    data = check_output(["node", "--import", "tsx", "--input-type=module", "-e", generate])
+    return load_workbook(BytesIO(data), data_only=False)
+
+
 def check_package():
     generate = """
         import { writeXlsx } from './src/xlsxpackage.ts';
         import { buildXlsxSheets } from './test/helpers/build-xlsx-sheets.ts';
         process.stdout.write(writeXlsx(buildXlsxSheets()));
     """
-    data = check_output(["node", "--import", "tsx", "--input-type=module", "-e", generate])
-    workbook = load_workbook(BytesIO(data), data_only=False)
+    workbook = read_generated(generate)
     assert workbook.sheetnames == ['Sales & "tax"', '第二']
     sheet = workbook.worksheets[0]
     expected = {
@@ -32,6 +36,30 @@ def check_package():
     workbook.close()
 
 
+def check_pdf_tables():
+    workbook = read_generated("""
+        import { Document } from './src/index.ts';
+        import { buildXlsxTablePdf } from './test/helpers/build-xlsx-table-pdf.ts';
+        process.stdout.write(Document.Open(buildXlsxTablePdf()).ToXlsx());
+    """)
+    assert workbook.sheetnames == ["T1"]
+    sheet = workbook.active
+    assert list(sheet.values) == [("Register", None), ("00123", "=1+2"), ("00456", "Final")]
+    assert sheet["B2"].data_type == "s"
+    assert {str(r) for r in sheet.merged_cells.ranges} == {"A1:B1"}
+    workbook.close()
+
+    workbook = read_generated("""
+        import { Document } from './src/index.ts';
+        import { buildNestedTablePdf } from './test/helpers/build-nested-table-pdf.ts';
+        process.stdout.write(await Document.Open(buildNestedTablePdf()).ToXlsxAsync());
+    """)
+    assert workbook.sheetnames == ["T1", "T2 (T1!B2)", "T3 (T2!A2)"]
+    assert [sheet["A1"].value for sheet in workbook] == ["A", "D", "G"]
+    workbook.close()
+
+
 if __name__ == "__main__":
     check_package()
-    print("Verified both sheets, cell values and types, and the Z3:AB4 merge.")
+    check_pdf_tables()
+    print("Verified the package writer, stitched PDF table, and nested PDF worksheets.")

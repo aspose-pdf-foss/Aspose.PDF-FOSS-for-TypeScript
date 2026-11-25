@@ -225,6 +225,7 @@ export type { SvgOptions } from './svgrender.js';
 export type { HtmlOptions } from './html.js';
 export type { DocxOptions } from './docxexport.js';
 export type { EpubOptions } from './epubexport.js';
+export type { XlsxExportOptions, XlsxSkipped } from './xlsxexport.js';
 export type { ImageOptions, ImageFormat, ImageMode } from './raster.js';
 export type { TiffFrame, TiffEncodeOptions } from './tiffencode.js';
 export { encodeTiff } from './tiffencode.js';

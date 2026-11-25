@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Export detected PDF tables to XLSX.** `ToXlsx` and `ToXlsxAsync` preserve extracted text and merged cells, stitch continuations across selected pages, and put each nested table on a sheet that names its parent cell. The optional omission callback identifies repeated headers and PDF-specific metadata at their source. (cfgh.2)
+
 - **Edit tagged tables in reading order.** `Table.Remove()` releases the table's marked-content IDs, and `Table.Replace(builder)` writes the new cells and header scopes at the original structure-tree position. Both operations preserve unrelated tagged content and reject edits that would leave a surviving reference to a removed cell. Replacement cells record their layout bounds for subsequent edits. (kprh.7)
 
 - **Edit rotated detected tables in place.** `table.Remove()` and

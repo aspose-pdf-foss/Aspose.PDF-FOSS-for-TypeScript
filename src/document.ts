@@ -30,6 +30,7 @@ import { StructTreeRoot } from './struct.js';
 import { renderDocumentToHtml, renderDocumentToHtmlAsync, HtmlOptions } from './html.js';
 import { renderDocumentToDocx, renderDocumentToDocxAsync, type DocxOptions } from './docxexport.js';
 import { renderEpub, renderEpubAsync, type EpubOptions } from './epubexport.js';
+import { xlsxSteps, type XlsxExportOptions } from './xlsxexport.js';
 import {
   renderDocumentToTiff, renderDocumentToTiffAsync, type TiffExportOptions,
   renderDocumentToThumbnails, renderDocumentToThumbnailsAsync, type ThumbnailOptions,
@@ -1646,6 +1647,16 @@ export class Document {
   /** Yield between cooperative work units; cancellation leaves completed edits. */
   ToDocxAsync(options?: DocxOptions): Promise<Uint8Array> {
     return renderDocumentToDocxAsync(this, options);
+  }
+
+  /** Export selected PDF tables as worksheets, in document order. */
+  ToXlsx(options: XlsxExportOptions = {}): Uint8Array {
+    return runOperation('ToXlsx', options, context => xlsxSteps(this, options, context));
+  }
+
+  /** Export the same workbook with cooperative progress and cancellation. */
+  ToXlsxAsync(options: XlsxExportOptions = {}): Promise<Uint8Array> {
+    return runOperationAsync('ToXlsx', options, context => xlsxSteps(this, options, context));
   }
 
   /** Render every page to one EPUB 3 archive.

@@ -11013,6 +11013,7 @@ Source (`src/`):
   at the left edge (`test/helpers/build-untagged-list-pdf.ts`), the shape a
   third-party producer emits. Building them with `AddMarkdown` measures our
   renderer, not the inference.
+- **xlsxexport.ts** maps selected original page tables to worksheets. It shares the continuation groups in `tablestitch.ts` while retaining source row numbers for omission reporting. Nested worksheets name the parent sheet ID and its destination cell after stitching. Both public methods drive the same generator (cfgh.2).
 - **xlsxpackage.ts** writes ordered worksheets for the tables-first exporter
   (`cfgh.1`). It passes workbook and worksheet parts to `buildOoxmlPackage`.
   Cell types come from the input values, so identifiers and formula-like text
