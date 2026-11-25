@@ -17,6 +17,10 @@ test/fixtures/jpeg/*.pgm binary
 # today only because one NUL happens to land in the sniff window. Say binary.
 test/fixtures/qpdf/*.pdf binary
 test/fixtures/qpdf-legacy-passwords/*.pdf binary
+test/fixtures/pubsec-go/*.pdf binary
+test/fixtures/pubsec-oaep/*.der binary
+test/fixtures/go-encrypted-signature/*.pdf binary
+test/fixtures/cms-signer-id/*.pdf binary
 
 # Two Word 2010 revisions whose SHA-256 the comparison test pins: byte-exact or
 # worthless. Both happen to contain NUL bytes, so the sniff calls them binary

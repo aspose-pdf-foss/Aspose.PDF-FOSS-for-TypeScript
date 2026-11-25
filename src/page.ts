@@ -4,7 +4,7 @@ import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream, type PdfRef }
 import { inflateStream } from './flate.js';
 import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
-import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions } from './text.js';
+import { extractText, extractFragments, extractStructured, walkOpts, TextFragment, TextBlock, type ExtractOptions, type TextReadOptions } from './text.js';
 import { searchText, replaceText, TextMatch, type SearchOptions } from './textedit.js';
 import type { ReplaceTextOptions } from './replacefont.js';
 import { restyleText, type TextRestyle, type RestyleTextOptions } from './textrestyle.js';
@@ -523,11 +523,13 @@ export class Page {
 
   /** Extract visible text from the page with reasonable word/line ordering.
    *  Decodes through simple-font encodings, /ToUnicode CMaps, and Type0 fonts.
-   *  Returns "" for pages with no text-showing operators.   *
+   *  Pass `{ actualText: true }` to use marked-content replacement strings.
+   *  Returns "" for pages with no text-showing operators.
+   *
    *  Content the document's default optional-content configuration HIDES is
    *  absent; pass `{ includeHidden: true }` to read what the file contains
    *  rather than what it shows. */
-  GetText(options?: ExtractOptions): string {
+  GetText(options?: TextReadOptions): string {
     return extractText(this.doc, this, options);
   }
 
@@ -580,7 +582,8 @@ export class Page {
   /** Find every occurrence of `find` (a literal string or RegExp) in the page's
    *  text, using the same word/line assembly as `GetText`. Each match carries the
    *  matched substring, one page-space quad per line it spans, and the glyph
-   *  events behind it (op provenance). A RegExp is always applied globally. */
+   *  events behind it (op provenance). With `actualText: true`, any part of a
+   *  replacement matches the full span's glyphs. A RegExp is always applied globally. */
   Search(find: string | RegExp, options?: SearchOptions): TextMatch[] {
     return searchText(this.doc, this, find, options);
   }
@@ -598,7 +601,7 @@ export class Page {
    *  could act on. To redact what this finds, pass the quads to `Redact` —
    *  which removes any annotation whose /Rect they intersect, the whole
    *  annotation being the only granularity available. */
-  SearchAnnotations(find: string | RegExp, options?: SearchOptions): AnnotationMatch[] {
+  SearchAnnotations(find: string | RegExp, options?: Omit<SearchOptions, 'actualText'>): AnnotationMatch[] {
     return searchAnnotations(this.doc, this, find, options);
   }
 

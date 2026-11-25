@@ -425,6 +425,9 @@ export interface GlyphEvent {
    *  exactly that case — veraPDF's `containsStringKey` checks the inherited
    *  marked-content attribute BEFORE it looks at the structure element. */
   mcProps?: { actualText?: string; alt?: string; lang?: string };
+  /** Outermost replacement span for this glyph. Identity distinguishes occurrences,
+   *  including separate invocations of the same Form. */
+  actualTextSpan?: { readonly text: string };
   /** The operators that re-establish the fill colour in force when this glyph
    *  was shown (u3l5.3), for an edit that changes the colour and must put it
    *  back. **Absent means the PDF initial fill**, DeviceGray black — `color`'s
@@ -612,6 +615,12 @@ export interface ContentWalkOptions { skipHidden?: boolean }
  */
 export interface ExtractOptions { includeHidden?: boolean }
 
+export interface TextReadOptions extends ExtractOptions {
+  /** Read each glyph-backed marked sequence using its outermost /ActualText.
+   *  Defaults to false. */
+  actualText?: boolean;
+}
+
 /** The walker option a read API's `ExtractOptions` means. THE one negation. */
 export function walkOpts(o: ExtractOptions | undefined): ContentWalkOptions {
   return { skipHidden: !o?.includeHidden };
@@ -708,7 +717,10 @@ const DEVICE_CS = new Set([
 ]);
 
 /** The marked-content string attributes a BDC may state. */
-interface McProps { actualText?: string; alt?: string; lang?: string }
+interface McProps {
+  values: NonNullable<GlyphEvent['mcProps']>;
+  span?: GlyphEvent['actualTextSpan'];
+}
 
 /** The marked-content string attributes in force inside this BDC: the new
  *  property list's values, falling back to the enclosing scope's.
@@ -727,14 +739,18 @@ function inheritMcProps(
     const v = ctx.doc.resolve(props.get(k));
     return isString(v) ? decodePdfText(v.bytes) : undefined;
   };
-  const actualText = str('ActualText') ?? outer?.actualText;
-  const alt = str('Alt') ?? outer?.alt;
-  const lang = str('Lang') ?? outer?.lang;
-  if (actualText === undefined && alt === undefined && lang === undefined) return undefined;
+  const ownText = str('ActualText'), ownAlt = str('Alt'), ownLang = str('Lang');
+  if (ownText === undefined && ownAlt === undefined && ownLang === undefined) return outer;
+  const actualText = ownText ?? outer?.values.actualText;
+  const alt = ownAlt ?? outer?.values.alt;
+  const lang = ownLang ?? outer?.values.lang;
   return {
-    ...(actualText !== undefined ? { actualText } : {}),
-    ...(alt !== undefined ? { alt } : {}),
-    ...(lang !== undefined ? { lang } : {}),
+    values: {
+      ...(actualText !== undefined ? { actualText } : {}),
+      ...(alt !== undefined ? { alt } : {}),
+      ...(lang !== undefined ? { lang } : {}),
+    },
+    span: outer?.span ?? (ownText === undefined ? undefined : { text: ownText }),
   };
 }
 
@@ -1066,7 +1082,8 @@ function emitGlyphs(ctx: Ctx, st: TextState, strObj: PdfObject, ctm: Matrix, add
       charSpacing: st.charSp, wordSpacing: st.wordSp, hscale: st.hscale,
       tm: startTm, tlm: st.tlm, ctm,
       ...(st.renderMode !== 0 ? { renderMode: st.renderMode } : {}),
-      ...(mcProps !== undefined ? { mcProps } : {}),
+      ...(mcProps !== undefined ? { mcProps: mcProps.values } : {}),
+      ...(mcProps?.span ? { actualTextSpan: mcProps.span } : {}),
       ...(ctx.drawnBy !== undefined ? { drawnBy: ctx.drawnBy } : {}),
       ...(fillSet !== undefined ? { fillState: fillSet } : {}),
       ...(strokeSet !== undefined ? { strokeState: strokeSet } : {}),
@@ -1509,8 +1526,79 @@ export function extractStructured(
   return blocks;
 }
 
+/** Glyphs behind one semantic unit, with their physical reading positions. */
+export type TextSource = { glyph: GlyphEvent; line: number; offset: number }[];
+
+/** Lay out the painted glyphs first. A replacement consumes its span's inferred
+ *  spaces and line breaks, but its search geometry still covers every line.
+ *  All UTF-16 units of a replacement share one source. */
+export function actualTextLayout(
+  doc: Document, page: Page, opts: ExtractOptions, accepts?: (g: GlyphEvent) => boolean,
+): { text: string; refs: (TextSource | undefined)[] } {
+  const runs: RefRun<GlyphEvent>[] = [];
+  const excluded = new Set<NonNullable<GlyphEvent['actualTextSpan']>>();
+  visitContent(doc, page, { glyph(g) {
+    const span = g.actualTextSpan;
+    if (accepts && !accepts(g)) {
+      if (span) excluded.add(span);
+      return;
+    }
+    if (!span && !g.text) return;
+    const run = runFromGlyph(g, g);
+    // Keep even unmapped glyphs and painted whitespace in the physical layout.
+    if (span) run.text = '\uFFFC';
+    runs.push(run);
+  } }, walkOpts(opts));
+  const physical = layoutLines(excluded.size
+    ? runs.filter(r => !r.ref?.actualTextSpan || !excluded.has(r.ref.actualTextSpan))
+    : runs);
+  const sources = new Map<NonNullable<GlyphEvent['actualTextSpan']>, TextSource>();
+  const parts: string[] = [];
+  const refs: (TextSource | undefined)[] = [];
+  let line = 0, pendingSpace = false;
+  let previous: GlyphEvent | undefined;
+  let source: TextSource | undefined;
+  for (let i = 0; i < physical.text.length; i++) {
+    const g = physical.refs[i];
+    const ch = physical.text[i];
+    if (!g) {
+      if (ch === '\n') line++;
+      // Only separators between members of the same replacement disappear.
+      const before = physical.refs[i - 1]?.actualTextSpan;
+      if (before && before === physical.refs[i + 1]?.actualTextSpan) continue;
+      if (ch === '\n') {
+        parts.push(ch);
+        refs.push(undefined);
+        pendingSpace = false;
+      } else pendingSpace = true;
+      continue;
+    }
+    const span = g.actualTextSpan;
+    const known = span && sources.get(span);
+    if (g !== previous) {
+      source = known ?? [];
+      if (span && !known) sources.set(span, source);
+      source.push({ glyph: g, line, offset: i });
+    }
+    previous = g;
+    const value = span ? (known ? '' : span.text) : ch;
+    if (value) {
+      const last = parts[parts.length - 1];
+      if (pendingSpace && last && !last.endsWith(' ') && !last.endsWith('\n') && !value.startsWith(' ')) {
+        parts.push(' ');
+        refs.push(undefined);
+      }
+      parts.push(value);
+      for (let u = 0; u < value.length; u++) refs.push(source);
+      pendingSpace = false;
+    }
+  }
+  return { text: parts.join(''), refs };
+}
+
 /** Walk a page's content, collect positioned runs, assemble into text. */
-export function extractText(doc: Document, page: Page, opts?: ExtractOptions): string {
+export function extractText(doc: Document, page: Page, opts?: TextReadOptions): string {
+  if (opts?.actualText) return actualTextLayout(doc, page, opts).text;
   const runs: Run[] = [];
   visitContent(doc, page, {
     glyph: (e) => {

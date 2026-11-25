@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Read and search marked-content replacement text.** Pass `{ actualText: true }` to `page.GetText()` or `page.Search()` to read the text a PDF author supplied for a glyph or marked sequence. A match on part of a replacement returns the entire span’s painted glyphs and one box per physical line, including when a Form is drawn in several places. (kprh.1)
+
 - **Style review annotations and label printed sheets.** Drawing annotations
   support dashed borders and signed line leaders. FreeText supports standard
   and embedded fonts, insets and cloudy borders. Links expose activation

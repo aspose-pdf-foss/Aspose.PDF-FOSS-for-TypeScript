@@ -203,7 +203,7 @@ export function applyRedactions(
 /** Options for `Page.MarkRedactText` — everything `AddRedact` takes except the
  *  geometry, which comes from the search hit, plus the search scope. */
 export type MarkRedactTextOptions =
-  Omit<RedactAnnotationOptions, 'quads' | 'rect'> & SearchOptions;
+  Omit<RedactAnnotationOptions, 'quads' | 'rect'> & Omit<SearchOptions, 'actualText'>;
 
 /** Mark every occurrence of `find` (a literal string or RegExp) on `page` with a
  *  /Redact annotation, using the same search as `Search`. One annotation per

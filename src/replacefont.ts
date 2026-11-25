@@ -11,7 +11,7 @@ import { resolveHyphenation, type HyphenationOptions } from './hyphenate.js';
 import { rethrowLimit } from './errors.js';
 
 /** Options for `ReplaceText` on a page or a document. */
-export interface ReplaceTextOptions extends SearchOptions {
+export interface ReplaceTextOptions extends Omit<SearchOptions, 'actualText'> {
   /** Fonts to write a character in when the matched glyph's own font cannot
    *  draw it, tried in order: one of the 12 Latin Standard-14 faces by name, or
    *  a handle from `AddFont`/`LoadFontByName`. */

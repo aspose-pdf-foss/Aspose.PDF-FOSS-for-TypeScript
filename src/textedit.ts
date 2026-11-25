@@ -4,8 +4,8 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
 import type { StructElement } from './struct.js';
-import type { GlyphEvent, Rect, RefRun } from './text.js';
-import { visitContent, layoutLines, runFromGlyph, walkOpts, contentStreamBytes } from './text.js';
+import type { GlyphEvent, Rect, RefRun, TextReadOptions, TextSource } from './text.js';
+import { actualTextLayout, visitContent, layoutLines, runFromGlyph, walkOpts, contentStreamBytes } from './text.js';
 import { inflateStream } from './flate.js';
 import { planAdjustment, runsAdvance, runUnits, splitRuns, glyphAdvance, type AdjustEdit, type ShowInsert, type ChainGap } from './replaceadjust.js';
 import { EditableContent } from './editcontent.js';
@@ -36,7 +36,7 @@ export interface TextMatch {
 }
 
 /** Scope for a text search. */
-export interface SearchOptions {
+export interface SearchOptions extends TextReadOptions {
   /** Restrict the search to this page-space rectangle. A glyph is in or out by
    *  its quad's CENTROID, never partly in.
    *
@@ -87,9 +87,30 @@ export function centroidIn(region: Rect, q: Rect): boolean {
 export function searchText(
   doc: Document, page: Page, find: string | RegExp, opts: SearchOptions = {},
 ): TextMatch[] {
+  if (opts.actualText) {
+    const region = opts.region;
+    const { text, refs } = actualTextLayout(doc, page, opts, region && (g => centroidIn(region, g.quad)));
+    if (!text.length) return [];
+    return findRanges(text, find, opts).map(([start, end]) => semanticMatch(text, refs, start, end));
+  }
   const { text, refs } = pageLayout(doc, page, opts);
   if (text.length === 0) return [];
   return findRanges(text, find, opts).map(([start, end]) => buildMatch(text, refs, start, end));
+}
+
+function semanticMatch(text: string, refs: (TextSource | undefined)[], start: number, end: number): TextMatch {
+  const positions: TextSource = [];
+  for (const source of new Set(refs.slice(start, end))) {
+    if (source) for (const position of source) positions.push(position);
+  }
+  positions.sort((a, b) => a.offset - b.offset);
+  const lines = new Map<number, GlyphEvent[]>();
+  for (const { line, glyph } of positions) {
+    const row = lines.get(line);
+    if (row) row.push(glyph);
+    else lines.set(line, [glyph]);
+  }
+  return { text: text.slice(start, end), quads: [...lines.values()].map(unionQuad), hits: positions.map(p => p.glyph) };
 }
 
 /** The page's assembled text and, per UTF-16 code unit, the glyph that drew
