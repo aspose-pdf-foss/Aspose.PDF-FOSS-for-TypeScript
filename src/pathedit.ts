@@ -65,7 +65,7 @@ export function editPagePath(doc: Document, page: Page, address: PagePathAddr, e
   ec.writeTopStreams(bytes);
 }
 
-function rewritePath(ops: readonly ContentOp[], edit: PathEdit): ContentOp[] {
+export function rewritePath(ops: readonly ContentOp[], edit: PathEdit): ContentOp[] {
   const paint = ops.at(-1);
   const start = ops[0]?.operator;
   const malformed = () => new UnsupportedFeatureError('cannot edit a malformed path object');

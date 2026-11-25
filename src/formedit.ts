@@ -179,7 +179,7 @@ interface Occurrence {
   ownsResources: boolean;
   parent?: Occurrence;
   invocations: Invocation[];
-  editedPath?: ContentSplice;
+  edits: Map<number, ContentSplice>;
   splices: (ContentSplice | ContentWrap)[];
   sites: ContentWrap[];
   backEdges: { caller: Occurrence; invocation: Invocation }[];
@@ -192,7 +192,7 @@ interface Occurrence {
  * No changes reach the document until the caller publishes the staged result. */
 export function planFormEdit(
   doc: Document, page: Page, top: ContentOpSource, invocations: readonly ContentAddr[],
-  edit: (source: ContentOpSource) => ContentSplice, tokens: ContentTokenBudget,
+  edit: (source: ContentOpSource) => ContentSplice | ContentSplice[], tokens: ContentTokenBudget,
 ): { bytes: Uint8Array; resources: PdfDict; additions: Addition[] } {
   const pageScope: ResourceScope = { original: page.Resources };
   const calledForm = (scope: ResourceScope, op: ContentOp | undefined): PdfStream | undefined => {
@@ -334,10 +334,12 @@ export function planFormEdit(
     const scope: ResourceScope = invocation.kind === 'glyph' ? invocation.site.scope
       : own ? { original: own } : parent?.scope ?? pageScope;
     const next = selection === undefined ? undefined : invocations[selection + 1];
-    const editedPath = selection !== undefined && !next ? edit(source) : undefined;
+    const batch = selection !== undefined && !next ? edit(source) : [];
+    const splices = Array.isArray(batch) ? batch : [batch];
+    const edits = new Map(splices.map(s => [s.first, s]));
     const occurrence: Occurrence = {
-      stream, source, scope, ownsResources: own !== undefined, parent, invocations: [invocation], editedPath,
-      splices: editedPath ? [editedPath] : [], sites: [], backEdges: [], readsInheritedFont: false,
+      stream, source, scope, ownsResources: own !== undefined, parent, invocations: [invocation], edits,
+      splices: splices.slice(), sites: [], backEdges: [], readsInheritedFont: false,
     };
     if (selection !== undefined) copies.add(occurrence);
     active.set(stream.dict, occurrence);
@@ -415,7 +417,8 @@ export function planFormEdit(
         }
       };
       for (let opIndex = 0; opIndex < source.ops.length; opIndex++) {
-        if (editedPath?.first === opIndex) {
+      const editedPath = edits.get(opIndex);
+      if (editedPath) {
           // Removal or recoloring may replace the pattern. Follow only the
           // channels that the edited paint still uses.
           for (const op of editedPath.ops) {
@@ -497,7 +500,7 @@ export function planFormEdit(
   const topSplice = replacement(pageScope, topIndex, root);
 
   for (const occurrence of copies) {
-    const { stream, source, editedPath, splices, sites, ownsResources, scope } = occurrence;
+    const { stream, source, edits, splices, sites, ownsResources, scope } = occurrence;
     if (stream.dict.has('StructParents') || stream.dict.has('StructParent'))
       throw new UnsupportedFeatureError('cannot edit a Form occurrence with a structure-parent entry');
 
@@ -506,7 +509,8 @@ export function planFormEdit(
       // Use the path boundary for standard streams. When a damaged stream
       // interleaves state operations, keep them and rebind at the actual paint.
       const start = source.ops.slice(first, end - 1).every((op) => pathConstruction.has(op.operator)) ? first : end - 1;
-      if (editedPath?.first === start && editedPath.end === end) {
+      const editedPath = edits.get(start);
+      if (editedPath?.end === end) {
         editedPath.ops = [...before, ...editedPath.ops, ...after];
       } else {
         splices.push({ first: start, end, before, after });

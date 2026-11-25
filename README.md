@@ -1092,6 +1092,27 @@ row.addCell('Acme Corp.', { valign: 'center' });
 doc.Pages[0].AddTable(t, 72, 720, { width: 400 });
 ```
 
+#### Edit a detected table
+
+Call `Remove()` on a result from `page.GetTables()` to remove its cell text,
+grid rules and cell backgrounds. Pass a `createTable()` builder to `Replace()`
+to redraw at the same top-left corner and width.
+
+```ts
+const [prices] = page.GetTables();
+const updated = createTable();
+updated.addRow(['Item', 'Price']);
+updated.addRow(['Paper', '$4']);
+prices.Replace(updated);
+```
+
+The entire replacement must fit the original rectangle. An oversized table
+raises `RangeError`. Read the tables again after a successful edit. Edits
+support upright, untagged, single-page tables drawn in page content or in
+one Form occurrence. Nested tables and ambiguous overlaps with neighboring
+text, graphics, images or annotations raise `UnsupportedFeatureError`.
+Ownership and redraw failures leave the page intact.
+
 #### Multi-page tables
 
 A table taller than the space on the page paginates. `AddTable` returns an
@@ -4288,7 +4309,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `StructRetagResult` | What a structure-type change reached: the marked-content tags it rewrote, and those it could not address. |
 | `StructTreeRoot` | The document's logical structure tree: a live handle over /StructTreeRoot. |
 | `SubmitAction` | A SubmitForm action: send the form's field values to `url`. |
-| `Table` | A reconstructed table: a rows×cells model with page-space quads and text, serializable to HTML or Markdown. |
+| `Table` | Reconstructed rows and cells with page-space quads, text, HTML and Markdown export. An upright, untagged table from `page.GetTables()` supports `Remove()` and `Replace(builder)`. |
 | `TableBuilder` | A page-independent table: ordered rows over shared text defaults. |
 | `Template` | A reusable piece of drawn content, placed on any number of pages from a single Form XObject. |
 | `TextChange` | One run of a text comparison: `op` (`equal`, `delete`, `insert`), `oldText`/`newText`, and `old`/`new` `TextSpan`s placing it on each document's pages. |

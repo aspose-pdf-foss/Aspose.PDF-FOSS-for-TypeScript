@@ -19,7 +19,7 @@ const AXIS_TOL = 0.6;   // matches table.ts: off-axis delta this small is axis-a
  *
  *  Cubics contribute only their endpoint: a rule is never a curve, and a
  *  curve's control points would widen the segment it is mistaken for. */
-function deviceSegments(p: PagePath): [number, number, number, number][] {
+export function deviceSegments(p: PagePath): [number, number, number, number][] {
   const out: [number, number, number, number][] = [];
   const ctm = p.ctm as Matrix;
   for (const sp of p.subpaths) {

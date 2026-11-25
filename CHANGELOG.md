@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Remove or replace a detected table in place.** Single-page table results
+  expose `Remove()` and `Replace(builder)`. Replacement reuses the original
+  position and width. Ambiguous ownership and redraw failures leave the page
+  intact. (kprh.4)
+
 - **Edit a single text occurrence or align an extracted paragraph.**
   Fragments returned by `GetTextFragments()` can replace, restyle, or move
   their source text while preserving the following pen position. Paragraphs

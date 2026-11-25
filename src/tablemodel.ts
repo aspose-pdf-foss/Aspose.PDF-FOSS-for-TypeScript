@@ -1,6 +1,8 @@
 import type { Rect as TextRect } from './text.js';
 import type { Rgb } from './colorspace.js';
 import { escapeMarkdownInline, escapeTableCell } from './mdescape.js';
+import { editDetectedTable } from './tableedit.js';
+import type { TableBuilder } from './tableauthor.js';
 
 export type Rect = TextRect;
 export interface TableExtractOptions {
@@ -100,6 +102,15 @@ export class Table {
    *  table's own upright frame — map a corner to page space via a rotation by
    *  `angle` about the origin. */
   angle = 0;
+
+  /** Remove the content owned by this upright, single-page detected table. */
+  Remove(): void { editDetectedTable(this); }
+
+  /** Replace this table within its original rectangle. Preflight errors leave the page intact. */
+  Replace(builder: TableBuilder): void {
+    if (!builder) throw new TypeError('Replace requires a table builder');
+    editDetectedTable(this, builder);
+  }
 
   toHtml(): string {
     const emitRow = (lines: string[], row: TableRow) => {

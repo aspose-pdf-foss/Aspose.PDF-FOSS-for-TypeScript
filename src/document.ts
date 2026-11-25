@@ -609,6 +609,33 @@ export class Document {
     return stitchTables(this.Pages.map((p) => p.GetTables(options)), options);
   }
 
+  /** @internal Stage content surgery and untagged table authoring against a private
+   * page dictionary and object map. The planners copy edited streams, Forms and
+   * resource subdictionaries. Only fresh indirect objects can enter the live map. */
+  editTablePage(page: Page, prepare: (page: Page) => void): void {
+    const version = this.#writeVersion;
+    const last = this.maxObjNum();
+    const dict = new Map(page.Dict);
+    dict.set('Resources', new Map(page.Resources));
+    const annots = this.resolve(dict.get('Annots'));
+    if (isArray(annots)) dict.set('Annots', annots.slice());
+    const objects = new Map(this.objects);
+    const number = this.pageObjNums[page.Number - 1];
+    if (!number || this.pageObjNums.indexOf(number) !== this.pageObjNums.lastIndexOf(number))
+      throw new UnsupportedFeatureError('table edit requires a uniquely owned page');
+    objects.set(number, dict);
+    const draft = new Document(objects, this.trailer, this.loadLimits, this.decodeBudget);
+    prepare(draft.Pages[page.Number - 1]);
+    if (this.#writeVersion !== version) throw new RangeError('Page changed during table edit');
+    for (const [id, obj] of objects) if (id > last) this.install(id, obj);
+    for (const font of draft.embeddedFonts) this.embeddedFonts.push(font);
+    for (const key of ['Contents', 'Resources', 'Annots']) {
+      const value = dict.get(key);
+      if (value !== undefined) page.Dict.set(key, value);
+    }
+    this.markModified();
+  }
+
   /** Build an in-memory document from a complete object set rooted at `rootNum`. */
   private static fromObjects(objects: Map<number, PdfObject>, rootNum: number, version?: string): Document {
     const trailer: PdfDict = new Map<string, PdfObject>([['Root', ref(rootNum)]]);

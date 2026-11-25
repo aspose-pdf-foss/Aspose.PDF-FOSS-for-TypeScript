@@ -10,6 +10,7 @@ import { dominantAngle, rot, ANGLE_EPS, type Seg } from './tableorient.js';
 import { collectPageInk, edgeAt, fillUnder, type PageInk } from './tableink.js';
 import { buildCells, cellText, centroid, contains, rowBbox } from './tablegrid.js';
 import { segmentBlocks } from './tablestream.js';
+import { bindDetectedTables } from './tableedit.js';
 
 export { Table } from './tablemodel.js';
 export { buildCells } from './tablegrid.js';
@@ -402,7 +403,9 @@ export function extractTables(doc: Document, page: Page, options: TableExtractOp
     // decorateInk. Moving it into the cell loop walks the page's content per
     // cell — the shape that turned an N-figure page into N content walks in
     // no93.1, and a table has cells x 4 edges to resolve.
-    decorateInk(tables, collectPageInk(page.GetPaths(options), MIN_RULE_LEN, MAX_RULE_THICK));
+    const paths = page.GetPaths(options);
+    decorateInk(tables, collectPageInk(paths, MIN_RULE_LEN, MAX_RULE_THICK));
+    bindDetectedTables(page, tables, paths, glyphs, options);
     return tables;
   }
 

@@ -484,7 +484,7 @@ function imageStreamOf(doc: Document, resources: PdfDict | undefined, op: Conten
 
 /** Rewrite a single show op (Tj/'/"/TJ) into an equivalent op sequence with the
  *  covered glyphs replaced by numeric advance shifts. */
-function rewriteShowOp(op: ContentOp, glyphs: GlyphRec[]): ContentOp[] {
+export function rewriteShowOp(op: ContentOp, glyphs: GlyphRec[]): ContentOp[] {
   switch (op.operator) {
     case 'Tj': return [tjFromString(op.operands[0], glyphs, 0)];
     case "'":

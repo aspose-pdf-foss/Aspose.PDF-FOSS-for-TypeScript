@@ -13,6 +13,8 @@ import {
 } from './tableauthor.js';
 import type { Undrawable } from './textcoverage.js';
 import type { SpanGrid } from './tablespan.js';
+import { EmbeddedFont } from './embeddedfont.js';
+import type { AuthoringFont } from './stamp.js';
 
 /** Options for {@link drawTable} / `page.AddTable`. */
 export interface AddTableOptions {
@@ -262,6 +264,35 @@ function paintPlaced(
     if (tagged) bd.EndMarkedContent();
     bd.apply();
   }
+}
+
+/** Draw a complete replacement into the transaction's private page. Resolve
+ * the same cells as AddTable, including spans, images and styled runs. Font
+ * subsetting records glyph usage, so the draft needs its own font handles. */
+export function drawFittedTable(page: Page, table: TableBuilder, box: [number, number, number, number], owner: Document): void {
+  const [x, bottom, right, top] = box;
+  const width = right - x;
+  const widths = table.resolveColumnWidths(width);
+  const { rowHeights, grid, totalHeight } = table.measure(widths, { requireFit: true });
+  const columns = [x];
+  for (const w of widths) columns.push(columns[columns.length - 1] + w);
+  if (!widths.length || !Number.isFinite(totalHeight) || totalHeight > top - bottom + 1e-6 ||
+      Math.abs(columns[columns.length - 1] - right) > 1e-6)
+    throw new RangeError('Replacement table must fit the original width and height');
+  const placed = placeRows(table, rangeIndices(0, table.rows.length), rowHeights, grid, columns, widths, top);
+  const fonts = new Map<EmbeddedFont, EmbeddedFont>();
+  const local = (font: AuthoringFont): AuthoringFont => {
+    if (!(font instanceof EmbeddedFont)) return font;
+    if (!owner.ownsEmbeddedFont(font)) throw new TypeError('Replacement font belongs to another document');
+    let copy = fonts.get(font);
+    if (!copy) { copy = page.Document.AddFont(font.sfnt.raw, { shape: font.shape }); fonts.set(font, copy); }
+    return copy;
+  };
+  for (const cell of placed) {
+    cell.style.font = local(cell.style.font);
+    if (Array.isArray(cell.text)) cell.text = cell.text.map(run => run.font ? { ...run, font: local(run.font) } : run);
+  }
+  paintPlaced(page.Document, page, placed, table.defaults.outerBorder, { x, bottom: top - totalHeight, w: width, h: totalHeight }, false);
 }
 
 /** Paint the rows named by `rowIndices` with the first row's top at `sliceTop`,

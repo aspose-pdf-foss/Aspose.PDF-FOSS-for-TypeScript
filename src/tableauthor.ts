@@ -746,7 +746,11 @@ export class TableBuilder {
    *  tallest cell, floored at the row's `minHeight`; total is the row sum.
    *  Padding resolves per cell through cell ?? row ?? `cellPadding` ?? table ??
    *  2pt, so it is read inside the cell loop rather than once up front. */
-  measure(columnWidths: number[], opts: { cellPadding?: number } = {}): TableMetrics {
+  measure(columnWidths: number[], opts: {
+    cellPadding?: number;
+    /** @internal A fitted replacement cannot paint an unbreakable word past its cell. */
+    requireFit?: boolean;
+  } = {}): TableMetrics {
     if (!Array.isArray(columnWidths) || !columnWidths.every((w) => Number.isFinite(w) && w > 0))
       throw new TypeError('columnWidths must be an array of positive finite numbers');
     const override = opts.cellPadding;
@@ -815,6 +819,8 @@ export class TableBuilder {
             weaveByBeforeRun(pieces, cell.atomics,
               (a) => ({ atomic: { width: a.width, height: a.height, align: a.align } })),
             innerWidth, Infinity, st.leading, st.fontSize, 0, hy);
+        if (opts.requireFit && res.lines.some(line => line.width > innerWidth + 1e-6))
+          throw new RangeError('Replacement cell text must fit the available width');
         // Sum the line bands rather than lineCount * leading: a cell run larger
         // than the cell's font size claims a taller band, and a row sized on the
         // flat product would let its glyphs spill out of the row.

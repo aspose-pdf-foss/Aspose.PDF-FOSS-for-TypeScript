@@ -72,7 +72,7 @@ export class EditableContent {
   /** Immediately edit one Form occurrence in a verified chain of `Do` ops.
    *  Prepare copies of every scope before publishing any stream or resource.
    *  @internal */
-  editFormOccurrence(invocations: readonly ContentAddr[], edit: (source: ContentOpSource) => ContentSplice): void {
+  editFormOccurrence(invocations: readonly ContentAddr[], edit: (source: ContentOpSource) => ContentSplice | ContentSplice[]): void {
     if (invocations.length === 0) throw new RangeError('missing Form invocation');
     const top = invocations[0].streamIndex;
     const { bytes, resources, additions } = planFormEdit(this.doc, this.page, this.topSource(top), invocations, edit, this.tokens);
