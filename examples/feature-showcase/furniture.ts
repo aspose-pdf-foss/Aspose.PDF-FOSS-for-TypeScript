@@ -1,24 +1,23 @@
 import type { Document, Page } from '../../src/index.js';
-import { pageHeight, pageWidth, xywh } from './theme.js';
+import { pageHeight, pageWidth } from './theme.js';
 import { asposeLogo } from './assets.js';
 
-/** The Aspose wordmark in the top-right corner of every page but the skipped
- *  ones (cover and TOC carry their own branding). The logo's viewBox is 314x100,
- *  and the stamp rect keeps that aspect. There is no load-once SVG handle in
- *  this library, so the same bytes are parsed once per page — fine at this
- *  scale, and cheaper than hand-caching a Form XObject. */
+/** Stamp a shared Aspose wordmark in the top-right corner. The cover and TOC
+ *  carry their own branding. */
 export function stampLogoOnEveryPage(doc: Document, skip: Page[]): void {
-  const svg = asposeLogo();
   const skipNumbers = new Set(skip.map((p) => p.Number));
+  const pages = doc.Pages.filter(p => !skipNumbers.has(p.Number));
+  if (pages.length === 0) return;
   const stampW = 120;
   const stampH = 38; // 314/100 * 38 ~= 119.3
   const margin = 25;
+  const logo = doc.NewTemplate(stampW, stampH);
+  logo.page.AddSVGObject(asposeLogo(), [0, 0, stampW, stampH]);
 
-  for (const p of doc.Pages) {
-    if (skipNumbers.has(p.Number)) continue;
-    const urx = pageWidth(p) - margin;
-    const ury = pageHeight(p) - margin;
-    p.AddSVGObject(svg, xywh([urx - stampW, ury - stampH, urx, ury]));
+  for (const page of pages) {
+    const x = pageWidth(page) - margin - stampW;
+    const y = pageHeight(page) - margin - stampH;
+    logo.PlaceOn(page, [x, y, stampW, stampH]);
   }
 }
 
