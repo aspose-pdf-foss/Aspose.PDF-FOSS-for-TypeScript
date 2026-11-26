@@ -1,6 +1,6 @@
 import type { Document } from './document.js';
 import type { Page } from './page.js';
-import type { StructElement } from './struct.js';
+import { structOnPage, type StructElement } from './struct.js';
 import { Table } from './tablemodel.js';
 import { bindTaggedTable } from './taggedtableedit.js';
 import type { Rect, TableCell, TableRow, TableExtractOptions } from './tablemodel.js';
@@ -63,8 +63,9 @@ function cellQuad(cell: StructElement, page: Page): Rect {
 }
 
 /** Build one Table from a Table structure element. */
-function buildTable(table: StructElement, page: Page): Table | undefined {
-  const rawRows = tableRows(table);
+function buildTable(table: StructElement, page: Page, only?: Page): Table | undefined {
+  const allRows = tableRows(table);
+  const rawRows = only ? allRows.filter(({ row }) => structOnPage(row, only)) : allRows;
   if (!rawRows.length) return undefined;
 
   // HTML-style occupancy: occupied[r] is a set of taken column indices.
@@ -88,7 +89,7 @@ function buildTable(table: StructElement, page: Page): Table | undefined {
       const cell: TableCell = {
         row: r, col: c, rowSpan, colSpan,
         quad: cellQuad(cellElem, page),
-        text: cellElem.GetText((e) => e.StandardType === 'Table'),
+        text: cellElem.textForPage(only, e => e.StandardType === 'Table'),
       };
       if (st === 'TH') cell.isHeader = true;
       if (attrs?.scope) cell.scope = attrs.scope;
@@ -99,7 +100,7 @@ function buildTable(table: StructElement, page: Page): Table | undefined {
       collectNested(cellElem, nested);
       if (nested.length) {
         const childTables = nested
-          .map((n) => buildTable(n, page))
+          .map((n) => buildTable(n, page, only))
           .filter((t): t is Table => t !== undefined);
         if (childTables.length) cell.tables = childTables;
       }
@@ -133,10 +134,10 @@ function primaryPage(table: StructElement): Page | undefined {
  *  `extractTaggedTables`: /Pg is optional on a Table element whose content all
  *  sits in its cells (what AutoTag authors), so the element and the extracted
  *  table disagree about which page they belong to. */
-export function tableFromStruct(elem: StructElement): Table | undefined {
-  const page = primaryPage(elem);
+export function tableFromStruct(elem: StructElement, only?: Page): Table | undefined {
+  const page = only ?? primaryPage(elem);
   if (!page) return undefined;
-  const t = buildTable(elem, page);
+  const t = buildTable(elem, page, only);
   return t && t.rows.length ? t : undefined;
 }
 

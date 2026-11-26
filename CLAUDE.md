@@ -11719,6 +11719,7 @@ Source (`src/`):
   in a reader. `semanticBody`'s optional `HtmlImageSink` is the other half:
   omitted it inlines `data:` URIs as before, and `epubexport.ts` passes a sink
   that registers each image as a package part.
+- **exportbundle.ts** collects selected HTML and SVG entry points, content-addressed assets and local navigation. SVG and fixed HTML share the raster shading patch renderer.
 - **html.ts**, **htmlsemantic.ts**, **htmlfixed.ts**, **htmlfont.ts**,
   **htmlfontembed.ts**, **imagehref.ts**, **sfntwrite.ts**, **woffwrite.ts** —
   HTML conversion (`Page.ToHtml` / `Document.ToHtml`). `html.ts` is the entry and

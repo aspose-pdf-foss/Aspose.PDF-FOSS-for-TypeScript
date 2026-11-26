@@ -197,7 +197,8 @@ export function readNamedDestinations(doc: Document, pageOf: PageOf): NamedDesti
 
 /** Walk a sibling list from `container`'s /First, following /Next, into items. */
 export function readOutlineTree(
-  doc: Document, container: PdfDict, readAction: (raw: PdfObject) => PdfAction | undefined, depth = 1,
+  doc: Document, container: PdfDict, readAction: (raw: PdfObject) => PdfAction | undefined,
+  readDest: typeof parseDest = parseDest, depth = 1,
 ): OutlineItem[] {
   const out: OutlineItem[] = [];
   const seen = new Set<PdfDict>();
@@ -209,7 +210,7 @@ export function readOutlineTree(
     seen.add(node);
     const title = doc.resolve(node.get('Title'));
     const item: ReadItem = { Title: isString(title) ? decodePdfText(title.bytes) : '' };
-    const dest = parseDest(doc, node, o => doc.pageNumberOf(o));
+    const dest = readDest(doc, node, o => doc.pageNumberOf(o));
     if (dest) item.Dest = dest;
     const raw = node.get('A');
     if (raw !== undefined && isDict(doc.resolve(raw)) && doc.resolve(node.get('Dest')) === null) {
@@ -230,7 +231,7 @@ export function readOutlineTree(
       if (f & 1) item.Italic = true;   // bit position 1 (PDF 32000-1 12.3.3)
       if (f & 2) item.Bold = true;     // bit position 2
     }
-    const children = readOutlineTree(doc, node, readAction, depth + 1);
+    const children = readOutlineTree(doc, node, readAction, readDest, depth + 1);
     if (children.length) {
       item.Children = children;
       const count = doc.resolve(node.get('Count'));

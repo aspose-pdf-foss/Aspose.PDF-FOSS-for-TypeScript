@@ -9,6 +9,8 @@ import { Type1Font } from './type1.js';
 import { type1ToCff, newGidByOldGid } from './type1cff.js';
 import { rethrowLimit } from './errors.js';
 
+import type { AssetWriter } from './imagehref.js';
+
 const PUA_BASE = 0xe000;
 
 /** Per-embedded-program accumulation: GID→rendering codepoint, GID→advance. */
@@ -67,14 +69,14 @@ export class EmbeddedFontRegistry {
   }
 
   /** Every `@font-face` rule (base64 WOFF) plus every `.eN` class rule. */
-  css(): string {
+  css(write?: AssetWriter): string {
     const faces: string[] = [];
     for (const prog of this.programs.values()) {
       if (!prog.embeddable || prog.gidToCp.size === 0) continue;
       try {
         const woff = sfntToWoff(buildProgramSfnt(prog));
-        const b64 = Buffer.from(woff).toString('base64');
-        faces.push(`@font-face{font-family:pf${prog.key};src:url(data:font/woff;base64,${b64}) format("woff")}`);
+        const url = write ? write(woff, 'woff') : `data:font/woff;base64,${Buffer.from(woff).toString('base64')}`;
+        faces.push(`@font-face{font-family:pf${prog.key};src:url(${url}) format("woff")}`);
       } catch (caught) { rethrowLimit(caught); /* drop this font — its runs already carry embedded classes; a
                    missing @font-face degrades to the class's absent family */ }
     }

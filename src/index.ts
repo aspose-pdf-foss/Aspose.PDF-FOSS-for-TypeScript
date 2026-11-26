@@ -226,6 +226,7 @@ export type {
 } from './tiling.js';
 export type { SvgOptions } from './svgrender.js';
 export type { HtmlOptions } from './html.js';
+export type { ExportBundle, HtmlBundleOptions, SvgBundleOptions } from './exportbundle.js';
 export type { DocxOptions } from './docxexport.js';
 export type { EpubOptions } from './epubexport.js';
 export type { XlsxExportOptions, XlsxSkipped } from './xlsxexport.js';

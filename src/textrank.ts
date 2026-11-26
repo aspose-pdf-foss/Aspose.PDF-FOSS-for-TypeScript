@@ -30,17 +30,17 @@ export function headingRanks(doc: Document): Map<number, number> {
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* headingRanksSteps(doc: Document, context: OperationContext): OperationSteps<Map<number, number>> {
+export function* headingRanksSteps(doc: Document, context: OperationContext, pages = doc.Pages): OperationSteps<Map<number, number>> {
   const chars = new Map<number, number>();
   let completed = 0;
-  for (const page of doc.Pages) {
+  for (const page of pages) {
     for (const block of page.GetStructuredText()) {
       for (const line of block.lines) for (const f of line.fragments) {
         const sz = roundSize(f.fontSize);
         chars.set(sz, (chars.get(sz) ?? 0) + f.text.length);
       }
     }
-    yield context.progress('headings', ++completed, doc.Pages.length, page.Number);
+    yield context.progress('headings', ++completed, pages.length, page.Number);
   }
   let bodySize = 0, bodyChars = -1;
   for (const [sz, c] of chars) if (c > bodyChars) { bodyChars = c; bodySize = sz; }

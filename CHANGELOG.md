@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HTML and SVG asset bundles.** Export selected pages in caller order with shared images and fonts under content-based filenames. Split HTML resolves page links and can include bookmark navigation. SVG and fixed HTML vector backdrops render function and mesh shadings as transparent patches at configurable DPI (1t5g.3).
+
 - **Distribute a text comparison as a PDF.** `Document.CompareMarkup` marks
   changes on an independent source or destination copy, with one quad per
   changed line and caret notes where unchanged text provides an anchor.

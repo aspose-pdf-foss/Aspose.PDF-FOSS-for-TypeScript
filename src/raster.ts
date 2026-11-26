@@ -1618,6 +1618,21 @@ class RasterSink implements RenderSink {
   }
 }
 
+/** Draw one shading on transparent pixels. Bounds and the incoming CTM are in
+ *  SVG device points. The caller composes the resulting image with its clip. */
+export function renderShadingPatch(
+  doc: Document, shading: PdfDict | PdfStream, ctm: Matrix, pattern: boolean, area: Rect, dpi: number,
+): Uint8Array {
+  const [x, y, right, bottom] = area;
+  const width = Math.max(1, Math.ceil((right - x) * dpi / 72));
+  const height = Math.max(1, Math.ceil((bottom - y) * dpi / 72));
+  doc.loadLimits.enforce('maxCanvasPixels', width * height, 'SVG shading patch');
+  const sx = width / (right - x), sy = height / (bottom - y);
+  const canvas = new Canvas(width, height, false);
+  rasterizeShading(canvas, doc, shading, mul(ctm, [sx, 0, 0, sy, -x * sx, -y * sy]), new Paint(), pattern);
+  return canvas.toPng(false);
+}
+
 // ---------- Entry point ----------
 
 /** Render one page to PNG bytes. Never throws — unsupported content degrades. */

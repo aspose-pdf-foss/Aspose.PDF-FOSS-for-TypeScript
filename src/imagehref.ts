@@ -231,10 +231,14 @@ function encodeFaithfully(doc: Document, stream: PdfStream, fill: Rgb): EncodedI
   }
 }
 
-/** An image XObject as a `data:` URI. See {@link encodeImage}. */
-export function imageHref(doc: Document, stream: PdfStream, fill: Rgb): string | undefined {
+/** Store encoded bytes under a bundle-relative path. */
+export type AssetWriter = (bytes: Uint8Array, extension: string) => string;
+
+/** Encode an image XObject and return its stored path or inline data URI. */
+export function imageHref(doc: Document, stream: PdfStream, fill: Rgb, write?: AssetWriter): string | undefined {
   const enc = encodeImage(doc, stream, fill);
   if (!enc) return undefined;
+  if (write) return write(enc.bytes, imageExtension(enc.mediaType));
   return `data:${enc.mediaType};base64,${Buffer.from(enc.bytes).toString('base64')}`;
 }
 

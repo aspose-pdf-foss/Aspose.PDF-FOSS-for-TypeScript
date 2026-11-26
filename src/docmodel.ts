@@ -9,11 +9,11 @@ import { mapRegions, visitContent, type Rect, type TextBlock, type TextLine } fr
  *  exports built on this model — HTML, Markdown, DOCX, EPUB — cannot disagree
  *  about it page by page. */
 const SHOWN = { skipHidden: true } as const;
-import { isDict, type PdfStream } from './types.js';
+import { isDict, type PdfDict, type PdfStream } from './types.js';
 import { parseAction } from './actions.js';
 import type { Table } from './tablemodel.js';
 import { dominantFragmentSize, headingRanksSteps } from './textrank.js';
-import { StructElement, StructTreeRoot, type StructNode, type StructTextNode } from './struct.js';
+import { StructElement, StructTreeRoot, structOnPage, type StructNode, type StructTextNode } from './struct.js';
 import { tableFromStruct } from './tablestruct.js';
 import { FigureContent, type PlacedImage } from './figurecontent.js';
 import {
@@ -225,20 +225,15 @@ function isText(n: StructNode): n is StructTextNode {
 /** Walk state. `figures` answers which images a /Figure draws, memoized per
  *  page (figurecontent.ts, shared with GenerateAltText) — keyed by MCID, so it
  *  cannot drift out of step the way a positional pairing would. */
+export type LinkResolver = (annotation: PdfDict) => string | undefined;
+
 interface Ctx {
+  resolveLink?: LinkResolver;
   doc: Document;
   only: Page | undefined;
   figures: FigureContent;
   control: OperationContext;
   completed: number;
-}
-
-/** True when this element contributes any content on `only` (or `only` is undefined). */
-function onPage(el: StructElement, only: Page | undefined): boolean {
-  if (!only) return true;
-  const nodes = el.Nodes;
-  if (!nodes.length) return el.Page === only;      // e.g. a Figure whose /K is an OBJR
-  return nodes.some((n) => (isText(n) ? n.page === only : onPage(n, only)));
 }
 
 /** The blocks under an /LBody (or, for a malformed /LI, under the item itself).
@@ -281,7 +276,7 @@ function* itemBlocks(ctx: Ctx, el: StructElement): OperationSteps<DocNode[]> {
 function* listItemNode(
   ctx: Ctx, el: StructElement,
 ): OperationSteps<{ item: DocListItem; marker?: Marker } | undefined> {
-  if (!onPage(el, ctx.only)) return undefined;
+  if (ctx.only && !structOnPage(el, ctx.only)) return undefined;
   const children = el.Children;
   const lbl = children.find((c) => c.StandardType === 'Lbl');
   const body = children.find((c) => c.StandardType === 'LBody');
@@ -360,21 +355,15 @@ function loneCode(el: StructElement): StructElement | undefined {
   return el.Nodes.every((n) => (isText(n) ? n.text.trim() === '' : true)) ? kids[0] : undefined;
 }
 
-/** The external destination of a `/Link` element, via the `/OBJR` naming its
- *  annotation.
- *
- *  **Invariant:** only a URI action yields an href. A `GoTo` — whether spelled
- *  as an action or as a bare `/Dest` — names a page object inside this file, and
- *  once the PDF is gone there is no address for it to become; a serializer that
- *  invented one would emit a link that resolves nowhere. The element's text is
- *  emitted either way, so an internal link degrades to the words it was on. */
+/** Read the annotation named by a tagged link's OBJR. Inline exporters keep
+ *  URI actions. A bundle can also resolve local pages to its entry points. */
 function linkHref(ctx: Ctx, el: StructElement): string | undefined {
   for (const item of el.ContentItems) {
     if (item.kind !== 'objr') continue;
     const annot = ctx.doc.resolve(item.ref);
     if (!isDict(annot)) continue;
-    const action = parseAction(ctx.doc, annot);
-    if (action?.type === 'uri' && action.uri) return action.uri;
+    const href = ctx.resolveLink ? ctx.resolveLink(annot) : uriHref(ctx.doc, annot);
+    if (href) return href;
   }
   return undefined;
 }
@@ -391,13 +380,13 @@ function* elementNode(ctx: Ctx, el: StructElement): OperationSteps<DocNode | und
 }
 
 function* elementNodeBody(ctx: Ctx, el: StructElement): OperationSteps<DocNode | undefined> {
-  if (!onPage(el, ctx.only)) return undefined;
+  if (ctx.only && !structOnPage(el, ctx.only)) return undefined;
   const type = el.StandardType;
 
   if (type === 'Table') {
     // Built from this element, not looked up by page position: a Table element
     // need not carry /Pg, and the walk must not depend on one.
-    const table = tableFromStruct(el);
+    const table = tableFromStruct(el, ctx.resolveLink ? ctx.only : undefined);
     return table ? { kind: 'table', table } : undefined;
   }
   if (type === 'Figure') {
@@ -458,8 +447,8 @@ function* elementNodeBody(ctx: Ctx, el: StructElement): OperationSteps<DocNode |
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* taggedModelSteps(doc: Document, root: StructTreeRoot, only: Page | undefined, context: OperationContext): OperationSteps<DocNode[]> {
-  const ctx: Ctx = { doc, only, figures: new FigureContent(doc, only), control: context, completed: 0 };
+export function* taggedModelSteps(doc: Document, root: StructTreeRoot, only: Page | undefined, context: OperationContext, resolveLink?: LinkResolver): OperationSteps<DocNode[]> {
+  const ctx: Ctx = { doc, only, resolveLink, figures: new FigureContent(doc, only), control: context, completed: 0 };
   const out: DocNode[] = [];
   for (const child of root.Children) {
     const node = yield* elementNode(ctx, child);
@@ -628,7 +617,13 @@ function segmentChildren(segs: LineSegment[]): DocNode[] {
   return out;
 }
 
-/** The URI-bearing /Link annotations on `page`, each resolved to the text it
+/** Read the URI of a link without a bundle destination map. */
+function uriHref(doc: Document, annot: PdfDict): string | undefined {
+  const action = parseAction(doc, annot);
+  return action?.type === 'uri' ? action.uri : undefined;
+}
+
+/** The resolved /Link annotations on `page`, each resolved to the text it
  *  actually covers.
  *
  *  The glyphs come from `mapRegions`, so the covered text is read off the real
@@ -636,18 +631,18 @@ function segmentChildren(segs: LineSegment[]): DocNode[] {
  *  colour is not part of a fragment's identity: a linked phrase inside a
  *  sentence is normally NOT its own fragment — a whole line is commonly one —
  *  so there is nothing to match at fragment granularity. */
-function linkSpans(doc: Document, page: Page): LinkSpan[] {
+function linkSpans(doc: Document, page: Page, resolveLink?: LinkResolver): LinkSpan[] {
   const out: LinkSpan[] = [];
   for (const a of page.Annotations) {
     if (a.Subtype !== 'Link') continue;
-    const action = parseAction(doc, a.Dict);
-    if (action?.type !== 'uri' || !action.uri) continue;
+    const href = resolveLink ? resolveLink(a.Dict) : uriHref(doc, a.Dict);
+    if (!href) continue;
     const r = a.Rect;
     if (!r) continue;
     const y0 = Math.min(r[1], r[3]), y1 = Math.max(r[1], r[3]);
     const text = mapRegions(doc, page, [r]).glyphs.map((g) => g.text).join('');
     if (!text.trim()) continue;
-    out.push({ text, href: action.uri, y0, y1 });
+    out.push({ text, href, y0, y1 });
   }
   return out;
 }
@@ -669,7 +664,7 @@ function mergeLists(nodes: DocNode[]): DocNode[] {
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* untaggedModelSteps(doc: Document, pages: Page[], ranks: Map<number, number>, context: OperationContext): OperationSteps<DocNode[]> {
+export function* untaggedModelSteps(doc: Document, pages: Page[], ranks: Map<number, number>, context: OperationContext, resolveLink?: LinkResolver): OperationSteps<DocNode[]> {
   const out: DocNode[] = [];
   let completed = 0;
   for (const page of pages) {
@@ -681,7 +676,7 @@ export function* untaggedModelSteps(doc: Document, pages: Page[], ranks: Map<num
       .filter((b) => !tables.some((t) => centerInside(b.quad, t.quad)));
     const bodySize = dominantFragmentSize(blocks.flatMap((b) => b.lines.flatMap((l) => l.fragments)));
     const metrics = pageMetrics(blocks, bodySize);
-    const spans = linkSpans(doc, page);
+    const spans = linkSpans(doc, page, resolveLink);
 
     const pageNodes: DocNode[] = [];
     blocks.forEach((block, i) => {

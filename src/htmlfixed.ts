@@ -6,7 +6,9 @@ import { glyphDisplacement, glyphOrigin } from './font.js';
 import { PdfDict, PdfStream } from './types.js';
 import { Rgb } from './colorspace.js';
 import { interpret, baseMatrix, RenderSink, Path, StrokeStyle, TextRunInfo, OffscreenUse } from './pagerender.js';
-import { SvgSink, fmt } from './svgrender.js';
+import type { LinkResolver } from './docmodel.js';
+import { bounds, boxCorners } from './tableorient.js';
+import { SvgSink, fmt, type SvgAssets } from './svgrender.js';
 import { renderPageBackdropToPng } from './raster.js';
 import { pageFormControls, formEnvelope } from './htmlforms.js';
 import { escapeHtml, HtmlOptions } from './html.js';
@@ -19,10 +21,8 @@ import { rethrowLimit } from './errors.js';
  *  diverts each glyph run to an absolutely positioned <span>. One interpret()
  *  pass yields both layers, so text is never drawn twice. */
 class HtmlSink implements RenderSink {
-  private svg: SvgSink;
   private spans: string[] = [];
-  constructor(doc: Document, private fonts: FontRegistry, private embed?: EmbeddedFontRegistry) {
-    this.svg = new SvgSink(doc);
+  constructor(private svg: SvgSink, private fonts: FontRegistry, private embed?: EmbeddedFontRegistry) {
   }
 
   save(): void { this.svg.save(); }
@@ -162,6 +162,20 @@ class HtmlSink implements RenderSink {
   }
 }
 
+/** Positioned anchors share the page transform with the SVG and text layers. */
+function pageLinks(page: Page, matrix: Matrix, resolve: LinkResolver): string {
+  const links: string[] = [];
+  for (const annotation of page.Annotations) {
+    if (annotation.Subtype !== 'Link' || !annotation.Rect) continue;
+    const href = resolve(annotation.Dict);
+    if (!href) continue;
+    const [x, y, right, bottom] = bounds(boxCorners(annotation.Rect, matrix));
+    const style = `position:absolute;left:${fmt(x)}px;top:${fmt(y)}px;width:${fmt(right - x)}px;height:${fmt(bottom - y)}px`;
+    links.push(`<a href="${escapeHtml(href)}" aria-label="${escapeHtml(annotation.Contents || href)}" style="${style}"></a>`);
+  }
+  return links.join('');
+}
+
 /** Build the fixed-mode body — one `<div class="pg">` per page — plus the
  *  document-wide font-class CSS. Never throws per page: a page that fails
  *  mid-walk contributes whatever was emitted, matching renderPageToSvg. */
@@ -170,7 +184,7 @@ export function fixedBody(doc: Document, pages: Page[], opts: HtmlOptions): { bo
 }
 
 /** @internal Shared resumable algorithm; delegate within the parent context. */
-export function* fixedBodySteps(doc: Document, pages: Page[], opts: HtmlOptions, context: OperationContext): OperationSteps<{ body: string; css: string }> {
+export function* fixedBodySteps(doc: Document, pages: Page[], opts: HtmlOptions, context: OperationContext, assets?: SvgAssets, resolveLink?: LinkResolver): OperationSteps<{ body: string; css: string }> {
   const box = opts.box ?? 'crop';
   const fonts = new FontRegistry();
   const embed = opts.fonts && opts.fonts !== 'map'
@@ -185,18 +199,11 @@ export function* fixedBodySteps(doc: Document, pages: Page[], opts: HtmlOptions,
   let completed = 0;
   for (const page of pages) {
     const { matrix, width, height } = baseMatrix(page, box);
-    const sink = new HtmlSink(doc, fonts, embed);
     // Before the interpret pass, which needs the suppression set it produces.
     const fc = opts.forms
       ? pageFormControls(doc, page, doc.Form, nextTabIndex)
       : undefined;
     if (fc?.submits) anySubmit = true;
-    try {
-      interpret(doc, page, matrix, sink,
-        { annotations: opts.annotations, hideWidgets: fc?.converted });
-    } catch (caught) { rethrowLimit(caught);
-      // Degrade: whatever was emitted before the failure still renders.
-    }
     const kind = opts.backdrop ?? 'vector';
     let backdrop = '';
     if (kind !== 'vector') {
@@ -209,23 +216,30 @@ export function* fixedBodySteps(doc: Document, pages: Page[], opts: HtmlOptions,
         // rendered page too — which is what lets forms work with 'page'.
         const png = renderPageBackdropToPng(doc, page, img,
           { skipGlyphs: kind === 'raster', hideWidgets: fc?.converted });
-        backdrop = `<img src="data:image/png;base64,${Buffer.from(png).toString('base64')}">`;
+        const href = assets ? assets.write(png, 'png') : `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
+        backdrop = `<img src="${href}">`;
       } catch (caught) { rethrowLimit(caught);
         // **Invariant:** a page that will not rasterize falls back to 'vector',
         // both raster modes, one rule. docxexport.ts degrades by dropping the
         // backdrop and keeping the text, which is right there and wrong here:
         // in 'page' mode the text is transparent, so dropping the backdrop
         // leaves a BLANK page. Falling back restores the backdrop and the
-        // visible text together — and costs nothing, because the vector
-        // backdrop comes from the interpret pass that has already run.
+        // visible text together through the vector pass below.
       }
     }
     // Keyed on `backdrop`, not on `kind`: a degraded 'page' must not carry the
     // transparent-text class, or the fallback produces the blank page it exists
     // to prevent.
+    const svg = new SvgSink(doc, backdrop ? undefined : assets, [0, 0, width, height], assets ? `p${page.Number}-` : '');
+    const sink = new HtmlSink(svg, fonts, embed);
+    try {
+      interpret(doc, page, matrix, sink, { annotations: opts.annotations, hideWidgets: fc?.converted });
+    } catch (caught) { rethrowLimit(caught); /* retain any layers already drawn */ }
+    const anchor = assets ? ` id="page-${page.Number}"` : '';
+    const links = resolveLink && opts.annotations !== false ? pageLinks(page, matrix, resolveLink) : '';
     const sel = backdrop && kind === 'page' ? ' sel' : '';
-    divs.push(`<div class="pg${sel}" style="width:${fmt(width)}px;height:${fmt(height)}px">`
-      + (backdrop || sink.svgLayer(width, height)) + sink.spanLayer()
+    divs.push(`<div class="pg${sel}"${anchor} style="width:${fmt(width)}px;height:${fmt(height)}px">`
+      + (backdrop || sink.svgLayer(width, height)) + sink.spanLayer() + links
       // Controls last, so they stack above the backdrop and the text and can
       // actually be clicked.
       + (fc?.html ?? '') + `</div>`);
@@ -238,5 +252,5 @@ export function* fixedBodySteps(doc: Document, pages: Page[], opts: HtmlOptions,
       body = `<form action="${escapeHtml(env.action)}" method="${env.method}">\n`
         + `${body}\n</form>`;
   }
-  return { body, css: fonts.css() + (embed?.css() ?? '') };
+  return { body, css: fonts.css() + (embed?.css(assets?.write) ?? '') };
 }

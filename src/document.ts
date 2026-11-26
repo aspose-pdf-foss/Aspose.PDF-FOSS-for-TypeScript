@@ -29,6 +29,7 @@ import type { OcrEngine } from './ocr.js';
 import { Metadata, MetadataUpdate, readMetadata, applyUpdate, decodePdfText, encodePdfText } from './metadata.js';
 import { StructTreeRoot } from './struct.js';
 import { renderDocumentToHtml, renderDocumentToHtmlAsync, HtmlOptions } from './html.js';
+import { htmlBundle, svgBundle, type ExportBundle, type HtmlBundleOptions, type SvgBundleOptions } from './exportbundle.js';
 import { renderDocumentToDocx, renderDocumentToDocxAsync, type DocxOptions } from './docxexport.js';
 import { renderEpub, renderEpubAsync, type EpubOptions } from './epubexport.js';
 import { xlsxSteps, type XlsxExportOptions } from './xlsxexport.js';
@@ -1616,6 +1617,16 @@ export class Document {
   /** Yield between cooperative work units; cancellation leaves completed edits. */
   ToMarkdownAssetsAsync(options?: MarkdownExportOptions): Promise<MarkdownExportResult> {
     return renderDocumentToMarkdownAssetsAsync(this, options);
+  }
+
+  /** Export selected pages as HTML entry points with shared assets. */
+  ToHtmlBundle(options: HtmlBundleOptions = {}): ExportBundle {
+    return htmlBundle(this, options);
+  }
+
+  /** Export one SVG per selected page with shared image and shading assets. */
+  ToSvgBundle(options: SvgBundleOptions = {}): ExportBundle {
+    return svgBundle(this, options);
   }
 
   /** Render every page to one standalone HTML document. See `Page.ToHtml`. */

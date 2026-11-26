@@ -80,7 +80,8 @@ const FIXED_CSS = [
     + '{position:absolute;box-sizing:border-box;margin:0;font-family:inherit}',
 ].join('');
 
-function shell(doc: Document, body: string, opts: HtmlOptions, css: string): string {
+export function shell(doc: Document, body: string, opts: HtmlOptions, extraCss = ''): string {
+  const css = (opts.mode === 'fixed' ? FIXED_CSS : CSS) + extraCss;
   const title = opts.title ?? doc.GetMetadata().title ?? '';
   const lang = doc.Lang;
   const langAttr = lang ? ` lang="${escapeHtml(lang)}"` : '';
@@ -111,7 +112,7 @@ export function* renderSteps(doc: Document, pages: Page[], opts: HtmlOptions, co
     } catch (caught) { rethrowLimit(caught);
       // Degrade: emit a well-formed shell around whatever was produced.
     }
-    const result = opts.fragment ? out.body : shell(doc, out.body, opts, FIXED_CSS + out.css);
+    const result = opts.fragment ? out.body : shell(doc, out.body, opts, out.css);
     yield context.progress('assemble', 1, 1);
     return result;
   }
@@ -122,7 +123,7 @@ export function* renderSteps(doc: Document, pages: Page[], opts: HtmlOptions, co
     // Degrade: emit a well-formed shell around whatever was produced. Matches
     // renderPageToSvg, which never throws.
   }
-  const result = opts.fragment ? body : shell(doc, body, opts, CSS);
+  const result = opts.fragment ? body : shell(doc, body, opts);
   yield context.progress('assemble', 1, 1);
   return result;
 }

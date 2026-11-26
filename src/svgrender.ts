@@ -8,7 +8,7 @@ import { PdfDict, PdfObject, PdfStream, isStream } from './types.js';
 import { inflateStream } from './flate.js';
 import { resolveColorSpace, deviceGray, rgbHex, Rgb, ColorConverter } from './colorspace.js';
 import { parseFunction } from './pdffunction.js';
-import { imageHref } from './imagehref.js';
+import { imageHref, type AssetWriter } from './imagehref.js';
 import {
   interpret, baseMatrix, arrNums, RenderSink, Path, StrokeStyle, TextRunInfo, OffscreenUse,
   fillsText, strokesText,
@@ -17,6 +17,15 @@ import { BlendMode } from './blend.js';
 import { strokeOutlinePolys } from './strokegeom.js';
 import { glyphDisplacement, glyphOrigin } from './font.js';
 import { rethrowLimit } from './errors.js';
+
+import { renderShadingPatch } from './raster.js';
+import { boxCorners, bounds } from './tableorient.js';
+import type { Rect } from './text.js';
+
+export interface SvgAssets {
+  write: AssetWriter;
+  patchDpi: number;
+}
 
 export interface SvgOptions extends OperationControlOptions {
   /** Which page box defines the viewport. Default 'crop'. */
@@ -51,10 +60,11 @@ class SvgWriter {
   private body: string[] = [];
   private defs: string[] = [];
   private idSeq = 0;
+  constructor(private prefix = '') {}
   /** Redirect stack: while non-empty, emitted body markup is captured rather
    *  than written, so it can become a <mask>/<pattern>/<g> definition. */
   private redirect: string[][] = [];
-  nextId(prefix: string): string { return `${prefix}${this.idSeq++}`; }
+  nextId(prefix: string): string { return `${this.prefix}${prefix}${this.idSeq++}`; }
   emit(s: string): void {
     const top = this.redirect[this.redirect.length - 1];
     if (top) top.push(s); else this.body.push(s);
@@ -146,9 +156,31 @@ function polyToD(p: number[]): string {
   return d + 'Z';
 }
 
+function intersectBounds(a: Rect, b: Rect): Rect {
+  return [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
+}
+
+/** A Bézier lies inside its control hull. A conservative bound suffices for
+ *  allocation because the emitted SVG clip still defines the visible shape. */
+function clipBounds(path: Path, matrix: Matrix): Rect {
+  const rect: Rect = [Infinity, Infinity, -Infinity, -Infinity];
+  function include(x: number, y: number): void {
+    const [u, v] = apply(matrix, x, y);
+    rect[0] = Math.min(rect[0], u); rect[1] = Math.min(rect[1], v);
+    rect[2] = Math.max(rect[2], u); rect[3] = Math.max(rect[3], v);
+  }
+  for (const seg of path) {
+    if (seg.op === 'C') { include(seg.x1, seg.y1); include(seg.x2, seg.y2); }
+    if (seg.op !== 'Z') include(seg.x, seg.y);
+  }
+  return rect;
+}
+
 /** RenderSink that emits a standalone SVG document. */
 export class SvgSink implements RenderSink {
-  private w = new SvgWriter();
+  private w: SvgWriter;
+  private captureBounds: Rect[] = [];
+  private clipAreas = new Map<string, Rect>();
   private groupDepth = 0;
   /** Depth of open wrapper <g>s, plus clip-stack depth, per `save()`. */
   private saveStack: { depth: number; clips: number }[] = [];
@@ -163,16 +195,20 @@ export class SvgSink implements RenderSink {
   private strokeAlpha = 1;
   private blend: BlendMode = 'Normal';
   private maskOpen = false;
-  constructor(private doc: Document) {}
+  constructor(private doc: Document, private assets?: SvgAssets, area?: Rect, idPrefix = '') {
+    this.w = new SvgWriter(idPrefix);
+    if (area) this.captureBounds.push(area);
+  }
 
   setAlpha(fill: number, stroke: number): void { this.fillAlpha = fill; this.strokeAlpha = stroke; }
   setBlend(mode: BlendMode): void { this.blend = mode; }
 
   beginOffscreen(
-    _region?: { x0: number; y0: number; x1: number; y1: number },
+    region?: { x0: number; y0: number; x1: number; y1: number },
     _opts?: { backdrop?: boolean; knockout?: boolean },
   ): void {
     this.w.beginCapture();
+    if (this.assets) this.captureBounds.push(region ? [region.x0, region.y0, region.x1, region.y1] : this.captureBounds[this.captureBounds.length - 1]);
     // Contents are captured unclipped: the active clip applies to whatever
     // *uses* the resulting definition. A tiling cell in particular lives
     // outside the region it fills, so clipping it here would erase it. Mirrors
@@ -184,6 +220,7 @@ export class SvgSink implements RenderSink {
 
   endOffscreen(use: OffscreenUse): void {
     const inner = this.w.endCapture();
+    if (this.assets) this.captureBounds.pop();
     this.clipStack = this.clipSaves.pop() ?? [];
     if (use.kind === 'softmask') {
       const id = this.w.nextId('mask');
@@ -290,19 +327,29 @@ export class SvgSink implements RenderSink {
   /** Define a clipPath chained onto the enclosing clip and make it current.
    *  SVG intersects a <clipPath> with its own clip-path, so the innermost id
    *  alone denotes the full active clip. */
-  private pushClip(child: string, prefix: string): void {
+  private pushClip(child: string, prefix: string, area?: Rect): void {
     const id = this.w.nextId(prefix);
     const parent = this.currentClip();
     const chain = parent ? ` clip-path="url(#${parent})"` : '';
     this.w.addDef(`<clipPath id="${id}"${chain}>${child}</clipPath>`);
+    if (this.assets) {
+      const outer = this.patchBounds();
+      this.clipAreas.set(id, area ? intersectBounds(outer, area) : outer);
+    }
     this.clipStack.push(id);
+  }
+
+  private patchBounds(): Rect {
+    const clip = this.currentClip();
+    return (clip && this.clipAreas.get(clip)) || this.captureBounds[this.captureBounds.length - 1];
   }
 
   addClip(path: Path, ctm: Matrix, evenOdd: boolean): void {
     const d = pathToD(path);
     if (!d) return;
     const rule = evenOdd ? ' clip-rule="evenodd"' : '';
-    this.pushClip(`<path d="${d}" transform="${matrixAttr(ctm)}"${rule}/>`, 'clip');
+    this.pushClip(`<path d="${d}" transform="${matrixAttr(ctm)}"${rule}/>`, 'clip',
+      this.assets ? clipBounds(path, ctm) : undefined);
   }
 
   clipToStroke(path: Path, ctm: Matrix, style: StrokeStyle): void {
@@ -315,7 +362,15 @@ export class SvgSink implements RenderSink {
     const polys = strokeOutlinePolys(path, ctm, style);
     if (!polys.length) return;
     const d = polys.map((p) => polyToD(p)).join('');
-    this.pushClip(`<path d="${d}"/>`, 'sclip');
+    let area: Rect | undefined;
+    if (this.assets) {
+      area = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const poly of polys) for (let i = 0; i < poly.length; i += 2) {
+        area[0] = Math.min(area[0], poly[i]); area[1] = Math.min(area[1], poly[i + 1]);
+        area[2] = Math.max(area[2], poly[i]); area[3] = Math.max(area[3], poly[i + 1]);
+      }
+    }
+    this.pushClip(`<path d="${d}"/>`, 'sclip', area);
   }
 
   fill(path: Path, ctm: Matrix, color: Rgb, evenOdd: boolean): void {
@@ -449,21 +504,31 @@ export class SvgSink implements RenderSink {
     return true;
   }
 
-  shading(shading: PdfDict | PdfStream, ctm: Matrix, _pattern: boolean): void {
-    // This backend draws no mesh type, so the stream half is of no use to
-    // it and the dict is all it reads. The union exists for raster.ts,
-    // which needs the vertex data (4gtd.4).
-    //
-    // It draws no FUNCTION-BASED shading (type 1) either, and `_pattern` is
-    // unread for the same reason: `/Background` fills what a shading does not
-    // cover, which needs a per-pixel answer. No SVG gradient element can
-    // express a 2-D function field, so both would mean rasterizing here —
-    // its own decision, and 4gtd.3 deliberately left it (README says so).
+  shading(shading: PdfDict | PdfStream, ctm: Matrix, pattern: boolean): void {
+    // Native gradients need only the dictionary. Bundle patches also read
+    // mesh vertex data and distinguish a pattern fill from the sh operator.
     const dict = isStream(shading) ? shading.dict : shading;
     const doc = this.doc;
     const r = (o: PdfObject | undefined) => doc.resolve(o);
     const infl = (s: { dict: PdfDict; raw: Uint8Array }) => inflateStream(s as Parameters<typeof inflateStream>[0]);
     const type = num(doc, dict.get('ShadingType'));
+    if (this.assets && (type === 1 || (type >= 4 && type <= 7))) {
+      let area = this.patchBounds();
+      const bbox = arrNums(doc, dict.get('BBox'));
+      if (bbox.length === 4) {
+        area = intersectBounds(area, bounds(boxCorners(bbox as Rect, ctm)));
+      }
+      const [x, y, right, bottom] = area;
+      if (right <= x || bottom <= y) return;
+      const png = renderShadingPatch(doc, shading, ctm, pattern, area, this.assets.patchDpi);
+      const href = this.assets.write(png, 'png');
+      const attrs = [`x="${fmt(x)}" y="${fmt(y)}" width="${fmt(right - x)}" height="${fmt(bottom - y)}"`,
+        `preserveAspectRatio="none" href="${href}"`, ...this.clipAttrs()];
+      if (this.fillAlpha < 1) attrs.push(`opacity="${fmt(this.fillAlpha)}"`);
+      if (this.blend !== 'Normal') attrs.push(`style="mix-blend-mode:${blendCss(this.blend)}"`);
+      this.w.emit(`<image ${attrs.join(' ')}/>`);
+      return;
+    }
     const csObj = dict.get('ColorSpace');
     const cs = csObj !== undefined ? resolveColorSpace(csObj, r, infl) : deviceGray();
     const coords = arrNums(doc, dict.get('Coords'));
@@ -510,7 +575,7 @@ export class SvgSink implements RenderSink {
   }
 
   private imageHref(stream: PdfStream, fill: Rgb): string | undefined {
-    return imageHref(this.doc, stream, fill);
+    return imageHref(this.doc, stream, fill, this.assets?.write);
   }
 }
 
@@ -525,11 +590,11 @@ export function renderPageToSvgAsync(doc: Document, page: Page, opts: SvgOptions
 
 /** @internal */
 export function* renderPageToSvgSteps(
-  doc: Document, page: Page, opts: SvgOptions, context: OperationContext,
+  doc: Document, page: Page, opts: SvgOptions, context: OperationContext, assets?: SvgAssets,
 ): OperationSteps<string> {
   const box = opts.box ?? 'crop';
   const { matrix, width, height } = baseMatrix(page, box);
-  const sink = new SvgSink(doc);
+  const sink = new SvgSink(doc, assets, [0, 0, width, height]);
   try {
     interpret(doc, page, matrix, sink, { annotations: opts.annotations });
   } catch (caught) { rethrowLimit(caught);

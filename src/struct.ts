@@ -58,6 +58,13 @@ export interface StructTextNode {
 /** A structure element's direct kid: a child element or a run of its own text. */
 export type StructNode = StructElement | StructTextNode;
 
+/** Does this subtree contain content belonging to the requested page? */
+export function structOnPage(el: StructElement, page: Page): boolean {
+  const nodes = el.Nodes;
+  if (!nodes.length) return el.Page === page;
+  return nodes.some(n => n instanceof StructElement ? structOnPage(n, page) : n.page === page);
+}
+
 /** A /K entry as `Nodes` sees it, before its text is resolved. */
 interface TextItem { kind: 'text'; page: Page | undefined; mcid: number }
 interface ElemItem { kind: 'elem'; el: StructElement }
@@ -379,23 +386,28 @@ export class StructElement {
 
   /** This element's text and its descendants', in /K (reading) order. */
   GetText(skip?: (e: StructElement) => boolean): string {
+    return this.textForPage(undefined, skip);
+  }
+
+  /** @internal Marked content from the requested page, retaining reading order. */
+  textForPage(only?: Page, skip?: (e: StructElement) => boolean): string {
     const parts: string[] = [];
     const ownPage = this.Page;
     for (const k of kids(this.doc, this.Dict)) {
       const r = this.doc.resolve(k);
       if (typeof r === 'number') {
-        if (ownPage) parts.push(glyphsToText(mcidGlyphs(this.doc, ownPage).get(r) ?? []));
+        if (ownPage && (!only || only === ownPage)) parts.push(glyphsToText(mcidGlyphs(this.doc, ownPage).get(r) ?? []));
       } else if (isStructElem(this.doc, k)) {
         const child = this.child(r as PdfDict, k);
         if (!child || skip?.(child)) continue;
-        parts.push(child.GetText(skip));
+        parts.push(child.textForPage(only, skip));
       } else if (isDict(r)) {
         const type = this.doc.resolve(r.get('Type'));
         if (isName(type) && type.name === 'MCR') {
           const mcid = this.doc.resolve(r.get('MCID'));
           const pg = r.get('Pg');
           const page = isRef(pg) ? this.doc.pageForRef(pg) : ownPage;
-          if (typeof mcid === 'number' && page) {
+          if (typeof mcid === 'number' && page && (!only || only === page)) {
             parts.push(glyphsToText(mcidGlyphs(this.doc, page).get(mcid) ?? []));
           }
         }
