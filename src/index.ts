@@ -133,6 +133,8 @@ export type {
   CompareTextOptions, TextComparison, TextChange, TextSpan, TextComparisonStats, PageTextComparison,
 } from './compare.js';
 export { comparisonToHtml, comparisonToMarkdown, comparisonToJson } from './comparereport.js';
+export { comparisonToPdf, type ComparisonPdfOptions } from './comparepdf.js';
+export type { ComparisonMarkupOptions, ComparisonMarkupResult } from './comparemarkup.js';
 export type { SideBySideOptions, SideBySideResult } from './comparesidebyside.js';
 export type { RenderingCompareOptions, RenderingComparison, PageRenderingComparison } from './comparerendering.js';
 export type { ComparisonReportOptions, ComparisonHtmlOptions, ComparisonJsonOptions } from './comparereport.js';

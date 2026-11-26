@@ -2263,12 +2263,27 @@ before.CompareText(after, { exclude: [[0, 0, 612, 50]] }); // skip a footer band
 const html = comparisonToHtml(result, { title: 'Contract v1 → v2', context: 10 });
 const md = comparisonToMarkdown(result);   // the ~~quick~~ **slow** brown fox
 const json = comparisonToJson(result, { spans: false });
+writeFileSync('changes.pdf', comparisonToPdf(result, { title: 'Contract changes', context: 10 }));
+
+const { document: marked } = before.CompareMarkup(after, { side: 'destination' });
+marked.WriteTo('marked-contract.pdf');
 
 const { document: review } = before.CompareSideBySide(after);   // a new PDF to read
 const pixels = before.CompareRendering(after, { image: true });  // what changed in appearance
 for (const p of pixels.pages) if (p.changedPixels) writeFileSync(`diff-${p.newPage}.png`, p.image!);
 writeFileSync('review.pdf', review.Save());
 ```
+
+`CompareMarkup` returns an editable copy of the destination by default. Insertions are
+highlighted there. Choose `side: 'source'` to strike out deletions on the original layout.
+A caret note carries text from the opposite side when unchanged text provides an anchor.
+In page-by-page mode, an absent page appears in the comparison and standalone report.
+The marked copy preserves existing annotations and encryption. Saving it makes a new PDF.
+Signatures on the input authenticate the original bytes.
+
+`comparisonToPdf` writes searchable, paginated text with underlined insertions and struck-out
+deletions. Pass `fontBytes` containing a font with the required glyphs for text outside
+WinAnsi. A missing glyph raises `UnsupportedFeatureError` with the characters to cover.
 
 Each change carries `TextSpan`s — page number, text and one quad per line — on the
 side it belongs to, so deletions can be marked on the first document and insertions
@@ -4291,7 +4306,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 553 public types plus 175
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 556 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4368,6 +4383,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ComparisonHtmlOptions` | Options for `comparisonToHtml`: `context`, `fragment`, `title`. |
 | `ComparisonJsonOptions` | Options for `comparisonToJson`: `spans` (include page spans, default true), `indent`. |
 | `ComparisonReportOptions` | Options shared by the comparison writers: `context`, the unchanged words kept either side of a change before a stretch is cut to `…`. |
+| `ComparisonMarkupOptions` | Select the source or destination copy and set text comparison options. |
+| `ComparisonMarkupResult` | An independently editable marked document and the text comparison used to annotate it. |
+| `ComparisonPdfOptions` | Optional report title, unchanged context length, and font bytes for the PDF writer. |
 | `ContentItem` | A marked-content reference owned by a structure element. |
 | `ConvertCategory` | A category of document changes that a standards conversion can report or preserve. |
 | `Decoration` | `true` uses the font's metrics and the text's own colour; `false` is off. |
@@ -5348,6 +5366,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.ReplaceText(find, replacement, options?)` | Replace matches in place (no reflow) → count replaced. `options` is `ReplaceTextOptions`: `region`, `ignoreCase`, `wholeWord`, `fallbackFonts`, `matchRegisteredFonts`, `onUndrawable`, `font`, `fontSize`, `color`, `adjust`, `onUnreflowable`, `hyphenate` |
 | `page.RestyleText(find, style, options?)` | Restyle matches in place without changing the text → count. `style` is `TextRestyle`, `options` is `RestyleTextOptions` |
 | `doc.CompareText(other, options?)` | Compare two documents' text → `TextComparison`: equal/delete/insert runs placed on each document's pages, `stats` with a `similarity`, `minimal`. `mode: 'pages'` compares page with page; `granularity: 'character'`, `ignoreCase`, `region` and `exclude` scope what is compared |
+| `doc.CompareMarkup(other, options?)` | Return a copy of the selected document with change annotations and the comparison used to place them. |
 | `doc.CompareSideBySide(other, options?)` | A **new** Document setting each page pair side by side — this document left, `other` right — with deletions marked on the left and insertions on the right, as highlight annotations (default) or drawn boxes. Returns `{ document, comparison }`; neither input changes |
 | `doc.CompareRendering(other, options?)` | Compare how two documents RENDER, page by page → `RenderingComparison`: changed pixels, their ratio, changed regions in page space, and with `{ image: true }` a PNG difference image per page. `dpi`, `tolerance` and `mergeDistance` tune it; sees colour, image and line changes that `CompareText` cannot |
 | `doc.ReplaceText(find, replacement, options?)` | `ReplaceText` across every page, same options; every page is planned before any changes → total count |
@@ -5411,6 +5430,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `comparisonToHtml` | Write a `TextComparison` as HTML: deletions in `<del>`, insertions in `<ins>`; a complete document with a summary line, or `{ fragment: true }` for the markup alone. |
 | `comparisonToMarkdown` | Write a `TextComparison` as GitHub-flavored Markdown: `~~deleted~~` and `**inserted**` words, or `<del>`/`<ins>` tags at character granularity. |
 | `comparisonToJson` | Write a `TextComparison` as JSON, with or without each change's page spans. |
+| `comparisonToPdf` | Write a searchable PDF report from a `TextComparison` and return its bytes. |
 | `searchAnnotations` | Search the text an annotation DRAWS, inside its `/AP` appearance stream. |
 | `searchAnnotationText` | Search the text an annotation CARRIES — `/Contents`, `/T`, `/Subj`, `/RC`. |
 | `extractTables` | Reconstruct a page's tables — the free function behind `page.GetTables`. |

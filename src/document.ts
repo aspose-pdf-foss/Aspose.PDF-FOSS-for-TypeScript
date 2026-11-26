@@ -71,6 +71,7 @@ import type { EditableParagraph } from './texttarget.js';
 import type { Rect } from './text.js';
 import type { RedactOptions } from './redact.js';
 import { compareText, type CompareTextOptions, type TextComparison } from './compare.js';
+import { markComparison, type ComparisonMarkupOptions, type ComparisonMarkupResult } from './comparemarkup.js';
 import { planSideBySide, renderSideBySide, type SideBySideOptions, type SideBySideResult } from './comparesidebyside.js';
 import { compareRendering, type RenderingCompareOptions, type RenderingComparison } from './comparerendering.js';
 import type { ApplyRedactionsOptions, MarkRedactTextOptions } from './redactapply.js';
@@ -4796,6 +4797,39 @@ export class Document {
    *  granularity, case, regions and exclusion areas. */
   CompareText(other: Document, options?: CompareTextOptions): TextComparison {
     return compareText(this, other, options);
+  }
+
+  /** Mark changes on an independent copy of the selected document. */
+  CompareMarkup(other: Document, options: ComparisonMarkupOptions = {}): ComparisonMarkupResult {
+    const side = options.side === undefined ? 'destination' : options.side;
+    if (side !== 'source' && side !== 'destination')
+      throw new RangeError("CompareMarkup: side must be 'source' or 'destination'");
+    if (!(other instanceof Document)) throw new TypeError('CompareMarkup: other must be a Document');
+    // Text extraction charges decoded streams to the document it reads.
+    const source = this.copyForComparison();
+    const destination = this === other ? source : other.copyForComparison();
+    const comparison = compareText(source, destination, options.compare);
+    const document = side === 'source' ? source : destination;
+    markComparison(document, comparison, side);
+    return { document, comparison };
+  }
+
+  private copyForComparison(): Document {
+    const { objects, trailer } = structuredClone({ objects: this.objects, trailer: this.trailer });
+    const copy = new Document(objects, trailer, this.loadLimits);
+    copy.sourceVersion = this.sourceVersion;
+    copy.migratedToPdf20 = this.migratedToPdf20;
+    copy.formEnforceRules = this.formEnforceRules;
+    copy.permissions = this.permissions && { ...this.permissions };
+    if (this.preservedEncryptor) copy.preservedEncryptor = {
+      ...this.preservedEncryptor, encryptDict: structuredClone(this.preservedEncryptor.encryptDict),
+    };
+    // An authored page can use a reserved Type0 slot before its first save.
+    // Finalize into the cloned graph. The editable copy owns no input font handles.
+    for (const font of this.embeddedFonts) copy.embeddedFonts.push(font);
+    copy.finalizeEmbeddedFonts();
+    copy.embeddedFonts.length = 0;
+    return copy;
   }
 
   /** Compare how this document and `other` RENDER, page by page: which

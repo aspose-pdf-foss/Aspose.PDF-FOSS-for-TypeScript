@@ -10737,6 +10737,8 @@ Source (`src/`):
   pages, and the not-a-Document check, which `{}` passed BY ACCIDENT because
   reading `.Pages` on it threw a `TypeError` anyway; the case asserts the
   message now.
+- **comparemarkup.ts** — places each changed span on the selected document's own page using its original quads. Carets use adjacent equal text, with anchor lookup scoped to each page pair in pages mode. `Document.CompareMarkup` prepares the independent live copy.
+- **comparepdf.ts** — writes the shared report blocks as Flow text runs, with searchable text and separate deletion and insertion decorations.
 - **comparereport.ts** — a `TextComparison` written out as HTML, Markdown or
   JSON (`aq4a.3`). Pure over `compare.ts`'s result TYPES: no `Document`, so
   it can only decide how to SHOW a comparison, never what changed.

@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Distribute a text comparison as a PDF.** `Document.CompareMarkup` marks
+  changes on an independent source or destination copy, with one quad per
+  changed line and caret notes where unchanged text provides an anchor.
+  `comparisonToPdf` writes a searchable, paginated report from the same
+  comparison, including changes on pages present in only one input. (1t5g.2)
+
 - **Inspect the original PDF before recovery.** `Document.Preflight(bytes, { limits })`
   reports structural damage even when opening the same bytes can recover every page.
   Callers can distinguish malformed input, unsupported checks and the exact resource

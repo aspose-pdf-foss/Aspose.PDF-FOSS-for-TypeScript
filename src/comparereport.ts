@@ -45,7 +45,6 @@ const VISIBLE_SPACE = '␣';
 
 /** Write a comparison as HTML: deletions in `<del>`, insertions in `<ins>`. */
 export function comparisonToHtml(result: TextComparison, opts: ComparisonHtmlOptions = {}): string {
-  const context = checkContext(opts.context);
   if (opts.title !== undefined && typeof opts.title !== 'string') throw new TypeError('comparisonToHtml: title must be a string');
   const sep = result.granularity === 'word' ? ' ' : '';
   const para = (pieces: Piece[]): string => `<p>${pieces.map((p) => {
@@ -54,7 +53,7 @@ export function comparisonToHtml(result: TextComparison, opts: ComparisonHtmlOpt
     return p.kind === 'equal' ? t : `<${p.kind === 'delete' ? 'del' : 'ins'}>${t}</${p.kind === 'delete' ? 'del' : 'ins'}>`;
   }).join(sep)}</p>\n`;
   let body = '<div class="pdf-diff">\n';
-  for (const b of blocks(result, context)) {
+  for (const b of comparisonBlocks(result, opts.context)) {
     body += b.heading === undefined ? para(b.pieces) : `<section>\n<h2>${escapeXml(b.heading)}</h2>\n${para(b.pieces)}</section>\n`;
   }
   body += '</div>\n';
@@ -78,7 +77,6 @@ export function comparisonToHtml(result: TextComparison, opts: ComparisonHtmlOpt
  *  granularity they are inline `<del>`/`<ins>` tags, because a change inside a
  *  word next to punctuation leaves a delimiter that cannot open or close. */
 export function comparisonToMarkdown(result: TextComparison, opts: ComparisonReportOptions = {}): string {
-  const context = checkContext(opts.context);
   const words = result.granularity === 'word';
   const para = (pieces: Piece[]): string => {
     const out = pieces.map((p) => {
@@ -93,7 +91,7 @@ export function comparisonToMarkdown(result: TextComparison, opts: ComparisonRep
     // Inline escaping everywhere, plus the block openers at the line's start.
     return escapeLineStart(out);
   };
-  return blocks(result, context)
+  return comparisonBlocks(result, opts.context)
     .map((b) => (b.heading === undefined ? '' : `## ${escapeMarkdown(b.heading)}\n\n`) + para(b.pieces) + '\n')
     .join('\n');
 }
@@ -135,7 +133,9 @@ function escapeLineStart(line: string): string {
   return line.replace(/^(\s{0,3})([#>+=-])/, '$1\\$2').replace(/^(\s{0,3})(\d{1,9})([.)])/, '$1$2\\$3');
 }
 
-function blocks(result: TextComparison, context: number): Block[] {
+/** @internal Shared headings and context for the formatted report writers. */
+export function comparisonBlocks(result: TextComparison, requestedContext?: number): Block[] {
+  const context = checkContext(requestedContext);
   if (!result.pages) return [{ pieces: pieces(result.changes, result.granularity, context) }];
   return result.pages.map((p) => ({
     heading: p.oldPage === undefined ? `Page ${p.newPage} (second document only)`
