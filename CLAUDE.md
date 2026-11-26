@@ -11872,6 +11872,8 @@ Source (`src/`):
 - **hybridinvoice.ts** — read Factur-X and ZUGFeRD envelopes. Match file
   specifications by identity and invoice properties by namespace. Read the CII
   guideline ID from the document context and return a copy of the original bytes.
+  Assembly updates the attachment and its XMP extension definitions on a copy,
+  then validates the serialized PDF at its declared PDF/A-3 level (default 3b).
 - **associatedfile.ts** — PDF/A-3 embedded-file validation and repair. Walk from
   the catalog so conversion cannot resurrect a replaced file. Promote a direct
   specification at each original use before saving its shared indirect reference.

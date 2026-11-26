@@ -71,7 +71,7 @@ export { PrinterMarkCornerPosition, PrinterMarkSidePosition, ColorsOfCMYK } from
 export type { PrinterMarkKind, PrinterMarksOptions, DocumentPrinterMarksOptions, PageInformationOptions } from './printermarks.js';
 export { Attachment } from './embeddedfile.js';
 export type { AFRelationship, AttachmentOptions } from './embeddedfile.js';
-export type { HybridInvoice } from './hybridinvoice.js';
+export type { HybridInvoice, HybridInvoiceOptions } from './hybridinvoice.js';
 export type { CollectionSettings, CollectionFieldDef, CollectionFieldType, CollectionView } from './collection.js';
 export type {
   OutlineItem, OutlineDest, PageDest, NamedDest, OutlineView, NamedDestination,

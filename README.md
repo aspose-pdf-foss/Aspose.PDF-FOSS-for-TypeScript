@@ -3519,6 +3519,33 @@ Configured stream, XML depth, and XML item limits raise `ResourceLimitError`.
 Extraction reads the envelope and its profile. Business-rule and schema
 validation are separate operations.
 
+### Assemble or Replace a Hybrid Invoice
+
+```ts
+import { readFile, writeFile } from 'node:fs/promises';
+
+// Prepare a plain source for PDF/A-3. Skip conversion for an existing PDF/A-3 invoice.
+doc.ConvertToPdfA('3b');
+const xml = await readFile('invoice.xml');
+const { bytes, level, validation } = doc.BuildHybridInvoice(xml);
+if (validation.Passed) await writeFile('invoice.pdf', bytes);
+else console.error(level, validation.Errors);
+```
+
+`BuildHybridInvoice` works on a copy of an unencrypted document. It uses the
+CII guideline to choose the XML filename, invoice XMP fields and extension
+schema. It attaches the original bytes in both the catalog and the embedded
+files name tree. Replacing an invoice preserves its annotation links, other
+attachments and unrelated XMP properties. A conflicting or unreadable
+existing envelope raises an error.
+
+The default XML relationship is `Data` for Factur-X MINIMUM and BASIC WL and
+`Alternative` otherwise. Supply `{ relationship: 'Source' }` when the XML
+served as the source for the visual invoice and the applicable profile calls
+for that relationship. The returned report checks the saved PDF against its
+declared PDF/A-3 level, defaulting to `3b`. Invoice XSD and business-rule
+validation are separate.
+
 ### Read and Write XMP Metadata
 
 ```ts
@@ -4391,7 +4418,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 568 public types plus 176
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 569 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4979,6 +5006,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `Attachment` | A live handle over one embedded file's /Filespec. |
 | `AFRelationship` | Predefined associated-file relationship names accepted by attachment writers and the `Relationship` setter. Imported custom names can be read through the getter. |
 | `HybridInvoice` | Embedded invoice filename, profile, guideline ID, and original CII XML bytes. |
+| `HybridInvoiceOptions` | Optional associated-file relationship for the invoice XML. |
 | `AttachmentOptions` | Options shared by document-level attachments and FileAttachment annotations. |
 
 ### Conversion
@@ -5313,6 +5341,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.GetAttachments()` / `doc.AddAttachment(name, bytes, opts?)` / `doc.RemoveAttachment(name)` | Read / upsert / delete document-level embedded files (`Attachment[]`, lazy `GetBytes()`) |
 | `doc.GetAssociatedFiles()` | Embedded files in catalog `/AF` order, once per file specification. |
 | `doc.ReadHybridInvoice()` | Read a Factur-X or ZUGFeRD envelope as a `HybridInvoice`, or `undefined` when absent. |
+| `doc.BuildHybridInvoice(xml, options?)` | Assemble or replace the embedded invoice and return the saved bytes, PDF/A-3 level and validation report. |
 | `doc.GetCollection()` / `doc.SetCollection(settings)` / `doc.RemoveCollection()` | Read / write / remove the `/Collection` portfolio (schema, view, sort, initial file) |
 | `attachment.GetField(name)` / `attachment.SetField(name, value)` / `attachment.RemoveField(name)` | Per-file portfolio custom field values (`/CI`); value is `string \| number \| Date` |
 | `doc.GetMetadata()` / `doc.SetMetadata(update)` / `doc.ClearMetadata()` | `/Info` metadata (`ClearMetadata` also drops the XMP packet) |

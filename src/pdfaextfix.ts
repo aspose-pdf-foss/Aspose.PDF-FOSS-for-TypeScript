@@ -36,7 +36,7 @@ const KNOWN: ReadonlyMap<string, KnownSchema> = new Map<string, KnownSchema>([
 
 const simple = (ns: string, name: string, value: string): RdfProperty => ({ ns, name, value: { kind: 'simple', value } });
 
-function describe(name: string, valueType: string, category: string, description: string): RdfProperty['value'] {
+export function describeExtensionProperty(name: string, valueType: string, category: string, description: string): RdfProperty['value'] {
   return { kind: 'struct', fields: [
     simple(PDFA_PROPERTY_NS, 'name', name), simple(PDFA_PROPERTY_NS, 'valueType', valueType),
     simple(PDFA_PROPERTY_NS, 'category', category), simple(PDFA_PROPERTY_NS, 'description', description),
@@ -53,13 +53,13 @@ function describe(name: string, valueType: string, category: string, description
  *  a generated prefix while its description still named the one it lost —
  *  including a description this pass had just written, which read the prefix
  *  before pinning. */
-function pinPdfaPrefixes(packet: RdfPacket): void {
+export function pinPdfaPrefixes(packet: RdfPacket, required = REQUIRED_PREFIX): void {
   const renamed = new Map<string, string>();
-  for (const [ns, pre] of REQUIRED_PREFIX) {
+  for (const [ns, pre] of required) {
     for (const [other, p] of [...packet.prefixes]) {
       if (p !== pre || other === ns) continue;
       packet.prefixes.delete(other);
-      renamed.set(other, p);
+      if (!required.has(other)) renamed.set(other, p);
     }
     packet.prefixes.set(ns, pre);
   }
@@ -67,7 +67,7 @@ function pinPdfaPrefixes(packet: RdfPacket): void {
   const inUse = new Set(packet.prefixes.values());
   for (const [ns, old] of renamed) {
     let n = 1;
-    while (inUse.has(`${old}${n}`) || REQUIRED_PREFIX_VALUES.has(`${old}${n}`)) n++;
+    while (inUse.has(`${old}${n}`)) n++;
     const fresh = `${old}${n}`;
     inUse.add(fresh);
     packet.prefixes.set(ns, fresh);
@@ -83,8 +83,6 @@ function pinPdfaPrefixes(packet: RdfPacket): void {
     if (fresh !== undefined && pf !== undefined && pf.value.kind === 'simple') pf.value = { kind: 'simple', value: fresh };
   }
 }
-
-const REQUIRED_PREFIX_VALUES: ReadonlySet<string> = new Set(REQUIRED_PREFIX.values());
 
 /** Describe what can be described, in place. `added` and `left` are
  *  `prefix:name` labels. `main` is the catalog packet, for an object-level
@@ -103,9 +101,9 @@ export function addMissingDescriptions(packet: RdfPacket, part: PdfaPart, main?:
     const known = KNOWN.get(p.ns);
     const k = known?.props[p.name];
     let desc: RdfProperty['value'] | undefined;
-    if (k !== undefined) desc = describe(p.name, k.valueType, 'internal', k.description);
+    if (k !== undefined) desc = describeExtensionProperty(p.name, k.valueType, 'internal', k.description);
     else if (known === undefined && p.value.kind === 'simple' && !p.value.uri)
-      desc = describe(p.name, 'Text', 'external', 'Added by PDF/A conversion: the value is carried as Text.');
+      desc = describeExtensionProperty(p.name, 'Text', 'external', 'Added by PDF/A conversion: the value is carried as Text.');
     if (desc === undefined) { left.push(label(p)); continue; }
     if (!plan.has(p.ns)) plan.set(p.ns, []);
     plan.get(p.ns)!.push({ prop: p, desc });

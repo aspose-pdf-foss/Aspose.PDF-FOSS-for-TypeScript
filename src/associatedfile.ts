@@ -116,6 +116,15 @@ export function validateAssociatedFiles(doc: Document): ValidationIssue[] {
   return issues;
 }
 
+/** Reuse the filespec reference shared by the source's annotations and name trees,
+ *  promoting direct uses of this specification when necessary. */
+export function registerFilespec(doc: Document, fs: PdfDict): PdfRef {
+  const file = inventory(doc).files.get(fs);
+  const ref = file?.ref ?? doc.allocObject(fs);
+  for (const replace of file?.directUses ?? []) replace(ref);
+  return ref;
+}
+
 export function repairAssociatedFiles(doc: Document): ConvertAction[] {
   const { files, associated, streams } = inventory(doc);
   const actions: ConvertAction[] = [];

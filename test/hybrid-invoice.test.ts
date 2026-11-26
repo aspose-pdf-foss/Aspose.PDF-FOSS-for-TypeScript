@@ -90,3 +90,71 @@ it('bounds a wide XML tree before extracting even a valid guideline', () => {
   });
   expect(() => doc.ReadHybridInvoice()).toThrow(ResourceLimitError);
 });
+
+it('packages exact XML bytes on a prepared PDF/A-3b and preserves unrelated metadata and attachments', () => {
+  const doc = attached('receipt.txt', 'keep');
+  doc.SetXmpValue('urn:example:ledger', 'Account', 'ledger 42', { prefix: 'fx' });
+  doc.ConvertToPdfA('3b');
+  const bytes = encode(xml());
+  const result = doc.BuildHybridInvoice(bytes);
+  const output = Document.Open(result.bytes);
+  expect(result.validation.Errors).toEqual([]);
+  expect(output.ValidatePdfA('3b').Errors).toEqual([]);
+  expect(output.ReadHybridInvoice()?.xml).toEqual(bytes);
+  expect(output.GetAttachments().map(file => file.Name)).toEqual(['factur-x.xml', 'receipt.txt']);
+  const file = output.GetAssociatedFiles().find(file => file.Name === 'factur-x.xml')!;
+  expect(file.Dict).toBe(output.GetAttachments()[0].Dict);
+  expect([file.Relationship, file.MimeType]).toEqual(['Alternative', 'text/xml']);
+  expect(output.GetAttachments()[1].GetBytes()).toEqual(encode('keep'));
+  expect(output.GetXmpValue('urn:example:ledger', 'Account')).toEqual(doc.GetXmpValue('urn:example:ledger', 'Account'));
+  expect(doc.ReadHybridInvoice()).toBeUndefined();
+});
+
+it('replaces a catalog-only invoice shared with an annotation and reports outstanding PDF/A findings', () => {
+  const doc = attached('receipt.txt', 'keep');
+  doc.Pages[0].AddFileAttachment({ name: 'ZUGFeRD-invoice.xml', bytes: encode(xml(zf + ':basic', true)),
+    relationship: 'Alternative', rect: [0, 0, 10, 10] });
+  const result = doc.BuildHybridInvoice(encode(xml('urn:factur-x.eu:1p0:minimum')));
+  const output = Document.Open(result.bytes);
+  expect(result.validation.Passed).toBe(false);
+  expect(output.ReadHybridInvoice()?.profile).toBe('MINIMUM');
+  const invoice = output.GetAttachments().find(f => f.Name === 'factur-x.xml')!;
+  expect(invoice.Relationship).toBe('Data');
+  const [annotation] = output.Pages[0].Annotations;
+  expect(output.resolve(annotation.Dict.get('FS'))).toBe(invoice.Dict);
+  expect(output.GetAssociatedFiles().filter(f => f.Dict === invoice.Dict)).toHaveLength(1);
+  expect(doc.ReadHybridInvoice()?.profile).toBe('BASIC');
+});
+
+it('switches invoice generations without stale XMP and rejects ambiguous or broken inputs', () => {
+  const doc = Document.New();
+  doc.AddPage();
+  const modern = Document.Open(doc.BuildHybridInvoice(encode(xml())).bytes);
+  const legacy = Document.Open(modern.BuildHybridInvoice(encode(xml(zf + ':comfort', true))).bytes);
+  expect(legacy.GetAttachments().map(f => f.Name)).toEqual(['ZUGFeRD-invoice.xml']);
+  expect(legacy.ReadHybridInvoice()?.profile).toBe('COMFORT');
+  expect(legacy.GetXmpValue(fx, 'Version')).toBeUndefined();
+  expect(() => modern.BuildHybridInvoice(encode('<broken'))).toThrow(PdfParseError);
+  modern.AddAttachment('xrechnung.xml', encode(xml()));
+  expect(() => modern.BuildHybridInvoice(encode(xml()))).toThrow(/multiple/i);
+});
+
+it('respects PDF/A-3u identification and a caller-specified Source relationship', () => {
+  const doc = Document.New();
+  doc.AddPage();
+  doc.ConvertToPdfA('3u');
+  const result = doc.BuildHybridInvoice(encode(xml()), { relationship: 'Source' });
+  expect(result.level).toBe('3u');
+  expect(result.validation.Errors).toEqual([]);
+  expect(Document.Open(result.bytes).GetAssociatedFiles()[0].Relationship).toBe('Source');
+});
+
+it('protects unrelated files with a reserved display name or name-tree key and unreadable catalog metadata', () => {
+  const doc = attached('factur-x.xml', '<ledger/>');
+  expect(() => doc.BuildHybridInvoice(encode(xml()))).toThrow(PdfParseError);
+  doc.GetAttachments()[0].Dict.delete('UF');
+  doc.GetAttachments()[0].Dict.set('F', { kind: 'string', bytes: encode('ledger.xml') });
+  expect(() => doc.BuildHybridInvoice(encode(xml()))).toThrow(/collides/);
+  doc.installXmpText('<broken');
+  expect(() => doc.BuildHybridInvoice(encode(xml()))).toThrow(/unreadable catalog XMP/);
+});

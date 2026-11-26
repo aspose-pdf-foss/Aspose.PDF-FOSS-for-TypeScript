@@ -57,7 +57,7 @@ import { inflateStream } from './flate.js';
 import { readXmp, editXmpPacket, editXmpPacketWith, claimPrefix, mirrorMetaToXmp, mirrorXmpToMeta, XmpMetadata, XmpUpdate } from './xmp.js';
 import { checkXmpWrite, toRdfValue, type XmpValueInput, type XmpWriteOptions } from './xmpwrite.js';
 import { parseRdfPacket } from './xmprdf.js';
-import { readHybridInvoice, type HybridInvoice } from './hybridinvoice.js';
+import { installHybridInvoice, readHybridInvoice, type HybridInvoice, type HybridInvoiceOptions } from './hybridinvoice.js';
 import { XmpValue, findXmpValue } from './xmpvalue.js';
 import { planSync, infoSide, xmpSide, mirroredField, type MetadataSyncReport, type SyncDirection } from './metasync.js';
 import { Page } from './page.js';
@@ -2317,6 +2317,22 @@ export class Document {
   /** Read a Factur-X or ZUGFeRD envelope, or undefined when none is identified. */
   ReadHybridInvoice(): HybridInvoice | undefined {
     return readHybridInvoice(this);
+  }
+
+  /** Export a standalone invoice and validate its declared PDF/A-3 level (default 3b). */
+  BuildHybridInvoice(xml: Uint8Array, options: HybridInvoiceOptions = {}): {
+    bytes: Uint8Array; level: '3a' | '3b' | '3u'; validation: ValidationReport;
+  } {
+    if (this.preservedEncryptor || this.trailer.has('Encrypt'))
+      throw new UnsupportedFeatureError('BuildHybridInvoice requires an unencrypted PDF/A source');
+    const copy = this.copyForExport();
+    installHybridInvoice(copy, xml, options);
+    const bytes = copy.Save();
+    const output = Document.Open(bytes, { limits: this.loadLimits });
+    const metadata = output.GetXmp();
+    const conformance = metadata.pdfaPart === 3 && metadata.pdfaConformance?.toUpperCase();
+    const level = conformance === 'A' ? '3a' : conformance === 'U' ? '3u' : '3b';
+    return { bytes, level, validation: output.ValidatePdfA(level) };
   }
 
   /** Embed `bytes` as an attachment named `name`, upserting it into the
@@ -4834,15 +4850,15 @@ export class Document {
       throw new RangeError("CompareMarkup: side must be 'source' or 'destination'");
     if (!(other instanceof Document)) throw new TypeError('CompareMarkup: other must be a Document');
     // Text extraction charges decoded streams to the document it reads.
-    const source = this.copyForComparison();
-    const destination = this === other ? source : other.copyForComparison();
+    const source = this.copyForExport();
+    const destination = this === other ? source : other.copyForExport();
     const comparison = compareText(source, destination, options.compare);
     const document = side === 'source' ? source : destination;
     markComparison(document, comparison, side);
     return { document, comparison };
   }
 
-  private copyForComparison(): Document {
+  private copyForExport(): Document {
     const { objects, trailer } = structuredClone({ objects: this.objects, trailer: this.trailer });
     const copy = new Document(objects, trailer, this.loadLimits);
     copy.sourceVersion = this.sourceVersion;

@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Document.BuildHybridInvoice(xml, options?)` packages caller-supplied Factur-X or ZUGFeRD XML, writes the associated file and XMP extension schema, and returns PDF/A-3 findings for the exported PDF.
+
 - **Read Factur-X and ZUGFeRD invoice envelopes.** `Document.ReadHybridInvoice()` returns the embedded XML bytes and the invoice profile. It checks the CII guideline against invoice XMP and reports ambiguous or contradictory attachments. Extraction matched qpdf byte for byte on modern EN 16931 and legacy BASIC invoices (6x6h.2).
 
 - **Associated files and PDF/A-3 repair.** Attachments accept typed relationships and catalog associations can be read through `GetAssociatedFiles()`. Conversion preserves file bytes and shared references across the name tree, annotations and catalog. It supplies missing MIME and relationship defaults and reports malformed metadata, including invalid file dates. Replacing a named attachment now releases its old catalog association when it has no other owner (6x6h.1).
