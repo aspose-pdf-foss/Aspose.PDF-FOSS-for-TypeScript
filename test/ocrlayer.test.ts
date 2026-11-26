@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildOcrLayer } from '../src/ocrlayer.js';
+import { buildOcrLayer, positionOcrSpans } from '../src/ocrlayer.js';
 import { GlyphlessCodes } from '../src/glyphless.js';
 import type { Matrix } from '../src/text.js';
 
@@ -7,6 +7,21 @@ const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 /** Device matrix of a 200x100 page at scale 1, Rotate 0: page → pixels. */
 const FLIP: Matrix = [1, 0, 0, -1, 0, 100];
 const IMG = { width: 200, height: 100 };
+
+it('returns clipped boxes and PDF corners for accepted spans in engine order', () => {
+  const result = positionOcrSpans([
+    { text: 'z', box: [30, 20, 40, 25] },
+    { text: 'outside', box: [201, 30, 220, 50] },
+    { text: 'e\u0301', box: [-5, 30, 100, 50] },
+  ], FLIP, IMG);
+  expect(result).toEqual({
+    dropped: 1,
+    spans: [
+      { text: 'z', box: [30, 20, 40, 25], quad: [30, 80, 40, 80, 40, 75, 30, 75] },
+      { text: 'é', box: [0, 30, 100, 50], quad: [0, 70, 100, 70, 100, 50, 0, 50] },
+    ],
+  });
+});
 
 /** The numbers of the one `Tm` in a single-span layer. */
 function tm(body: Uint8Array): number[] {

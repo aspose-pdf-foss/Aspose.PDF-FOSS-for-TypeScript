@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Read-only OCR for scanned and signed PDFs.** `Document.RecognizeText` returns text, clipped image boxes and PDF coordinates for each selected page while preserving the document and its signatures. It accepts the same OCR engines, page selectors and resolution as `MakeSearchable` (1t5g.5).
+
 - **Caller-owned page pixels and custom backdrops.** `Page.ToPixels()` and `Page.ToPixelsAsync()` expose packed 8-bit RGBA for direct compositing. Raw and encoded exports can start from a caller-supplied RGB or RGBA color, so PDF blend modes see that color during painting (1t5g.4).
 
 - **HTML and SVG asset bundles.** Export selected pages in caller order with shared images and fonts under content-based filenames. Split HTML resolves page links and can include bookmark navigation. SVG and fixed HTML vector backdrops render function and mesh shadings as transparent patches at configurable DPI (1t5g.3).

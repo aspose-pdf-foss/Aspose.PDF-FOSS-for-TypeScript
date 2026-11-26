@@ -13542,7 +13542,10 @@ Source (`src/`):
   **aiocr.ts** — `doc.MakeSearchable` (`3ywf.3`): an invisible text layer over
   image-only pages. `ocr.ts` is the seam (`OcrEngine`, a types-only leaf);
   `glyphless.ts` the font; `ocrlayer.ts` the pure span → content-bytes step;
-  `makesearchable.ts` the only one holding a `Document`; `aiocr.ts` the
+  `recognizetext.ts` owns shared page selection, rasterization, engine calls
+  and the read-only report for `doc.RecognizeText` (`1t5g.5`). Both workflows
+  consume the same clipped boxes and PDF-space corners from `ocrlayer.ts`.
+  `makesearchable.ts` writes the overlay and guards signature fields. `aiocr.ts` is the
   `AiModel` adapter.
   **Invariant:** the page→pixel matrix is `ocrDeviceMatrix`, which is
   `renderCanvas`'s composition (`baseMatrix` × scale) — one owner, so the

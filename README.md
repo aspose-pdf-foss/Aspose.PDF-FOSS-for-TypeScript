@@ -4185,6 +4185,20 @@ const { text, usage } = await model.complete({
 
 Each attempt is bounded by `timeoutMs` (default 120 s) and `maxResponseBytes` (default 4 MiB). Rate limits and server errors (429, 500, 502, 503, 504), network errors and timeouts are retried up to `maxRetries` times (default 2), honouring `Retry-After`; a `Retry-After` longer than 30 s fails at once rather than being waited out. Pass credentials through `apiKey` or `headers`: a `baseUrl` carrying a user name, password, query or fragment is refused. Failures raise `AiServiceError`, which never contains your API key. A reply that hit `maxTokens` is an error rather than a silently truncated answer. To use another provider, implement `AiModel`'s single `complete` method yourself.
 
+### Recognize Text on Scanned Pages
+
+Use `Document.RecognizeText` when you need words and their locations while preserving the original PDF, including its signatures. Supply an `OcrEngine` such as the adapter in the next example.
+
+```ts
+const { pages } = await doc.RecognizeText(engine, { pages: '1-3', dpi: 200 });
+for (const page of pages) {
+  if (page.status === 'ocr') console.log(page.page, page.text, page.spans);
+  else console.log(page.page, page.status, page.reason);
+}
+```
+
+The default skips pages with extractable text. Pass `force: true` to recognize them too. Each accepted span has a clipped pixel `box` measured from the image's top left and a PDF-space `quad` with four coordinate pairs in image top-left, top-right, bottom-right, bottom-left order. Page text joins the accepted spans with newlines in engine order. Individual engine failures appear in the report. Cancellation and resource-limit errors reject the operation.
+
 ### Make Scanned Pages Searchable
 
 `MakeSearchable` renders each image-only page, hands it to an OCR engine you supply, and writes the recognized text back as an invisible layer exactly over the words in the picture — so `GetText`, `Search`, copy-paste and indexers find them while the page looks unchanged:
@@ -4339,7 +4353,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 562 public types plus 176
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 566 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -5158,6 +5172,10 @@ it. An unsuccessful attempt with no other conclusive evidence yields
 | `OcrEngine` | Recognizes the text in a page image: `recognize(image, { signal })` returns `OcrSpan`s. Implement it over Tesseract or a cloud OCR service, or use `aiOcrEngine`. |
 | `OcrImage` | A rendered page handed to an `OcrEngine`: PNG or JPEG `bytes`, `mediaType`, and its `width` and `height` in pixels. |
 | `OcrSpan` | One recognized run of text — a word or a line — with its `box` `[x0, y0, x1, y1]` in image pixels, origin top-left. |
+| `PositionedOcrSpan` | Recognized text with its clipped pixel box and its four corners in PDF user space. |
+| `RecognizeTextOptions` | Page selection, force, DPI, abort signal and per-page callback for read-only OCR. |
+| `RecognizeTextPage` | Page number, status, optional reason, joined text, positioned spans and discarded span count. |
+| `RecognizeTextReport` | Result of `doc.RecognizeText(engine, options?)`, with one record per selected page in page order. |
 | `MakeSearchableOptions` | Options for `MakeSearchable`: `pages`, `force` (OCR pages that already have text), `dpi` (default 200), `signal`, `onPage`. |
 | `MakeSearchablePage` | One page's outcome: `status` `ocr`, `skipped` (`reason: 'has-text'`) or `failed` (`reason` the error), with `spans` written and `dropped`. |
 | `MakeSearchableReport` | What `MakeSearchable` did: one `MakeSearchablePage` per selected page. |

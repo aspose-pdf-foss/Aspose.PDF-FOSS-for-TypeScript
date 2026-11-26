@@ -21,6 +21,7 @@ import type { FontSubstitutionHandler, FontSubstitutionRequest, FontSubstitution
 import { Type1Font } from './type1.js';
 import { isType1 } from './type1header.js';
 import { makeSearchable, type MakeSearchableOptions, type MakeSearchableReport } from './makesearchable.js';
+import { recognizeText, type RecognizeTextOptions, type RecognizeTextReport } from './recognizetext.js';
 import { summarize, type SummarizeOptions, type SummarizeResult } from './aisummarize.js';
 import { ask, type AskOptions, type AskResult } from './aiask.js';
 import { generateAltText, type AltTextOptions, type AltTextReport } from './aialttext.js';
@@ -1756,6 +1757,11 @@ export class Document {
     const st = this.resolve(stRef);
     if (!isDict(st)) return null;
     return new StructTreeRoot(this, st, isRef(stRef) ? stRef : undefined);
+  }
+
+  /** Recognize selected pages and return positioned spans without editing the PDF. */
+  RecognizeText(engine: OcrEngine, opts?: RecognizeTextOptions): Promise<RecognizeTextReport> {
+    return recognizeText(this, engine, opts);
   }
 
   /** Add an invisible, exactly placed text layer to image-only pages so text

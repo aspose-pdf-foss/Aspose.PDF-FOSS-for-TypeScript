@@ -285,6 +285,8 @@ export type { AiContentPart, AiMessage, AiRequest, AiResponse, AiModel } from '.
 export { openAiModel } from './aiopenai.js';
 export type { OpenAiModelOptions } from './aiopenai.js';
 export type { OcrEngine, OcrImage, OcrSpan } from './ocr.js';
+export type { PositionedOcrSpan } from './ocrlayer.js';
+export type { RecognizeTextOptions, RecognizeTextPage, RecognizeTextReport } from './recognizetext.js';
 export type { MakeSearchableOptions, MakeSearchablePage, MakeSearchableReport } from './makesearchable.js';
 export { aiOcrEngine } from './aiocr.js';
 export type { AiOcrOptions } from './aiocr.js';
