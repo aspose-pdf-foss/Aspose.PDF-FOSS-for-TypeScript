@@ -44,6 +44,7 @@ export interface NsElement {
 }
 
 export interface NsOptions {
+  completeDocument?: boolean;
   /** Map a declared namespace URI to the one the caller compares against. */
   canon?: (uri: string) => string;
   /** Apply Markup Compatibility, understanding these namespaces. */
@@ -78,14 +79,15 @@ export function nsFind(el: NsElement | undefined, ns: string, local: string): Ns
 }
 
 export function parseNsXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults, opts: NsOptions = {}): NsElement {
-  const root = parseXml(bytes, limits, { qnames: true });
-  const out = new Builder(opts.canon ?? ((u) => u), opts.understood).convert(root, new Map([['xml', XML_NS]]), new Set(), new Set());
+  const root = parseXml(bytes, limits, { qnames: true, completeDocument: opts.completeDocument });
+  const out = new Builder(opts.canon ?? ((u) => u), opts.understood, opts.completeDocument).convert(root, new Map([['xml', XML_NS]]), new Set(), new Set());
   if (out.length !== 1) throw new PdfParseError('XML: markup compatibility removed the root element');
   return out[0];
 }
 
 class Builder {
-  constructor(private readonly canon: (u: string) => string, private readonly understood?: ReadonlySet<string>) {}
+  constructor(private readonly canon: (u: string) => string, private readonly understood?: ReadonlySet<string>,
+    private readonly completeDocument = false) {}
 
   private scopeOf(node: XmlNode, parent: Scope): Scope {
     let scope: Map<string, string> | undefined;
@@ -101,6 +103,7 @@ class Builder {
     const scope = this.scopeOf(node, parentScope);
     const [pfx, local] = splitQ(node.name);
     const ns = scope.get(pfx) ?? '';
+    if (this.completeDocument && pfx && !ns) throw new PdfParseError('XML: unbound prefix ' + pfx);
     const mc = this.understood;
     let ignorable = parentIgnorable;
     let process = parentProcess;
@@ -135,6 +138,8 @@ class Builder {
       if (k === 'xmlns' || k.startsWith('xmlns:')) continue;
       const [ap, al] = splitQ(k);
       const ans = ap === '' ? '' : scope.get(ap) ?? '';
+      if (this.completeDocument && ap && !ans) throw new PdfParseError('XML: unbound attribute prefix ' + ap);
+      if (this.completeDocument && attrs.has(`${ans} ${al}`)) throw new PdfParseError('XML: duplicate attribute ' + k);
       if (mc && ans !== '' && ignorable.has(ans) && !mc.has(ans)) continue;
       attrs.set(`${ans} ${al}`, v);
     }

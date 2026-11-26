@@ -57,6 +57,7 @@ import { inflateStream } from './flate.js';
 import { readXmp, editXmpPacket, editXmpPacketWith, claimPrefix, mirrorMetaToXmp, mirrorXmpToMeta, XmpMetadata, XmpUpdate } from './xmp.js';
 import { checkXmpWrite, toRdfValue, type XmpValueInput, type XmpWriteOptions } from './xmpwrite.js';
 import { parseRdfPacket } from './xmprdf.js';
+import { readHybridInvoice, type HybridInvoice } from './hybridinvoice.js';
 import { XmpValue, findXmpValue } from './xmpvalue.js';
 import { planSync, infoSide, xmpSide, mirroredField, type MetadataSyncReport, type SyncDirection } from './metasync.js';
 import { Page } from './page.js';
@@ -2311,6 +2312,11 @@ export class Document {
   /** Embedded files associated through catalog /AF, in array order. */
   GetAssociatedFiles(): Attachment[] {
     return readAssociatedFiles(this);
+  }
+
+  /** Read a Factur-X or ZUGFeRD envelope, or undefined when none is identified. */
+  ReadHybridInvoice(): HybridInvoice | undefined {
+    return readHybridInvoice(this);
   }
 
   /** Embed `bytes` as an attachment named `name`, upserting it into the

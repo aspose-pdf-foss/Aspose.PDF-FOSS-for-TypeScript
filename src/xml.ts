@@ -1,4 +1,4 @@
-import { PdfParseError } from './errors.js';
+import { PdfParseError, rethrowLimit } from './errors.js';
 import { LoadLimits } from './loadlimits.js';
 
 /** A parsed XML element. `text` is the concatenated direct text content
@@ -21,6 +21,7 @@ export interface XmlNode {
 }
 
 const NAMED: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
+const INVALID_XML_CHAR = /[^\t\n\r\x20-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u;
 
 export function unescapeXml(s: string): string {
   if (!s.includes('&')) return s;
@@ -39,6 +40,9 @@ export function escapeXml(s: string): string {
 
 /** Options for {@link parseXml}. */
 export interface ParseXmlOptions {
+  /** Read one complete UTF-8 document, reject declarations other than XML
+   *  processing instructions, and bound the total element and attribute count. */
+  completeDocument?: boolean;
   /** Keep namespace prefixes on element names and attribute keys (`rdf:li`,
    *  `xmlns:dc`, `xml:lang`) instead of stripping them. Off by default, which
    *  is what every pre-existing caller gets. `xmprdf.ts` needs it because RDF
@@ -64,12 +68,27 @@ export interface ParseXmlOptions {
  *  overflowed the stack. Past the bound is `ResourceLimitError`, not
  *  `PdfParseError` — the markup is well formed, it is merely too deep. */
 export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults, opts: ParseXmlOptions = {}): XmlNode {
-  const decoded = new TextDecoder('utf-8').decode(bytes);
+  if (opts.completeDocument) limits.enforce('maxDecodedStreamBytes', bytes.length, 'XML document');
+  let decoded: string;
+  try { decoded = new TextDecoder('utf-8', { fatal: opts.completeDocument }).decode(bytes); }
+  catch (caught) { rethrowLimit(caught); throw new PdfParseError('XML: invalid UTF-8'); }
   const src = opts.normalize ? decoded.replace(/\r\n?/g, '\n') : decoded;
   let i = 0;
   let depth = 0;
+  let items = 0;
 
   const fail = (msg: string): never => { throw new PdfParseError(`XML: ${msg}`, i); };
+  if (opts.completeDocument && INVALID_XML_CHAR.test(src)) fail('invalid XML character');
+  const readText = (value: string): string => {
+    if (opts.completeDocument && value.includes('&')) {
+      if (/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);)/.test(value)) fail('invalid entity reference');
+      for (const m of value.matchAll(/&#(x[\da-fA-F]+|\d+);/g)) {
+        const cp = m[1][0] === 'x' ? parseInt(m[1].slice(1), 16) : Number(m[1]);
+        if (cp > 0x10ffff || INVALID_XML_CHAR.test(String.fromCodePoint(cp))) fail('invalid character reference');
+      }
+    }
+    return unescapeXml(value);
+  };
 
   const skipSpace = (): void => { while (i < src.length && /\s/.test(src[i])) i++; };
 
@@ -83,7 +102,10 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
   const skipMisc = (): boolean => {
     if (src.startsWith('<!--', i)) { skipTo('-->', 'comment'); return true; }
     if (src.startsWith('<?', i)) { skipTo('?>', 'processing instruction'); return true; }
-    if (src.startsWith('<!', i) && !src.startsWith('<![CDATA[', i)) { skipTo('>', 'declaration'); return true; }
+    if (src.startsWith('<!', i) && !src.startsWith('<![CDATA[', i)) {
+      if (opts.completeDocument) fail('unexpected markup declaration');
+      skipTo('>', 'declaration'); return true;
+    }
     return false;
   };
 
@@ -97,6 +119,7 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
   };
 
   const parseElement = (): XmlNode => {
+    if (opts.completeDocument) limits.enforce('maxContainerItems', ++items, 'XML elements and attributes');
     limits.enforce('maxNestingDepth', ++depth, 'XML element');
     try { return parseElementBody(); } finally { depth--; }
   };
@@ -107,11 +130,17 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
     const name = readName();
     const attrs = new Map<string, string>();
     for (;;) {
+      const beforeSpace = i;
       skipSpace();
       if (i >= src.length) fail(`unterminated start tag <${name}`);
       if (src.startsWith('/>', i)) { i += 2; return { name, attrs, children: [], text: '', nodes: [] }; }
       if (src[i] === '>') { i++; break; }
+      if (opts.completeDocument && beforeSpace === i) fail('expected whitespace before attribute');
       const an = readName();
+      if (opts.completeDocument) {
+        limits.enforce('maxContainerItems', ++items, 'XML elements and attributes');
+        if (attrs.has(an)) fail(`duplicate attribute ${an}`);
+      }
       skipSpace();
       if (src[i] !== '=') fail(`expected = after attribute ${an}`);
       i++;
@@ -122,7 +151,8 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
       const e = src.indexOf(q, i);
       if (e < 0) fail(`unterminated value for attribute ${an}`);
       const literal = src.slice(i, e);
-      attrs.set(an, unescapeXml(opts.normalize ? literal.replace(/[\t\n]/g, ' ') : literal));
+      if (opts.completeDocument && literal.includes('<')) fail('unescaped < in attribute value');
+      attrs.set(an, readText(opts.normalize ? literal.replace(/[\t\n]/g, ' ') : literal));
       i = e + 1;
     }
 
@@ -155,7 +185,9 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
       if (src[i] === '<') { const c = parseElement(); children.push(c); nodes.push(c); continue; }
       const nx = src.indexOf('<', i);
       const end = nx < 0 ? src.length : nx;
-      const chunk = unescapeXml(src.slice(i, end));
+      const literal = src.slice(i, end);
+      if (opts.completeDocument && literal.includes(']]>')) fail('unexpected CDATA terminator');
+      const chunk = readText(literal);
       text += chunk;
       nodes.push(chunk);
       i = end;
@@ -164,7 +196,12 @@ export function parseXml(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defa
 
   for (;;) { skipSpace(); if (!skipMisc()) break; }
   if (i >= src.length || src[i] !== '<') fail('no root element');
-  return parseElement();
+  const root = parseElement();
+  if (opts.completeDocument) {
+    for (;;) { skipSpace(); if (!skipMisc()) break; }
+    if (i !== src.length) fail('unexpected content after the root element');
+  }
+  return root;
 }
 
 /** Serialize an element tree, with an XML declaration and two-space indent. */

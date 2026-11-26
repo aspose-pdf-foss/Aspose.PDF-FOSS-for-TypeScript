@@ -261,10 +261,11 @@ class Reader {
  *  it, and an XMP packet has no business declaring entities. The test is on
  *  the decoded source, so a CDATA section containing that text is refused too
  *  — no real packet carries one. */
-export function parseRdfPacket(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults): RdfPacket {
+export function parseRdfPacket(bytes: Uint8Array, limits: LoadLimits = LoadLimits.defaults, completeDocument = false): RdfPacket {
+  if (completeDocument) limits.enforce('maxDecodedStreamBytes', bytes.length, 'invoice XMP packet');
   const src = new TextDecoder('utf-8').decode(bytes);
   if (/<!(?:DOCTYPE|ENTITY)\b/.test(src)) fail('DTD and entity declarations are not allowed');
-  const root = parseXml(bytes, limits, { qnames: true, normalize: true });
+  const root = parseXml(bytes, limits, { qnames: true, normalize: true, completeDocument });
   const r = new Reader();
   const rootScope = r.bind(root, BASE_SCOPE);
   const rq = r.lookup(root.name, rootScope);
@@ -300,7 +301,10 @@ export function parseRdfPacket(bytes: Uint8Array, limits: LoadLimits = LoadLimit
     }
     for (const p of desc.props) {
       const key = `${p.ns}\u0000${p.name}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) {
+        if (completeDocument) fail(`duplicate XMP property ${p.name}`);
+        continue;
+      }
       seen.add(key);
       properties.push(p);
     }
