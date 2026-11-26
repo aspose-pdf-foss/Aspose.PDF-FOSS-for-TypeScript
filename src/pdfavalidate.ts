@@ -17,6 +17,7 @@ import {
   type PageScan, pageScans, usesDeviceColor, extGStates, blendModeName, eachAnnotation,
 } from './validatectx.js';
 import { rethrowLimit } from './errors.js';
+import { validateAssociatedFiles } from './associatedfile.js';
 import { parseRdfPacket } from './xmprdf.js';
 import { readPdfaIdentification } from './xmpid.js';
 import { extensionSchemaIssues, type PacketUnderTest } from './pdfaext.js';
@@ -1236,6 +1237,7 @@ const alternatePresentationsRule: Rule = (ctx) => {
 // ---- PDF/A-4 embedded files ------------------------------------------------
 
 const embeddedFileSpecRule: Rule = (ctx) => {
+  if (ctx.part === 3) return validateAssociatedFiles(ctx.doc);
   if (ctx.part !== 4) return [];
   const issues: ValidationIssue[] = [];
   for (const [object, obj] of allObjects(ctx)) {

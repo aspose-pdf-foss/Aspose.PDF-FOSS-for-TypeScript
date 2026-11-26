@@ -3441,13 +3441,26 @@ its printer marks as `PrinterMarkAnnotation` handles, with the optional PDF
 
 ```ts
 // Document-level attachment (shows in a viewer's attachments panel).
-doc.AddAttachment('report.csv', bytes, { mimeType: 'text/csv', description: 'Q2 figures' });
+doc.AddAttachment('report.csv', bytes, { relationship: 'Data', mimeType: 'text/csv', description: 'Q2 figures' });
 for (const a of doc.GetAttachments()) console.log(a.Name, a.Size, a.GetBytes().length);
 doc.RemoveAttachment('report.csv');
 
 // On-page attachment icon (FileAttachment annotation).
 doc.Pages[0].AddFileAttachment({ rect: [72, 700, 92, 720], name: 'note.txt', bytes, icon: 'PushPin' });
 ```
+
+`doc.GetAssociatedFiles()` reads embedded files in catalog `/AF` order.
+An annotation with a `relationship` also registers its file in that array.
+The same file specification can be shared by an annotation, the name tree
+and the catalog. Read its name through `attachment.Relationship` or assign
+a predefined relationship, such as `'Source'` or `'Alternative'`.
+
+PDF/A-3 conversion links embedded files that lack an association, promotes
+direct file specifications to shared references, and fills missing relationship
+and MIME entries with `Unspecified` and `application/octet-stream`. It derives a
+missing filename from its companion `/F` or `/UF`. Malformed supplied values and
+a missing modification date in an existing `/Params` dictionary appear in
+`unresolved` as `EmbeddedFileSpec` findings. The embedded bytes are preserved.
 
 Bytes are `FlateDecode`-compressed by default; pass `compress: false` to store
 them raw. `AddFileAttachment` is annotation-only by default — pass
@@ -4353,7 +4366,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 566 public types plus 176
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 567 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4939,6 +4952,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | Class | Description |
 |---|---|
 | `Attachment` | A live handle over one embedded file's /Filespec. |
+| `AFRelationship` | Predefined associated-file relationship names accepted by attachment writers and the `Relationship` setter. Imported custom names can be read through the getter. |
 | `AttachmentOptions` | Options shared by document-level attachments and FileAttachment annotations. |
 
 ### Conversion
@@ -5271,6 +5285,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.GetViewerPreferences()` / `doc.SetViewerPreferences(update)` | The catalog `/ViewerPreferences` (32000-1 Table 150, all 17 entries). Reports only what the document states; the setter merges, `null` deletes |
 | `doc.PageMode` / `doc.PageLayout` | The catalog `/PageMode` and `/PageLayout` (32000-1 Table 28): which viewer panel is open, and how pages are arranged. Report only what the document states; assign `null` to remove |
 | `doc.GetAttachments()` / `doc.AddAttachment(name, bytes, opts?)` / `doc.RemoveAttachment(name)` | Read / upsert / delete document-level embedded files (`Attachment[]`, lazy `GetBytes()`) |
+| `doc.GetAssociatedFiles()` | Embedded files in catalog `/AF` order, once per file specification. |
 | `doc.GetCollection()` / `doc.SetCollection(settings)` / `doc.RemoveCollection()` | Read / write / remove the `/Collection` portfolio (schema, view, sort, initial file) |
 | `attachment.GetField(name)` / `attachment.SetField(name, value)` / `attachment.RemoveField(name)` | Per-file portfolio custom field values (`/CI`); value is `string \| number \| Date` |
 | `doc.GetMetadata()` / `doc.SetMetadata(update)` / `doc.ClearMetadata()` | `/Info` metadata (`ClearMetadata` also drops the XMP packet) |

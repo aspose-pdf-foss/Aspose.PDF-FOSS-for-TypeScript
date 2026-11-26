@@ -1,6 +1,6 @@
 import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
-import { PdfDict, PdfObject, PdfStream, isArray, isDict, isStream, type PdfRef } from './types.js';
+import { PdfDict, PdfObject, PdfStream, isArray, isDict, isName, isStream, type PdfRef } from './types.js';
 import { inflateStream } from './flate.js';
 import { ImageInfo, collectImages } from './image.js';
 import { InlineImageInfo, collectInlineImages } from './inlineimage.js';
@@ -68,6 +68,7 @@ import type { Field, TextField, CheckboxField, ChoiceField, ButtonField } from '
 import { addBarcodeField, type BarcodeFieldInit } from './paperbarcode.js';
 import { registerStructIds, untagObjects } from './structwrite.js';
 import { unlinkRemovedReplyParents } from './annotlinks.js';
+import { removeAssociatedFiles } from './embeddedfile.js';
 import { checkOnSkipped, markdownElementsSteps, type AddMarkdownResult, type MarkdownFlowOptions } from './mdflow.js';
 import { htmlElementsSteps, type AddHtmlResult, type HtmlFlowOptions } from './htmlflow.js';
 import { docxElementsSteps, checkDocxOptions, type AddDocxResult, type DocxFlowOptions, type DocxSkipped } from './wmlimport.js';
@@ -321,6 +322,10 @@ export class Page {
         // which is reachable from /Root — leaving it there keeps the annotation
         // in the saved bytes with no /Annots entry anywhere.
         untagObjects(this.doc, removed);
+        const file = target.get('FS');
+        const subtype = this.doc.resolve(target.get('Subtype'));
+        if (file && isName(subtype) && subtype.name === 'FileAttachment')
+          removeAssociatedFiles(this.doc, [file]);
         this.doc.markModified();
         return;
       }

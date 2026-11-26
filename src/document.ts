@@ -122,7 +122,7 @@ import {
   PageMode, PageLayout, readPageMode, setPageMode, readPageLayout, setPageLayout,
 } from './pagemode.js';
 import {
-  AttachmentOptions, Attachment, buildFilespec, readAttachments,
+  AttachmentOptions, Attachment, buildFilespec, readAttachments, readAssociatedFiles,
   upsertEmbeddedFile, removeEmbeddedFile,
 } from './embeddedfile.js';
 import {
@@ -2306,6 +2306,11 @@ export class Document {
    *  by name. Each result's GetBytes() decodes the file on demand. */
   GetAttachments(): Attachment[] {
     return readAttachments(this);
+  }
+
+  /** Embedded files associated through catalog /AF, in array order. */
+  GetAssociatedFiles(): Attachment[] {
+    return readAssociatedFiles(this);
   }
 
   /** Embed `bytes` as an attachment named `name`, upserting it into the

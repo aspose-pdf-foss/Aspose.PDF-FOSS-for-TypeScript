@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Associated files and PDF/A-3 repair.** Attachments accept typed relationships and catalog associations can be read through `GetAssociatedFiles()`. Conversion preserves file bytes and shared references across the name tree, annotations and catalog. It supplies missing MIME and relationship defaults and reports malformed metadata, including invalid file dates. Replacing a named attachment now releases its old catalog association when it has no other owner (6x6h.1).
+
 - **Read-only OCR for scanned and signed PDFs.** `Document.RecognizeText` returns text, clipped image boxes and PDF coordinates for each selected page while preserving the document and its signatures. It accepts the same OCR engines, page selectors and resolution as `MakeSearchable` (1t5g.5).
 
 - **Caller-owned page pixels and custom backdrops.** `Page.ToPixels()` and `Page.ToPixelsAsync()` expose packed 8-bit RGBA for direct compositing. Raw and encoded exports can start from a caller-supplied RGB or RGBA color, so PDF blend modes see that color during painting (1t5g.4).

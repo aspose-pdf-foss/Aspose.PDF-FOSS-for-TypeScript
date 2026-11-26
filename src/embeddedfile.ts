@@ -6,12 +6,24 @@ import {
 import { decodePdfByteString, decodePdfText, encodePdfByteString, encodePdfText, formatPdfDate, parsePdfDate } from './metadata.js';
 import { md5 } from './crypto.js';
 import { inflateStream } from './flate.js';
-import { collectNameTree, nameTreeEntries, removeNameTreeEntries, upsertNameTreeEntry } from './nametree.js';
+import { collectNameTree, removeNameTreeEntries, upsertNameTreeEntry } from './nametree.js';
+import { reachableContainers } from './associatedfile.js';
 import { PdfParseError } from './errors.js';
 import type { Document } from './document.js';
 
+const relationships = ['Source', 'Data', 'Alternative', 'Supplement', 'Unspecified',
+  'EncryptedPayload', 'FormData', 'Schema'] as const;
+/** Predefined associated-file relationship names from PDF/A-3 and PDF 2.0. */
+export type AFRelationship = typeof relationships[number];
+
+function relationshipName(value: AFRelationship) {
+  if (!relationships.includes(value)) throw new RangeError('unknown attachment relationship');
+  return name(value);
+}
+
 /** Options shared by document-level attachments and FileAttachment annotations. */
 export interface AttachmentOptions {
+  relationship?: AFRelationship;
   /** MIME type written to the embedded stream's /Subtype (e.g. 'application/pdf'). */
   mimeType?: string;
   /** Human-readable description written to the filespec's /Desc. */
@@ -37,6 +49,7 @@ export function buildFilespec(
 ): PdfDict {
   if (typeof fileName !== 'string' || fileName === '')
     throw new RangeError('attachment name must be a non-empty string');
+  const relationship = opts.relationship === undefined ? undefined : relationshipName(opts.relationship);
   const compress = opts.compress ?? true;
   const body = compress ? new Uint8Array(deflateSync(Buffer.from(bytes))) : bytes;
 
@@ -56,6 +69,7 @@ export function buildFilespec(
 
   const fs: PdfDict = new Map<string, PdfObject>();
   fs.set('Type', name('Filespec'));
+  if (relationship) fs.set('AFRelationship', relationship);
   fs.set('F', { kind: 'string', bytes: encodePdfByteString(fileName) });
   fs.set('UF', pdfStr(fileName));
   if (opts.description) fs.set('Desc', pdfStr(opts.description));
@@ -65,9 +79,9 @@ export function buildFilespec(
 
 /** The filespec's display name, preferring the Unicode /UF over /F. */
 export function filespecName(doc: Document, fs: PdfDict): string {
-  const uf = fs.get('UF');
+  const uf = doc.resolve(fs.get('UF'));
   if (isString(uf)) return decodePdfText(uf.bytes);
-  const f = fs.get('F');
+  const f = doc.resolve(fs.get('F'));
   if (isString(f)) return decodePdfByteString(f.bytes);
   return '';
 }
@@ -106,8 +120,19 @@ export class Attachment {
 
   get Name(): string { return filespecName(this.doc, this.Dict) || this.fallbackName; }
 
+  /** Imported files may use a custom PDF name. */
+  get Relationship(): string | undefined {
+    const value = this.doc.resolve(this.Dict.get('AFRelationship'));
+    return isName(value) ? value.name : undefined;
+  }
+
+  set Relationship(value: AFRelationship) {
+    this.Dict.set('AFRelationship', relationshipName(value));
+    this.doc.markModified();
+  }
+
   get Description(): string | undefined {
-    const d = this.Dict.get('Desc');
+    const d = this.doc.resolve(this.Dict.get('Desc'));
     return isString(d) ? decodePdfText(d.bytes) : undefined;
   }
 
@@ -119,7 +144,7 @@ export class Attachment {
   }
 
   get MimeType(): string | undefined {
-    const sub = this.embeddedStream()?.dict.get('Subtype');
+    const sub = this.doc.resolve(this.embeddedStream()?.dict.get('Subtype'));
     return isName(sub) ? sub.name : undefined;
   }
 
@@ -130,7 +155,7 @@ export class Attachment {
   }
 
   get Size(): number | undefined {
-    const v = this.params()?.get('Size');
+    const v = this.doc.resolve(this.params()?.get('Size'));
     return typeof v === 'number' ? v : undefined;
   }
 
@@ -138,7 +163,7 @@ export class Attachment {
   get ModDate(): Date | undefined { return this.paramDate('ModDate'); }
 
   private paramDate(key: string): Date | undefined {
-    const v = this.params()?.get(key);
+    const v = this.doc.resolve(this.params()?.get(key));
     if (isString(v)) { const d = parsePdfDate(decodePdfByteString(v.bytes)); if (d instanceof Date) return d; }
     return undefined;
   }
@@ -201,27 +226,45 @@ export function readAttachments(doc: Document): Attachment[] {
 
 /** Add a filespec ref to the catalog's /AF associated-files array (PDF 2.0),
  *  creating it on first use and de-duplicating by object number. */
-function addAssociatedFile(doc: Document, fsRef: PdfRef): void {
+export function addAssociatedFile(doc: Document, fsRef: PdfRef): void {
   const catalog = doc.catalog();
   let af = doc.resolve(catalog.get('AF'));
   if (!isArray(af)) { af = []; catalog.set('AF', af); }
   if (!af.some((r) => isRef(r) && r.num === fsRef.num)) af.push(fsRef);
 }
 
+/** Embedded specifications in catalog /AF order, including catalog-only files. */
+export function readAssociatedFiles(doc: Document): Attachment[] {
+  const af = doc.resolve(doc.catalog().get('AF'));
+  if (!isArray(af)) return [];
+  const files = new Set<PdfDict>();
+  for (const value of af) {
+    const fs = doc.resolve(value);
+    if (isDict(fs) && fs.has('EF')) files.add(fs);
+  }
+  return Array.from(files, fs => new Attachment(doc, fs));
+}
+
 /** Remove the deleted filespec refs from /AF, dropping the array when it empties. */
-function removeAssociatedFiles(doc: Document, removed: readonly PdfObject[]): void {
-  const numbers = new Set(removed.filter(isRef).map((ref) => ref.num));
-  if (numbers.size === 0) return;
+export function removeAssociatedFiles(doc: Document, removed: readonly PdfObject[]): void {
+  if (removed.length === 0) return;
   const catalog = doc.catalog();
   const af = doc.resolve(catalog.get('AF'));
   if (!isArray(af)) return;
-  const names = doc.resolve(catalog.get('Names'));
-  if (isDict(names)) for (const [, value] of nameTreeEntries(doc, names.get('EmbeddedFiles'))) {
-    if (isRef(value)) numbers.delete(value.num);
+  const unused = new Set(removed.map(value => doc.resolve(value)).filter(isDict));
+  if (!af.some(value => {
+    const fs = doc.resolve(value);
+    return isDict(fs) && unused.has(fs);
+  })) return;
+  for (const container of reachableContainers(doc, true)) {
+    if (isDict(container)) unused.delete(container);
+    if (unused.size === 0) return;
   }
-  if (numbers.size === 0) return;
   let kept = 0;
-  for (const value of af) if (!isRef(value) || !numbers.has(value.num)) af[kept++] = value;
+  for (const value of af) {
+    const fs = doc.resolve(value);
+    if (!isDict(fs) || !unused.has(fs)) af[kept++] = value;
+  }
   af.length = kept;
   if (kept === 0) catalog.delete('AF');
 }
@@ -231,7 +274,8 @@ function removeAssociatedFiles(doc: Document, removed: readonly PdfObject[]): vo
 export function upsertEmbeddedFile(doc: Document, key: string, fsRef: PdfRef): void {
   if (typeof key !== 'string' || key === '')
     throw new RangeError('attachment name must be a non-empty string');
-  upsertNameTreeEntry(doc, 'EmbeddedFiles', key, fsRef);
+  const replaced = upsertNameTreeEntry(doc, 'EmbeddedFiles', key, fsRef);
+  removeAssociatedFiles(doc, replaced);
   addAssociatedFile(doc, fsRef);
 }
 
@@ -240,5 +284,6 @@ export function upsertEmbeddedFile(doc: Document, key: string, fsRef: PdfRef): v
 export function removeEmbeddedFile(doc: Document, key: string): boolean {
   const removed = removeNameTreeEntries(doc, 'EmbeddedFiles', key);
   removeAssociatedFiles(doc, removed);
+  if (removed.length) doc.markModified();
   return removed.length > 0;
 }

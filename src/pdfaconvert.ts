@@ -16,6 +16,7 @@ import {
 import type { Ctx as ScanCtx } from './validatectx.js';
 import { convertColors } from './colorconvert.js';
 import { hasSignatureField } from './signature.js';
+import { repairAssociatedFiles } from './associatedfile.js';
 import { usesTransparency } from './pdfatransparency.js';
 import { flattenTransparencySteps, resolveFlattenTransparency } from './pdfaflatten.js';
 import { srgbIcc, SRGB_N } from './srgb.js';
@@ -674,7 +675,8 @@ const embeddedFilesPass: Pass = (ctx) => {
     }
     return actions;
   }
-  // parts 2/3: ensure each file spec carries /AFRelationship.
+  if (ctx.part === 3) return repairAssociatedFiles(ctx.doc);
+  // Part 2: ensure each file spec carries /AFRelationship.
   for (const [object, obj] of ctx.doc.objectEntries()) {
     if (!isDict(obj)) continue;
     if (nameOf(ctx, obj, 'Type') === 'Filespec' && obj.get('EF') !== undefined && obj.get('AFRelationship') === undefined) {

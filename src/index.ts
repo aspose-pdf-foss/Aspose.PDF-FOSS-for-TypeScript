@@ -70,7 +70,7 @@ export type { RectilinearMeasure, MeasureNumberFormat } from './measure.js';
 export { PrinterMarkCornerPosition, PrinterMarkSidePosition, ColorsOfCMYK } from './printermarks.js';
 export type { PrinterMarkKind, PrinterMarksOptions, DocumentPrinterMarksOptions, PageInformationOptions } from './printermarks.js';
 export { Attachment } from './embeddedfile.js';
-export type { AttachmentOptions } from './embeddedfile.js';
+export type { AFRelationship, AttachmentOptions } from './embeddedfile.js';
 export type { CollectionSettings, CollectionFieldDef, CollectionFieldType, CollectionView } from './collection.js';
 export type {
   OutlineItem, OutlineDest, PageDest, NamedDest, OutlineView, NamedDestination,

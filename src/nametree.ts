@@ -138,20 +138,23 @@ export function flatNameNode(entries: Array<[PdfString, PdfObject]>): PdfDict {
  *  suite's saved-bytes assertions depend on. */
 export function upsertNameTreeEntry(
   doc: Document, branch: string, key: string, value: PdfObject,
-): void {
+): PdfObject[] {
   const catalog = doc.catalog();
   let names = doc.resolve(catalog.get('Names'));
   if (!isDict(names)) { names = new Map<string, PdfObject>(); catalog.set('Names', names); }
   const entries = [...nameTreeEntries(doc, names.get(branch))];
   const authoredKey: PdfString = { kind: 'string', bytes: encodePdfByteString(key) };
   let needsKey = true;
+  const replaced: PdfObject[] = [];
   for (const entry of entries) {
     if (decodePdfByteString(entry[0].bytes) !== key) continue;
+    replaced.push(entry[1]);
     entry[1] = value;
     if (branch !== 'Dests' || Buffer.compare(entry[0].bytes, authoredKey.bytes) === 0) needsKey = false;
   }
   if (needsKey) entries.push([authoredKey, value]);
   names.set(branch, doc.allocObject(flatNameNode(entries)));
+  return replaced;
 }
 
 /** Remove every byte spelling of the decoded `key` in `/Root /Names /<branch>`.

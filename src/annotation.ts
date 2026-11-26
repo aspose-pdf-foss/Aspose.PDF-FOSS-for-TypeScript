@@ -30,7 +30,7 @@ import { buildImageXObject, type BuiltImage } from './imageembed.js';
 import { parseDest, encodeDest, type OutlineDest, type OutlineView } from './outline.js';
 import { encodeAction, parseAction, type PdfAction } from './actions.js';
 import {
-  buildFilespec, readFilespecBytes, filespecName, upsertEmbeddedFile,
+  buildFilespec, readFilespecBytes, filespecName, upsertEmbeddedFile, addAssociatedFile,
   type AttachmentOptions,
 } from './embeddedfile.js';
 import { PdfParseError, UnsupportedFeatureError } from './errors.js';
@@ -1549,6 +1549,7 @@ export function addFileAttachment(
   dict.set('FS', fsRef);
   dict.set('Name', name(opts.icon ?? 'PushPin'));
   if (opts.addToCatalog) upsertEmbeddedFile(doc, opts.name, fsRef);
+  else if (opts.relationship !== undefined) addAssociatedFile(doc, fsRef);
   return new FileAttachmentAnnotation(doc, dict);
 }
 

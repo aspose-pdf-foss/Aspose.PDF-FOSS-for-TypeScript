@@ -11869,6 +11869,9 @@ Source (`src/`):
   **Note:** it refuses a non-bilevel frame rather than thresholding, so
   `ToImage({ format: 'tiff', compression: 'g4' })` refuses too — a rendered page
   is 8-bit RGB, and picking a threshold is a decision about the image.
+- **associatedfile.ts** — PDF/A-3 embedded-file validation and repair. Walk from
+  the catalog so conversion cannot resurrect a replaced file. Promote a direct
+  specification at each original use before saving its shared indirect reference.
 - **embeddedfile.ts**, **collection.ts** — embedded-file attachments
   (`Attachment`) and the `/Collection` portfolio layer. **pagelabels.ts** —
   `/PageLabels` ranges; named destinations live in **outline.ts**.
