@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inspect the original PDF before recovery.** `Document.Preflight(bytes, { limits })`
+  reports structural damage even when opening the same bytes can recover every page.
+  Callers can distinguish malformed input, unsupported checks and the exact resource
+  limit that stopped inspection. (1t5g.1)
+
 - **Export PDF pages as editable Excel worksheets.** Pass `mode: 'pages'` to `ToXlsx` or `ToXlsxAsync` for positioned text and anchored pictures on one sheet per selected page. Numeric-looking text keeps its spelling, and repeated pictures share a single budgeted media part. (cfgh.3)
 
 - **Export detected PDF tables to XLSX.** `ToXlsx` and `ToXlsxAsync` preserve extracted text and merged cells, stitch continuations across selected pages, and put each nested table on a sheet that names its parent cell. The optional omission callback identifies repeated headers and PDF-specific metadata at their source. (cfgh.2)

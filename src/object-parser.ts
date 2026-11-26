@@ -1,4 +1,4 @@
-import { Lexer, Token } from './lexer.js';
+import { isPdfWhitespace, Lexer, Token } from './lexer.js';
 import { PdfParseError } from './errors.js';
 import { PdfObject, PdfDict, ref } from './types.js';
 import { LoadLimits } from './loadlimits.js';
@@ -31,6 +31,7 @@ const STRAY = new Set([')', '{', '}', '>']);
  *  as `object-parse-failure` — so a 10,000-deep array read as a broken file. */
 export class ObjectParser {
   private depth = 0;
+  private sourceBoundaries = false;
 
   /**
    * @param lenient skip a STRAY DELIMITER KEYWORD (`)`, `{`, `}`, `>`) where a
@@ -82,6 +83,19 @@ export class ObjectParser {
     const value = this.parseValue(this.take());
     this.limits.enforce('maxObjectBytes', this.lx.pos - start, `object ${a} ${b}`);
     return { num: a, gen: b, value };
+  }
+
+  /** Source inspection requires exact stream lengths and an endobj marker. */
+  parseSourceIndirectObject(): ReturnType<ObjectParser['parseIndirectObject']> {
+    this.sourceBoundaries = true;
+    try {
+      const start = this.lx.pos;
+      const obj = this.parseIndirectObject();
+      const end = this.take();
+      if (end.t !== 'kw' || end.v !== 'endobj') throw new PdfParseError('expected endobj', end.pos);
+      this.limits.enforce('maxObjectBytes', this.lx.pos - start, `object ${obj.num} ${obj.gen}`);
+      return obj;
+    } finally { this.sourceBoundaries = false; }
   }
 
   private expect(t: Token['t']): Token {
@@ -202,6 +216,22 @@ export class ObjectParser {
     let end: number;
     const lenObj = dict.get('Length');
     const len = typeof lenObj === 'number' ? lenObj : this.resolveLength?.(lenObj!);
+    if (this.sourceBoundaries) {
+      if (p === this.lx.pos || (buf[this.lx.pos] === 13 && buf[this.lx.pos + 1] !== 10))
+        throw new PdfParseError('stream keyword requires LF or CRLF', this.lx.pos);
+      if (len === undefined || !Number.isSafeInteger(len) || len < 0 || len > buf.length - start)
+        throw new PdfParseError('invalid stream /Length', start);
+      this.limits.enforce('maxObjectBytes', len, `stream at byte ${start}`);
+      end = start + len;
+      let marker = end;
+      if (buf[marker] === 13) marker++;
+      if (buf[marker] === 10) marker++;
+      const after = marker + 'endstream'.length;
+      if (!this.matches(buf, marker, 'endstream') || (!isPdfWhitespace(buf[after]) && buf[after] !== 37))
+        throw new PdfParseError('stream /Length does not end at endstream', end);
+      this.lx.pos = after;
+      return { kind: 'stream', dict, raw: buf.subarray(start, end) };
+    }
     if (typeof len === 'number' && len >= 0 && this.looksLikeEndstream(buf, start + len)) {
       end = start + len;
     } else {

@@ -1,7 +1,7 @@
 import { Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
 import { inflateStream } from './flate.js';
-import { PdfObject, PdfStream } from './types.js';
+import { isStream, PdfObject, PdfStream } from './types.js';
 import { PdfParseError, rethrowLimit } from './errors.js';
 import { LoadLimits } from './loadlimits.js';
 
@@ -26,6 +26,62 @@ export interface ObjStmResult {
   objects: Map<number, PdfObject>;
   /** Undefined when the container decoded whole. */
   damage?: ObjStmDamage;
+}
+
+interface Member { num: number; off: number }
+
+function readMemberTable(data: Uint8Array, count: number, container: number, limits: LoadLimits) {
+  const lx = new Lexer(data);
+  lx.maxTokenBytes = limits.maxObjectBytes ?? Infinity;
+  const pairs: Member[] = [];
+  let headerEnd = 0;
+  for (let i = 0; i < count; i++) {
+    const a = lx.next(), b = lx.next();
+    if (a.over !== undefined || b.over !== undefined)
+      limits.enforce('maxObjectBytes', Math.max(a.over ?? 0, b.over ?? 0), `object stream ${container} header`);
+    if (a.t !== 'num' || b.t !== 'num') break;
+    limits.enforce('maxObjects', pairs.length + 1, `object stream ${container}`);
+    pairs.push({ num: a.v, off: b.v });
+    headerEnd = lx.pos;
+  }
+  return { pairs, headerEnd };
+}
+
+/** Inspect a source container without substituting offsets or inflating a partial payload. */
+export function sourceObjectStream(stream: PdfStream, container: number, limits: LoadLimits) {
+  const count = stream.dict.get('N'), first = stream.dict.get('First');
+  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0 ||
+      typeof first !== 'number' || !Number.isSafeInteger(first) || first < 0)
+    throw new PdfParseError('invalid object stream /N or /First');
+  const data = inflateStream(stream);
+  if (first > data.length) throw new PdfParseError('object stream /First outside payload');
+  const header = data.subarray(0, first);
+  const { pairs, headerEnd } = readMemberTable(header, count, container, limits);
+  const tail = new Lexer(header, headerEnd);
+  tail.maxTokenBytes = limits.maxObjectBytes ?? Infinity;
+  const token = tail.next();
+  if (token.over !== undefined) limits.enforce('maxObjectBytes', token.over, `object stream ${container} header`);
+  if (pairs.length !== count || token.t !== 'eof')
+    throw new PdfParseError('invalid object stream header');
+  const numbers = new Set<number>();
+  let previous = -1;
+  for (const { num, off } of pairs) {
+    if (!Number.isSafeInteger(num) || num <= 0 || numbers.has(num) ||
+        !Number.isSafeInteger(off) || off <= previous || off >= data.length - first)
+      throw new PdfParseError('invalid object stream member table');
+    numbers.add(num);
+    previous = off;
+  }
+  return (num: number, index: number): PdfObject => {
+    if (pairs[index]?.num !== num) throw new PdfParseError('xref index disagrees with object stream header');
+    const start = first + pairs[index].off;
+    const end = first + (pairs[index + 1]?.off ?? data.length - first);
+    limits.enforce('maxObjectBytes', end - start, `compressed object ${num}`);
+    const lx = new Lexer(data.subarray(start, end));
+    const value = new ObjectParser(lx, undefined, limits).parseObject();
+    if (lx.next().t !== 'eof' || isStream(value)) throw new PdfParseError('invalid compressed object body');
+    return value;
+  };
 }
 
 /** Decode an /ObjStm into a map of objectNumber -> PdfObject, degrading per
@@ -67,18 +123,7 @@ export function decodeObjStm(
   // also why /N being absent can leave the count open.
   const want = typeof declaredN === 'number' && declaredN >= 0 ? declaredN : Infinity;
   if (typeof declaredN !== 'number') notes.push('no usable /N');
-  const lx = new Lexer(data, 0);
-  const pairs: Array<{ num: number; off: number }> = [];
-  let headerEnd = 0;
-  for (let i = 0; i < want; i++) {
-    const a = lx.next(); const b = lx.next();
-    if (a.t !== 'num' || b.t !== 'num') break;
-    // Header pairs are what the container PRODUCES, so they count as objects
-    // exactly as xref rows do — and this is the loop `/N` does not bound.
-    limits.enforce('maxObjects', pairs.length + 1, `object stream ${container}`);
-    pairs.push({ num: a.v, off: b.v });
-    headerEnd = lx.pos;
-  }
+  const { pairs, headerEnd } = readMemberTable(data, want, container, limits);
   if (typeof declaredN === 'number' && pairs.length !== declaredN)
     notes.push(`header yielded ${pairs.length} of ${declaredN} declared pairs`);
   if (pairs.length === 0)

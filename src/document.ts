@@ -8,7 +8,8 @@ import { appendPsPages } from './pspdf.js';
 import { needsBarcodeRefresh, refreshBarcodeFields } from './paperbarcode.js';
 import type { FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
-import { readXref, XrefEntry, PdfRevision, type XrefResult } from './xref.js';
+import { inspectSource, sourceHeader, type SourcePreflightReport } from './preflight.js';
+import { hasLinearizationHeader, readXref, XrefEntry, PdfRevision, type XrefResult } from './xref.js';
 import { sweepObjects, ObjCandidate, SweepResult } from './recover.js';
 import {
   expandObjectStreams, findEncryptDict, reachableFrom, rebuildTrailer, TrailerChoice,
@@ -787,6 +788,11 @@ export class Document {
     this.syncPages(kids);
   }
 
+  /** Inspect the original PDF structure before deciding whether to open it. */
+  static Preflight(buf: Uint8Array, options: { limits?: LoadLimits } = {}): SourcePreflightReport {
+    return inspectSource(buf, options.limits ?? LoadLimits.defaults);
+  }
+
   static Open(buf: Uint8Array, opts: OpenOptions = {}): Document {
     return Document.openBytes(buf, opts);
   }
@@ -821,8 +827,7 @@ export class Document {
     // Before anything is read. The bound is on what a caller handed us, so it is
     // checked once against the whole input rather than per structure.
     limits.enforce('maxFileBytes', buf.length, 'input');
-    const head = new TextDecoder('latin1').decode(buf.subarray(0, 1024));
-    const sourceVersion = /%PDF-(\d+\.\d+)/.exec(head)?.[1];
+    const sourceVersion = sourceHeader(buf)?.[1];
     // One decode budget for the whole Open, shared by every build pass and then
     // by the document, so object streams decoded while parsing count against
     // the same running total as everything decoded afterwards.
@@ -1982,10 +1987,7 @@ export class Document {
    *  /Linearized parameter dictionary, within the first 1024 bytes). False for
    *  in-memory/authored documents and for re-saved (non-linearized) output. */
   get IsLinearized(): boolean {
-    if (!this.originalBytes) return false;
-    const head = new TextDecoder('latin1').decode(this.originalBytes.subarray(0, 1024));
-    const m = /\bobj\b([\s\S]*?)\bendobj\b/.exec(head);
-    return m !== null && /\/Linearized\b/.test(m[1]);
+    return this.originalBytes !== undefined && hasLinearizationHeader(this.originalBytes);
   }
 
   /** The document default language (/Lang on the catalog), or undefined. */

@@ -431,6 +431,33 @@ try {
 }
 ```
 
+### Inspect PDF Structure Before Recovery
+
+`Document.Preflight` inspects the original byte view. It checks the header, cross-references,
+revision footers, catalog reference, live object headers and stream boundaries. It decodes
+structural streams to check compressed objects. Page content, image data, and archival
+conformance require their respective document APIs.
+
+```ts
+import { readFileSync } from 'node:fs';
+import { Document, LoadLimits } from '@asposefoss/pdf';
+
+const bytes = readFileSync('input.pdf');
+const limits = LoadLimits.defaults.with({ maxFileBytes: 50 * 1024 * 1024 });
+const { findings } = Document.Preflight(bytes, { limits });
+for (const finding of findings) console.log(finding.stage, finding.category, finding.message);
+
+// For a recoverable input, compare the source findings with the repair Open performed.
+if (findings.length > 0 && findings.every(f => f.category === 'malformed')) {
+  const doc = Document.Open(bytes, { limits });
+  console.log(doc.recovery);
+}
+```
+
+An empty array means the covered checks passed. An unsupported finding identifies a check
+that could not finish, such as inspecting an encrypted object stream. A limit finding ends
+inspection immediately and includes the limit name, allowed value and reached value.
+
 ### Open Untrusted PDFs Under Resource Limits
 
 `Document.Open` and `Document.OpenFile` apply `LoadLimits.defaults` when you pass nothing.
@@ -4264,7 +4291,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 551 public types plus 175
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 553 public types plus 175
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4636,6 +4663,8 @@ for work-unit boundaries and mutation/lifetime rules.
 | `RecalculateReport` | What `Form.Recalculate()` did: the values it `changed`, the calculate scripts it could not recognise (`unrecognised`), and the calculated fields `/CO` does not list (`notInOrder`), which Acrobat never runs either. |
 | `RecalculatedValue` | One value `Form.Recalculate()` changed: `{ field, from, to }`. |
 | `RecoveryReport` | How Open obtained its cross-reference data. |
+| `SourcePreflightFinding` | Source inspection stage, category, message and available byte offset or object number. A limit finding includes the enforced bound and measurements. |
+| `SourcePreflightReport` | Ordered findings from checking the original PDF structure. |
 | `RegionHits` | Glyph and image events intersecting a set of regions. |
 | `RemoveImageOptions` | Options for removeImage / `ImageInfo.Remove`. |
 | `ReplaceImageOptions` | Options for replaceImage / `ImageInfo.Replace`. |
@@ -5125,6 +5154,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 |---|---|
 | `Document.New(format?)` | Create a document from scratch: zero pages, or one page of `format` |
 | `Document.Open(buf, opts?)` | Parse a PDF from a `Uint8Array` |
+| `Document.Preflight(buf, opts?)` | Inspect the original PDF structure under optional load limits before recovery. |
 | `Document.OpenAsync(buf, opts?)` | Parse PDF bytes and await a PubSec recipient key provider when supplied. |
 | `Document.OpenFile(name, opts?)` | Parse a PDF from disk |
 | `splitPdfFile(inputPath, outDir, opts?)` | Split a PDF on disk into `page-N.pdf` files |

@@ -2,7 +2,7 @@ import { isPdfWhitespace, Lexer } from './lexer.js';
 import { ObjectParser } from './object-parser.js';
 import { inflateStream } from './flate.js';
 import { PdfParseError } from './errors.js';
-import { PdfDict, isDict, isStream } from './types.js';
+import { PdfDict, isDict, isName, isStream } from './types.js';
 import { LoadLimits } from './loadlimits.js';
 import { DecodeBudget, registerStream } from './decodebudget.js';
 
@@ -11,7 +11,8 @@ import { DecodeBudget, registerStream } from './decodebudget.js';
  *  count: a subsection header or `/Size` that overstates what follows is
  *  damage the recovery ladder already opens, and refusing it would turn a file
  *  that opens into one that does not. What costs memory is rows that exist. */
-interface RowBudget { limits: LoadLimits; rows: number; decodeBudget: DecodeBudget }
+interface RowBudget { limits: LoadLimits; rows: number; decodeBudget: DecodeBudget; inspect?: boolean }
+const unsigned = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const countRow = (b: RowBudget): void => b.limits.enforce('maxObjects', ++b.rows, 'cross-reference rows');
 
 export type XrefEntry =
@@ -43,6 +44,13 @@ export function revisionFooterEnd(revision: PdfRevision): number | undefined {
   return confirmedFooters.get(revision);
 }
 
+/** Linearization parameters occupy the first indirect object in the header window. */
+export function hasLinearizationHeader(buf: Uint8Array): boolean {
+  const head = new TextDecoder('latin1').decode(buf.subarray(0, 1024));
+  const m = /\bobj\b([\s\S]*?)\bendobj\b/.exec(head);
+  return m !== null && /\/Linearized\b/.test(m[1]);
+}
+
 export interface XrefResult {
   entries: Map<number, XrefEntry>;
   trailer: PdfDict;
@@ -64,6 +72,7 @@ export interface XrefResult {
  *  `maxXrefSections` BEFORE it is parsed. */
 export function readXref(
   buf: Uint8Array, limits = LoadLimits.defaults, decodeBudget = new DecodeBudget(limits),
+  inspect = false,
 ): XrefResult {
   const start = findStartXref(buf);
   const entries = new Map<number, XrefEntry>();
@@ -71,29 +80,38 @@ export function readXref(
   const seen = new Set<number>();
   const revisions: PdfRevision[] = [];
   let pos: number | undefined = start;
-  const budget: RowBudget = { limits, rows: 0, decodeBudget };
+  const budget: RowBudget = { limits, rows: 0, decodeBudget, inspect };
   let sections = 0;
+  let linearizedFooterTarget: number | undefined;
 
   while (pos !== undefined) {
     if (seen.has(pos)) throw new PdfParseError(`cycle in /Prev chain at offset ${pos}`, pos);
     seen.add(pos);
     limits.enforce('maxXrefSections', ++sections, '/Prev chain');
     const section = readXrefSection(buf, pos, budget);
-    // earlier sections must not overwrite newer entries
-    for (const [num, e] of section.entries) if (!entries.has(num)) entries.set(num, e);
     if (!trailer) trailer = section.trailer;
-    const revision = { xrefOffset: pos, length: revisionEnd(buf, section.end) };
-    const footer = confirmFooter(buf, section.end, pos);
+    const prev = section.trailer.get('Prev');
+    // In a linearized file the first-page footer contains 0, and the main
+    // section reached by its forward /Prev points back to the first-page xref.
+    const firstPage: boolean = inspect && typeof prev === 'number' && prev > pos && hasLinearizationHeader(buf);
+    const target: number = firstPage ? 0 : linearizedFooterTarget ?? pos;
+    linearizedFooterTarget = firstPage ? pos : undefined;
+    const footer = confirmFooter(buf, section.end, target);
+    const revision = { xrefOffset: pos, length: inspect ? footer ?? buf.length : revisionEnd(buf, section.end) };
     if (footer !== undefined) confirmedFooters.set(revision, footer);
     revisions.push(revision);
     // Hybrid: /XRefStm points to a parallel xref stream
     const xrefStm = section.trailer.get('XRefStm');
+    if (inspect && xrefStm !== undefined && !unsigned(xrefStm)) throw new PdfParseError('invalid /XRefStm', pos);
     if (typeof xrefStm === 'number' && !seen.has(xrefStm)) {
       limits.enforce('maxXrefSections', ++sections, '/XRefStm');
       const hs = readXrefSection(buf, xrefStm, budget);
-      for (const [num, e] of hs.entries) if (!entries.has(num)) entries.set(num, e);
+      for (const [num, e] of hs.entries)
+        if (inspect || !section.entries.has(num)) section.entries.set(num, e);
     }
-    const prev = section.trailer.get('Prev');
+    // Entries in an older revision never overwrite newer entries.
+    for (const [num, e] of section.entries) if (!entries.has(num)) entries.set(num, e);
+    if (inspect && prev !== undefined && !unsigned(prev)) throw new PdfParseError('invalid /Prev', pos);
     pos = typeof prev === 'number' ? prev : undefined;
   }
   if (!trailer) throw new PdfParseError('no trailer found');
@@ -159,28 +177,43 @@ interface Section {
 function readXrefSection(buf: Uint8Array, pos: number, budget: RowBudget): Section {
   // Classic table begins with keyword `xref`. Otherwise it's an xref stream (Task 8).
   const lx = new Lexer(buf, pos);
+  if (budget.inspect) {
+    if (!unsigned(pos) || pos >= buf.length) throw new PdfParseError('xref offset outside input');
+    lx.maxTokenBytes = budget.limits.maxObjectBytes ?? Infinity;
+  }
   const save = lx.pos;
-  const first = lx.next();
+  const first = xrefToken(lx, budget);
+  if (budget.inspect && first.pos !== pos) throw new PdfParseError('xref offset misses section header', pos);
   if (first.t === 'kw' && first.v === 'xref') return readClassicTable(buf, lx, budget);
   // Not a classic table -> delegate to xref-stream reader (added in Task 8).
   return readXrefStream(buf, save, budget);
 }
 
+function xrefToken(lx: Lexer, budget: RowBudget) {
+  const token = lx.next();
+  if (token.over !== undefined) budget.limits.enforce('maxObjectBytes', token.over, 'xref token');
+  return token;
+}
+
 function readClassicTable(buf: Uint8Array, lx: Lexer, budget: RowBudget): Section {
   const entries = new Map<number, XrefEntry>();
   for (;;) {
-    const t = lx.next();
+    const t = xrefToken(lx, budget);
     if (t.t === 'kw' && t.v === 'trailer') break;
     if (t.t !== 'num') throw new PdfParseError('expected subsection start', t.pos);
     const startObj = t.v as number;
-    const count = lx.next();
+    const count = xrefToken(lx, budget);
     if (count.t !== 'num') throw new PdfParseError('expected subsection count', count.pos);
+    if (budget.inspect && (!unsigned(startObj) || !unsigned(count.v) || !unsigned(startObj + count.v)))
+      throw new PdfParseError('invalid xref subsection range', t.pos);
     for (let i = 0; i < (count.v as number); i++) {
       countRow(budget);
-      const off = lx.next(); const gen = lx.next(); const kind = lx.next();
+      const off = xrefToken(lx, budget); const gen = xrefToken(lx, budget); const kind = xrefToken(lx, budget);
       if (off.t !== 'num' || gen.t !== 'num' || kind.t !== 'kw')
         throw new PdfParseError('malformed xref entry', off.pos);
       const num = startObj + i;
+      if (budget.inspect && (!unsigned(off.v) || !unsigned(gen.v) || gen.v > 65535 || !['f', 'n'].includes(kind.v)))
+        throw new PdfParseError('invalid xref entry', off.pos);
       if (entries.has(num)) continue;
       if (kind.v === 'n') entries.set(num, { type: 'offset', offset: off.v as number, gen: gen.v as number });
       else if (kind.v === 'f') entries.set(num, { type: 'free', gen: gen.v as number });
@@ -199,17 +232,30 @@ export function readXrefStream(
   // stream payload, which is where the revision-end scan must begin.
   const lx = new Lexer(buf, pos);
   const parser = new ObjectParser(lx, undefined, budget.limits);
-  const { value } = parser.parseIndirectObject();
+  const { value } = budget.inspect ? parser.parseSourceIndirectObject() : parser.parseIndirectObject();
   if (!isStream(value)) throw new PdfParseError('xref stream object is not a stream', pos);
   registerStream(value, budget.decodeBudget);
   const dict = value.dict;
+  const type = dict.get('Type');
+  if (budget.inspect && !(isName(type) && type.name === 'XRef')) throw new PdfParseError('expected /Type /XRef', pos);
   const data = inflateStream(value);
   const W = dict.get('W');
   if (!Array.isArray(W) || W.length !== 3) throw new PdfParseError('xref stream missing /W', pos);
   const [w0, w1, w2] = W as number[];
   const size = (dict.get('Size') as number) ?? 0;
   const indexArr = (dict.get('Index') as number[]) ?? [0, size];
+  if (budget.inspect && (!unsigned(size) || !W.every(unsigned) ||
+      !Array.isArray(indexArr) || indexArr.length % 2 !== 0 || !indexArr.every(unsigned)))
+    throw new PdfParseError('invalid xref stream dimensions', pos);
   const rowLen = w0 + w1 + w2;
+  if (budget.inspect) {
+    let rows = 0;
+    for (let i = 0; i < indexArr.length; i += 2) {
+      if (indexArr[i] + indexArr[i + 1] > size) throw new PdfParseError('xref /Index exceeds /Size', pos);
+      rows += indexArr[i + 1];
+    }
+    if (rowLen === 0 || rows * rowLen !== data.length) throw new PdfParseError('xref stream row length mismatch', pos);
+  }
   const entries = new Map<number, XrefEntry>();
   let p = 0;
   const readField = (w: number): number => { let v = 0; for (let i = 0; i < w; i++) v = v * 256 + data[p++]; return v; };

@@ -49,6 +49,18 @@ export function rethrowLimit(e: unknown): void {
 }
 
 const callerErrors = new WeakSet<object>();
+
+/** Only the outer source-preflight boundary converts a limit refusal to data.
+ * The exception first unwinds the entire inspection, including any per-object catches. */
+export function captureResourceLimit(inspect: () => void): ResourceLimitError | undefined {
+  try {
+    inspect();
+    return undefined;
+  } catch (e) {
+    if (e instanceof ResourceLimitError) return e;
+    throw e;
+  }
+}
 /** Mark an error thrown by caller-supplied code (a font substitution handler,
  *  g0ky.6) so every `catch` in `src/` lets it through via {@link rethrowLimit}.
  *  A non-object throw is wrapped in an `Error` whose `cause` is the value.

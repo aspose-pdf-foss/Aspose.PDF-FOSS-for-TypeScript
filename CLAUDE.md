@@ -156,6 +156,12 @@ also append revisions to preserve the earlier signed bytes.
 
 Source (`src/`):
 
+- **preflight.ts** — source inspection for `Document.Preflight`. Read the live xref
+  entries and verify the declared object and stream boundaries against the original bytes.
+  Limits unwind every parser frame before the reporting boundary records the terminal
+  finding. Compressed member offsets are relative to decoded data, so only report a
+  file offset when it identifies an original source byte.
+
 - **types.ts** — the `PdfObject` model and type guards. `PdfDict` is a `Map`
   keyed by name (no leading `/`); names/strings/refs/streams are tagged objects
   (`isDict`/`isRef`/`isName`/`isStream`/...).
