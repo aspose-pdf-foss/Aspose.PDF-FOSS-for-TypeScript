@@ -69,7 +69,54 @@ export const IMAGE_MODES = ['rgb', 'gray', 'bilevel'] as const;
  *  is not what was asked for. */
 export type ImageMode = (typeof IMAGE_MODES)[number];
 
-export interface ImageOptions extends OperationControlOptions {
+type Rgba = readonly [number, number, number, number];
+
+/** Page backdrop. RGB and straight RGBA components are in the range 0..1. */
+export type RasterBackground = 'white' | 'transparent' | readonly [number, number, number] | Rgba;
+
+const WHITE: Rgba = [1, 1, 1, 1];
+const TRANSPARENT: Rgba = [0, 0, 0, 0];
+
+function resolveBackground(background: RasterBackground = 'white'): Rgba {
+  if (background === 'white') return WHITE;
+  if (background === 'transparent') return TRANSPARENT;
+  if (!Array.isArray(background) || (background.length !== 3 && background.length !== 4))
+    throw new TypeError('background must be white, transparent, or an RGB or RGBA tuple');
+  const rgba: Rgba = [background[0], background[1], background[2], background.length === 3 ? 1 : background[3]];
+  for (const channel of rgba) {
+    if (typeof channel !== 'number') throw new TypeError('background components must be numbers');
+    if (!Number.isFinite(channel) || channel < 0 || channel > 1)
+      throw new RangeError('background components must be finite and in 0..1');
+  }
+  return rgba;
+}
+
+/** Page geometry, paint and operation controls shared by raw and encoded output. */
+export interface PixelOptions extends OperationControlOptions {
+  /** Multiplier on the 72-DPI point size. Default 1. Ignored if width/height set. */
+  scale?: number;
+  /** Target pixel width. Height preserves aspect ratio unless also supplied. */
+  width?: number;
+  /** Target pixel height. Width preserves aspect ratio unless also supplied. */
+  height?: number;
+  /** Which page box defines the viewport. Default 'crop'. */
+  box?: 'crop' | 'media';
+  /** Initial page color. Default opaque white. */
+  background?: RasterBackground;
+  /** Composite annotation and form-field /AP appearances. Default true. */
+  annotations?: boolean;
+}
+
+/** Caller-owned 8-bit straight-alpha RGBA samples, top row first. */
+export interface RasterPixels {
+  width: number;
+  height: number;
+  /** Bytes per row, exactly four times width. */
+  stride: number;
+  data: Uint8Array;
+}
+
+export interface ImageOptions extends PixelOptions {
   /** Output encoding. Default 'png'.
    *
    *  **Invariant:** an unrecognised value THROWS rather than falling back to
@@ -87,18 +134,6 @@ export interface ImageOptions extends OperationControlOptions {
   /** Strip compression, for formats that choose one. TIFF only; default
    *  'deflate'. PNG and JPEG carry their own coding and ignore it. */
   compression?: 'none' | 'deflate' | 'g4';
-  /** Multiplier on the 72-DPI point size. Default 1. Ignored if width/height set. */
-  scale?: number;
-  /** Target pixel width. Overrides `scale`; height derived aspect-preserving unless also given. */
-  width?: number;
-  /** Target pixel height. Overrides `scale`; width derived aspect-preserving unless also given. */
-  height?: number;
-  /** Which page box defines the viewport. Default 'crop'. */
-  box?: 'crop' | 'media';
-  /** 'white' → opaque RGB PNG (default); 'transparent' → RGBA PNG, unpainted area transparent. */
-  background?: 'white' | 'transparent';
-  /** Composite annotation and form-field /AP appearances. Default true. */
-  annotations?: boolean;
   /** Output colour mode. Default 'rgb', so an unset mode takes exactly the path
    *  it always has.
    *
@@ -160,9 +195,20 @@ class Canvas {
   bounds(): { x0: number; y0: number; x1: number; y1: number } {
     return { x0: this.originX, y0: this.originY, x1: this.originX + this.w, y1: this.originY + this.h };
   }
-  constructor(readonly w: number, readonly h: number, opaqueWhite: boolean) {
+  readonly opaque: boolean;
+  constructor(readonly w: number, readonly h: number, background: Rgba = TRANSPARENT) {
+    this.opaque = background[3] === 1;
     this.data = new Float32Array(w * h * 4);
-    if (opaqueWhite) this.data.fill(1);      // (1,1,1,1) everywhere
+    if (background === WHITE) this.data.fill(1);
+    else if (background !== TRANSPARENT) {
+      const [r, g, b, a] = background;
+      for (let i = 0; i < this.data.length; i += 4) {
+        this.data[i] = r;
+        this.data[i + 1] = g;
+        this.data[i + 2] = b;
+        this.data[i + 3] = a;
+      }
+    }
   }
 
   /** Source-over composite `color` at coverage `cov` (0..1) onto pixel (x,y),
@@ -204,7 +250,7 @@ class Canvas {
 
   /** Interleaved 8-bit RGB, alpha DISCARDED rather than composited — which is
    *  right only because the caller has already established the canvas is
-   *  opaque (`opaqueWhite`, so it was seeded to white and every draw
+   *  opaque (it was seeded with an opaque backdrop and every draw
    *  composited over it). Shared by the PNG and JPEG encoders so the two
    *  cannot disagree about the conversion. */
   toRgb(): Uint8Array {
@@ -269,8 +315,8 @@ class Canvas {
     return out;
   }
 
-  toPng(opaqueWhite: boolean): Uint8Array {
-    return opaqueWhite
+  toPng(): Uint8Array {
+    return this.opaque
       ? encodePng(this.w, this.h, this.toRgb(), 'rgb')
       : encodePng(this.w, this.h, this.toRgba(), 'rgba');
   }
@@ -1328,7 +1374,7 @@ class RasterSink implements RenderSink {
     // Allocate over the requested region, not the page: a small masked logo
     // costs a few KB rather than the ~30 MB a full-page Float32Array takes at
     // scale 4.
-    const sub = new Canvas(wantW, wantH, false);
+    const sub = new Canvas(wantW, wantH);
     sub.originX = b.x0; sub.originY = b.y0;
     if (opts?.backdrop) {
       // Non-isolated group: seed with the backdrop so inner blend modes see the
@@ -1388,7 +1434,7 @@ class RasterSink implements RenderSink {
     // A sub-buffer congruent to the group accumulator, seeded with B0. It tracks
     // element-only alpha (groupAlpha) and geometric shape. The current paint
     // (clip / soft mask / ca) is kept: the element draws in the group's state.
-    const E = new Canvas(G.w, G.h, false);
+    const E = new Canvas(G.w, G.h);
     E.originX = G.originX; E.originY = G.originY;
     E.data.set(G.knockoutBackdrop);
     E.groupAlpha = new Float32Array(G.w * G.h);
@@ -1628,9 +1674,9 @@ export function renderShadingPatch(
   const height = Math.max(1, Math.ceil((bottom - y) * dpi / 72));
   doc.loadLimits.enforce('maxCanvasPixels', width * height, 'SVG shading patch');
   const sx = width / (right - x), sy = height / (bottom - y);
-  const canvas = new Canvas(width, height, false);
+  const canvas = new Canvas(width, height);
   rasterizeShading(canvas, doc, shading, mul(ctm, [sx, 0, 0, sy, -x * sx, -y * sy]), new Paint(), pattern);
-  return canvas.toPng(false);
+  return canvas.toPng();
 }
 
 // ---------- Entry point ----------
@@ -1654,7 +1700,7 @@ interface AppearanceOptions {
 /** Encode a finished canvas. The single dispatch point every raster entry
  *  reaches, so no two of them can disagree about what a format means. */
 function encodeCanvas(
-  canvas: Canvas, opts: ImageOptions, format: ImageFormat, opaqueWhite: boolean,
+  canvas: Canvas, opts: ImageOptions, format: ImageFormat,
 ): Uint8Array {
   const mode = opts.mode ?? 'rgb';
   const threshold = opts.threshold ?? DEFAULT_THRESHOLD;
@@ -1678,7 +1724,7 @@ function encodeCanvas(
       if (mode === 'bilevel') {
         return encodePng(canvas.w, canvas.h, canvas.toBilevel(threshold, false), 'bilevel');
       }
-      return canvas.toPng(opaqueWhite);
+      return canvas.toPng();
     case 'jpeg':
       // 'bilevel' is refused by `resolveOutput`, so only 'gray' reaches here —
       // and JPEG carries that natively, one component rather than three.
@@ -1698,7 +1744,7 @@ function encodeCanvas(
     case 'tiff':
       // TIFF, unlike JPEG and BMP, CAN carry alpha, so a transparent
       // background is honoured through an unassociated ExtraSample.
-      return encodeTiff([tiffFrameOf(canvas, mode, threshold, opaqueWhite)],
+      return encodeTiff([tiffFrameOf(canvas, mode, threshold)],
         opts.compression != null ? { compression: opts.compression } : {});
   }
 }
@@ -1730,14 +1776,14 @@ function grayToRgb(canvas: Canvas, mode: ImageMode, threshold: number): Uint8Arr
  * 0 (WhiteIsZero), which is what `decodeCcitt` returns and `encodeG4` expects.
  */
 function tiffFrameOf(
-  canvas: Canvas, mode: ImageMode, threshold: number, opaqueWhite: boolean,
+  canvas: Canvas, mode: ImageMode, threshold: number,
 ): TiffFrame {
   const { w: width, h: height } = canvas;
   if (mode === 'gray') return { width, height, kind: 'gray', samples: canvas.toGray() };
   if (mode === 'bilevel') {
     return { width, height, kind: 'bilevel', samples: canvas.toBilevel(threshold, true) };
   }
-  return opaqueWhite
+  return canvas.opaque
     ? { width, height, kind: 'rgb', samples: canvas.toRgb() }
     : { width, height, kind: 'rgba', samples: canvas.toRgba() };
 }
@@ -1749,7 +1795,7 @@ const OPAQUE_ONLY: ReadonlySet<ImageFormat> = new Set<ImageFormat>(['jpeg', 'bmp
 /** Resolve `opts.format`, rejecting anything `encodeCanvas` cannot encode and
  *  any option combination the chosen format cannot honour. Called BEFORE the
  *  render so a refused call does no work. */
-function resolveFormat(opts: ImageOptions): ImageFormat {
+function resolveFormat(opts: ImageOptions, background: Rgba): ImageFormat {
   const format = opts.format ?? 'png';
   if (!(IMAGE_FORMATS as readonly string[]).includes(format)) {
     throw new UnsupportedFeatureError(
@@ -1761,10 +1807,10 @@ function resolveFormat(opts: ImageOptions): ImageFormat {
   // transparency request would vanish with no signal, and `ToImage` returns
   // bytes with no report channel to carry one. Refusing is also the reversible
   // choice — relaxing it later is additive, tightening it would not be.
-  if (opts.background === 'transparent' && OPAQUE_ONLY.has(format)) {
+  if (background[3] < 1 && OPAQUE_ONLY.has(format)) {
     throw new UnsupportedFeatureError(
       `image format ${JSON.stringify(format)} has no alpha channel and cannot ` +
-      `honour background: 'transparent' — use 'png', or drop the background option`);
+      `honour a transparent or translucent background — use 'png' or 'tiff'`);
   }
 
   const mode = opts.mode ?? 'rgb';
@@ -1787,10 +1833,10 @@ function resolveFormat(opts: ImageOptions): ImageFormat {
   // combination is refused rather than silently composited, exactly as the
   // opaque formats are above. The reversible direction: relaxing later is
   // additive.
-  if (mode !== 'rgb' && opts.background === 'transparent') {
+  if (mode !== 'rgb' && background[3] < 1) {
     throw new UnsupportedFeatureError(
       `mode ${JSON.stringify(mode)} carries no alpha channel and cannot honour ` +
-      `background: 'transparent' — use mode: 'rgb', or drop the background option`);
+      `a transparent or translucent background — use mode: 'rgb'`);
   }
   // Validated even where it is not read, unlike `quality`: an out-of-range
   // threshold makes the whole page one colour, which is a plausible-looking
@@ -1808,10 +1854,10 @@ function resolveFormat(opts: ImageOptions): ImageFormat {
  *  rather than a finished single-page file — encoded TIFFs cannot be
  *  concatenated, so every frame has to reach one `encodeTiff` call. */
 function renderCanvas(
-  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions & AppearanceOptions,
+  doc: Document, page: Page, opts: PixelOptions, o: BackdropOptions & AppearanceOptions,
+  background = resolveBackground(opts.background),
 ): Canvas {
   const box = opts.box ?? 'crop';
-  const opaqueWhite = (opts.background ?? 'white') !== 'transparent';
   const { matrix, width: w0, height: h0 } = baseMatrix(page, box);
 
   let sx: number, sy: number;
@@ -1831,7 +1877,7 @@ function renderCanvas(
     doc.loadLimits.enforce('maxCanvasPixels', devW * devH, 'page canvas');
   const device = mul(matrix, [sx, 0, 0, sy, 0, 0]);
 
-  const canvas = new Canvas(devW, devH, opaqueWhite);
+  const canvas = new Canvas(devW, devH, background);
   const sink = new RasterSink(doc, canvas, o.skipGlyphs);
   try {
     interpret(doc, page, device, sink,
@@ -1843,6 +1889,17 @@ function renderCanvas(
   return canvas;
 }
 
+/** @internal Render and convert at the same checkpoints for both page APIs. */
+export function* renderPageToPixelsSteps(
+  doc: Document, page: Page, opts: PixelOptions, context: OperationContext,
+): OperationSteps<RasterPixels> {
+  const canvas = renderCanvas(doc, page, opts, { skipGlyphs: false });
+  yield context.progress('render', 1, 1, page.Number);
+  const data = canvas.toRgba();
+  yield context.progress('pixels', 1, 1, page.Number);
+  return { width: canvas.w, height: canvas.h, stride: canvas.w * 4, data };
+}
+
 function renderPage(
   doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions,
 ): Uint8Array {
@@ -1850,14 +1907,17 @@ function renderPage(
 }
 
 function* renderPageSteps(
-  doc: Document, page: Page, opts: ImageOptions, o: BackdropOptions, context: OperationContext,
+  doc: Document, page: Page, options: ImageOptions, o: BackdropOptions, context: OperationContext,
+  resolvedBackground?: Rgba,
 ): OperationSteps<Uint8Array> {
-  // Before the render, so a refused call does no work.
-  const format = resolveFormat(opts);
-  const opaqueWhite = (opts.background ?? 'white') !== 'transparent';
-  const canvas = renderCanvas(doc, page, opts, o);
+  // Progress callbacks can edit the caller's options between rendering and
+  // encoding. Both stages must use the settings validated here.
+  const opts = { ...options };
+  const background = resolvedBackground ?? resolveBackground(opts.background);
+  const format = resolveFormat(opts, background);
+  const canvas = renderCanvas(doc, page, opts, o, background);
   yield context.progress('render', 1, 1, page.Number);
-  const result = encodeCanvas(canvas, opts, format, opaqueWhite);
+  const result = encodeCanvas(canvas, opts, format);
   yield context.progress('encode', 1, 1, page.Number);
   return result;
 }
@@ -1890,12 +1950,14 @@ export function renderDocumentToThumbnailsAsync(doc: Document, opts: ThumbnailOp
 
 /** Preflight every viewport before rendering; both runners drive the same work. */
 function* renderDocumentToThumbnailsSteps(
-  doc: Document, opts: ThumbnailOptions, context: OperationContext,
+  doc: Document, options: ThumbnailOptions, context: OperationContext,
 ): OperationSteps<Uint8Array[]> {
-  const maxSize = opts?.maxSize;
+  const opts = { ...options };
+  const maxSize = opts.maxSize;
   if (!Number.isSafeInteger(maxSize) || maxSize < 1)
     throw new TypeError('ToThumbnails: maxSize must be a positive safe integer');
-  const format = resolveFormat(opts);
+  const background = resolveBackground(opts.background);
+  const format = resolveFormat(opts, background);
   // The TIFF encoder normally checks this after rendering its first frame.
   // Here the contract includes refusing incompatible output on an empty PDF.
   if (format === 'tiff' && opts.compression === 'g4' && (opts.mode ?? 'rgb') !== 'bilevel')
@@ -1918,7 +1980,7 @@ function* renderDocumentToThumbnailsSteps(
 
   const images: Uint8Array[] = [];
   for (const { page, width, height } of fitted) {
-    images.push(yield* renderPageSteps(doc, page, { ...opts, width, height }, { skipGlyphs: false }, context));
+    images.push(yield* renderPageSteps(doc, page, { ...opts, width, height }, { skipGlyphs: false }, context, background));
   }
   return images;
 }
@@ -1929,15 +1991,14 @@ function* renderDocumentToThumbnailsSteps(
  *  each page rather than a finished single-page file — there is no way to
  *  concatenate encoded TIFFs, so the frames must reach one `encodeTiff` call. */
 function renderPageToTiffFrame(
-  doc: Document, page: Page, opts: ImageOptions,
+  doc: Document, page: Page, opts: ImageOptions, background: Rgba,
 ): TiffFrame {
-  const canvas = renderCanvas(doc, page, opts, { skipGlyphs: false });
-  const opaque = (opts.background ?? 'white') !== 'transparent';
+  const canvas = renderCanvas(doc, page, opts, { skipGlyphs: false }, background);
   // Through the SAME frame builder `encodeCanvas` uses, so the single-page and
   // multi-page TIFF paths cannot disagree about what a mode means. This is the
   // path multi-page G4 goes through, which is the archival and fax interchange
   // the mode exists for.
-  return tiffFrameOf(canvas, opts.mode ?? 'rgb', opts.threshold ?? DEFAULT_THRESHOLD, opaque);
+  return tiffFrameOf(canvas, opts.mode ?? 'rgb', opts.threshold ?? DEFAULT_THRESHOLD);
 }
 
 /** Render a page selection to ONE multi-page TIFF — the entry that makes this
@@ -1964,12 +2025,15 @@ export function* renderDocumentToTiffSteps(
   if (pages.length === 0)
     throw new TypeError('ToTiff: the page selection is empty; at least one page is required');
 
+  const background = resolveBackground(opts.background);
+  const frameOptions: ImageOptions = { ...opts, format: 'tiff' };
+  resolveFormat(frameOptions, background);
   const frames: TiffFrame[] = [];
   for (const n of pages) {
-    frames.push(renderPageToTiffFrame(doc, doc.Pages[n - 1], opts));
+    frames.push(renderPageToTiffFrame(doc, doc.Pages[n - 1], frameOptions, background));
     yield context.progress('render', frames.length, pages.length, n);
   }
-  const result = encodeTiff(frames, opts.compression != null ? { compression: opts.compression } : {});
+  const result = encodeTiff(frames, frameOptions.compression != null ? { compression: frameOptions.compression } : {});
   yield context.progress('encode', 1, 1);
   return result;
 }
@@ -2109,7 +2173,7 @@ export function rasterizeFormRgba(
   ]);
   const page = new Page(doc, pageDict, 1);
 
-  const canvas = new Canvas(w, h, false);
+  const canvas = new Canvas(w, h);
   try {
     interpret(doc, page, baseMatrix(page, 'media').matrix, new RasterSink(doc, canvas));
   } catch (caught) { rethrowLimit(caught);

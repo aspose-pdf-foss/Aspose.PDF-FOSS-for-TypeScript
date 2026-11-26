@@ -280,6 +280,8 @@ const svg = doc.Pages[0].ToSvg();          // standalone <svg> string
 // fs.writeFileSync('page1.svg', svg);
 const png = doc.Pages[0].ToImage({ scale: 2 }); // Uint8Array of PNG bytes @144 DPI
 // fs.writeFileSync('page1.png', png);
+const pixels = doc.Pages[0].ToPixels({ scale: 2, background: [0.2, 0.4, 0.6, 0.5] });
+const firstPixel = pixels.data.subarray(0, 4); // red, green, blue, alpha
 const thumbnails = doc.ToThumbnails({ maxSize: 256 }); // one PNG per page
 // fs.writeFileSync('thumb1.png', thumbnails[0]);
 const html = doc.ToHtml();                 // standalone semantic HTML, all pages
@@ -4136,6 +4138,18 @@ SVG page dimensions stay in points as patch resolution changes. The same
 backdrops use `backdropScale`. Bookmarks and links to omitted pages retain
 their text in semantic HTML. URI actions with script, data or blob schemes also render as plain text.
 
+`ToPixels()` and `await ToPixelsAsync()` each return a fresh buffer. Pixel
+`(x, y)` starts at `y * stride + 4 * x`, with the origin at the top left
+and `stride = 4 * width`. Channels are bytes with straight alpha. A
+half-transparent red pixel is `[255, 0, 0, 128]`. You can change the bytes
+without affecting the page or another render.
+
+For raw pixels, encoded images, thumbnails and document TIFFs, `background`
+accepts `'white'` (default), `'transparent'`, or an RGB or RGBA tuple with
+finite components from 0 to 1. The renderer paints and blends against this
+color. PNG and TIFF in RGB mode can preserve backdrop alpha below 1.
+JPEG, BMP, GIF and reduced-color modes require an opaque backdrop.
+
 `ToThumbnails` fits each rotated page inside a square pixel bound without padding;
 the longest edge equals `maxSize`, so small pages are enlarged. Dimensions round
 to whole pixels with a one-pixel minimum. It uses the crop box by default; pass
@@ -4325,7 +4339,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 559 public types plus 176
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 562 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4934,6 +4948,9 @@ for work-unit boundaries and mutation/lifetime rules.
 | `EpubOptions` | Options for ToEpub. |
 | `ImageMode` | What `ImageOptions.mode` accepts. |
 | `ImageOptions` | Raster output format, dimensions, scale, page box, background, annotation and encoder options. |
+| `PixelOptions` | Page dimensions, scale, box, backdrop, annotations, progress and cancellation for pixel rendering. |
+| `RasterBackground` | White, transparent, or an RGB or straight RGBA tuple with components in 0..1. |
+| `RasterPixels` | Width, height, byte stride and caller-owned top-down RGBA bytes. |
 | `MarkdownAsset` | One image file an external-image export expects to be written. |
 | `MarkdownElements` | What markdownElements produced. |
 | `MarkdownExportOptions` | Options for ToMarkdown and ToMarkdown. |
@@ -5424,6 +5441,7 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `page.ToImage(options?)` | Rasterize the page to PNG bytes (`Uint8Array`); anti-aliased vector fills at `scale`/`width`/`height`; composites annotation `/AP` appearances (`{ annotations: false }` for content only); `{ background: 'transparent' }` for RGBA; honors `/Rotate` + crop/media box. `{ format }` selects the encoding — `'png'` (default), `'jpeg'`, `'tiff'`, `'bmp'` or `'gif'`, with `{ quality }` (1..100, default 75) read by the lossy ones and `{ compression }` (`'deflate'` default, `'none'`, or `'g4'` for bilevel frames) read by TIFF; an unsupported value throws `UnsupportedFeatureError` rather than returning PNG bytes under the wrong name (`IMAGE_FORMATS` lists what is supported), as does `{ format: 'jpeg', background: 'transparent' }`, JPEG having no alpha channel. `{ mode }` selects the colour mode — `'rgb'` (default), `'gray'` (Rec. 601 luminance) or `'bilevel'` (a plain cut at `{ threshold }`, 0..255, default 128) — which is what makes `{ format: 'tiff', compression: 'g4', mode: 'bilevel' }` possible; `'jpeg'` refuses bilevel and any non-rgb mode refuses a transparent background (`IMAGE_MODES` lists what is supported) |
 | `doc.ToHtml(options?)` | Export every page to one standalone HTML document. `mode: 'semantic'` (default, reflowable; `/StructTree`-driven when tagged, font-size heuristics otherwise) or `mode: 'fixed'` (positioned text over a `backdrop: 'vector'` SVG (default), a `'raster'` glyph-less PNG, or a `'page'` full-page PNG with transparent selectable text; `backdropScale` defaults to 2; `forms: true` for fillable AcroForm controls; with optional `fonts: 'embed'` \| `'embed-all'` `@font-face` embedding); `{ fragment: true }` for body markup only |
 | `doc.ToHtmlBundle(options?)` | Write `index.html` or one `page-N.html` per selected page with `split: true`. Local links follow exported pages. Set `outlineNav: true` to include bookmarks. |
+| `page.ToPixels(options?)`, `page.ToPixelsAsync(options?)` | Render the selected page box to an owned RGBA buffer at the requested size. The asynchronous version yields between rendering and sample conversion. |
 | `doc.ToSvgBundle(options?)` | Produce a `page-N.svg` entry point for each selected page. Function and mesh shadings use transparent PNG patches at `patchDpi` (default 144). |
 | `page.ToHtml(options?)` | Export one page to a standalone HTML document (same options; a tagged semantic tree is filtered to this page's content, ancestors intact) |
 | `doc.ToMarkdown(options?)` | Export every page to one GFM Markdown document. Reconstructs the document from the `/StructTree` when tagged and from font-size heuristics otherwise: ATX headings, paragraphs, pipe tables via `Table.toMarkdown()`, and images inline as `data:` URIs. From a tagged tree it also recovers nested lists (bullet, ordered with `start`, and task), fenced code blocks with their indentation, and block quotes; untagged, it infers lists and code blocks from marker text and monospaced faces. Recovers damaged content; cancellation and callback errors propagate. It refuses `images: 'external'`, which has nowhere to hand the bytes back — use `ToMarkdownAssets` |

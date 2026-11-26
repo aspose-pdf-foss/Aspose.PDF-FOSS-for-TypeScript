@@ -26,7 +26,7 @@ import {
   renderPageToMarkdown, renderPageToMarkdownAsync, renderPageToMarkdownAssets, renderPageToMarkdownAssetsAsync,
   type MarkdownExportOptions, type MarkdownExportResult,
 } from './mdexport.js';
-import { renderPageToPng, renderPageToPngAsync, ImageOptions } from './raster.js';
+import { renderPageToPng, renderPageToPngAsync, renderPageToPixelsSteps, type ImageOptions, type PixelOptions, type RasterPixels } from './raster.js';
 import { addImage, AddImageOptions } from './imageembed.js';
 import { addBarcode, BarcodeSpec, AddBarcodeOptions } from './barcodeplace.js';
 import { addSvgObject, AddSVGOptions, AddSVGResult } from './svgembed.js';
@@ -939,11 +939,11 @@ export class Page {
     return renderPageToMarkdownAssetsAsync(this.doc, this, options);
   }
 
-  /** Render this page to PNG bytes with a pure-TypeScript software rasterizer.
+  /** Render this page to encoded image bytes (PNG by default).
    *  Anti-aliased vector fills (nonzero/even-odd) composite onto an RGBA canvas
    *  at device resolution (`scale`, or `width`/`height`), honoring `/Rotate` and
-   *  the crop/media box. `background: 'transparent'` yields an RGBA PNG with the
-   *  unpainted area transparent; the default is an opaque white RGB PNG.
+   *  the crop/media box. The page backdrop defaults to white and accepts
+   *  transparent or a normalized RGB or RGBA color.
    *  Unsupported content degrades rather than throwing. */
   ToImage(options?: ImageOptions): Uint8Array {
     return renderPageToPng(this.doc, this, options);
@@ -952,6 +952,16 @@ export class Page {
   /** Yield between rendering and encoding; a page render itself is atomic. */
   ToImageAsync(options?: ImageOptions): Promise<Uint8Array> {
     return renderPageToPngAsync(this.doc, this, options);
+  }
+
+  /** Render a fresh buffer of tightly packed RGBA pixels with straight alpha. */
+  ToPixels(options: PixelOptions = {}): RasterPixels {
+    return runOperation('ToPixels', options, context => renderPageToPixelsSteps(this.doc, this, options, context));
+  }
+
+  /** Yield between rendering the page and converting its samples to bytes. */
+  ToPixelsAsync(options: PixelOptions = {}): Promise<RasterPixels> {
+    return runOperationAsync('ToPixels', options, context => renderPageToPixelsSteps(this.doc, this, options, context));
   }
 
   /** Embed `data` (JPEG or PNG) as an Image XObject and paint it into the

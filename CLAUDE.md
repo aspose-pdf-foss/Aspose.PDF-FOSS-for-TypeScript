@@ -9580,8 +9580,10 @@ Source (`src/`):
   ISO 19005 wins. Note it is still converted when something else in the
   document triggers the pass, since the walk converts the whole document.
 - **svgrender.ts**, **raster.ts**, **pagerender.ts** — rendering (`ToSvg` /
-  `ToImage`): a shared content-stream interpreter, a pure-TS scanline rasterizer,
-  and glyph-outline drawing.
+  `ToImage` / `ToPixels`): a shared content-stream interpreter, a pure-TS scanline
+  rasterizer, and glyph-outline drawing. Raw pixels use the same straight RGBA
+  conversion as transparent PNG. The page canvas starts at the requested backdrop.
+  Offscreen groups and masks retain their own PDF compositing rules.
   **Invariant (`s2i2.3`):** `PathsToSvg` serializes the supplied path snapshots
   in order, using the same CropBox matrix and SVG writer as `ToSvg`. A path's
   CTM runs before that matrix. Its recorded stroke width is already in page
