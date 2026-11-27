@@ -773,6 +773,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed `Document.WriteTo()` preserves the previous PDF.** The writer flushes a temporary file in the destination directory before replacing the requested file. Partial writes, flush errors and failed renames leave the previous bytes available. Saving through a symbolic link updates its target, and other hard links keep their previous contents (cqzf.3).
+
 - **Ruled table extraction preserves cells when a candidate spans the whole
   table.** `GetTables()` and default `AutoTag()` could exhaust the call stack
   on these layouts. The extractor now keeps the rules and text in the current

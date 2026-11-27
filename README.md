@@ -5443,7 +5443,8 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `doc.SyncMetadata(direction)` | Make `/Info` and XMP agree on the eight shared fields (`'infoToXmp'` / `'xmpToInfo'`), converting dates; returns `MetadataSyncReport` |
 | `doc.Version` / `doc.ID` | Inspect the effective PDF version and optional trailer identifiers |
 | `doc.ConvertToPdf20()` | Prepare a standalone PDF 2.0 save and return `Pdf20MigrationReport` |
-| `doc.Save(opts?)` / `doc.WriteTo(fileName, opts?)` | Serialize (`{ compressed: true }` for xref + object streams; `{ streamFilter }` to re-filter data streams; `{ incremental: true }` to append a revision rather than rewrite) |
+| `doc.Save(opts?)` | Serialize to bytes. Options include `compressed` for xref and object streams, `streamFilter` to re-filter data streams, and `incremental` to append a revision. |
+| `doc.WriteTo(fileName, opts?)` | Save with the same options, flush a temporary file in the destination directory, then atomically rename it into place. A failed write, flush, or rename preserves the original PDF. Symbolic links are followed, and other hard links retain the old bytes. Replacement requires a writable target and directory. It preserves POSIX read, write and execute bits. Ownership and ACLs follow the filesystem’s rules for newly created files. |
 | `doc.Revisions` / `doc.hasIncrementalUpdates` | The revisions this file carries, oldest first — each with its xref offset and the file's byte length as of that revision, so `bytes.subarray(0, rev.length)` is that revision's document. Empty when the chain could not be read |
 | `doc.Save({ encrypt })` / `WriteTo(name, { encrypt })` | Write a standard-security-handler encrypted PDF (AES-256/128, RC4) |
 | `doc.Save({ linearized: true })` | Write a linearized (Fast Web View) PDF; `doc.IsLinearized` reads the flag |

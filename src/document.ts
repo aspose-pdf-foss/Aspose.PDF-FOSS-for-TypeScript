@@ -221,7 +221,8 @@ import { X509Certificate } from 'node:crypto';
 import { parseSfnt, type SfntFont } from './sfnt.js';
 import { EmbeddedFont } from './embeddedfont.js';
 import { buildEmbeddedFont, buildFontEncoding, flateStream } from './fontembed.js';
-import { closeSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { writeFileAtomically } from './fileoutput.js';
 import { systemFontFolders, indexFolder, peekCmap, type FaceRecord } from './fontsource.js';
 import { readFontNames } from './fontnames.js';
 import {
@@ -4331,9 +4332,9 @@ export class Document {
     };
   }
 
-  /** Serialize and write to a file path (synchronous), mirroring OpenFile. */
+  /** Serialize, flush and atomically replace a regular file, following symbolic links. */
   WriteTo(fileName: string, options: SaveOptions = {}): void {
-    writeFileSync(fileName, this.Save(options));
+    writeFileAtomically(fileName, this.Save(options));
   }
 
   getObject(num: number): PdfObject {
