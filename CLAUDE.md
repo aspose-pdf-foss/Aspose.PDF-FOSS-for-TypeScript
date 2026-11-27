@@ -397,9 +397,10 @@ Source (`src/`):
   `RangeError`. The max scan, insertion concatenation and per-page append loops
   keep those paths bounded while preserving the public `Pages` array identity.
   Repair's null-child cleanup reuses its filtered array for the same reason.
-- **fileoutput.ts** — synchronous publication for `Document.WriteTo`. Resolve
-  symbolic links, write and flush an exclusive sibling, then rename it over
-  the destination. Other hard links retain the previous bytes.
+- **fileoutput.ts** — staged publication for synchronous `Document.WriteTo` and
+  asynchronous Node file helpers. Default replacement follows symbolic links
+  and renames a flushed sibling. Node helpers with `overwrite: false` publish
+  with a hard link at the requested name so competing writers receive `EEXIST`.
 - **page.ts**, **pagetree.ts** — `Page` wrapper plus page-tree flattening and
   attribute inheritance.
   **Invariant (`1lr9`):** `buildPages` walks the tree as a DAG. A node reached

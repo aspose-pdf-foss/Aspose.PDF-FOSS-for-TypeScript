@@ -1,5 +1,5 @@
 import { createOperationControl, type OperationControlOptions } from './checkpoint.js';
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, mkdir, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Document, SplitOptions } from './document.js';
@@ -19,17 +19,25 @@ import type { UnsupportedDeclaration } from './cssprop.js';
 import { rethrowLimit } from './errors.js';
 import { decodePlainText, type PlainTextOptions } from './plaintext.js';
 import type { StdFont } from './metrics.js';
+import { writeFileAtomicallyAsync } from './fileoutput.js';
 
-function captureFileControl(options?: OperationControlOptions) {
-  const captured = { signal: options?.signal, onProgress: options?.onProgress };
+/** Destination policy for Node file helpers. */
+export interface FileOutputOptions {
+  /** Replace existing files atomically (default true). False rejects an occupied name with EEXIST. */
+  overwrite?: boolean;
+}
+
+function captureFileControl<T extends OperationControlOptions & FileOutputOptions>(options: T) {
+  const captured = { signal: options.signal, onProgress: options.onProgress };
   const control = createOperationControl(captured);
   control.checkpoint();
-  return { captured, control };
+  const { overwrite, ...rest } = options;
+  return { captured, control, overwrite, operationOptions: { ...rest, ...captured } };
 }
 
 /** Plain-text file import. An embedded font is supplied as bytes, because the
  *  wrapper owns the newly created document. font and fontData are exclusive. */
-export interface TextFileOptions extends Omit<PlainTextOptions, 'font'> {
+export interface TextFileOptions extends Omit<PlainTextOptions, 'font'>, FileOutputOptions {
   font?: StdFont;
   fontData?: Uint8Array;
   /** TextDecoder label. Default UTF-8; Unicode BOMs override this label. */
@@ -40,8 +48,8 @@ export interface TextFileOptions extends Omit<PlainTextOptions, 'font'> {
  *  Malformed input and missing glyphs are rejected before writing output. */
 export async function textFileToPdf(inputPath: string, outPath: string,
   options: TextFileOptions = {}): Promise<void> {
-  const { captured, control } = captureFileControl(options);
-  const { font, fontData, encoding, ...layout } = { ...options, ...captured };
+  const { captured, control, overwrite, operationOptions } = captureFileControl(options);
+  const { font, fontData, encoding, ...layout } = operationOptions;
   if (font !== undefined && fontData !== undefined)
     throw new TypeError('font and fontData are mutually exclusive');
   if (fontData !== undefined && !(fontData instanceof Uint8Array))
@@ -58,7 +66,7 @@ export async function textFileToPdf(inputPath: string, outPath: string,
   control.checkpoint();
   await mkdir(dirname(resolve(outPath)), { recursive: true });
   control.checkpoint();
-  await writeFile(outPath, output);
+  await writeFileAtomicallyAsync(outPath, output, overwrite, control.checkpoint);
 }
 
 /** Read a PDF for one of the wrappers below, refusing an oversized file from
@@ -72,14 +80,16 @@ async function readPdfFile(path: string): Promise<Uint8Array> {
 }
 
 /** Read a PDF from disk, split it, and write `page-N.pdf` files into `outDir`. */
-export async function splitPdfFile(inputPath: string, outDir: string, options?: SplitOptions): Promise<string[]> {
+export async function splitPdfFile(inputPath: string, outDir: string,
+  options?: SplitOptions & FileOutputOptions): Promise<string[]> {
+  const overwrite = options?.overwrite;
   const input = await readPdfFile(inputPath);
   const docs = Document.Open(input).Split(options);
   await mkdir(outDir, { recursive: true });
   const paths: string[] = [];
   for (let i = 0; i < docs.length; i++) {
     const p = join(outDir, `page-${i + 1}.pdf`);
-    await writeFile(p, docs[i].Save());
+    await writeFileAtomicallyAsync(p, docs[i].Save(), overwrite);
     paths.push(p);
   }
   return paths;
@@ -91,24 +101,20 @@ export async function savePageImageFile(
   inputPath: string,
   pageIndex: number,
   outPath: string,
-  options?: ImageOptions,
+  options: ImageOptions & FileOutputOptions = {},
 ): Promise<void> {
-  const { captured, control } = captureFileControl(options);
-  options = { ...options, ...captured };
+  const { operationOptions, control, overwrite } = captureFileControl(options);
 
   const input = await readPdfFile(inputPath);
   control.checkpoint();
   const doc = Document.Open(input);
-  const png = await doc.Pages[pageIndex].ToImageAsync(options);
+  const png = await doc.Pages[pageIndex].ToImageAsync(operationOptions);
   control.checkpoint();
-  control.checkpoint();
-  await writeFile(outPath, png);
+  await writeFileAtomicallyAsync(outPath, png, overwrite, control.checkpoint);
 }
 
-/** How {@link saveImagesFile} encodes what it writes: {@link ImageInfo.Save}'s
- *  options, forwarded verbatim, so this module invents no image vocabulary of
- *  its own. */
-export type SaveImagesOptions = SaveImageOptions;
+/** Image encoding and destination policy for {@link saveImagesFile}. */
+export type SaveImagesOptions = SaveImageOptions & FileOutputOptions;
 
 /** One image the extraction could not write, and why. */
 export interface SkippedImage {
@@ -152,6 +158,7 @@ export async function saveImagesFile(
   outDir: string,
   options?: SaveImagesOptions,
 ): Promise<{ written: string[]; skipped: SkippedImage[] }> {
+  const overwrite = options?.overwrite;
   const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   await mkdir(outDir, { recursive: true });
@@ -174,7 +181,7 @@ export async function saveImagesFile(
       if (seen.has(key)) continue;
       seen.add(key);
       const p = join(outDir, `img-${written.length + 1}.${imageExtension(enc.mediaType)}`);
-      await writeFile(p, enc.bytes);
+      await writeFileAtomicallyAsync(p, enc.bytes, overwrite);
       written.push(p);
     }
   }
@@ -190,24 +197,23 @@ export async function saveImagesFile(
 export async function saveMarkdownFile(
   inputPath: string,
   outPath: string,
-  options?: MarkdownExportOptions,
+  options: MarkdownExportOptions & FileOutputOptions = {},
 ): Promise<string[]> {
-  const { captured, control } = captureFileControl(options);
-  options = { ...options, ...captured };
+  const { operationOptions, control, overwrite } = captureFileControl(options);
 
   const input = await readPdfFile(inputPath);
   control.checkpoint();
-  const { markdown, images } = await Document.Open(input).ToMarkdownAssetsAsync(options);
+  const { markdown, images } = await Document.Open(input).ToMarkdownAssetsAsync(operationOptions);
   const base = dirname(outPath);
   await mkdir(base, { recursive: true });
   control.checkpoint();
-  await writeFile(outPath, markdown);
+  await writeFileAtomicallyAsync(outPath, markdown, overwrite, control.checkpoint);
   const written = [outPath];
   for (const img of images) {
     const p = join(base, img.path);
     await mkdir(dirname(p), { recursive: true });
     control.checkpoint();
-    await writeFile(p, img.bytes);
+    await writeFileAtomicallyAsync(p, img.bytes, overwrite, control.checkpoint);
     written.push(p);
   }
   return written;
@@ -218,18 +224,17 @@ export async function saveMarkdownFile(
  *  Unlike `saveMarkdownFile` there are no sidecar files to write: a `.docx`
  *  carries its own images inside the package. */
 export async function saveDocxFile(
-  inputPath: string, outPath: string, options?: DocxOptions,
+  inputPath: string, outPath: string, options: DocxOptions & FileOutputOptions = {},
 ): Promise<void> {
-  const { captured, control } = captureFileControl(options);
-  options = { ...options, ...captured };
+  const { operationOptions, control, overwrite } = captureFileControl(options);
 
   const input = await readPdfFile(inputPath);
   control.checkpoint();
-  const output = await Document.Open(input).ToDocxAsync(options);
+  const output = await Document.Open(input).ToDocxAsync(operationOptions);
   control.checkpoint();
   await mkdir(dirname(outPath), { recursive: true });
   control.checkpoint();
-  await writeFile(outPath, output);
+  await writeFileAtomicallyAsync(outPath, output, overwrite, control.checkpoint);
 }
 
 /** Read a PDF from disk and return its document metadata (/Info). */
@@ -246,42 +251,46 @@ export async function updateMetadataFile(
   inputPath: string,
   outputPath: string,
   update: MetadataUpdate,
+  { overwrite }: FileOutputOptions = {},
 ): Promise<void> {
   const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   doc.SetMetadata(update);
-  await writeFile(outputPath, doc.Save());
+  await writeFileAtomicallyAsync(outputPath, doc.Save(), overwrite);
 }
 
 /** Read a PDF, remove all document metadata, and write the result to `outputPath`. */
 export async function clearMetadataFile(
   inputPath: string,
   outputPath: string,
+  { overwrite }: FileOutputOptions = {},
 ): Promise<void> {
   const input = await readPdfFile(inputPath);
   const doc = Document.Open(input);
   doc.ClearMetadata();
-  await writeFile(outputPath, doc.Save());
+  await writeFileAtomicallyAsync(outputPath, doc.Save(), overwrite);
 }
 
 /** Read a PDF from disk and write its form-field values to `fdfPath` as FDF. */
 export async function exportFdfFile(
   pdfPath: string,
   fdfPath: string,
-  options?: ExportFormDataOptions,
+  options?: ExportFormDataOptions & FileOutputOptions,
 ): Promise<void> {
+  const overwrite = options?.overwrite;
   const doc = Document.Open(await readPdfFile(pdfPath));
-  await writeFile(fdfPath, doc.ExportFdf(options));
+  await writeFileAtomicallyAsync(fdfPath, doc.ExportFdf(options), overwrite);
 }
 
 /** Read a PDF from disk and write its form-field values to `xfdfPath` as XFDF. */
 export async function exportXfdfFile(
   pdfPath: string,
   xfdfPath: string,
-  options?: ExportFormDataOptions,
+  options?: ExportFormDataOptions & FileOutputOptions,
 ): Promise<void> {
+  const overwrite = options?.overwrite;
   const doc = Document.Open(await readPdfFile(pdfPath));
-  await writeFile(xfdfPath, doc.ExportXfdf(options));
+  await writeFileAtomicallyAsync(xfdfPath, doc.ExportXfdf(options), overwrite);
 }
 
 /** Read a PDF from disk and write its form-field values to `jsonPath` as JSON
@@ -289,10 +298,15 @@ export async function exportXfdfFile(
 export async function exportJsonFile(
   pdfPath: string,
   jsonPath: string,
-  options?: ExportJsonOptions,
+  options: ExportJsonOptions & FileOutputOptions = {},
 ): Promise<void> {
+  const { overwrite } = options;
   const doc = Document.Open(await readPdfFile(pdfPath));
-  await writeFile(jsonPath, doc.ExportJson(options), 'utf8');
+  // ExportJson enumerates its options and rejects annotations from JS callers.
+  const { file, includeEmpty, indent } = options;
+  const annotations = 'annotations' in options ? options.annotations : undefined;
+  const jsonOptions = { file, includeEmpty, indent, annotations };
+  await writeFileAtomicallyAsync(jsonPath, doc.ExportJson(jsonOptions), overwrite);
 }
 
 /** Import JSON field values into a PDF on disk. Writes to `outPath`, which
@@ -301,10 +315,11 @@ export async function importJsonFile(
   pdfPath: string,
   jsonPath: string,
   outPath = pdfPath,
+  { overwrite }: FileOutputOptions = {},
 ): Promise<ImportReport> {
   const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportJson(new Uint8Array(await readFile(jsonPath)));
-  await writeFile(outPath, doc.Save());
+  await writeFileAtomicallyAsync(outPath, doc.Save(), overwrite);
   return report;
 }
 
@@ -313,10 +328,11 @@ export async function importJsonFile(
 export async function exportXmlFile(
   pdfPath: string,
   xmlPath: string,
-  options?: ExportXmlOptions,
+  options?: ExportXmlOptions & FileOutputOptions,
 ): Promise<void> {
+  const overwrite = options?.overwrite;
   const doc = Document.Open(await readPdfFile(pdfPath));
-  await writeFile(xmlPath, doc.ExportXml(options));
+  await writeFileAtomicallyAsync(xmlPath, doc.ExportXml(options), overwrite);
 }
 
 /** Import XML field values into a PDF on disk. Writes to `outPath`, which
@@ -325,10 +341,11 @@ export async function importXmlFile(
   pdfPath: string,
   xmlPath: string,
   outPath = pdfPath,
+  { overwrite }: FileOutputOptions = {},
 ): Promise<ImportReport> {
   const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportXml(new Uint8Array(await readFile(xmlPath)));
-  await writeFile(outPath, doc.Save());
+  await writeFileAtomicallyAsync(outPath, doc.Save(), overwrite);
   return report;
 }
 
@@ -338,11 +355,12 @@ export async function importFdfFile(
   pdfPath: string,
   fdfPath: string,
   outPath = pdfPath,
-  options?: ImportOptions,
+  options?: ImportOptions & FileOutputOptions,
 ): Promise<ImportReport> {
+  const overwrite = options?.overwrite;
   const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportFdf(new Uint8Array(await readFile(fdfPath)), options);
-  await writeFile(outPath, doc.Save());
+  await writeFileAtomicallyAsync(outPath, doc.Save(), overwrite);
   return report;
 }
 
@@ -351,11 +369,12 @@ export async function importXfdfFile(
   pdfPath: string,
   xfdfPath: string,
   outPath = pdfPath,
-  options?: ImportOptions,
+  options?: ImportOptions & FileOutputOptions,
 ): Promise<ImportReport> {
+  const overwrite = options?.overwrite;
   const doc = Document.Open(await readPdfFile(pdfPath));
   const report = doc.ImportXfdf(new Uint8Array(await readFile(xfdfPath)), options);
-  await writeFile(outPath, doc.Save());
+  await writeFileAtomicallyAsync(outPath, doc.Save(), overwrite);
   return report;
 }
 
@@ -363,7 +382,7 @@ export async function importXfdfFile(
  *  `doc.AddHtml` takes — the HTML options plus the flow's page geometry — and
  *  two things only a FILE has: the bytes' encoding, and a directory to resolve
  *  a relative `<img src>` against. */
-export interface HtmlFileOptions extends HtmlFlowOptions, FlowOptions {
+export interface HtmlFileOptions extends HtmlFlowOptions, FlowOptions, FileOutputOptions {
   /** Document title. Non-empty. Default: the source's own `<title>`. */
   title?: string;
   /** The encoding to decode the file with — from an HTTP header, say, or a
@@ -397,14 +416,13 @@ export async function htmlFileToPdf(
   outPath: string,
   options: HtmlFileOptions = {},
 ): Promise<{ skipped: NotRendered[]; unsupported: UnsupportedDeclaration[] }> {
-  const { captured, control } = captureFileControl(options);
-  options = { ...options, ...captured };
+  const { captured, control, overwrite, operationOptions } = captureFileControl(options);
 
   // `encoding` is ours and `resolveImage` gets a default, so both are taken
   // out before the rest is forwarded — the destructure-it-out rule textedit.ts
   // already follows for `region`, so a key we own cannot reach a consumer that
   // would silently accept it.
-  const { encoding, resolveImage, ...flow } = options;
+  const { encoding, resolveImage, ...flow } = operationOptions;
   const bytes = new Uint8Array(await readFile(inputPath));
   control.checkpoint();
   const tree = parseHtmlBytes(bytes, { encoding });
@@ -417,7 +435,7 @@ export async function htmlFileToPdf(
   control.checkpoint();
   await mkdir(dirname(resolve(outPath)), { recursive: true });
   control.checkpoint();
-  await writeFile(outPath, output);
+  await writeFileAtomicallyAsync(outPath, output, overwrite, control.checkpoint);
   return { skipped, unsupported };
 }
 
@@ -464,7 +482,7 @@ function confinedPath(base: string, src: string): string | undefined {
 }
 
 /** How {@link docxFileToPdf} renders: everything `doc.AddDocx` takes. */
-export interface DocxFileOptions extends DocxFlowOptions, FlowOptions {
+export interface DocxFileOptions extends DocxFlowOptions, FlowOptions, FileOutputOptions {
   /** Document title. Non-empty. Default: the document's own core-properties title. */
   title?: string;
 }
@@ -475,17 +493,16 @@ export interface DocxFileOptions extends DocxFlowOptions, FlowOptions {
 export async function docxFileToPdf(
   inputPath: string, outPath: string, options: DocxFileOptions = {},
 ): Promise<{ skipped: DocxSkipped[] }> {
-  const { captured, control } = captureFileControl(options);
-  options = { ...options, ...captured };
+  const { captured, control, overwrite, operationOptions } = captureFileControl(options);
 
   const bytes = new Uint8Array(await readFile(inputPath));
   control.checkpoint();
   const doc = Document.New();
-  const { skipped } = await doc.AddDocxAsync(bytes, options);
+  const { skipped } = await doc.AddDocxAsync(bytes, operationOptions);
   const output = await doc.SaveAsync(captured);
   control.checkpoint();
   await mkdir(dirname(resolve(outPath)), { recursive: true });
   control.checkpoint();
-  await writeFile(outPath, output);
+  await writeFileAtomicallyAsync(outPath, output, overwrite, control.checkpoint);
   return { skipped };
 }

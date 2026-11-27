@@ -3780,7 +3780,13 @@ three components, and component sub-sampling.
 
 ### Use File-Based Helper Methods
 
-Convenience wrappers that handle reading and writing for you:
+Each Node helper that writes files accepts `overwrite` in its final options object. By default, the helper flushes a temporary sibling and atomically replaces the destination. Saving through a symbolic link updates its target. Other hard links keep the previous contents. The target directory must be writable.
+
+Pass `{ overwrite: false }` to create a new output. An occupied name, including a dangling symbolic link, rejects with `error.code === 'EEXIST'`. When two calls compete for an unused name, just one can publish it. This mode requires filesystem hard-link support. For a form import that defaults to updating the input PDF, supply a fresh output path to use this mode.
+
+If exclusive publication succeeds and the filesystem then refuses to remove the temporary sibling, the error identifies both paths and reports that the destination was published. The destination contains the complete output.
+
+Split PDFs, extracted images and Markdown with external images publish one file at a time. If `page-3.pdf` already exists during an exclusive split, pages 1 and 2 remain available, page 3 keeps its contents, and the split stops. Markdown publishes the main file first, so a later image conflict can leave a document with missing or pre-existing images.
 
 ```ts
 import {
@@ -3791,6 +3797,7 @@ import {
 } from '@asposefoss/pdf';
 
 await splitPdfFile('input.pdf', 'out/');             // writes out/page-1.pdf, page-2.pdf, ...
+await splitPdfFile('input.pdf', 'archive/', { overwrite: false });
 const meta = await readMetadataFile('input.pdf');
 await updateMetadataFile('in.pdf', 'out.pdf', { title: 'New', author: null }); // null deletes a field
 await clearMetadataFile('in.pdf', 'out.pdf');
@@ -4501,7 +4508,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 571 public types plus 176
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 572 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -5387,20 +5394,21 @@ method and property grouped by the object it belongs to, each with a one-line de
 | `Document.OpenFile(name, opts?)` | Parse a PDF from disk |
 | `splitPdfFile(inputPath, outDir, opts?)` | Split a PDF on disk into `page-N.pdf` files |
 | `readMetadataFile(inputPath)` | A PDF's `/Info` metadata, read from disk |
-| `updateMetadataFile(inputPath, outputPath, update)` | Merge `update` into a PDF's metadata: `undefined` leaves a field, `null` deletes it |
-| `clearMetadataFile(inputPath, outputPath)` | Remove all document metadata |
+| `updateMetadataFile(inputPath, outputPath, update, opts?)` | Merge metadata. An undefined field keeps its value and a null field deletes it. |
+| `clearMetadataFile(inputPath, outputPath, opts?)` | Remove all document metadata |
+| `FileOutputOptions` | Shared Node file helper option. Set `overwrite: false` to publish exclusively. |
 | `savePageImageFile(inputPath, pageIndex, outPath, opts?)` | Render one page (0-based) with `page.ToImage` and write the result |
 | `saveImagesFile(inputPath, outDir, opts?)` | Every distinct embedded image as a file → `{ written, skipped }`; one damaged image costs itself, not the run |
 | `saveMarkdownFile(inputPath, outPath, opts?)` | Export to Markdown with its images as files alongside → every path written, the Markdown first |
 | `saveDocxFile(inputPath, outPath, opts?)` | Export to a `.docx` |
 | `exportFdfFile(pdfPath, fdfPath, opts?)` / `exportXfdfFile(pdfPath, xfdfPath, opts?)` | Write a PDF's form-field values as FDF or XFDF |
 | `importFdfFile(pdfPath, fdfPath, outPath?, opts?)` / `importXfdfFile(pdfPath, xfdfPath, outPath?, opts?)` | Import FDF or XFDF values; `outPath` defaults to rewriting `pdfPath` |
-| `exportXmlFile(pdfPath, xmlPath, opts?)` / `importXmlFile(pdfPath, xmlPath, outPath?)` | Write a PDF's form-field values as AcroForm XML, or import them; `outPath` defaults to rewriting `pdfPath` |
-| `exportJsonFile(pdfPath, jsonPath, opts?)` / `importJsonFile(pdfPath, jsonPath, outPath?)` | Write a PDF's form-field values as JSON, or import them; `outPath` defaults to rewriting `pdfPath` |
+| `exportXmlFile(pdfPath, xmlPath, opts?)` / `importXmlFile(pdfPath, xmlPath, outPath?, opts?)` | Export or import AcroForm XML. The import destination defaults to `pdfPath`. |
+| `exportJsonFile(pdfPath, jsonPath, opts?)` / `importJsonFile(pdfPath, jsonPath, outPath?, opts?)` | Export or import JSON form values. The import destination defaults to `pdfPath`. |
 | `htmlFileToPdf(inputPath, outPath, opts?)` | Render an HTML file to a PDF, decoding its bytes and resolving relative `<img src>` inside its own directory → `{ skipped }` |
 | `textFileToPdf(inputPath, outPath, opts?)` | Decode a plain-text file, append Courier pages with form-feed breaks, and write a PDF; rejects malformed bytes and missing glyphs |
 | `docxFileToPdf(inputPath, outPath, opts?)` | Render a Word document (.docx) to a PDF → `{ skipped }` |
-| `SaveImagesOptions` | What `saveImagesFile` takes: `ImageInfo.Save`'s options |
+| `SaveImagesOptions` | Image encoding options and the `overwrite` destination policy for `saveImagesFile` |
 | `SaveImagesSkipped` | One image `saveImagesFile` could not write: its `page`, resource `name` and `reason` |
 | `HtmlFileOptions` | What `htmlFileToPdf` takes: `doc.AddHtml`'s options, `title`, and the input bytes' `encoding` |
 | `DocxFileOptions` | What `docxFileToPdf` takes: `doc.AddDocx`'s options and `title` |

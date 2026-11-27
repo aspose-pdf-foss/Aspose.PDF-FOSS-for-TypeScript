@@ -6,7 +6,7 @@ export {
   saveImagesFile, saveMarkdownFile, saveDocxFile, textFileToPdf,
   exportFdfFile, exportXfdfFile, importFdfFile, importXfdfFile, exportJsonFile, importJsonFile, exportXmlFile, importXmlFile, htmlFileToPdf, docxFileToPdf,
 } from './node.js';
-export type { SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions, TextFileOptions } from './node.js';
+export type { FileOutputOptions, SaveImagesOptions, SkippedImage as SaveImagesSkipped, HtmlFileOptions, DocxFileOptions, TextFileOptions } from './node.js';
 export type { PlainTextOptions } from './plaintext.js';
 export { Document } from './document.js';
 export type { SourcePreflightFinding, SourcePreflightReport } from './preflight.js';
