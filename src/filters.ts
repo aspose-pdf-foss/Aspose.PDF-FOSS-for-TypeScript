@@ -20,6 +20,8 @@ export interface TerminalFilter { name: string; parms: PdfDict | undefined; }
  *  the damaged-file paths pass it; a well-formed payload decodes identically. */
 export interface DecodeOptions {
   partial?: boolean;
+  /** Resolve indirect filter names and parameters when the object graph is available. */
+  resolve?: (value: PdfObject | undefined) => PdfObject;
   /** This stream is PAGE CONTENT and this many content bytes were decoded
    *  before it (`ibzo.4`), so `maxContentBytes` caps the decode alongside the
    *  per-stream bounds. Set by the helpers that assemble a page's `/Contents`. */
@@ -182,21 +184,23 @@ export function applyDecodeFilters(
   return { bytes };
 }
 
-export function filterList(s: PdfStream): { names: string[]; parms: (PdfDict | undefined)[] } {
-  const f = s.dict.get('Filter');
+export function filterList(s: PdfStream, resolve?: DecodeOptions['resolve']): { names: string[]; parms: (PdfDict | undefined)[] } {
+  const valueOf = (value: PdfObject | undefined) => resolve ? resolve(value) : value;
+  const f = valueOf(s.dict.get('Filter'));
   const names = isName(f) ? [f.name]
-    : isArray(f) ? f.filter(isName).map((n) => n.name) : [];
-  const p = s.dict.get('DecodeParms') ?? s.dict.get('DP');
+    : isArray(f) ? f.map(valueOf).filter(isName).map((n) => n.name) : [];
+  const p = valueOf(s.dict.get('DecodeParms') ?? s.dict.get('DP'));
   const parms = isArray(p)
-    ? p.map((x) => (isDict(x) ? x : undefined))
+    ? p.map(valueOf).map((x) => (isDict(x) ? x : undefined))
     : names.map(() => (isDict(p) ? p : undefined));
-  return { names, parms };
+  // Byte-filter predictors read scalar entries directly. Preserve the live dictionaries.
+  return { names, parms: resolve ? parms.map(d => d && new Map([...d].map(([k, v]) => [k, resolve(v)]))) : parms };
 }
 
 /** Fully decode a stream's byte-filters. Throws UnsupportedFeatureError if an
  *  image-codec filter remains (not valid for non-image streams). */
 export function decodeStream(s: PdfStream, opts?: DecodeOptions): Uint8Array {
-  const { names, parms } = filterList(s);
+  const { names, parms } = filterList(s, opts?.resolve);
   // An unfiltered stream costs no decode, but as page content it still counts:
   // a /Contents array of plain streams is exactly what maxContentBytes bounds.
   if (names.length === 0) {

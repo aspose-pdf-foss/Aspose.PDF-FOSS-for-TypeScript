@@ -43,7 +43,8 @@ export interface IncrementalUpdateOptions {
   infoNum?: number;
   /** Full trailer references, including generations, when supplied by the live document. */
   rootRef?: PdfRef;
-  infoRef?: PdfRef;
+  /** An explicit null omits /Info from the new trailer. */
+  infoRef?: PdfRef | null;
   /** `/ID` array for the new trailer. Default: carried from original (kept
    *  identical, as signatures require). */
   id?: PdfObject;
@@ -145,7 +146,8 @@ function* layoutSteps(
 
   const root = opts.rootRef ?? (opts.rootNum === undefined ? prev.trailer.get('Root') : ref(opts.rootNum));
   if (!isRef(root)) throw new PdfParseError('cannot append: original /Root is not an indirect reference');
-  const info = opts.infoRef ?? (opts.infoNum === undefined ? prev.trailer.get('Info') : ref(opts.infoNum));
+  const info = opts.infoRef !== undefined ? opts.infoRef
+    : opts.infoNum === undefined ? prev.trailer.get('Info') : ref(opts.infoNum);
   const id = opts.id ?? prev.trailer.get('ID');
   const prevSize = typeof prev.trailer.get('Size') === 'number' ? (prev.trailer.get('Size') as number) : 0;
 

@@ -12,8 +12,8 @@
 // `resprune.ts` and `datauri.ts` each already made, and for the same reason:
 // two consumers that must not reach each other through a third.
 import type { Document } from './document.js';
-import { PdfDict, PdfStream, isDict, isStream, isName, isArray } from './types.js';
-import { applyDecodeFilters } from './filters.js';
+import { PdfDict, PdfStream, isStream, isName, isArray } from './types.js';
+import { applyDecodeFilters, filterList } from './filters.js';
 import { budgetFor } from './decodebudget.js';
 import { decodeCcitt } from './ccitt.js';
 import { decodeJpx } from './jpx.js';
@@ -37,25 +37,6 @@ export function filterName(doc: Document, dict: PdfDict): string | undefined {
   return undefined;
 }
 
-/** Resolved filter names + per-filter DecodeParms (indirects dereferenced). */
-function resolvedFilters(
-  doc: Document, dict: PdfDict,
-): { names: string[]; parms: (PdfDict | undefined)[] } {
-  const f = doc.resolve(dict.get('Filter'));
-  const names = isName(f) ? [f.name]
-    : isArray(f)
-      ? f.map((x) => doc.resolve(x)).filter(isName).map((n) => n.name)
-      : [];
-  const p = doc.resolve(dict.get('DecodeParms') ?? dict.get('DP'));
-  const parms = isArray(p)
-    ? p.map((x) => { const r = doc.resolve(x); return isDict(r) ? r : undefined; })
-    : names.map(() => (isDict(p) ? p : undefined));
-  // Byte-filter predictors consume numeric entries directly. Resolve scalar
-  // references on a copy, just as terminal codecs resolve their own entries.
-  return { names, parms: parms.map((d) => d === undefined ? undefined
-    : new Map([...d].map(([key, value]) => [key, doc.resolve(value)]))) };
-}
-
 /** Decoded bytes. JPEG passthrough for DCTDecode; decoded 8-bit samples for
  *  Flate/LZW/ASCII chains, CCITTFaxDecode, and JPXDecode (JPEG 2000); decoded
  *  1-bpp samples for JBIG2Decode (arithmetic generic/symbol/text + MMR).
@@ -70,7 +51,7 @@ export function decodeImageStream(doc: Document, stream: PdfStream): Uint8Array 
   // payload. The codecs still check their own headers, which may disagree.
   doc.loadLimits.enforce('maxImagePixels',
     numOf(doc, dict, 'Width', 0) * numOf(doc, dict, 'Height', 0), 'image');
-  const { names, parms } = resolvedFilters(doc, dict);
+  const { names, parms } = filterList(stream, value => doc.resolve(value));
   const { bytes, terminal } = applyDecodeFilters(stream.raw, names, parms, { budget: budgetFor(stream), stream });
   if (!terminal) return bytes;
   if (terminal.name === 'DCTDecode' || terminal.name === 'DCT') return bytes;

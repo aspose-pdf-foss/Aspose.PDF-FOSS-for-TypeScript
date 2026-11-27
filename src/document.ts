@@ -1533,12 +1533,28 @@ export class Document {
     return readMetadata(this.currentInfo(), (o) => this.resolve(o));
   }
 
+  private xmpPacketBytes(): Uint8Array | undefined {
+    const md = this.resolve(this.catalog().get('Metadata'));
+    return isStream(md) ? inflateStream(md, { resolve: value => this.resolve(value) }) : undefined;
+  }
+
+  /** A copy of the decoded catalog XMP packet, including any BOM and padding. */
+  GetXmpRaw(): Uint8Array | undefined {
+    const bytes = this.xmpPacketBytes();
+    return bytes === undefined ? undefined : new Uint8Array(bytes);
+  }
+
+  /** Store an exact copy of the packet bytes. Synchronize /Info explicitly with SyncMetadata. */
+  SetXmpRaw(bytes: Uint8Array): void {
+    if (!(bytes instanceof Uint8Array)) throw new TypeError('SetXmpRaw expects a Uint8Array');
+    this.installXmpBytes(new Uint8Array(bytes));
+  }
+
   /** The document-level XMP packet at /Root /Metadata as structured data; an
    *  empty object when there is no metadata stream. Read leniently. */
   GetXmp(): XmpMetadata {
-    const md = this.resolve(this.catalog().get('Metadata'));
-    if (!isStream(md)) return {};
-    return readXmp(inflateStream(md), this.loadLimits);
+    const bytes = this.xmpPacketBytes();
+    return bytes === undefined ? {} : readXmp(bytes, this.loadLimits);
   }
 
   /** One XMP property as a typed value (`o6uu.4`), found by namespace URI and
@@ -1546,10 +1562,9 @@ export class Document {
    *  there is no packet, the property is absent, or the packet will not parse.
    *  Parsed under this document's `loadLimits`. */
   GetXmpValue(namespaceUri: string, propName: string): XmpValue | undefined {
-    const md = this.resolve(this.catalog().get('Metadata'));
-    if (!isStream(md)) return undefined;
     try {
-      return findXmpValue(parseRdfPacket(inflateStream(md), this.loadLimits), namespaceUri, propName);
+      const bytes = this.xmpPacketBytes();
+      return bytes === undefined ? undefined : findXmpValue(parseRdfPacket(bytes, this.loadLimits), namespaceUri, propName);
     } catch (e) {
       rethrowLimit(e);
       return undefined;
@@ -1565,8 +1580,7 @@ export class Document {
    *  is edited, so a refusal changes nothing. */
   SetXmpValue(namespaceUri: string, propName: string, value: XmpValueInput | null, opts: XmpWriteOptions = {}): void {
     checkXmpWrite(namespaceUri, propName, value, opts);
-    const md = this.resolve(this.catalog().get('Metadata'));
-    const existing = isStream(md) ? inflateStream(md) : undefined;
+    const existing = this.xmpPacketBytes();
     const text = editXmpPacketWith(existing, (p) => {
       const i = p.properties.findIndex((q) => q.ns === namespaceUri && q.name === propName);
       if (value === null) {
@@ -2129,18 +2143,21 @@ export class Document {
    *  /Info computes it first (`o6uu.7`). Parsed under this document's
    *  limits. `undefined` means write nothing. */
   private xmpTextFor(update: XmpUpdate): string | undefined {
-    const md = this.resolve(this.catalog().get('Metadata'));
-    return editXmpPacket(isStream(md) ? inflateStream(md) : undefined, update, this.loadLimits);
+    return editXmpPacket(this.xmpPacketBytes(), update, this.loadLimits);
   }
 
   /** @internal Install `text` as the catalog's /Metadata stream, uncompressed.
    *  The one place a packet becomes a stream — `installXmp` and the PDF/A
    *  extension-schema pass (`o6uu.6`) both end here. */
   installXmpText(text: string): void {
+    this.installXmpBytes(new TextEncoder().encode(text));
+  }
+
+  private installXmpBytes(raw: Uint8Array): void {
     const dict: PdfDict = new Map<string, PdfObject>([
       ['Type', name('Metadata')], ['Subtype', name('XML')],
     ]);
-    const stream: PdfStream = { kind: 'stream', dict, raw: new TextEncoder().encode(text) };
+    const stream: PdfStream = { kind: 'stream', dict, raw };
     this.catalog().set('Metadata', this.allocObject(stream));
   }
 
@@ -2432,10 +2449,9 @@ export class Document {
     if (direction !== 'infoToXmp' && direction !== 'xmpToInfo') {
       throw new RangeError(`SyncMetadata: direction must be 'infoToXmp' or 'xmpToInfo', got ${String(direction)}`);
     }
-    const md = this.resolve(this.catalog().get('Metadata'));
     const plan = planSync(
       infoSide(this.currentInfo(), (o) => this.resolve(o)),
-      xmpSide(isStream(md) ? inflateStream(md) : undefined, this.loadLimits),
+      xmpSide(this.xmpPacketBytes(), this.loadLimits),
       direction,
     );
     if (plan.changed.length > 0) {
@@ -2445,19 +2461,22 @@ export class Document {
     return { changed: plan.changed, skipped: plan.skipped };
   }
 
+  /** Unlink the trailer's /Info dictionary independently of XMP. */
+  ClearInfo(): void {
+    if (this.trailer.delete('Info')) this.markModified();
+  }
+
+  /** Unlink the catalog XMP packet. Other owners of a shared stream retain it. */
+  ClearXmp(): void {
+    if (this.catalog().delete('Metadata')) this.markModified();
+  }
+
   /** Remove all document metadata: drop the /Info dictionary and the catalog's
    *  /Root /Metadata XMP packet, so /Info and XMP stay consistent (the mirror
    *  counterpart of SetMetadata <-> SetXmp). */
   ClearMetadata(): void {
-    this.markModified();
-    const infoRef = this.trailer.get('Info');
-    if (isRef(infoRef)) this.objects.delete(infoRef.num);
-    this.trailer.delete('Info');
-
-    const catalog = this.catalog();
-    const mdRef = catalog.get('Metadata');
-    if (isRef(mdRef)) this.objects.delete(mdRef.num);
-    catalog.delete('Metadata');
+    this.ClearInfo();
+    this.ClearXmp();
   }
 
   /** Losslessly shrink the document in place: subset already-embedded fonts to
@@ -2721,7 +2740,7 @@ export class Document {
       freed: delta.freed,
       encryptor: base.stored.preservedEncryptor,
       rootRef: isRef(rootRef) ? rootRef : undefined,
-      infoRef: isRef(infoRef) ? infoRef : undefined,
+      infoRef: isRef(infoRef) ? infoRef : null,
     }, context);
   }
 

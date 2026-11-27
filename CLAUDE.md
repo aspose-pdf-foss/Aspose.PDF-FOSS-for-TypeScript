@@ -5215,6 +5215,9 @@ Source (`src/`):
   crypto.ts.
 - **xmp.ts** — read (`GetXmp`) and build (`SetXmp`) the `/Root /Metadata` XMP
   packet with a dependency-free scan, mirroring shared fields with `/Info`.
+  `GetXmpRaw` and `SetXmpRaw` copy decoded bytes at the API boundary. The raw
+  path bypasses XML and mirroring. `ClearInfo` and `ClearXmp` unlink one owner
+  each. An incremental save must omit a cleared Info reference from its trailer.
   **Invariant (`5n57`):** custom literals resolve namespaces in their OWN XML
   scope, including declarations on the property itself and on an aliased RDF
   Description. Nested literal fields remain visible, with elements before
