@@ -47,6 +47,7 @@ import {
 import { validatePdfUaSteps, ValidationReport, type PdfUaPart } from './structvalidate.js';
 import { validatePdfASteps, type PdfALevel } from './pdfavalidate.js';
 import { convertToPdfASteps, type ConvertOptions, type ConversionReport } from './pdfaconvert.js';
+import { flattenSelectedTransparency, type FlattenTransparencyOptions, type FlattenTransparencyReport } from './pdfaflatten.js';
 import { migratePdf20, type DocumentId, type Pdf20MigrationReport } from './pdf20.js';
 import { convertToPdfUaSteps, type PdfUaConvertOptions } from './pdfuaconvert.js';
 import { validatePdfXSteps, type PdfXLevel } from './pdfxvalidate.js';
@@ -1881,6 +1882,14 @@ export class Document {
   /** Yield between validation rules; each rule remains atomic. */
   ValidatePdfXAsync(level: PdfXLevel, options: OperationControlOptions = {}): Promise<ValidationReport> {
     return runOperationAsync('ValidatePdfX', options, (context) => validatePdfXSteps(this, this.catalog(), level, context));
+  }
+
+  /** Rasterize complete selected pages that use transparency, optionally retaining searchable text. */
+  FlattenTransparency(options: FlattenTransparencyOptions = {}): FlattenTransparencyReport {
+    // Authored fonts can still occupy placeholder slots until the first Save.
+    // Finalize once, after the first selected page passes the skip checks.
+    const prepareFonts = this.embeddedFonts.length ? () => this.finalizeEmbeddedFonts() : undefined;
+    return runOperation('FlattenTransparency', options, context => flattenSelectedTransparency(this, options, context, prepareFonts));
   }
 
   /** Remediate the document toward PDF/A `level` (b/u), then re-validate.

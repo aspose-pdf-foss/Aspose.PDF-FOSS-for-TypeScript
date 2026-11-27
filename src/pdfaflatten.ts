@@ -1,8 +1,12 @@
-// Opt-in PDF/A-1 flattening. The entire affected page is the compositing region:
+// Selected-page and PDF/A-1 flattening. The entire affected page is the compositing region:
 // retaining the complete backdrop is essential for non-Normal blend modes.
 import type { Document } from './document.js';
 import type { OperationContext, OperationSteps } from './operation.js';
+import type { OperationControlOptions } from './checkpoint.js';
 import type { ConvertAction } from './conversion.js';
+import type { Page } from './page.js';
+import { hasSignatureField } from './signature.js';
+import { resolvePages } from './pagerange.js';
 import { PdfDict, PdfObject, isArray, isDict, isName, isRef, isStream, name } from './types.js';
 import { usesTransparency } from './pdfatransparency.js';
 import { visitContent, mul, invert, type GlyphEvent, type Matrix } from './text.js';
@@ -13,12 +17,31 @@ import { encodeStream } from './filters.js';
 import { srgbIcc } from './srgb.js';
 import { serializeValue } from './serialize.js';
 
+export interface FlattenTransparencyOptions extends OperationControlOptions {
+  /** One-based selection, defaulting to all pages. */
+  pages?: number[] | string;
+  /** Raster resolution in (0, 1200]. Default 150. */
+  dpi?: number;
+  /** Write an invisible searchable text layer. Default true. */
+  retainText?: boolean;
+}
+
+type SkipReason = 'signature-field' | 'no-transparency' | 'tagged-page' | 'annotation-resources';
+
+export interface FlattenTransparencyReport {
+  affected: number[];
+  skipped: { page: number; reason: SkipReason }[];
+}
+
 /** Validate before any conversion pass mutates the document. */
 export function resolveFlattenTransparency(value: unknown): number | undefined {
   if (value === undefined || value === false) return undefined;
   if (value !== true && (value === null || typeof value !== 'object' || Array.isArray(value)))
     throw new TypeError('flattenTransparency must be a boolean or { dpi }');
-  const dpi = value === true ? 150 : (value as { dpi?: unknown }).dpi ?? 150;
+  return flattenDpi(value === true ? 150 : (value as { dpi?: unknown }).dpi ?? 150);
+}
+
+function flattenDpi(dpi: unknown): number {
   if (typeof dpi !== 'number') throw new TypeError('flattenTransparency.dpi must be a number');
   if (!(dpi > 0 && dpi <= 1200)) throw new RangeError('flattenTransparency.dpi must be in (0, 1200]');
   return dpi;
@@ -164,71 +187,130 @@ function textLayer(glyphs: GlyphEvent[], codes: GlyphlessCodes, verticalCodes: G
   return body + 'ET\n';
 }
 
-/** @internal Each page is completely installed, including ToUnicode, before
- *  yielding. Finally cleans up newly orphaned assets even after cancellation. */
+/** Return the number of glyphs retained or the reason the page was skipped. */
+function flattenPage(
+  doc: Document, page: Page, dpi: number, retainText: boolean, prepareFonts?: () => void,
+): number | Exclude<SkipReason, 'signature-field'> {
+  if (!usesTransparency(page.Resources, (o) => doc.resolve(o))) return 'no-transparency';
+  if (page.Dict.has('StructParents')) return 'tagged-page';
+  if (inheritsAppearanceResources(doc, page.Dict.get('Annots'))) return 'annotation-resources';
+  const glyphs: GlyphEvent[] = [];
+  const collect = (g: GlyphEvent) => { glyphs.push(g); };
+  // Structure links can target a Form in an OFF layer. Scan all drawn Forms
+  // for MCIDs, but keep only visible glyphs in the searchable layer.
+  const separateGlyphPass = retainText && (prepareFonts !== undefined || doc.catalog().has('OCProperties'));
+  let tagged = false;
+  visitContent(doc, page, {
+    glyph: retainText && !separateGlyphPass ? collect : undefined,
+    marked: () => { tagged = true; },
+  });
+  if (tagged) return 'tagged-page';
+  prepareFonts?.();
+  if (separateGlyphPass) visitContent(doc, page, { glyph: collect }, { skipHidden: true });
+  const codes = new GlyphlessCodes(), verticalCodes = new GlyphlessCodes();
+  const layer = glyphs.length ? textLayer(glyphs, codes, verticalCodes) : '';
+  // Keep annotations live; rendering them here would duplicate their ink.
+  const { width, height, rgb, device } = renderPageRgb(doc, page, dpi / 72, false);
+  const m = mul([width, 0, 0, -height, 0, height], invert(device));
+  const image = encodeStream(rgb, 'FlateDecode', new Map<string, PdfObject>([
+    ['Type', name('XObject')], ['Subtype', name('Image')], ['Width', width], ['Height', height],
+    ['BitsPerComponent', 8],
+  ]));
+  // The renderer emits sRGB samples even for a custom non-RGB output
+  // intent. Tag this image rather than calling those samples DeviceCMYK.
+  const profile = doc.allocObject(encodeStream(srgbIcc(), 'FlateDecode', new Map<string, PdfObject>([['N', 3]])));
+  image.dict.set('ColorSpace', [name('ICCBased'), profile]);
+  const resources: PdfDict = new Map([['XObject', new Map([['Raster', doc.allocObject(image)]])]]);
+  const fonts: PdfDict = new Map();
+  for (const [key, assigned, vertical] of [['Text', codes, false], ['TextV', verticalCodes, true]] as const) {
+    if (!assigned.maxCode) continue;
+    const font = createGlyphlessFont((o) => doc.allocObject(o), (r, o) => doc.replaceObject(r.num, o), vertical);
+    font.finish(assigned);
+    fonts.set(key, font.font);
+  }
+  if (fonts.size) resources.set('Font', fonts);
+  const body = `q ${m.map(num).join(' ')} cm /Raster Do Q\n${fonts.size ? layer : ''}`;
+  const content = doc.allocObject(encodeStream(new TextEncoder().encode(body), 'FlateDecode'));
+  page.Dict.set('Contents', content);
+  page.Dict.set('Resources', resources);
+  page.Dict.delete('Group');
+  return glyphs.length;
+}
+
+function inheritedResourceOwner(doc: Document, page: Page): PdfDict | undefined {
+  let node = page.Dict;
+  const seen = new Set<PdfDict>();
+  while (!node.has('Resources')) {
+    const parent = doc.resolve(node.get('Parent'));
+    if (!isDict(parent) || seen.has(parent)) return undefined;
+    seen.add(parent);
+    node = parent;
+  }
+  return node === page.Dict ? undefined : node;
+}
+
+export function* flattenSelectedTransparency(
+  doc: Document, options: FlattenTransparencyOptions, context: OperationContext, prepareFonts?: () => void,
+): OperationSteps<FlattenTransparencyReport> {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('options must be an object');
+  const { pages, dpi = 150, retainText = true } = options;
+  flattenDpi(dpi);
+  if (typeof retainText !== 'boolean') throw new TypeError('retainText must be a boolean');
+  const selected = resolvePages(pages, doc.Pages.length);
+  const report: FlattenTransparencyReport = { affected: [], skipped: [] };
+  if (!selected.length) return report;
+  if (hasSignatureField(doc)) {
+    report.skipped = selected.map(page => ({ page, reason: 'signature-field' }));
+    return report;
+  }
+
+  const owners = new Set<PdfDict>();
+  let completed = 0;
+  try {
+    for (const n of selected) {
+      const page = doc.Pages[n - 1], owner = inheritedResourceOwner(doc, page);
+      const outcome = flattenPage(doc, page, dpi, retainText, prepareFonts);
+      if (typeof outcome === 'number') {
+        prepareFonts = undefined;
+        report.affected.push(n);
+        if (owner) owners.add(owner);
+      } else {
+        report.skipped.push({ page: n, reason: outcome });
+      }
+      yield context.progress('transparency-pages', ++completed, selected.length, n);
+    }
+  } finally {
+    // Keep detached objects available to live authoring handles. Save sweeps
+    // any that the caller did not reuse.
+    for (const owner of owners) {
+      const kids = doc.resolve(owner.get('Kids'));
+      if (isArray(kids) && !inheritedByLeaf(doc, kids)) owner.delete('Resources');
+    }
+  }
+  return report;
+}
+
+/** PDF/A validates all objects, so it also prunes newly orphaned assets. */
 export function* flattenTransparencySteps(
-  doc: Document, dpi: number, context: OperationContext,
-  preserve: ReadonlySet<string> = new Set(),
+  doc: Document, dpi: number, context: OperationContext, preserve: ReadonlySet<string>,
 ): OperationSteps<ConvertAction[]> {
   const before = reachable(doc), actions: ConvertAction[] = [];
-  let changed = false, completed = 0;
   const pages = doc.Pages;
+  let completed = 0;
   try {
     for (const page of pages) {
-      pageUnit: {
-        if (!usesTransparency(page.Resources, (o) => doc.resolve(o))) break pageUnit;
-        // A bitmap freezes the visible optional-content configuration and
-        // removes its hidden content; retain the original if layers were kept.
-        if (preserve.has('optionalContent') && doc.catalog().has('OCProperties')) break pageUnit;
-        if (preserve.has('postScript') && hasPostScript(doc, page.Resources)) break pageUnit;
-        if (inheritsAppearanceResources(doc, page.Dict.get('Annots'))) break pageUnit;
-        if (page.Dict.has('StructParents')) break pageUnit;
-        const glyphs: GlyphEvent[] = [];
-        let tagged = false;
-        visitContent(doc, page, {
-          glyph: (g) => { glyphs.push(g); },
-          marked: () => { tagged = true; },
-        }, { skipHidden: true });
-        if (tagged) break pageUnit;
-        const codes = new GlyphlessCodes(), verticalCodes = new GlyphlessCodes();
-        const layer = textLayer(glyphs, codes, verticalCodes);
-        // Keep annotations live; rendering them here would duplicate their ink.
-        const { width, height, rgb, device } = renderPageRgb(doc, page, dpi / 72, false);
-        const m = mul([width, 0, 0, -height, 0, height], invert(device));
-        const image = encodeStream(rgb, 'FlateDecode', new Map<string, PdfObject>([
-          ['Type', name('XObject')], ['Subtype', name('Image')], ['Width', width], ['Height', height],
-          ['BitsPerComponent', 8],
-        ]));
-        // The renderer emits sRGB samples even for a custom non-RGB output
-        // intent. Tag this image rather than calling those samples DeviceCMYK.
-        const profile = doc.allocObject(encodeStream(srgbIcc(), 'FlateDecode', new Map<string, PdfObject>([['N', 3]])));
-        image.dict.set('ColorSpace', [name('ICCBased'), profile]);
-        const resources: PdfDict = new Map([['XObject', new Map([['Raster', doc.allocObject(image)]])]]);
-        const fonts: PdfDict = new Map();
-        for (const [key, assigned, vertical] of [['Text', codes, false], ['TextV', verticalCodes, true]] as const) {
-          if (!assigned.maxCode) continue;
-          const font = createGlyphlessFont((o) => doc.allocObject(o), (r, o) => doc.replaceObject(r.num, o), vertical);
-          font.finish(assigned);
-          fonts.set(key, font.font);
-        }
-        if (fonts.size) resources.set('Font', fonts);
-        const body = `q ${m.map(num).join(' ')} cm /Raster Do Q\n${fonts.size ? layer : ''}`;
-        const content = doc.allocObject(encodeStream(new TextEncoder().encode(body), 'FlateDecode'));
-        page.Dict.set('Contents', content);
-        page.Dict.set('Resources', resources);
-        page.Dict.delete('Group');
-        changed = true;
-        actions.push({ rule: 'Transparency', page,
-          action: `Rasterized the complete page at ${dpi} DPI; retained ${glyphs.length} invisible text glyphs.` });
+      if (!(preserve.has('optionalContent') && doc.catalog().has('OCProperties'))
+          && !(preserve.has('postScript') && hasPostScript(doc, page.Resources))) {
+        const glyphs = flattenPage(doc, page, dpi, true);
+        if (typeof glyphs === 'number') actions.push({ rule: 'Transparency', page,
+          action: `Rasterized the complete page at ${dpi} DPI; retained ${glyphs} invisible text glyphs.` });
       }
       yield context.progress('transparency-pages', ++completed, pages.length, page.Number);
     }
   } finally {
-    if (changed) {
+    if (actions.length) {
       detachUnusedInheritedResources(doc);
       const after = reachable(doc);
-      // Existing unrelated orphans are deliberately left alone. Other pages,
-      // annotations, structure trees and Info can retain shared old assets.
       for (const n of before) if (!after.has(n)) doc.deleteObject(n);
     }
   }

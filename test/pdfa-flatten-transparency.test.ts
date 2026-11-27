@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { Document } from '../src/document.js';
 import { name, isStream, isDict, type PdfDict, type PdfObject } from '../src/types.js';
 import { decodeStream } from '../src/filters.js';
@@ -34,6 +35,138 @@ function contents(doc: Document): string {
   if (!isStream(s)) throw new Error('expected one content stream');
   return new TextDecoder().decode(decodeStream(s));
 }
+
+describe('Document.FlattenTransparency', () => {
+  it('handles each selected page once and round-trips rotated text and pixels', () => {
+    const doc = transparentDoc(4);
+    const [first, rotated, tagged, opaque] = doc.Pages;
+    rotated.Dict.set('CropBox', [10, 10, 180, 190]);
+    rotated.Dict.set('Rotate', 90);
+    tagged.Dict.set('StructParents', 0);
+    opaque.Resources!.delete('ExtGState');
+    const originals = doc.Pages.map(page => page.Dict.get('Contents'));
+    const pixels = rotated.ToImage();
+    expect(doc.FlattenTransparency({ pages: '4,2-3,2', dpi: 72 })).toEqual({
+      affected: [2], skipped: [{ page: 3, reason: 'tagged-page' }, { page: 4, reason: 'no-transparency' }],
+    });
+    for (const page of [first, tagged, opaque]) expect(page.Dict.get('Contents')).toBe(originals[page.Number - 1]);
+    const reopened = Document.Open(doc.Save()).Pages[1];
+    expect(reopened.ToImage()).toEqual(pixels);
+    expect(reopened.GetText()).toContain('Search me');
+    expect(reopened.Images[0].Width).toBe(180);
+  });
+
+  it('omits searchable text on request while still protecting MCIDs', () => {
+    const doc = transparentDoc(2);
+    const original = doc.allocObject({ kind: 'stream', dict: new Map(),
+      raw: new TextEncoder().encode('/P << /MCID 0 >> BDC 0 0 5 5 re f EMC') });
+    doc.Pages[1].Dict.set('Contents', original);
+    expect(doc.FlattenTransparency({ retainText: false })).toEqual({
+      affected: [1], skipped: [{ page: 2, reason: 'tagged-page' }],
+    });
+    expect(doc.Pages[1].Dict.get('Contents')).toBe(original);
+    const page = Document.Open(doc.Save()).Pages[0];
+    expect(page.GetText()).toBe('');
+    expect(page.Resources!.has('Font')).toBe(false);
+    expect(page.Images[0].Width).toBe(Math.ceil((page.MediaBox[2] - page.MediaBox[0]) * 150 / 72));
+  });
+
+  it.each([true, false])('skips the selection when a signature field exists (filled=%s)', filled => {
+    const doc = transparentDoc(3);
+    const field: PdfDict = new Map([['FT', name('Sig')]]);
+    if (filled) field.set('V', new Map([['Type', name('Sig')]]));
+    doc.catalog().set('AcroForm', new Map([['Fields', [doc.allocObject(field)]]]));
+    const opened = Document.Open(doc.Save()), before = opened.Save();
+    expect(opened.FlattenTransparency({ pages: [3, 1] })).toEqual({ affected: [], skipped: [
+      { page: 1, reason: 'signature-field' }, { page: 3, reason: 'signature-field' },
+    ] });
+    expect(opened.isModifiedInternal()).toBe(false);
+    expect(opened.Save()).toEqual(before);
+  });
+
+  it('validates the entire selection, DPI and text flag before changing a page', () => {
+    const doc = Document.Open(transparentDoc(2).Save());
+    expect(() => doc.FlattenTransparency({ pages: [1, 3] })).toThrow(RangeError);
+    expect(() => doc.FlattenTransparency({ dpi: Infinity })).toThrow(RangeError);
+    expect(() => doc.FlattenTransparency({ retainText: 1 as any })).toThrow(TypeError);
+    expect(doc.FlattenTransparency({ pages: [] })).toEqual({ affected: [], skipped: [] });
+    expect(doc.isModifiedInternal()).toBe(false);
+  });
+
+  it('keeps inherited resources until the last page using them is flattened', () => {
+    const doc = transparentDoc(2), parent = doc.resolve(doc.catalog().get('Pages')) as PdfDict;
+    const resources = doc.Pages[0].Resources!;
+    parent.set('Resources', resources);
+    for (const page of doc.Pages) page.Dict.delete('Resources');
+    expect(doc.FlattenTransparency({ pages: [2], dpi: 72 }).affected).toEqual([2]);
+    expect(parent.get('Resources')).toBe(resources);
+    expect(Document.Open(doc.Save()).Pages[0].GetText()).toBe('Search me');
+    expect(doc.FlattenTransparency({ pages: [1], dpi: 72 }).affected).toEqual([1]);
+    expect(parent.has('Resources')).toBe(false);
+    expect(doc.FlattenTransparency().skipped).toEqual([
+      { page: 1, reason: 'no-transparency' }, { page: 2, reason: 'no-transparency' },
+    ]);
+  });
+
+  it('renders and retains text from an authored embedded font before the first save', () => {
+    const create = () => {
+      const doc = transparentDoc();
+      const font = doc.AddFont(readFileSync('fonts/LiberationSans-Regular.ttf'));
+      doc.Pages[0].AddText('Read me', 40, 40, { font, fontSize: 18 });
+      return doc;
+    };
+    const doc = create(), reference = Document.Open(create().Save()).Pages[0];
+    expect(doc.FlattenTransparency({ dpi: 72 }).affected).toEqual([1]);
+    const page = Document.Open(doc.Save()).Pages[0];
+    expect(page.GetText()).toContain('Read me');
+    expect(page.ToImage()).toEqual(reference.ToImage());
+  });
+
+  it('allows a pattern from a flattened page to be reused on another page', () => {
+    const doc = transparentDoc(2);
+    const pattern = doc.NewTilingPattern(8, 8, tile => {
+      tile.setFillColor([0, 1, 0]).drawRect(0, 0, 8, 8).fill();
+    });
+    const paint = (index: number) => {
+      const graphics = doc.Pages[index].Graphics();
+      graphics.setFillPattern(pattern).drawRect(0, 0, 16, 16).fill();
+      graphics.apply();
+    };
+    paint(0);
+    expect(doc.FlattenTransparency({ pages: [1], dpi: 72 }).affected).toEqual([1]);
+    paint(1);
+    const page = Document.Open(doc.Save()).Pages[1];
+    const pixels = decodePng(page.ToImage());
+    expect(pixels.at(4, pixels.height - 4)).toEqual([0, 255, 0, 255]);
+  });
+
+  it('reports an annotation appearance that depends on the original page resources', () => {
+    const doc = transparentDoc();
+    const appearance = doc.allocObject({ kind: 'stream', dict: new Map(), raw: new Uint8Array() });
+    doc.Pages[0].Dict.set('Annots', [new Map([['AP', new Map([['N', appearance]])]])]);
+    const before = doc.Save();
+    expect(doc.FlattenTransparency()).toEqual({ affected: [], skipped: [{ page: 1, reason: 'annotation-resources' }] });
+    expect(doc.Save()).toEqual(before);
+  });
+
+  it.each([false, true])('protects marked content inside a hidden form (retainText=%s)', retainText => {
+    const doc = transparentDoc(), page = doc.Pages[0];
+    const layer = doc.allocObject(new Map([['Type', name('OCG')]]));
+    doc.catalog().set('OCProperties', new Map<string, PdfObject>([
+      ['OCGs', [layer]], ['D', new Map([['OFF', [layer]]])],
+    ]));
+    const form = doc.allocObject({ kind: 'stream',
+      dict: new Map<string, PdfObject>([['Subtype', name('Form')], ['BBox', [0, 0, 10, 10]], ['OC', layer], ['StructParents', 1]]),
+      raw: new TextEncoder().encode('/P << /MCID 0 >> BDC 0 0 10 10 re f EMC'),
+    });
+    page.Resources!.set('XObject', new Map([['Fm', form]]));
+    page.Dict.set('Contents', doc.allocObject({ kind: 'stream', dict: new Map(),
+      raw: new TextEncoder().encode('/A gs 0 0 10 10 re f /Fm Do') }));
+    expect(doc.FlattenTransparency({ retainText, dpi: 72 })).toEqual({
+      affected: [], skipped: [{ page: 1, reason: 'tagged-page' }],
+    });
+  });
+});
 
 describe('PDF/A-1 opt-in transparency flattening', () => {
   it.each([undefined, false])('leaves real transparency unresolved with option %s', (flattenTransparency) => {

@@ -116,6 +116,7 @@ export type { PdfALevel } from './pdfavalidate.js';
 export type { PdfXLevel } from './pdfxvalidate.js';
 export type { PdfXConvertOptions } from './pdfxconvert.js';
 export type { ConvertOptions, ConvertCategory } from './pdfaconvert.js';
+export type { FlattenTransparencyOptions, FlattenTransparencyReport } from './pdfaflatten.js';
 export type { ConvertAction, ConversionReport } from './conversion.js';
 export type { PdfUaConvertOptions } from './pdfuaconvert.js';
 export type { ElemOpts } from './structwrite.js';

@@ -3757,8 +3757,14 @@ Source (`src/`):
   something, the border rule included — the plan predicted that one would be
   uncovered, and `test/csstable.test.ts`'s "paints the edges a cell border
   states and no others" closes it.
-- **pdfaflatten.ts** — opt-in `ConvertToPdfA` PDF/A-1 transparency flattening
-  (`nh1t.2`). Uses the entire affected page as the compositing region, opaque
+- **pdfaflatten.ts** — `Document.FlattenTransparency` shares the raster and glyphless
+  text paths with PDF/A-1. Resolve the full one-based selection before mutation.
+  A signature field, including an empty one, skips the entire selection. The
+  image-only mode still checks content for MCIDs, including Forms in hidden layers.
+  Standalone flattening prepares authored font mappings before rendering and
+  preserves detached objects for reusable resource handles until Save. It prunes
+  inherited resources only from ancestors that supplied an affected page.
+  The opt-in `ConvertToPdfA` PDF/A-1 pass (`nh1t.2`) uses the entire affected page as the compositing region, opaque
   sRGB/Flate pixels, and an invisible embedded glyphless text layer reconstructed
   from original glyph pen spans. Annotations stay live, geometry uses the inverse
   of renderPageRgb's actual device matrix. Tagged pages, signed

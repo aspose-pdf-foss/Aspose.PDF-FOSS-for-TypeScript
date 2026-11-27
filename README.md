@@ -3927,6 +3927,26 @@ signing it with retained encryption or appending signatures, timestamps, or
 long-term validation data. PDF/A and accessibility conformance have their own
 validation and conversion APIs.
 
+### Flatten Transparency on Selected Pages
+
+```ts
+const { affected, skipped } = doc.FlattenTransparency({ pages: '2-4,7', dpi: 150 });
+for (const { page, reason } of skipped) console.log(page, reason);
+```
+
+`pages` accepts a one-based list or range string and defaults to all pages.
+Each affected page becomes an opaque raster of its visible content at the
+requested DPI (default 150, maximum 1200). This fixes the resolution of vector
+art and the visible configuration of layers. Annotations remain interactive.
+Searchable text is retained by default. Set `retainText: false` for image-only
+page content. Call `Save()` to write the result.
+
+`affected` lists the flattened page numbers. Each skipped selection has a
+reason: `no-transparency`, `tagged-page`, or `annotation-resources` when an
+annotation appearance depends on page resources. A signature field anywhere
+in the document gives every selected page the reason `signature-field`, even
+when the field is empty. Both lists use ascending page order.
+
 ### Flatten Transparency for PDF/A-1
 
 Real transparency stays unresolved by default. Opt in when rasterizing affected
@@ -4418,7 +4438,7 @@ processed units that were skipped; they are not a global percentage.
 
 The public entry points are organized around `Document` and `Page` (the core object model),
 `Font`/`EmbeddedFont` (text authoring), `Annotation` and `Field` (interactive content), and
-per-capability builders such as `PageGraphics`, `Flow` and `Table` — 569 public types plus 176
+per-capability builders such as `PageGraphics`, `Flow` and `Table` — 571 public types plus 176
 functions, classes and constants, grouped below by capability. Every name `index.ts` exports appears in one
 of these tables.
 
@@ -4684,6 +4704,8 @@ for work-unit boundaries and mutation/lifetime rules.
 | `FlowRuleOptions` | Options for rule / `Flow.AddRule`. |
 | `FlowTableOptions` | Options for table / `Flow.AddTable`. |
 | `FlattenLayersReport` | What `FlattenLayers` deleted, unwrapped and left alone. |
+| `FlattenTransparencyOptions` | Page selection, raster DPI, text retention and operation controls for `doc.FlattenTransparency(options?)`. |
+| `FlattenTransparencyReport` | Affected page numbers and a reason for each skipped page. |
 | `FontFamily` | The four faces emphasis selects between, loaded from disk. |
 | `FontMatch` | What a name resolves to -- reported without loading or embedding anything. |
 | `FontOptimization` | Font name, retained and dropped glyph counts, and bytes saved by subsetting. |

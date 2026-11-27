@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Flatten transparency on selected pages.** `Document.FlattenTransparency` rasterizes the chosen pages at the requested DPI. It keeps searchable text by default and can produce image-only content. The report lists affected pages and explains skips, including any document with a filled or empty signature field (6x6h.5).
+
 - **Opt in to font embedding during PDF/A and PDF/UA conversion.** Register a font folder and pass `embedFonts: true` to embed compatible simple and composite fonts. The conversion report lists embedded faces and explains refusals, including incompatible advances and restricted font permissions. PDF/A-1 can supply a missing subset CIDSet from verified usage. Both converters can reconcile a CMap writing-mode declaration while preserving its mappings (6x6h.4).
 
 - `Document.BuildHybridInvoice(xml, options?)` packages caller-supplied Factur-X or ZUGFeRD XML, writes the associated file and XMP extension schema, and returns PDF/A-3 findings for the exported PDF.
