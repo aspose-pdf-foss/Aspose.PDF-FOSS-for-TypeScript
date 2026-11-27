@@ -8834,6 +8834,13 @@ Source (`src/`):
   undefined rather than guessed. Annotation-appearance and AcroForm /DR fonts
   are not listed, `enumerateFonts`' own reach. All 10 mutations redden.
 - **simpleembed.ts**, **embedfonts.ts** — `doc.EmbedFonts()` (`g0ky.2`).
+  PDF/A and PDF/UA conversion share the engine via **conversionfonts.ts** when `embedFonts: true`
+  (6x6h.4). Registration alone only supplies candidates. The conversion
+  path checks embedding permissions and retains per-font refusals in
+  `ConversionReport.fontEmbedding`. PDF/A's fontEmbedding preserve category
+  bypasses both registered and bundled embedding. PDF/A-1 needs the used
+  CIDs for embedded subsets. PDF/A-2 and PDF/A-3 permit omitting CIDSet
+  and require it to describe every CID if retained.
   `simpleembed.ts` is the ENGINE that was `pdfastd14.ts`'s body: embed a
   TrueType program into a non-embedded simple font dict, scan once, keep it
   only when every SHOWN code has a glyph and a `/Widths` entry within 1/1000 em

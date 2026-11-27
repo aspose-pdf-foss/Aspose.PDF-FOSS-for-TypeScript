@@ -20,10 +20,12 @@
 
 import type { Document } from './document.js';
 import { isDict, isName, type PdfDict } from './types.js';
+import type { SfntFont } from './sfnt.js';
+import { rethrowLimit } from './errors.js';
 import { fontStyleOf } from './font.js';
 import { deriveStyle } from './fontmatch.js';
 import type { FaceRecord } from './fontsource.js';
-import { embedSimpleFonts, hasProgram, heldFonts, type SimpleEmbedDecline, type SimpleEmbedRequest } from './simpleembed.js';
+import { embedSimpleFonts, hasProgram, heldFonts, type HeldFont, type SimpleEmbedDecline, type SimpleEmbedRequest } from './simpleembed.js';
 import { std14Request, stripSubset } from './pdfastd14.js';
 import { fontFamilyKeys, squashFontName as squash } from './fontsubstrules.js';
 import { readType1Header } from './type1header.js';
@@ -45,7 +47,7 @@ export interface EmbedFontsOptions {
  *  the face disagreeing with the font; `no-face` is no registered face of
  *  that name and style. A composite font is embedded since g0ky.7 and
  *  declines with the same reasons. */
-export type EmbedFontSkipReason = 'no-face' | SimpleEmbedDecline;
+export type EmbedFontSkipReason = 'no-face' | 'license' | SimpleEmbedDecline;
 
 /** A font {@link Document.EmbedFonts} embedded. */
 export interface EmbeddedFontRecord {
@@ -115,7 +117,7 @@ function checkOpts(opts: EmbedFontsOptions): void {
 }
 
 /** Implementation of {@link Document.EmbedFonts}. */
-export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}): EmbedFontsReport {
+export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}, conversion?: ConversionFontTarget, fonts?: HeldFont[]): EmbedFontsReport {
   checkOpts(opts);
   const report: EmbedFontsReport = { embedded: [], skipped: [] };
   const faces = doc.registeredFontFaces();
@@ -131,7 +133,7 @@ export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}): EmbedFo
   // Where a record says the font is: its object number, else its pages.
   const where = new Map<PdfDict, { object: number } | { pages: number[] }>();
   const at = (font: PdfDict): { object: number } | { pages: number[] } => where.get(font)!;
-  const held0 = heldFonts(doc);
+  const held0 = fonts ?? heldFonts(doc);
   // A descendant two Type0 dicts name is ONE program for both: embedding it
   // for one changes what the other draws, unchecked (final review).
   const descendantOf = (font: PdfDict): PdfDict | undefined => {
@@ -173,6 +175,10 @@ export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}): EmbedFo
       }
       const sfnt = face ? doc.registeredFaceSfnt(face) : undefined;
       if (face && sfnt) {
+        if (conversion && !allowsConversionEmbedding(sfnt)) {
+          report.skipped.push({ name: fontName, ...at(obj), reason: 'license' });
+          continue;
+        }
         const r: CidEmbedRequest = { object, font: obj, sfnt };
         cidFaceOf.set(r, face);
         cidRequests.push(r);
@@ -188,6 +194,11 @@ export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}): EmbedFo
     const type1 = face ? doc.registeredFaceType1(face) : undefined;
     const sfnt = face && !type1 ? doc.registeredFaceSfnt(face) : undefined;
     if (face && (type1 || sfnt)) {
+      if (conversion && (!sfnt || !allowsConversionEmbedding(sfnt))) {
+        report.skipped.push({ name: fontName, ...at(obj), reason: 'license',
+          detail: type1 ? 'Cannot verify raw Type 1 font permissions for conversion.' : 'Editable outline subsetting is not permitted.' });
+        continue;
+      }
       const r: SimpleEmbedRequest = type1 ? { object, font: obj, type1 } : { object, font: obj, sfnt };
       faceOf.set(r, face);
       requests.push(r);
@@ -217,7 +228,7 @@ export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}): EmbedFo
       ...(face ? { path: face.path, faceIndex: face.faceIndex } : {}),
     });
   }
-  for (const o of embedCidFonts(doc, cidRequests, { subset: opts.subset ?? true })) {
+  for (const o of embedCidFonts(doc, cidRequests, { subset: opts.subset ?? true, pdfa1: conversion === 1 })) {
     const { request } = o;
     const fontName = nameOf(request.font);
     if (!o.embedded) {
@@ -238,4 +249,21 @@ export function embedFonts(doc: Document, opts: EmbedFontsOptions = {}): EmbedFo
   const key = (r: EmbedFontSkip): number => r.object ?? 2 ** 40 + (r.pages?.[0] ?? 0);
   report.skipped.sort((a, b) => key(a) - key(b));
   return report;
+}
+
+/** PDF/A part, or the common font embedding policy for PDF/UA. @internal */
+export type ConversionFontTarget = 1 | 2 | 3 | 4 | 'pdfua';
+
+/** The converter writes editable documents and subsets outlines. Decline any
+ *  program whose embedding permissions would require a different output. */
+function allowsConversionEmbedding(sfnt: SfntFont): boolean {
+  try {
+    const os2 = sfnt.table('OS/2', false);
+    if (!os2 || os2.length < 10) return false;
+    const flags = (os2[8] << 8) | os2[9];
+    return flags === 0 || flags === 8;
+  } catch (caught) {
+    rethrowLimit(caught);
+    return false;
+  }
 }

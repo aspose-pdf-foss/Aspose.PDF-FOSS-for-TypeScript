@@ -2,6 +2,7 @@ import type { OperationControlOptions } from './checkpoint.js';
 import { runOperation, runOperationAsync, type OperationContext, type OperationSteps } from './operation.js';
 import type { Document } from './document.js';
 import { PdfDict, PdfObject, PdfRef, isDict, isName, name } from './types.js';
+import { embedConversionFonts } from './conversionfonts.js';
 import { validatePdfUa, validatePdfUaSteps, type PdfUaPart } from './structvalidate.js';
 import { STANDARD_STRUCTURE_TYPES } from './struct.js';
 import type { StructElement } from './struct.js';
@@ -10,6 +11,8 @@ import type { ConvertAction, ConversionReport } from './conversion.js';
 import { describeXmpPackets } from './pdfaextfix.js';
 
 export interface PdfUaConvertOptions extends OperationControlOptions {
+  /** Embed compatible fonts from registered folders. Default false. */
+  embedFonts?: boolean;
   /** Which part of ISO 14289 to target: 1 (the default) or 2. */
   part?: PdfUaPart;
   /** Catalog /Lang (e.g. 'en-US'); resolves NaturalLanguage. Never fabricated. */
@@ -221,6 +224,7 @@ export function* convertToPdfUaSteps(doc: Document, catalog: PdfDict, opts: PdfU
   const ctx: Uctx = { doc, catalog, part, opts, R: (o) => doc.resolve(o) };
   doc.markModified();
   const applied: ConvertAction[] = [];
+  const fontEmbedding = opts.embedFonts === true ? embedConversionFonts(doc, 'pdfua', applied) : undefined;
   let completed = 0;
   for (const pass of PASSES) {
     applied.push(...pass(ctx));
@@ -231,5 +235,5 @@ export function* convertToPdfUaSteps(doc: Document, catalog: PdfDict, opts: PdfU
   // part-2 rules were never asked — and convertToPdfUa's contract is that
   // `unresolved` mirrors the validator exactly.
   const unresolved = (yield* validatePdfUaSteps(doc, catalog, part, context.scope('validate'))).Errors;
-  return { applied, unresolved, passed: unresolved.length === 0 };
+  return { applied, unresolved, passed: unresolved.length === 0, ...(fontEmbedding && { fontEmbedding }) };
 }

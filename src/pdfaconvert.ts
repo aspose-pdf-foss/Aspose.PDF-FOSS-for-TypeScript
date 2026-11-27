@@ -23,6 +23,8 @@ import { srgbIcc, SRGB_N } from './srgb.js';
 import { baseEncodingByName, glyphToUnicode } from './encoding.js';
 import { describeXmpPackets, repairXmpValueTypes } from './pdfaextfix.js';
 import { embedStandard14 } from './pdfastd14.js';
+import type { EmbedFontsReport } from './embedfonts.js';
+import { embedConversionFonts } from './conversionfonts.js';
 import { decodePdfByteString, decodePdfText, encodePdfText } from './metadata.js';
 
 export type ConvertCategory =
@@ -31,6 +33,9 @@ export type ConvertCategory =
   | 'xmpValueTypes' | 'fontEmbedding';
 
 export interface ConvertOptions extends OperationControlOptions {
+  /** Also embed compatible fonts from registered folders. Default false.
+   *  Preserving fontEmbedding takes precedence. */
+  embedFonts?: boolean;
   /** Output-intent ICC profile. Defaults to a bundled sRGB profile. */
   iccProfile?: { bytes: Uint8Array; n: 1 | 3 | 4; identifier?: string };
   /** Destructive-removal categories to skip (then reported unresolved). */
@@ -45,6 +50,8 @@ export interface ConvertOptions extends OperationControlOptions {
 
 
 export interface Cctx {
+  embedFonts?: boolean;
+  fontEmbedding?: EmbedFontsReport;
   doc: Document;
   catalog: PdfDict;
   part: 1 | 2 | 3 | 4;
@@ -72,7 +79,7 @@ export function* convertToPdfASteps(doc: Document, catalog: PdfDict, level: PdfA
   const flattenDpi = resolveFlattenTransparency(opts.flattenTransparency);
   const ic = opts.iccProfile ?? { bytes: srgbIcc(), n: SRGB_N as 3, identifier: 'sRGB' };
   const ctx: Cctx = {
-    doc, catalog, part, level: lvl,
+    doc, catalog, part, level: lvl, embedFonts: opts.embedFonts === true,
     preserve: new Set(opts.preserve ?? []),
     icc: { bytes: ic.bytes, n: ic.n, identifier: ic.identifier ?? 'Custom' },
     R: (o) => doc.resolve(o),
@@ -92,7 +99,7 @@ export function* convertToPdfASteps(doc: Document, catalog: PdfDict, level: PdfA
     yield context.progress('passes', ++completed, totalPasses);
   }
   const unresolved = (yield* validatePdfASteps(doc, catalog, level, context.scope('validate'))).Errors;
-  return { applied, unresolved, passed: unresolved.length === 0 };
+  return { applied, unresolved, passed: unresolved.length === 0, ...(ctx.fontEmbedding && { fontEmbedding: ctx.fontEmbedding }) };
 }
 
 /** The name value of dict.get(key), resolved, or undefined. */
@@ -474,7 +481,13 @@ const cosmeticPass: Pass = (ctx) => {
 /** Embed the bundled substitute for a non-embedded Latin Standard-14 font
  *  (`29z6.6`) — see pdfastd14.ts. The one pass that ADDS an asset the document
  *  did not carry, so it has its own opt-out. */
-const std14EmbedPass: Pass = (ctx) => (ctx.preserve.has('fontEmbedding') ? [] : embedStandard14(ctx.doc));
+const fontEmbedPass: Pass = (ctx) => {
+  if (ctx.preserve.has('fontEmbedding')) return [];
+  if (!ctx.embedFonts) return embedStandard14(ctx.doc);
+  const actions: ConvertAction[] = [];
+  ctx.fontEmbedding = embedConversionFonts(ctx.doc, ctx.part, actions);
+  return actions;
+};
 
 const PROHIBITED_ANNOTS = new Set(['Movie', 'Sound', 'Screen', '3D', 'RichMedia']);
 
@@ -999,7 +1012,7 @@ const PASSES: Pass[] = [
   annotationFlagsPass, formsPass,
   // After formsPass, whose generated appearances name Helvetica too; before
   // cosmeticPass and toUnicodePass, which read the font dicts this rewrites.
-  std14EmbedPass,
+  fontEmbedPass,
   cosmeticPass,
   actionsPass, multimediaPass, xfaPass, optionalContentPass, embeddedFilesPass, postScriptPass,
   toUnicodePass,

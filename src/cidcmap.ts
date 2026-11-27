@@ -65,6 +65,9 @@ export interface CMapParts extends CMapGeometry {
   name?: string;
   /** `/WMode`: 0 horizontal, 1 vertical. */
   wmode: 0 | 1;
+  /** Explicit, valid /WMode definition. A default or damaged value cannot
+   *  justify overwriting a conflicting entry in an embedded stream dictionary. */
+  declaredWMode?: 0 | 1;
   /** The name in a `/Name usecmap` — the parent this CMap extends. */
   usecmap?: string;
   registry?: string;
@@ -310,7 +313,12 @@ export function parseCidCMap(buf: Uint8Array): CMapParts {
       const next = toks[i + 1];
       // `/UniJIS-UCS2-H usecmap` — the name comes first.
       if (next?.kind === 'op' && next.v === 'usecmap') { out.usecmap = t.v; continue; }
-      if (t.v === 'WMode' && next?.kind === 'num') out.wmode = next.v === 1 ? 1 : 0;
+      if (t.v === 'WMode' && next?.kind === 'num') {
+        out.wmode = next.v === 1 ? 1 : 0;
+        const op = toks[i + 2];
+        out.declaredWMode = (next.v === 0 || next.v === 1) && op?.kind === 'op' && op.v === 'def'
+          ? next.v : undefined;
+      }
       else if (t.v === 'CMapName' && next?.kind === 'name') out.name = next.v;
       else if (t.v === 'Registry' && next?.kind === 'hex') out.registry = latin1(next.bytes);
       else if (t.v === 'Ordering' && next?.kind === 'hex') out.ordering = latin1(next.bytes);

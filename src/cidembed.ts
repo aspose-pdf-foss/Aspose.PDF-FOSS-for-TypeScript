@@ -89,11 +89,11 @@ function cidUnicodes(doc: Document, font: PdfDict): { map: Map<number, number>; 
  * shown CID at its stated width. Outcomes come back in request order.
  */
 export function embedCidFonts(
-  doc: Document, requests: readonly CidEmbedRequest[], opts: { subset: boolean },
+  doc: Document, requests: readonly CidEmbedRequest[], opts: { subset: boolean; pdfa1?: boolean },
 ): CidEmbedOutcome[] {
   const outcomes: CidEmbedOutcome[] = requests.map((request) => ({ request, embedded: false }));
   const wasModified = doc.isModifiedInternal();
-  interface Live { outcome: CidEmbedOutcome; map: Uint8Array; programRef: PdfRef; multi: Set<number>; restore: () => void }
+  interface Live { outcome: CidEmbedOutcome; map: Uint8Array; descriptor: PdfDict; programRef: PdfRef; multi: Set<number>; restore: () => void }
   const live: Live[] = [];
 
   for (const outcome of outcomes) {
@@ -146,7 +146,7 @@ export function embedCidFonts(
     d0.set('FontDescriptor', fdRef);
     d0.set('CIDToGIDMap', mapRef);
     live.push({
-      outcome, map, programRef, multi,
+      outcome, map, descriptor, programRef, multi,
       restore: () => { restoreFont(); restoreD0(); for (const n of allocated) doc.deleteObject(n); },
     });
   }
@@ -189,9 +189,24 @@ export function embedCidFonts(
         doc.replaceObject(e.programRef.num, encodeStream(shrunk, 'FlateDecode', new Map<string, PdfObject>([['Length1', shrunk.length]])));
       }
     }
+    if (opts.pdfa1) {
+      // Identity-H codes are CIDs. PDF/A-1 requires the subset's used CIDs,
+      // including space even though its glyph can have no outline.
+      e.descriptor.set('CIDSet', doc.allocObject(usedCidSet(u.codes)));
+    }
     e.outcome.embedded = true;
     kept++;
   }
   if (kept === 0 && !wasModified) doc.clearModifiedInternal();
   return outcomes;
+}
+
+/** PDF/A-1 subset membership, most significant bit first, including .notdef. */
+export function usedCidSet(codes: ReadonlySet<number>) {
+  let highest = 0;
+  for (const cid of codes) highest = Math.max(highest, cid);
+  const bits = new Uint8Array((highest >> 3) + 1);
+  bits[0] = 0x80;
+  for (const cid of codes) bits[cid >> 3] |= 0x80 >> (cid & 7);
+  return encodeStream(bits, 'FlateDecode');
 }

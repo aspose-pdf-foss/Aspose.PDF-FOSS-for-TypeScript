@@ -4633,7 +4633,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `ContentOp` | A content-stream operator and its operands, with the dictionary and bytes for inline images. |
 | `ContentVisitor` | Interface with 3 methods. |
 | `ConvertColorsOptions` | Options for `doc.ConvertColors`, including `to` and `transform`. |
-| `ConvertOptions` | PDF/A conversion options, including ICC intent, preserved categories and opt-in `flattenTransparency`. |
+| `ConvertOptions` | PDF/A conversion options, including ICC intent, preserved categories, `flattenTransparency`, and `embedFonts`. Set `embedFonts: true` to embed compatible faces from registered folders. The pass supplies missing PDF/A-1 subset CIDSets when it can verify usage and omits optional CIDSets for PDF/A-2 and PDF/A-3. `preserve: ['fontEmbedding']` skips the pass and bundled substitutes. |
 | `Crl` | Parsed certificate revocation list with issuer, validity times, revoked entries, and signature data. |
 | `CrlEntry` | Serial number and revocation time of a certificate listed in a CRL. |
 | `DataMatrixOptions` | What `makeDataMatrix` takes: `{ shape }`, `'square'` by default. |
@@ -4776,7 +4776,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `PathPaint` | A path's RGB paint color and source color space. |
 | `PathSubpath` | A path's segments and whether the subpath is closed. |
 | `Pdf417Options` | What `makePdf417` takes: `{ ecLevel, columns }`. |
-| `PdfUaConvertOptions` | PDF/UA conversion settings for part, language, title, role mappings, and operation controls. |
+| `PdfUaConvertOptions` | PDF/UA conversion settings for part, language, title, role mappings, and operation controls. Set `embedFonts: true` to embed compatible faces from registered folders. Both converters also correct a conflicting CMap dictionary writing mode when the program explicitly defines it. |
 | `PdfXConvertOptions` | PDF/X conversion settings for output intent, trapping, color conversion, preservation, and operation controls. |
 | `PemSigner` | Sign from a PEM private key plus its PEM/DER certificate chain (leaf first). |
 | `Pkcs12Signer` | Sign from a PKCS#12 (`.pfx`/`.p12`) blob; the key and chain are extracted. |
@@ -5018,7 +5018,7 @@ for work-unit boundaries and mutation/lifetime rules.
 | `IMAGE_MODES` | Every `mode` `page.ToImage` accepts: `'rgb'`, `'gray'`, `'bilevel'` |
 | `MarkdownFontSpec` | A single face (whose family is derived when it is Standard-14) or an explicit family. |
 | `AddMarkdownResult` | What AddMarkdown reports. |
-| `ConversionReport` | The result of a conversion run: what was applied, what still fails, pass flag. |
+| `ConversionReport` | Applied actions, unresolved findings, and pass flag. When the registered-font pass runs, `fontEmbedding` lists each embedded face and each refusal. Conversion checks shown glyphs and widths. Registered fonts need readable OpenType permissions allowing editable outline subsetting. Raw Type 1 programs are reported as license refusals. |
 | `DocumentId` | Original and modified trailer identifiers as upper-case hexadecimal. |
 | `Pdf20MigrationChange` | A version change, metadata decision, or removed PDF dictionary entry. |
 | `Pdf20MigrationReport` | The previous version, target `2.0`, and changes from standalone migration. |
