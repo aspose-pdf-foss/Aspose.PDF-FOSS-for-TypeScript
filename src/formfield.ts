@@ -198,6 +198,11 @@ export class Field {
     return this.initialV;
   }
 
+  /** @internal Effective signature /V, including a value inherited from a parent field. */
+  signatureValue(): PdfObject {
+    return this.rawValue();
+  }
+
   /** Typed view of /V: text → string (''), checkbox → boolean,
    *  radio → on-state name (''), choice → string or string[] (multi-select). */
   get Value(): string | string[] | boolean {

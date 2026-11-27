@@ -27,7 +27,7 @@ import { decodePdfText } from './metadata.js';
 export type { PageScan } from './validatectx.js';
 export { memo, filterNames, allObjects, pageScans } from './validatectx.js';
 
-/** Conformance target: part (1/2/3/4) + level. Parts 1–3 take b/u/a; PDF/A-4
+/** Conformance target. Part 1 takes a or b, parts 2 and 3 take a, b or u, and PDF/A-4
  *  takes '' (the base conformance), 'e' (engineering) or 'f' (embedded files).
  *
  *  Note there is no '4a'. ISO 19005-4 has no clause 6.8 and no accessibility

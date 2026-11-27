@@ -976,8 +976,8 @@ export class Page {
   }
 
   /** Generate a barcode and place it in the rectangle [x, y, w, h] (PDF user
-   *  space). `spec` selects the symbology (`code128`, `ean13`, `upca`, `ean8`,
-   *  `qr`). Rendered as filled vector rectangles by default, or a 1-bit
+   *  space). `spec` selects Code 128, EAN-13, UPC-A, EAN-8, QR, PDF417
+   *  or Data Matrix. Rendered as filled vector rectangles by default, or a 1-bit
    *  `/ImageMask` stencil with `{ render: 'raster' }`. Existing content is
    *  preserved. */
   AddBarcode(spec: BarcodeSpec, rect: [number, number, number, number], opts?: AddBarcodeOptions): void {

@@ -6189,6 +6189,10 @@ Source (`src/`):
   green when this changed, the identity fences included: no fixture had a
   word gap without a space glyph. `test/text-fragment-spaces.test.ts` holds
   the rule, the guard against doubling a space and the boundary.
+  **removetext.ts** implements `Page.RemoveAllText()`. It removes text-show
+  operations and associated `ActualText`, cloning shared Forms for the edited
+  page. Quote operators keep their line and spacing effects. Clipping text
+  prevents the edit because removing it would change later artwork.
   **textedit.ts** — string/`RegExp` search
   (`Search`/`searchText`) and same-font, no-reflow `ReplaceText`.
   **Invariant:** `SearchOptions.region` uses `extractTables`' containment rule —
@@ -8108,6 +8112,11 @@ Source (`src/`):
   drivers between rich-text painting, table measurement and intrinsic sizing.
   Feature maps merge by tag; a styled run is a hard shaping boundary, and bidi
   reorders glyphs within that span rather than reordering paragraph style spans.
+- **tableedit.ts** binds geometry-detected tables to their source streams and
+  checks ownership of the selected glyphs and rules before removal or replacement.
+  **taggedtableedit.ts** updates the structure tree and parent-tree slots for
+  tagged tables. **taggedtableink.ts** identifies their page content by MCID and
+  checks whether overlapping decoration belongs to the table before editing it.
 - **table.ts**, **tablemodel.ts**, **tablegrid.ts**, **tablestream.ts**,
   **tableorient.ts**, **tablestruct.ts**,
   **tablestitch.ts** — table extraction: geometry (ruling lines + text, rotated
@@ -11888,8 +11897,10 @@ Source (`src/`):
 - **hybridinvoice.ts** — read Factur-X and ZUGFeRD envelopes. Match file
   specifications by identity and invoice properties by namespace. Read the CII
   guideline ID from the document context and return a copy of the original bytes.
-  Assembly updates the attachment and its XMP extension definitions on a copy,
-  then validates the serialized PDF at its declared PDF/A-3 level (default 3b).
+  `Document.BuildHybridInvoice` rejects encrypted input and works on a copy.
+  `installHybridInvoice` updates the attachment, catalog association and XMP
+  extension schema on that copy. The facade reopens the serialized bytes and
+  returns their PDF/A-3 validation report at the declared level (default 3b).
 - **associatedfile.ts** — PDF/A-3 embedded-file validation and repair. Walk from
   the catalog so conversion cannot resurrect a replaced file. Promote a direct
   specification at each original use before saving its shared indirect reference.
@@ -12569,7 +12580,6 @@ Source (`src/`):
   redden, and so does a fourteenth added during execution: bounding a broken
   page flow by NOTHING rather than by the bottom of what placed (`fromChild`),
   which reddens only `bounds a broken flow by the items that placed`.
-```
   **Note fw9, I-130 and I-765 are oracles too (`164g.3`).** Each declares ONE
   `<pageArea>` for 6, 12 and 7 pages and was refused until pages became an
   output of layout; now all 23, 438 and 154 body fields land on Adobe's page and

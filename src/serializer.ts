@@ -35,8 +35,10 @@ export interface SerializeOptions extends OperationControlOptions {
    *  Not supported with `linearized`. */
   streamFilter?: StreamFilterName;
   /** Append an incremental update to the bytes the document was opened from,
-   *  rather than rewriting it. Only the objects that changed are written, the
-   *  original bytes are preserved verbatim, and object numbers are NOT
+   *  rather than rewriting it. An untouched reopened input with a bound signature
+   *  or the AcroForm AppendOnly flag is returned byte-for-byte. An appended
+   *  revision writes only changed objects and preserves the original prefix.
+   *  Object numbers are not
    *  renumbered. Requires a document opened from bytes; throws if combined
    *  with `compressed`, `encrypt`, `linearized` or `streamFilter`.
    *  Default: false. */

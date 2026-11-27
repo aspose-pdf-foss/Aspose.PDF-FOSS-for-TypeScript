@@ -3,7 +3,7 @@ import type { Page } from './page.js';
 import type { ValidationIssue } from './validation.js';
 import type { EmbedFontsReport } from './embedfonts.js';
 
-/** One remediation performed by a converter (PDF/A or PDF/UA). */
+/** One repair performed during PDF/A, PDF/X or PDF/UA conversion. */
 export interface ConvertAction {
   /** Validator rule id this addresses, e.g. 'OutputIntent' or 'NaturalLanguage'. */
   rule: string;

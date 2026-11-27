@@ -42,9 +42,10 @@ export interface ConvertOptions extends OperationControlOptions {
   preserve?: ConvertCategory[];
   /** PDF/A-1 only: rasterize complete pages whose resources use transparency,
    *  retaining an invisible searchable text layer. Lossy; off by default.
-   *  true means 150 DPI; an object selects a DPI in (0, 1200]. Tagged/vertical
-   *  pages, signed documents, conflicting preserved content, and annotation
-   *  appearances that inherit page resources stay unresolved. */
+   *  true means 150 DPI. An object selects a DPI in (0, 1200]. Horizontal and
+   *  vertical text retain searchable glyph positions. Any signature field skips
+   *  this pass. Tagged pages, conflicting preserved content and annotation
+   *  appearances that inherit page resources also prevent rasterization. */
   flattenTransparency?: boolean | { dpi?: number };
 }
 

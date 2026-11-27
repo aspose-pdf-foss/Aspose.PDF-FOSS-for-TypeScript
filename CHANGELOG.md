@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Opt in to font embedding during PDF/A and PDF/UA conversion.** Register a font folder and pass `embedFonts: true` to embed compatible simple and composite fonts. The conversion report lists embedded faces and explains refusals, including incompatible advances and restricted font permissions. PDF/A-1 can supply a missing subset CIDSet from verified usage. Both converters can reconcile a CMap writing-mode declaration while preserving its mappings (6x6h.4).
 
-- `Document.BuildHybridInvoice(xml, options?)` packages caller-supplied Factur-X or ZUGFeRD XML, writes the associated file and XMP extension schema, and returns PDF/A-3 findings for the exported PDF.
+- **Assemble or replace a hybrid invoice.** `Document.BuildHybridInvoice(xml, options?)` packages caller-supplied Factur-X or ZUGFeRD XML on a copy of an unencrypted document. It preserves the XML bytes, writes the associated file and XMP extension schema, and returns the exported PDF with its PDF/A-3 validation report (6x6h.3).
 
 - **Read Factur-X and ZUGFeRD invoice envelopes.** `Document.ReadHybridInvoice()` returns the embedded XML bytes and the invoice profile. It checks the CII guideline against invoice XMP and reports ambiguous or contradictory attachments. Extraction matched qpdf byte for byte on modern EN 16931 and legacy BASIC invoices (6x6h.2).
 
@@ -1813,6 +1813,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PDF/UA rule in this library is a faithful transcription. (`q7hc.4.6`)
 
 ### Changed
+
+- **Explicit incremental saves preserve an untouched signed revision byte-for-byte.**
+  Reopening and incrementally saving a signed or append-only PDF used to add an
+  empty revision. A signature that covered the whole file now keeps that coverage,
+  including when a nested signature field supplies the byte range without
+  `/SigFlags`. (cqzf.1)
 
 - **BREAKING: `ReplaceFontRefusal`'s `'pattern'` narrows, and a `refused` entry gains `part`.** A tiling pattern is now rewritten rather than reported, so `'pattern'` no longer means "a pattern draws in the old font": it now means only a pattern that states no `/Resources` and is painted under several resource dictionaries, which may give its font names different meanings, so no single rewrite is right for all of them. `'type3-glyph'` now means only a Type 3 font with no `/Resources` of its own. A refusal reached through a pattern or a Type 3 font carries `part: 'pattern'` or `part: 'type3-glyph'` beside its `reason`, which may be `'vertical'` or `'shared-form'` like any other. (aspose-pdf-foss-for-ts-g0ky.8)
 - **BREAKING: `EmbedFontsReport` records: `object` is optional, `pages` is new, and the `'composite'` skip reason is gone.** A font dictionary written directly in a resource dictionary has no object number, so its `EmbeddedFontRecord`/`EmbedFontSkip` carries `pages` — the 1-based pages declaring it — and no `object`; TypeScript code reading `object` as a `number` must now allow `undefined`. A composite font is embedded or declined with the ordinary reasons, so `EmbedFontSkipReason` no longer includes `'composite'`, and an exhaustive `switch` over it must drop that case; it gains `'shared'`, for a composite font whose descendant another `Type0` font also names. (aspose-pdf-foss-for-ts-g0ky.7)

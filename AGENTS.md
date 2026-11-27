@@ -8,6 +8,11 @@ NodeNext with `.js` specifiers, TDD, the public error types). User-facing API
 docs live in [README.md](README.md). Dated design specs, plans, and verification
 notes live under [docs/superpowers/](docs/superpowers/).
 
+For documentation updates, match README examples and API rows to the public
+signatures in `src/`. The README export checks live in
+[`test/readme-api.test.ts`](test/readme-api.test.ts). The source-module inventory
+check is in [Conventions & Patterns](CLAUDE.md#conventions--patterns).
+
 Quality gates before closing any issue — both must be green:
 
 ```bash

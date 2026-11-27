@@ -34,6 +34,64 @@ async function signedDocument(): Promise<Uint8Array> {
   return doc.Save();
 }
 
+describe('explicit incremental save of an untouched protected input', () => {
+  it('returns the signed byte image, keeping the signature over the whole file', async () => {
+    const signed = await signedDocument();
+    const out = Document.Open(signed).Save({ incremental: true });
+    expect(out.length).toBe(signed.length);
+    expect(out).toEqual(signed);
+    expect(verifyFirstSignature(out)).toMatchObject({ digestMatches: true, coversWholeFile: true });
+  });
+
+  it('recognizes a nested signature with an inherited value and no SigFlags', async () => {
+    const doc = Document.Open(buildClassicPdf(1));
+    const field = doc.Form.AddSignatureField({ page: 1, rect: [0, 0, 40, 20], name: 'Review.Approval' });
+    // Structural fixture. Signature validity is tested separately above.
+    const parent = doc.resolve(field.Dict.get('Parent'));
+    if (!(parent instanceof Map)) throw new Error('expected parent field');
+    parent.set('V', new Map([['ByteRange', [0, 12, 20, 24]]]));
+    doc.Form.Dict!.delete('SigFlags');
+    const base = doc.Save();
+    const out = await Document.Open(base).SaveAsync({ incremental: true });
+    expect(out.length).toBe(base.length);
+    expect(out).toEqual(base);
+  });
+
+  it.each([1, 2])('honors only the AppendOnly bit for an empty signature field (flags %i)', (flags) => {
+    const doc = Document.Open(buildClassicPdf(1));
+    doc.Form.AddSignatureField({ page: 1, rect: [0, 0, 40, 20], name: 'Approval' });
+    doc.Form.Dict!.set('SigFlags', flags);
+    const base = doc.Save();
+    const out = Document.Open(base).Save({ incremental: true });
+    if (flags === 2) {
+      expect(out.length).toBe(base.length);
+      expect(out).toEqual(base);
+    } else {
+      expect(out.length).toBeGreaterThan(base.length);
+    }
+  });
+
+  it('keeps the ordinary unsigned behavior for an unfilled byte-range placeholder', () => {
+    const doc = Document.Open(buildClassicPdf(1));
+    const field = doc.Form.AddSignatureField({ page: 1, rect: [0, 0, 40, 20], name: 'Approval' });
+    field.Dict.set('V', new Map([['ByteRange', [0, 0, 0, 0]]]));
+    const base = doc.Save();
+    expect(Document.Open(base).Save({ incremental: true }).length).toBeGreaterThan(base.length);
+  });
+
+  it('writes an edit that only removes the trailer Info reference', async () => {
+    const initial = Document.Open(buildClassicPdf(1));
+    initial.SetMetadata({ title: 'Recorded before signing' });
+    await initial.Sign(signerOf(buildSigner({ type: 'rsa' })));
+    const base = initial.Save();
+    const reopened = Document.Open(base);
+    expect(reopened.trailer.delete('Info')).toBe(true);
+    const out = reopened.Save({ incremental: true });
+    expect(out.length).toBeGreaterThan(base.length);
+    expect(Document.Open(out).trailer.has('Info')).toBe(false);
+  });
+});
+
 describe('an earlier signature survives an incremental edit', () => {
   it('still validates over its own byte range after the edit', async () => {
     const signed = await signedDocument();

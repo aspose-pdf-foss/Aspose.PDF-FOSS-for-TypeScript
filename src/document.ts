@@ -6,7 +6,7 @@ import type { PsBudget } from './psbudget.js';
 import { runPostScriptImport, type PostScriptOptions, type PostScriptResult } from './psimport.js';
 import { appendPsPages } from './pspdf.js';
 import { needsBarcodeRefresh, refreshBarcodeFields } from './paperbarcode.js';
-import type { FieldAppearanceOptions } from './formfield.js';
+import type { Field, FieldAppearanceOptions } from './formfield.js';
 import { ObjectParser } from './object-parser.js';
 import { inspectSource, sourceHeader, type SourcePreflightReport } from './preflight.js';
 import { hasLinearizationHeader, readXref, XrefEntry, PdfRevision, type XrefResult } from './xref.js';
@@ -1829,8 +1829,7 @@ export class Document {
     return runOperationAsync('ValidatePdfUa', options, (context) => validatePdfUaSteps(this, this.catalog(), part, context));
   }
 
-  /** Validate the document against a curated, machine-decidable subset of
-   *  PDF/A (ISO 19005, parts 1-3, levels b/u/a). Read-only; never mutates. */
+  /** Inspect the document against the supported PDF/A rules for the requested level in parts 1–4. */
   ValidatePdfA(level: PdfALevel, options: OperationControlOptions = {}): ValidationReport {
     return runOperation('ValidatePdfA', options, (context) => validatePdfASteps(this, this.catalog(), level, context));
   }
@@ -1906,8 +1905,8 @@ export class Document {
     return runOperation('FlattenTransparency', options, context => flattenSelectedTransparency(this, options, context, prepareFonts));
   }
 
-  /** Remediate the document toward PDF/A `level` (b/u), then re-validate.
-   *  Mutates the live model in place; the result is emitted by the next Save(). */
+  /** Apply repairs for the requested PDF/A level and revalidate the live document.
+   *  The next Save() writes the result. */
   ConvertToPdfA(level: PdfALevel, opts?: ConvertOptions): ConversionReport {
     return runOperation('ConvertToPdfA', opts, (context) => convertToPdfASteps(this, this.catalog(), level, opts ?? {}, context));
   }
@@ -1930,9 +1929,8 @@ export class Document {
     return runOperationAsync('ConvertToPdfX', opts, (context) => convertToPdfXSteps(this, this.catalog(), level, opts ?? {}, context));
   }
 
-  /** Remediate the document toward PDF/UA-1 (mechanical fixes only), then
-   *  re-validate. Mutates the live model in place; defects requiring human
-   *  authoring (alt text, structure, untagged content) are reported, not fixed. */
+  /** Apply mechanical repairs and revalidate for PDF/UA-1 (default) or PDF/UA-2.
+   *  The report identifies remaining authoring work such as missing alt text. */
   ConvertToPdfUa(opts?: PdfUaConvertOptions): ConversionReport {
     return runOperation('ConvertToPdfUa', opts, (context) => convertToPdfUaSteps(this, this.catalog(), opts ?? {}, context));
   }
@@ -2146,9 +2144,8 @@ export class Document {
     return editXmpPacket(this.xmpPacketBytes(), update, this.loadLimits);
   }
 
-  /** @internal Install `text` as the catalog's /Metadata stream, uncompressed.
-   *  The one place a packet becomes a stream — `installXmp` and the PDF/A
-   *  extension-schema pass (`o6uu.6`) both end here. */
+  /** @internal Encode a generated XML packet as UTF-8. Typed metadata setters
+   *  and the PDF/A extension-schema pass share the byte-stream writer with SetXmpRaw. */
   installXmpText(text: string): void {
     this.installXmpBytes(new TextEncoder().encode(text));
   }
@@ -2345,7 +2342,8 @@ export class Document {
     return readHybridInvoice(this);
   }
 
-  /** Export a standalone invoice and validate its declared PDF/A-3 level (default 3b). */
+  /** Package caller-supplied invoice XML on a copy of an unencrypted document.
+   *  Return the exported bytes and their PDF/A-3 validation report (default level 3b). */
   BuildHybridInvoice(xml: Uint8Array, options: HybridInvoiceOptions = {}): {
     bytes: Uint8Array; level: '3a' | '3b' | '3u'; validation: ValidationReport;
   } {
@@ -2719,6 +2717,13 @@ export class Document {
   /** Keep changed objects even when they are unreachable from `/Root` in the
    *  current graph. Earlier revisions still need their own definitions. */
   private *saveIncrementalSteps(base: CheckedAppendBase, context: OperationContext): OperationSteps<Uint8Array> {
+    // Check before save-time appearance generation can dirty an untouched input.
+    // Live dict handles bypass markModified, and a trailer-only edit has no object delta.
+    if (!this.modified && equalPdfObjects(this.trailer, base.stored.trailer)
+      && base.stored.requiresSignedRevisionPreservation(base.bytes.length)) {
+      const before = yield* diffObjectsSteps(base.stored.objects, this.objects, context.scope('preservation'));
+      if (!before.added.size && !before.replaced.size && !before.freed.size) return base.bytes;
+    }
     // After the refusals, so a rejected call leaves the document untouched —
     // and before the diff, because font embedding allocates objects: taken
     // first, every font added since Open is missing from the revision. The
@@ -3826,7 +3831,7 @@ export class Document {
       if (prior.recovery || prior.Revisions.at(-1)?.xrefOffset !== xrefOffset)
         throw new PdfParseError('could not open the signed revision at its cross-reference section');
       const field = prior.Form.Get(name);
-      return field?.Type === 'signature' ? prior.readSignatureField(field.Dict, name) : undefined;
+      return field?.Type === 'signature' ? prior.readSignatureField(field) : undefined;
     });
   }
 
@@ -4249,6 +4254,15 @@ export class Document {
     return this.Signatures.some((s) => s.isSigned);
   }
 
+  /** AppendOnly and signature byte ranges are independent structural signals. */
+  private requiresSignedRevisionPreservation(sourceLength: number): boolean {
+    const acro = this.resolve(this.catalog().get('AcroForm'));
+    if (!isDict(acro)) return false;
+    const flags = this.resolve(acro.get('SigFlags'));
+    return (typeof flags === 'number' && (flags & 2) !== 0)
+      || this.signatureFields().some((field) => signatureRevisionEnd(field.byteRange, sourceLength) !== undefined);
+  }
+
   /** Every approval/certification signature field (read-side; always available).
    *  Document timestamps are excluded — see {@link DocumentTimestamps}. */
   get Signatures(): SignatureField[] {
@@ -4271,14 +4285,16 @@ export class Document {
   private signatureFields(): SignatureField[] {
     return this.Form.Fields
       .filter((f) => f.Type === 'signature')
-      .map((f) => this.readSignatureField(f.Dict, f.FullName));
+      .map((f) => this.readSignatureField(f));
   }
 
-  private readSignatureField(field: PdfDict, fieldName: string): SignatureField {
+  private readSignatureField(handle: Field): SignatureField {
+    const field = handle.Dict;
+    const fieldName = handle.FullName;
     const seedValue = field.has('SV') ? readSeedValue((o) => this.resolve(o), field.get('SV')!) : undefined;
     const lock = readFieldLock((o) => this.resolve(o ?? null), field.get('Lock'));
     const seed = { ...(seedValue === undefined ? {} : { seedValue }), ...(lock === undefined ? {} : { lock }) };
-    const value = this.resolve(field.get('V'));
+    const value = handle.signatureValue();
     if (!isDict(value)) {
       return { name: fieldName, subFilter: '', isSigned: false, valueDict: new Map(), coversWholeFile: false, isDocTimeStamp: false, ...seed };
     }

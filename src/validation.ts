@@ -12,7 +12,7 @@ export interface ValidationIssue {
   severity: Severity;
   /** Human-readable description. */
   message: string;
-  /** ISO 19005 / ISO 14289 / Matterhorn reference. */
+  /** Standards clause or Matterhorn reference, when applicable. */
   clause?: string;
   /** Offending structure element, when applicable. */
   element?: StructElement;
@@ -22,7 +22,7 @@ export interface ValidationIssue {
   object?: PdfRef;
 }
 
-/** The result of a validation pass (PDF/UA or PDF/A). */
+/** Findings from a document structure or standards validation pass. */
 export class ValidationReport {
   constructor(readonly Issues: ValidationIssue[]) {}
   get Errors(): ValidationIssue[] { return this.Issues.filter((i) => i.severity === 'error'); }
