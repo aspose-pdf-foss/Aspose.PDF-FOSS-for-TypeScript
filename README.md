@@ -300,7 +300,7 @@ const fixed = doc.ToDocx({ mode: 'textbox' });  // .docx keeping each page's own
 // fs.writeFileSync('fixed.docx', fixed);
 ```
 
-- **Saving** — `Save()` returns a `Uint8Array`; `WriteTo(fileName)` writes to disk. The serializer keeps only objects reachable from `/Root` and `/Info`, renumbers them, and preserves the document `/ID`. Pass `{ compressed: true }` to emit a cross-reference stream plus compressed object streams (smaller output for multi-object documents); the default stays a classic xref table for maximum compatibility. Pass `{ incremental: true }` to **append a revision instead of rewriting**: the bytes the document was opened from are preserved verbatim, only the objects that changed are written, and nothing is renumbered — so a signature over an earlier revision stays valid. It requires a document opened from bytes, is not combinable with `compressed`, `encrypt`, `linearized` or `streamFilter`, and refuses recovery-opened documents. It preserves encryption on supported encrypted documents using the credentials retained from opening. It also refuses a document signed in the *same session*: `fillSignature` patches bytes rather than the model, so the live `/Sig` is already behind the signed bytes and an appended revision would overwrite the signature with an empty one. Save the signed bytes, reopen them, then edit — that path keeps the earlier signature valid over its own `/ByteRange`, which is what the feature exists for.
+- **Saving** — `Save()` returns a `Uint8Array`; `WriteTo(fileName)` writes to disk. Reopened signed and AppendOnly files preserve earlier revisions by default. A full rewrite keeps only objects reachable from `/Root` and `/Info`, renumbers them, and preserves the document `/ID`. Pass `{ compressed: true }` to emit a cross-reference stream plus compressed object streams (smaller output for multi-object documents); the default stays a classic xref table for maximum compatibility. Pass `{ incremental: true }` to **append a revision instead of rewriting**: the bytes the document was opened from are preserved verbatim, only the objects that changed are written, and nothing is renumbered — so a signature over an earlier revision stays valid. It requires a document opened from bytes, is not combinable with `compressed`, `encrypt`, `linearized` or `streamFilter`, and refuses recovery-opened documents. It preserves encryption on supported encrypted documents using the credentials retained from opening. It also refuses a document signed in the *same session*: `fillSignature` patches bytes rather than the model, so the live `/Sig` is already behind the signed bytes and an appended revision would overwrite the signature with an empty one. Save the signed bytes, reopen them, then edit — that path keeps the earlier signature valid over its own `/ByteRange`, which is what the feature exists for.
 - **Linearization (Fast Web View)** — `doc.Save({ linearized: true })` emits a linearized PDF (ISO 32000-1 Annex F): a parameter dictionary first, the first page's objects and a primary hint stream near the front, and two chained cross-reference sections, so a viewer can render page 1 before the whole file downloads. `doc.IsLinearized` reports whether an opened file is linearized, and `verifyLinearization(bytes)` re-checks output offsets and hint tables. Classic-xref, plaintext output only.
 - **Encrypted output** — `Save({ encrypt })` writes a PDF protected with the standard security handler: AES-256 (default), AES-128, or RC4. Set user/owner passwords, restrict permissions with named flags, and toggle metadata encryption. Works with classic and compressed output.
 - **Public-key encryption (PubSec)** — certificate-based `Save`/`Open` (`/Adobe.PubSec`) with RC4, AES-128, and AES-256, alongside the password-based standard handler. Encrypt to one or more recipient certificates (PEM or DER). RSA recipients use PKCS#1 v1.5 or opt-in RSAES-OAEP key transport. EC recipients use ECDH-ES key agreement. Give recipients distinct permissions or a shared set. Open with a private key and certificate, a PKCS#12 bundle, or a certificate and synchronous RSA key transport provider. Recovered permissions are surfaced via `doc.Permissions`.
@@ -711,12 +711,20 @@ validation-data collection, and signature verification can also await the
 provider to open stored bytes and earlier revisions. Each reopen applies the
 document's original `LoadLimits`. Keep the provider available for these operations.
 
-On an untouched reopened PDF, `Save({ incremental: true })` and
-`SaveAsync({ incremental: true })` return the original bytes when the AcroForm
-declares AppendOnly or a signature field binds a byte range. A signature that
-covered the whole file still covers the whole file after saving. This also
-applies to nested signature fields when the producer omitted `/SigFlags`.
-Edits are appended as a new revision. Use `VerifySignatures` to check validity.
+### Save a reopened signed PDF
+
+`Save()` and `SaveAsync()` preserve a reopened PDF’s signed revision by default.
+An untouched file comes back byte-for-byte. Edits append a revision. This also
+applies to AppendOnly files and nested signature fields without `/SigFlags`.
+Use `VerifySignatures()` to check the digest and the certification permissions
+separately. A digest can still verify after an edit that violates certification.
+
+Changing encryption or requesting a new file layout requires an explicit full
+rewrite, for example `doc.Save({ incremental: false, encrypt: false })` to
+produce plaintext. A rewrite can invalidate existing signatures. Applying
+redactions or successfully sanitizing a document makes subsequent ordinary
+saves write a standalone file so earlier revisions cannot retain removed
+content. An explicit incremental save then throws.
 
 ### Split and Merge Documents
 

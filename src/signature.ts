@@ -237,22 +237,27 @@ export function derTotalLength(bytes: Uint8Array): number {
 /** True when the document carries any signature field. Optimizing or converting
  *  one would invalidate it, and `Save()` returns the cached signed bytes
  *  verbatim, so every change would be discarded silently. One owner for the
- *  question: `optimize.ts` and `colorconvert.ts` both ask it. */
-export function hasSignatureField(doc: Document): boolean {
+ *  question: `optimize.ts` and `colorconvert.ts` both ask it. A predicate
+ *  restricts the search to signature fields with a matching effective /V. */
+export function hasSignatureField(doc: Document, matches?: (value: PdfObject) => boolean): boolean {
   const acro = doc.resolve(doc.catalog().get('AcroForm'));
   if (!isDict(acro)) return false;
   const fields = doc.resolve(acro.get('Fields'));
   if (!isArray(fields)) return false;
-  const stack = [...fields];
+  // Walk the stored graph once, without building field handles or full names.
+  const stack = fields.map(node => ({ node, signature: false, value: null as PdfObject }));
   const seen = new Set<PdfDict>();
   while (stack.length) {
-    const f = doc.resolve(stack.pop()!);
+    const parent = stack.pop()!;
+    const f = doc.resolve(parent.node);
     if (!isDict(f) || seen.has(f)) continue;
     seen.add(f);
     const ft = doc.resolve(f.get('FT'));
-    if (isName(ft) && ft.name === 'Sig') return true;
+    const signature = isName(ft) ? ft.name === 'Sig' : parent.signature;
+    const value = matches && f.has('V') ? doc.resolve(f.get('V')) : parent.value;
+    if (signature && (!matches || matches(value))) return true;
     const kids = doc.resolve(f.get('Kids'));
-    if (isArray(kids)) stack.push(...kids);
+    if (isArray(kids)) for (const node of kids) stack.push({ node, signature, value });
   }
   return false;
 }

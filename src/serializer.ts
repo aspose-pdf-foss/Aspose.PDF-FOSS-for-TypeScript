@@ -38,10 +38,11 @@ export interface SerializeOptions extends OperationControlOptions {
    *  rather than rewriting it. An untouched reopened input with a bound signature
    *  or the AcroForm AppendOnly flag is returned byte-for-byte. An appended
    *  revision writes only changed objects and preserves the original prefix.
-   *  Object numbers are not
-   *  renumbered. Requires a document opened from bytes; throws if combined
+   *  Object numbers are retained. Requires a document opened from bytes; throws if combined
    *  with `compressed`, `encrypt`, `linearized` or `streamFilter`.
-   *  Default: false. */
+   *  When omitted, reopened signed or AppendOnly inputs use incremental output.
+   *  Applied redaction and sanitization require a full rewrite. Explicit false
+   *  requests a standalone rewrite of a reopened input and can invalidate signatures. */
   incremental?: boolean;
 }
 

@@ -404,7 +404,7 @@ describe('re-encrypting a document that already contains a signature', () => {
     const before = Document.Open(signed).Signatures[0].contents!;
     // A full rewrite, which preserves encryption and so runs every object --
     // the signature dict included -- through the encryptor.
-    const rewritten = Document.Open(signed).Save();
+    const rewritten = Document.Open(signed).Save({ incremental: false });
     const after = Document.Open(rewritten).Signatures[0].contents!;
 
     expect(after).toEqual(before);

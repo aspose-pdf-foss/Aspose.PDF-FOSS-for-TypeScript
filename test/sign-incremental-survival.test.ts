@@ -92,6 +92,85 @@ describe('explicit incremental save of an untouched protected input', () => {
   });
 });
 
+describe('default save selection for reopened documents', () => {
+  it('preserves an untouched signed file on both ordinary save paths', async () => {
+    const signed = await signedDocument();
+    const doc = Document.Open(signed);
+    for (const bytes of [doc.Save(), await doc.SaveAsync()]) {
+      expect(bytes.length).toBe(signed.length);
+      expect(bytes).toEqual(signed);
+    }
+  });
+
+  it.each(['form-fill', 'no-changes'] as const)('separates digest preservation from %s certification', async (permissions) => {
+    const doc = Document.Open(buildClassicPdf(1));
+    doc.Form.AddTextField({ page: 1, rect: [5, 5, 120, 25], name: 'Invoice', value: 'draft' });
+    await doc.Certify(signerOf(buildSigner()), { permissions });
+    const signed = doc.Save();
+    const edit = Document.Open(signed);
+    edit.Form.Get('Invoice')!.Value = 'approved';
+    const bytes = await edit.SaveAsync();
+    expect(Buffer.from(bytes.subarray(0, signed.length)).equals(signed)).toBe(true);
+    const reopened = Document.Open(bytes);
+    expect(reopened.Form.Get('Invoice')!.Value).toBe('approved');
+    expect((await reopened.VerifySignatures())[0]).toMatchObject({
+      integrity: 'valid', signature: 'valid', docMDP: permissions === 'form-fill' ? 'ok' : 'violated',
+    });
+  });
+
+  it('selects preservation from the input even if the live AcroForm was removed', async () => {
+    const signed = await signedDocument();
+    const doc = Document.Open(signed);
+    doc.catalog().delete('AcroForm');
+    const bytes = doc.Save();
+    expect(Buffer.from(bytes.subarray(0, signed.length)).equals(signed)).toBe(true);
+    expect(Document.Open(bytes).Signatures).toHaveLength(0);
+  });
+
+  it('preserves a flag-only input until sanitation requires removal of its earlier revision', () => {
+    const source = Document.Open(buildClassicPdf(1));
+    source.Form.AddTextField({ page: 1, rect: [10, 10, 60, 25], name: 'Code', value: 'A' });
+    source.Form.Dict!.set('SigFlags', 2);
+    source.SetMetadata({ title: 'Private title' });
+    const base = source.Save();
+    const doc = Document.Open(base);
+    expect(doc.Save()).toEqual(base);
+    doc.Sanitize({ metadata: true });
+    expect(() => doc.Save({ incremental: true })).toThrow(/Sanitize/);
+    const saved = doc.Save();
+    expect(Buffer.from(saved.subarray(0, base.length)).equals(base)).toBe(false);
+    expect(Document.Open(saved).GetMetadata().title).toBeUndefined();
+  });
+
+  it('requires explicit rewrite for incompatible output options and can retry', async () => {
+    const signed = await signedDocument();
+    const doc = Document.Open(signed);
+    expect(() => doc.Save({ compressed: true })).toThrow(/incremental: false/);
+    await expect(doc.SaveAsync({ encrypt: { userPassword: 'secret' } })).rejects.toThrow(/incremental: false/);
+    const rewritten = doc.Save({ compressed: true, incremental: false });
+    expect(Buffer.from(rewritten.subarray(0, signed.length)).equals(signed)).toBe(false);
+    expect(Document.Open(rewritten).Pages).toHaveLength(2);
+    expect(doc.Save()).toEqual(signed);
+  });
+
+  it('writes a standalone file after applying a redaction and refuses an explicit append', async () => {
+    const source = Document.Open(buildClassicPdf(1));
+    source.Pages[0].AddText('Private', 20, 20);
+    await source.Sign(signerOf(buildSigner()));
+    const signed = source.Save();
+    const doc = Document.Open(signed);
+    expect(doc.Pages[0].MarkRedactText('Private')).toBe(1);
+    expect(doc.ApplyRedactions()).toBe(1);
+    expect(() => doc.Save({ incremental: true })).toThrow(/redact/i);
+    await expect(doc.AddValidationData({})).rejects.toThrow(/redact/i);
+    const bytes = doc.Save();
+    expect(Buffer.from(bytes.subarray(0, signed.length)).equals(signed)).toBe(false);
+    const reopened = Document.Open(bytes);
+    expect(reopened.Revisions).toHaveLength(1);
+    expect(reopened.Pages[0].GetText()).not.toContain('Private');
+  });
+});
+
 describe('an earlier signature survives an incremental edit', () => {
   it('still validates over its own byte range after the edit', async () => {
     const signed = await signedDocument();

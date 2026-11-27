@@ -84,6 +84,12 @@ describe('asynchronous PubSec key transport', () => {
 
     const unwrapKey = vi.fn(async (key: Uint8Array) => unwrap(key));
     const doc = await Document.OpenAsync(appended, { recipient: { certificate, keyTransportAsync: transport(unwrapKey) } });
+    expect(() => doc.Save()).toThrow(/SaveAsync/);
+    await expect(doc.SaveAsync({ encrypt: false })).rejects.toThrow(/incremental: false/);
+    const saved = await doc.SaveAsync();
+    expect(Buffer.from(saved).equals(appended)).toBe(true);
+    const plain = await doc.SaveAsync({ encrypt: false, incremental: false });
+    expect(Document.Open(plain).trailer.has('Encrypt')).toBe(false);
     unwrapKey.mockClear();
     const valid = { integrity: 'valid', signature: 'valid', coversWholeFile: false };
     expect(await doc.VerifySignatures({ shadowAnalysis: true })).toMatchObject([{

@@ -187,7 +187,7 @@ import { Signer, resolveSigner } from './signer.js';
 import {
   SignOptions, CertifyOptions, DocMdpPermission, SignatureField,
   buildSigValueDict, buildDocMdpReference, subFilterName,
-  digestByteRange, digestName, derTotalLength, pdfString, signatureRevisionEnd,
+  digestByteRange, digestName, derTotalLength, hasSignatureField, pdfString, signatureRevisionEnd,
   buildDocTimeStampDict, DocumentTimestampOptions,
 } from './signature.js';
 import {
@@ -493,6 +493,8 @@ export class Document {
   /** The bytes this document was opened from (absent when authored in memory).
    *  Required as the base for incremental-update (append) signing. */
   private originalBytes?: Uint8Array;
+  /** Captured before callers can change the live AcroForm. */
+  private sourceBindsSignature = false;
   /** The input header or the effective version inherited from copied pages. */
   private sourceVersion?: string;
   /** Retain the effective password or resolved recipient for fresh byte views.
@@ -521,11 +523,8 @@ export class Document {
    *  requires reopening the signed bytes before editing because the signing
    *  writer can leave a placeholder in the live model. */
   private signedInSession = false;
-  /** Set once {@link Sanitize} has run, and never cleared. An incremental save
-   *  APPENDS to the bytes this document was opened from, and those bytes still
-   *  hold everything Sanitize removed — so it is refused from then on, even
-   *  when this run found nothing, rather than trusting a count (`74mf.4`). */
-  private sanitizedInSession = false;
+  /** An appended revision would retain the input that this operation removed. */
+  private historyRemoval?: 'Sanitize' | 'redaction';
   /** An explicit PDF 2.0 migration must be written as a standalone file. */
   private migratedToPdf20 = false;
   /** Revisions the `/Prev` chain named on open, oldest first — exactly what
@@ -911,7 +910,7 @@ export class Document {
       xrefFailure.lost = [...pass.failed, ...pass.lostInObjStm];
       if (pass.objStmDamage.length > 0) xrefFailure.objectStreams = pass.objStmDamage;
       const doc = new Document(pass.objects, recovered, limits, budget);
-      doc.originalBytes = buf;
+      doc.rememberSaveSource(buf);
       doc.sourceVersion = sourceVersion;
       doc.#openCredentials = pass.credentials;
       doc.revisions = revisions;
@@ -1008,7 +1007,7 @@ export class Document {
     }
 
     const doc = new Document(pass.objects, trailer, limits, budget);
-    doc.originalBytes = buf;
+    doc.rememberSaveSource(buf);
     doc.sourceVersion = sourceVersion;
     doc.#openCredentials = pass.credentials;
     doc.revisions = revisions;
@@ -2578,9 +2577,16 @@ export class Document {
    *  {@link UnsupportedFeatureError} for a signed document, both before
    *  anything changes. */
   Sanitize(opts: SanitizeOptions = {}): SanitizeReport {
-    const report = sanitizeDocument(this, opts);
-    this.sanitizedInSession = true;
-    return report;
+    return sanitizeDocument(this, opts);
+  }
+
+  /** @internal Called after validation, before a removal can partially complete. */
+  requireHistoryRemoval(operation: 'Sanitize' | 'redaction'): void {
+    this.historyRemoval = operation;
+    // A clean sanitize can leave the object graph unchanged. An old sealed
+    // byte image, however, must never be returned after a removal begins.
+    if (this.pendingSignedBytes) this.markModified();
+    else this.#writeVersion++;
   }
 
   /** Convert this document's XFA form to a real `/AcroForm` field tree.
@@ -2613,7 +2619,8 @@ export class Document {
     return convertXfaToAcroFormAsync(this, opts);
   }
 
-  /** Serialize the live document to PDF bytes (mark-sweep from /Root, renumbered).
+  /** Serialize the live document. Reopened signed or AppendOnly inputs preserve
+   *  their revisions by default. Use `incremental: false` for a standalone rewrite.
    *  Pass `{ compressed: true }` for cross-reference-stream + ObjStm output.
    *  When returning sealed signed bytes, an explicit `encrypt` option throws
    *  {@link UnsupportedFeatureError}. */
@@ -2623,8 +2630,8 @@ export class Document {
 
   /** Cooperatively yield between work units of {@link Save}.
    *  Cancellation leaves completed edits; do not mutate the document while pending. */
-  SaveAsync(options: SaveOptions = {}): Promise<Uint8Array> {
-    if (options.incremental && this.hasAsyncRecipient()) return this.saveWithAsyncBaseline({ ...options });
+  async SaveAsync(options: SaveOptions = {}): Promise<Uint8Array> {
+    if (this.hasAsyncRecipient() && this.useIncrementalSave(options)) return this.saveWithAsyncBaseline({ ...options });
     return runOperationAsync('Save', options, (context) => this.saveSteps(options, context));
   }
 
@@ -2646,7 +2653,7 @@ export class Document {
   private *saveSteps(options: SaveOptions, context: OperationContext): OperationSteps<Uint8Array> {
     // Incremental goes first so it can REFUSE a document signed in this
     // session, which the verbatim return below would otherwise hide.
-    if (options.incremental) return yield* this.saveIncrementalSteps(this.preflightIncrementalSave(options), context);
+    if (this.useIncrementalSave(options)) return yield* this.saveIncrementalSteps(this.preflightIncrementalSave(options), context);
     // A completed signature fixes the exact bytes; return them verbatim so the
     // signed byte image is never re-serialized (which would break the digest).
     if (this.pendingSignedBytes) {
@@ -2677,20 +2684,22 @@ export class Document {
     );
   }
 
+  private useIncrementalSave(options: SaveOptions): boolean {
+    return options.incremental ?? (!this.pendingSignedBytes && !this.historyRemoval && this.sourceBindsSignature);
+  }
+
   private requireIncrementalBase(options: SaveOptions): Uint8Array {
     if (this.migratedToPdf20)
-      throw new UnsupportedFeatureError('cannot save incrementally after ConvertToPdf20: write a standalone file with Save()');
+      throw new UnsupportedFeatureError('cannot save incrementally after ConvertToPdf20: write a standalone file with Save({ incremental: false })');
     // Signing can leave a placeholder in the object graph. Reopen the signed
     // output to make the complete signature revision the incremental baseline.
     if (this.signedInSession)
       throw new UnsupportedFeatureError(
         'cannot save incrementally after signing in this session: Save() first, '
         + 'reopen the result, then edit.');
-    if (this.sanitizedInSession)
+    if (this.historyRemoval)
       throw new UnsupportedFeatureError(
-        'cannot save incrementally after Sanitize: an incremental update appends to '
-        + 'the bytes this document was opened from, which still contain everything '
-        + 'Sanitize removed. Save() without `incremental` writes a fresh file.');
+        `cannot save incrementally after ${this.historyRemoval}: earlier revisions retain removed content. Save() writes a fresh file.`);
     if (!this.originalBytes)
       throw new UnsupportedFeatureError(
         'cannot save incrementally: this document was authored in memory, '
@@ -2698,10 +2707,10 @@ export class Document {
     if (this.recovery)
       throw new UnsupportedFeatureError(
         'cannot save incrementally: this document was opened by recovery, so the '
-        + 'cross-reference an update would chain /Prev onto could not be read');
+        + 'cross-reference an update would chain /Prev onto could not be read. Use { incremental: false } for a full rewrite.');
     for (const k of ['encrypt', 'compressed', 'linearized', 'streamFilter'] as const)
-      if (options[k])
-        throw new UnsupportedFeatureError(`cannot save incrementally with \`${k}\``);
+      if (options[k] || (k === 'encrypt' && options.encrypt === false && this.preservedEncryptor))
+        throw new UnsupportedFeatureError(`cannot save incrementally with \`${k}\`. Use { incremental: false } for a full rewrite, which can invalidate existing signatures.`);
     return this.originalBytes;
   }
 
@@ -2720,7 +2729,7 @@ export class Document {
     // Check before save-time appearance generation can dirty an untouched input.
     // Live dict handles bypass markModified, and a trailer-only edit has no object delta.
     if (!this.modified && equalPdfObjects(this.trailer, base.stored.trailer)
-      && base.stored.requiresSignedRevisionPreservation(base.bytes.length)) {
+      && base.stored.sourceBindsSignature) {
       const before = yield* diffObjectsSteps(base.stored.objects, this.objects, context.scope('preservation'));
       if (!before.added.size && !before.replaced.size && !before.freed.size) return base.bytes;
     }
@@ -3987,7 +3996,7 @@ export class Document {
         throw new UnsupportedFeatureError('cannot add a signature: no base byte image to append to');
       return true;
     }
-    return this.signBaseAvailable() && !this.modified;
+    return this.signBaseAvailable() && !this.modified && !this.historyRemoval;
   }
 
   /** Incremental signature writers need the standalone layout and object numbers. */
@@ -4030,6 +4039,8 @@ export class Document {
 
   /** Read the layout once. Its xref stream decode shares the baseline's budget. */
   private readAppendLayout(source: Uint8Array, operation: AppendOperation): AppendBase & OpenLayout {
+    if (this.historyRemoval && !this.pendingSignedBytes)
+      throw new UnsupportedFeatureError(`cannot ${operation} incrementally after ${this.historyRemoval}: save and reopen the standalone PDF first`);
     if (operation !== 'save' && this.pendingLayoutNeedsReopen)
       throw new UnsupportedFeatureError(`cannot ${operation} incrementally after a signing rewrite: save and reopen the signed PDF first`);
     const bytes = this.snapshotForAuthentication(source);
@@ -4254,13 +4265,19 @@ export class Document {
     return this.Signatures.some((s) => s.isSigned);
   }
 
-  /** AppendOnly and signature byte ranges are independent structural signals. */
-  private requiresSignedRevisionPreservation(sourceLength: number): boolean {
+  private rememberSaveSource(bytes: Uint8Array): void {
+    this.originalBytes = bytes;
     const acro = this.resolve(this.catalog().get('AcroForm'));
-    if (!isDict(acro)) return false;
+    if (!isDict(acro)) return;
     const flags = this.resolve(acro.get('SigFlags'));
-    return (typeof flags === 'number' && (flags & 2) !== 0)
-      || this.signatureFields().some((field) => signatureRevisionEnd(field.byteRange, sourceLength) !== undefined);
+    this.sourceBindsSignature = (typeof flags === 'number' && (flags & 2) !== 0)
+      || hasSignatureField(this, value => signatureRevisionEnd(this.signatureByteRange(value), bytes.length) !== undefined);
+  }
+
+  private signatureByteRange(value: PdfObject): SignatureField['byteRange'] {
+    const br = isDict(value) ? this.resolve(value.get('ByteRange')) : undefined;
+    return isArray(br) && br.length === 4 && br.every((x) => typeof x === 'number')
+      ? br as [number, number, number, number] : undefined;
   }
 
   /** Every approval/certification signature field (read-side; always available).
@@ -4302,9 +4319,7 @@ export class Document {
     const subFilter = isName(sf) ? sf.name : '';
     const typeObj = value.get('Type');
     const isDocTimeStamp = (isName(typeObj) && typeObj.name === 'DocTimeStamp') || subFilter === 'ETSI.RFC3161';
-    const br = this.resolve(value.get('ByteRange'));
-    const byteRange = isArray(br) && br.length === 4 && br.every((x) => typeof x === 'number')
-      ? (br as number[] as [number, number, number, number]) : undefined;
+    const byteRange = this.signatureByteRange(value);
     const contentsObj = value.get('Contents');
     const contents = isString(contentsObj) ? contentsObj.bytes : undefined;
     const cmsLength = contents ? derTotalLength(contents) : undefined;

@@ -63,6 +63,7 @@ export function redactRegions(
   keepAnnotations = false,
 ): void {
   const valid = rects.map(checkRect); // validate up front: no partial mutation on bad input
+  if (valid.length) doc.requireHistoryRemoval('redaction');
   const ec = new EditableContent(doc, page);
   removeRegionContent(doc, page, valid, ec); // text + images in one per-stream rebuild
   sanitizeResources(doc, page, ec);
@@ -80,7 +81,10 @@ export function redactRegions(
 export function redactPage(doc: Document, page: Page, rects: Rect[], opts: RedactOptions = {}): void {
   redactRegions(doc, page, rects, (rs) => paintRedactionBoxes(doc, page, rs, opts.color),
     opts.keepAnnotations);
-  if (opts.scrubMetadata) doc.ClearMetadata();
+  if (opts.scrubMetadata) {
+    if (!rects.length) doc.requireHistoryRemoval('redaction');
+    doc.ClearMetadata();
+  }
 }
 
 /** Remove covered text glyphs and images from a page in a single per-stream

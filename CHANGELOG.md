@@ -1814,6 +1814,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — Ordinary saves preserve reopened signed PDFs.** `Save()`,
+  `SaveAsync()` and file output now retain the signed bytes and append edits.
+  Choose `incremental: false` to rewrite a reopened signed file, including
+  when changing its encryption or layout. Applied redactions require a
+  standalone save so removed content stays out of the file’s history. (cqzf.2)
+
 - **Explicit incremental saves preserve an untouched signed revision byte-for-byte.**
   Reopening and incrementally saving a signed or append-only PDF used to add an
   empty revision. A signature that covered the whole file now keeps that coverage,

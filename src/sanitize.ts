@@ -230,6 +230,7 @@ export function sanitizeDocument(doc: Document, opts: SanitizeOptions = {}): San
       'Sanitize: the document is signed; removing anything would invalidate the signature',
     );
   }
+  doc.requireHistoryRemoval('Sanitize');
   const report: SanitizeReport = {
     metadata: undefined, actions: undefined, attachments: undefined,
     annotations: undefined, forms: undefined, layers: undefined, privateData: undefined,
